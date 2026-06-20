@@ -183,6 +183,62 @@ func TestRecordCheckpointZeroObservedAtNull(t *testing.T) {
 	}
 }
 
+// TestCheckpointAt confirms a recorded (root, raw) round-trips through
+// CheckpointAt and that an absent (hubID, treeSize) returns found=false with a
+// nil error (mirroring FollowState's absent-row convention).
+func TestCheckpointAt(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	wantRoot := []byte("checkpoint-at-root-padding-32byt")
+	wantRaw := []byte("sb0.iscc.id/log\n42\n<root>\n")
+	if _, _, err := s.RecordCheckpoint(ctx, CheckpointRecord{
+		HubID:      hubID,
+		TreeSize:   42,
+		Root:       wantRoot,
+		Raw:        wantRaw,
+		ObservedAt: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint: %v", err)
+	}
+
+	root, raw, found, err := s.CheckpointAt(ctx, hubID, 42)
+	if err != nil {
+		t.Fatalf("CheckpointAt: %v", err)
+	}
+	if !found {
+		t.Fatalf("found = false for a recorded checkpoint, want true")
+	}
+	if string(root) != string(wantRoot) {
+		t.Errorf("root = %q, want %q", root, wantRoot)
+	}
+	if string(raw) != string(wantRaw) {
+		t.Errorf("raw = %q, want %q", raw, wantRaw)
+	}
+
+	// An absent (hubID, treeSize) is not an error.
+	_, _, found, err = s.CheckpointAt(ctx, hubID, 99)
+	if err != nil {
+		t.Fatalf("CheckpointAt absent size: %v", err)
+	}
+	if found {
+		t.Errorf("found = true for an absent tree_size, want false")
+	}
+
+	// An absent hub is likewise not an error.
+	_, _, found, err = s.CheckpointAt(ctx, 999, 42)
+	if err != nil {
+		t.Fatalf("CheckpointAt absent hub: %v", err)
+	}
+	if found {
+		t.Errorf("found = true for an absent hub, want false")
+	}
+}
+
 // TestFollowStateUnknownHub confirms an unknown hub returns the zero FollowState
 // and a nil error, not an error.
 func TestFollowStateUnknownHub(t *testing.T) {

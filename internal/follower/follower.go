@@ -4,12 +4,13 @@
 // enters the store's closure and the store stays a leaf.
 //
 // This file holds PollHub, the single-observation wiring: for one hub it fetches
-// the latest signed checkpoint, runs the four-way AcceptCheckpoint verdict,
-// persists the observed checkpoint, and advances the follow cursor — but only
-// when the verdict is StatusVerified, since that is the only outcome that may
-// advance accepted state (ADR-0009). The poll loop, the RFC-6962 consistency
-// check, freeze/alert, coverage, and the did:web key cache are each their own
-// later steps; PollHub does exactly one observation per call and returns.
+// the latest signed checkpoint, runs the four-way AcceptCheckpoint verdict, runs
+// the dep-free RFC-6962 self-consistency checks (shrink/fork) against the prior
+// accepted checkpoint, and then either freezes the hub on a violation or advances
+// the follow cursor — but only a StatusVerified observation may advance accepted
+// state (ADR-0009). The merkle-backed equivocation trigger, the poll loop,
+// coverage, and the did:web key cache are each their own later steps; PollHub
+// does exactly one observation per call and returns.
 //
 // Record-only-on-verified: only a StatusVerified observation is persisted, since
 // the non-verified verdicts carry a zero CheckpointInfo and therefore no
@@ -17,6 +18,15 @@
 // non-verified observations (e.g. for evidence of an internally-broken hub); for
 // now an unverified/unresolvable/rotated verdict is returned to the caller
 // without touching the store.
+//
+// Freeze on violation (ADR-0006): when a verified observation contradicts the
+// prior accepted checkpoint for the same hub (a strict tree-size decrease =
+// shrink, or the same size with a different root = fork), PollHub records the
+// violation as irreplaceable evidence, freezes the hub, and fires the injected
+// alert exactly once on the not-frozen -> frozen transition. A frozen hub does
+// not advance its cursor; the violation freezes, never crashes, so the verdict
+// status is still returned with a nil error. Re-detecting on a later poll records
+// the violation again (re-detection is itself evidence) but never re-alerts.
 package follower
 
 import (
@@ -28,21 +38,33 @@ import (
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
+// AlertFunc is the minimal injected alert sink the follower fires once per
+// not-frozen -> frozen transition. It is a func seam (not an interface) for
+// YAGNI: a test passes a counter, production passes a real transport. Delivery
+// (email/webhook/log sink) and the backed-off evidence-only re-poll cadence of a
+// frozen hub are out of scope here; this only signals the transition.
+type AlertFunc func(hubID int64, kind string)
+
 // PollHub performs one observation of a hub's latest checkpoint.
 //
 // It fetches the raw checkpoint, runs the four-way AcceptCheckpoint verdict, and
-// — only on StatusVerified — records the observed checkpoint and advances the
-// per-hub follow cursor. hubID and baseURL are pre-resolved by the caller and
-// observedAt is injected (never time.Now() here) so the decision is deterministic
-// and the seam stays small.
+// — only on StatusVerified — runs the RFC-6962 self-consistency checks against
+// the prior accepted checkpoint, then either freezes the hub (recording the
+// violation + alerting once) or records the checkpoint and advances the per-hub
+// follow cursor. hubID and baseURL are pre-resolved by the caller and observedAt
+// is injected (never time.Now() here) so the decision is deterministic and the
+// seam stays small. alert is fired exactly once per not-frozen -> frozen
+// transition; pass a no-op to ignore it.
 //
 // The returned Status is the verdict for any of the four outcomes: a non-verified
-// verdict is a verdict, not a Go error. The returned error is reserved for a
-// genuine fault — a transport failure fetching the checkpoint, or a
+// verdict is a verdict, not a Go error, and a self-consistency violation freezes
+// the hub but still returns StatusVerified with a nil error (the signature was
+// valid; the violation is a separate axis — ADR-0006). The returned error is
+// reserved for a genuine fault — a transport failure fetching the checkpoint, a
 // verified-but-garbled body from AcceptCheckpoint (which returns a non-nil error
 // alongside StatusUnverified's zero value, so the error is checked before the
-// status). On any such fault nothing is persisted.
-func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string, observedAt time.Time) (logclient.Status, error) {
+// status), or a store failure. On any such fault accepted state does not advance.
+func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string, observedAt time.Time, alert AlertFunc) (logclient.Status, error) {
 	raw, err := logclient.FetchCheckpoint(ctx, fetcher, baseURL)
 	if err != nil {
 		return logclient.StatusUnverified, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err)
@@ -61,6 +83,20 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 		return status, nil
 	}
 
+	// Self-consistency check against the prior accepted checkpoint, before any
+	// record/advance: a violation must freeze (not advance) the hub (ADR-0006).
+	fs, err := st.FollowState(ctx, hubID)
+	if err != nil {
+		return status, fmt.Errorf("follower.PollHub: hub %d: follow state: %w", hubID, err)
+	}
+	violated, kind, prevRaw, err := checkConsistency(ctx, st, hubID, fs.LastSize, info)
+	if err != nil {
+		return status, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err)
+	}
+	if violated {
+		return status, freeze(ctx, st, hubID, kind, prevRaw, raw, info, fs.Frozen, observedAt, alert)
+	}
+
 	rec := store.CheckpointRecord{
 		HubID:      hubID,
 		Status:     status.String(),
@@ -76,4 +112,76 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 		return status, fmt.Errorf("follower.PollHub: hub %d: advance follow state: %w", hubID, err)
 	}
 	return status, nil
+}
+
+// checkConsistency runs the dep-free shrink/fork triggers against the prior
+// accepted checkpoint for a hub. prevSize is FollowState.LastSize; the CheckShrink
+// and CheckFork prevSize>0 guards mean a fresh-store zero never trips a violation,
+// so a never-advanced hub is always clean. The prior root and raw bytes come from
+// a checkpoints lookup at prevSize, since follow_state does not persist the root;
+// if no checkpoint is stored at that size (a hub that advanced before this code
+// existed), the fork check is skipped while the size-only shrink check still runs.
+// On a true verdict it returns the matching violation kind and the prior raw bytes
+// (RawA evidence). Shrink and fork are mutually exclusive by size, so shrink is
+// evaluated first and its kind used when true.
+func checkConsistency(ctx context.Context, st *store.Store, hubID int64, prevSize uint64, info logclient.CheckpointInfo) (violated bool, kind logclient.ViolationKind, prevRaw []byte, err error) {
+	if prevSize == 0 {
+		return false, "", nil, nil
+	}
+	prevRootBytes, prevRaw, prevFound, err := st.CheckpointAt(ctx, hubID, prevSize)
+	if err != nil {
+		return false, "", nil, fmt.Errorf("checkpoint at prior size %d: %w", prevSize, err)
+	}
+	var prevRoot [32]byte
+	copy(prevRoot[:], prevRootBytes)
+
+	shrink := logclient.CheckShrink(prevSize, info.TreeSize)
+	fork := prevFound && logclient.CheckFork(prevSize, prevRoot, info.TreeSize, info.Root)
+	switch {
+	case shrink:
+		return true, logclient.ViolationShrink, prevRaw, nil
+	case fork:
+		return true, logclient.ViolationFork, prevRaw, nil
+	default:
+		return false, "", nil, nil
+	}
+}
+
+// freeze records the violation as irreplaceable evidence, persists the
+// contradictory checkpoint, freezes the hub, and fires the alert exactly once on
+// the not-frozen -> frozen transition (ADR-0006). It deliberately does NOT
+// advance the cursor — a frozen hub never advances accepted state. A violation
+// freezes, never crashes, so this returns nil on success even though a violation
+// was found; a non-nil error is only a store failure. wasFrozen gates the
+// alert: a later poll of an already-frozen hub records the violation again
+// (re-detection is evidence — RecordViolation has no ON CONFLICT) but never
+// re-alerts.
+func freeze(ctx context.Context, st *store.Store, hubID int64, kind logclient.ViolationKind, prevRaw, raw []byte, info logclient.CheckpointInfo, wasFrozen bool, observedAt time.Time, alert AlertFunc) error {
+	if _, err := st.RecordViolation(ctx, store.Violation{
+		HubID:      hubID,
+		Kind:       string(kind),
+		RawA:       prevRaw,
+		RawB:       raw,
+		DetectedAt: observedAt,
+	}); err != nil {
+		return fmt.Errorf("record violation: %w", err)
+	}
+	// Persist the contradictory checkpoint as evidence, but do not advance.
+	if _, _, err := st.RecordCheckpoint(ctx, store.CheckpointRecord{
+		HubID:      hubID,
+		Status:     logclient.StatusVerified.String(),
+		TreeSize:   info.TreeSize,
+		Root:       info.Root[:],
+		Raw:        raw,
+		ObservedAt: observedAt,
+	}); err != nil {
+		return fmt.Errorf("record contradictory checkpoint: %w", err)
+	}
+	if err := st.Freeze(ctx, hubID); err != nil {
+		return fmt.Errorf("freeze: %w", err)
+	}
+	if !wasFrozen {
+		alert(hubID, string(kind))
+	}
+	return nil
 }

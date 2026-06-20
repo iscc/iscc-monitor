@@ -111,6 +111,32 @@ func (s *Store) RecordCheckpoint(ctx context.Context, c CheckpointRecord) (int64
 	return id, false, nil
 }
 
+// CheckpointAt reads the persisted (root, raw) bytes for a hub's checkpoint at a
+// given tree_size. follow_state deliberately does not persist the accepted root,
+// so the follower reads it back here to drive the fork check (prevRoot) and to
+// supply the prior raw bytes as violation evidence (RawA).
+//
+// An absent (hubID, treeSize) returns found=false with a nil error (not an
+// error), mirroring FollowState's "absent row is not an error" convention. store
+// stays a leaf: it returns []byte, never a logclient type — the follower copies
+// the root into a fixed-size array at the call site. The query is LIMIT 1, so a
+// hub that recorded two different roots at one size (a fork's evidence) returns
+// the first row deterministically; the caller has already detected the violation
+// from the size/root mismatch.
+func (s *Store) CheckpointAt(ctx context.Context, hubID int64, treeSize uint64) (root []byte, raw []byte, found bool, err error) {
+	err = s.db.QueryRowContext(ctx,
+		"SELECT root, raw FROM checkpoints WHERE hub_id = ? AND tree_size = ? LIMIT 1",
+		hubID, int64(treeSize),
+	).Scan(&root, &raw)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, nil, false, nil
+	case err != nil:
+		return nil, nil, false, fmt.Errorf("store.CheckpointAt: hub %d size %d: %w", hubID, treeSize, err)
+	}
+	return root, raw, true, nil
+}
+
 // FollowState reads the per-hub poll cursor and freeze flag. A hub with no
 // follow_state row yet returns the zero FollowState{} and a nil error (not an
 // error), so the follower can treat "never polled" as last_size 0 / not frozen.

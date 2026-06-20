@@ -1,60 +1,85 @@
 # Handoff
 
-## 2026-06-20 — Review of: Pure fork-trigger detection (`CheckFork`) in `internal/logclient`
+## 2026-06-20 — Wire CheckShrink + CheckFork into follower.PollHub (freeze + alert-once)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Composed the two landed pure verdicts (`CheckShrink`/`CheckFork`) into M1's ADR-0006 freeze
+behavior inside `follower.PollHub`: on a `StatusVerified` observation that contradicts the prior
+accepted checkpoint for the same hub (strict size decrease = shrink, equal size + different root =
+fork), `PollHub` now records the violation, persists the contradictory checkpoint as evidence,
+freezes the hub, and fires an injected alert exactly once on the not-frozen → frozen transition —
+without advancing the cursor. Added the one supporting store read method (`CheckpointAt`) the fork
+check + violation evidence need.
 
-**Summary:** The advance landed M1's second RFC-6962 self-consistency trigger exactly as `next.md`
-asked: a pure `CheckFork(prevSize, prevRoot [rootBytes]byte, nextSize, nextRoot [rootBytes]byte) bool
-== prevSize > 0 && nextSize == prevSize && nextRoot != prevRoot`, plus `ViolationFork ViolationKind =
-"fork"`, both extending the existing `consistency.go` (no new file). Dep-free (array `!=`, no `bytes`
-import), no follower wiring, no store calls, doc updated so only equivocation stays deferred. All
-gates green; every load-bearing boundary is pinned by a non-vacuous table.
+**Files changed:**
+- `internal/store/checkpoints.go`: added `CheckpointAt(ctx, hubID, treeSize) (root, raw []byte, found
+  bool, err error)` — `SELECT root, raw FROM checkpoints WHERE hub_id=? AND tree_size=? LIMIT 1`;
+  absent row → `found=false`, nil error (mirrors `FollowState`). Returns `[]byte`, never a logclient
+  type, so `store` stays a leaf.
+- `internal/follower/follower.go`: added `AlertFunc` func seam; `PollHub` signature gained an `alert
+  AlertFunc` param; on `StatusVerified` it now reads `FollowState`, runs `checkConsistency` (shrink
+  first, then fork — guarded by the `prevSize>0`/`prevFound` rules), and on a true verdict calls
+  `freeze` (RecordViolation + RecordCheckpoint-as-evidence + Freeze + alert-once on `!wasFrozen`)
+  instead of advancing. A violation returns `(StatusVerified, nil)` — freezes, never crashes. Two
+  helper funcs (`checkConsistency`, `freeze`) keep `PollHub` short; package/func docs updated so only
+  equivocation/poll-loop/key-cache remain "later steps".
+- `internal/follower/follower_test.go`: updated the two existing `PollHub` calls for the new `alert`
+  param (added a `Frozen==false` assertion to the clean-advance test); added `TestPollHubFork` and
+  `TestPollHubShrink` driving the freeze paths through the outbound-fetch seam against the real sb0
+  fixture, with a seeded prior checkpoint at the contradicting size/root. Assertions read the
+  `violations`/`follow_state` rows over an independent read-only `sqlite` connection (no follower
+  internals).
+- `internal/store/checkpoints_test.go`: added `TestCheckpointAt` (round-trip + absent-size +
+  absent-hub, all nil-error).
 
-**Verification:**
-- [x] `mise run check` green — `go build ./...`, `go vet ./...`, `go test ./...` all `ok`
-  (didweb/follower/logclient/store) on go1.24.
-- [x] `gofmt -l .` (whole tree) — empty.
-- [x] `go test -count=1 -run TestCheckFork ./internal/logclient` — PASS, 5 subtests (true + false).
-- [x] `string(ViolationFork) == "fork"` — PASS (`TestViolationForkKind`).
-- [x] `CheckFork(10183, rootA, 10183, rootB) == true` (same size, different root) — PASS.
-- [x] `CheckFork(10183, rootA, 10183, rootA) == false` (identical root, re-observation) — PASS.
-- [x] `CheckFork(10183, rootA, 10182, rootB) == false` (shrink) — PASS.
-- [x] `CheckFork(10183, rootA, 10184, rootB) == false` (growth with differing roots) — PASS.
-- [x] `CheckFork(0, zeroRoot, 5, rootB) == false` (fresh-store `prevSize == 0` guard) — PASS.
-- [x] Test setup guard `if rootA == rootB { t.Fatal }` makes "different root" non-vacuous — present.
-- [x] No dep added — `git status --short go.mod go.sum` empty; `go list -m
-  github.com/transparency-dev/merkle` → "not a known dependency"; `net/http` count in logclient deps
-  still 4; package imports unchanged (no `bytes`).
-- [x] Scope discipline — across all 3 unpushed commits, exactly one non-test/doc Go file
-  (`consistency.go`) modified (≤3 budget). Nothing from `## Not In Scope`: no merkle dep, no `PollHub`
-  wiring, no `RecordViolation`/`Freeze` calls, no tile fixtures, no equivocation trigger, no store /
-  `accept.go` / `verify.go` / didweb edits.
-- [x] Quality-gate integrity — scanned all unpushed commits (`@{upstream}..HEAD`); the only
-  `nolint`/`t.Skip` string matches are in `.claude/` prose, none in added Go lines.
-- [n/a] Conformance/oracle gate — pure size/root array comparison; no signature, RFC-6962 proof,
-  didweb, or merkle code touched, so `notecheck` / `derive_vkey.py` / `fsck` parity is N/A. didweb +
-  logclient golden suites still pass (no regression). The merkle-backed equivocation slice will trip
-  this gate.
+**Verification:** `mise run check` → green (`go build ./...`, `go vet ./...`, `go test ./...` all
+`ok`: didweb/follower/logclient/store); `gofmt -l .` empty; `git status --short go.mod go.sum` empty
+(no dep added).
+- [x] `go test -count=1 -run TestPollHub ./internal/follower` — PASS (existing verified-advances +
+  unverified-no-advance still green after the signature change).
+- [x] `TestPollHubFork` — second verified observation at the same `tree_size` (10183) with a different
+  root → `violations.kind == "fork"`, `frozen == 1`, cursor stays at 10183 (no advance), alert fired
+  exactly once.
+- [x] Re-detection: a third poll of the already-frozen hub records a 2nd `violations` row but alert
+  count stays 1 (exactly-one-alert across re-detection).
+- [x] Other hubs unaffected: a 2nd registered hub polled with the clean verified checkpoint advances
+  to 10183 and stays `frozen == 0`.
+- [x] Restart: after reopening the store from the same path, `FollowState(...).Frozen == true` and
+  both violation rows survive.
+- [x] `TestPollHubShrink` — verified observation at 10183 < prior accepted 20000 → `violations.kind
+  == "shrink"`, `frozen == 1`, cursor stays at 20000, exactly one alert.
+- [x] `TestCheckpointAt` — round-trips `(root, raw)`; absent `(hubID, treeSize)` → `found == false`,
+  nil error.
 
-**Issues found:** (none)
-
-**Next:** Wire `CheckShrink` + `CheckFork` into `follower.PollHub` — the composition slice both pure
-verdicts were left unwired for. Map `FollowState.LastSize → prevSize` and the stored root at that size
-(a `checkpoints` lookup, since `LastRoot` is intentionally NOT persisted in `follow_state`) →
-prevRoot; map `CheckpointInfo.TreeSize/Root → nextSize/nextRoot`; on a true verdict call
-`RecordViolation` + `Freeze`, with the "exactly one alert" mechanism. Test through the outbound-fetch
-boundary with synthetic same-size-different-root / shrink fixtures, asserting `violations.kind` +
-`frozen=1` + exactly one alert + other hubs unaffected + evidence surviving restart. Keep
-`transparency-dev/merkle` + tile fixtures deferred to the single equivocation slice.
+**Next:** The merkle-backed **equivocation** trigger (RFC-6962 consistency-proof failure across
+*growing* sizes) is the last M1 self-consistency trigger — its own slice, since it needs
+`transparency-dev/merkle` + tile fixtures and trips the conformance/oracle gate (`fsck` root-rebuild,
+inclusion cross-check vs the hub's `IsccLogInclusionProof`). It plugs into the same `checkConsistency`
+seam (a third branch returning `ViolationEquivocation` + a real `ProofJSON`). Alternatively, the
+**poll-loop / single-writer goroutine wrapper** (the backed-off evidence-only re-poll cadence of a
+frozen hub) is the other unblocked next slice.
 
 **Notes:**
-- `CheckFork` / `ViolationFork` are an *intentional* unused-until-wired export seam (same as
-  `CheckShrink` / `ViolationShrink`), referenced only by their own tests until the follower wiring
-  slice lands — not dead code. `go vet` is clean.
-- The `prevSize > 0` guard is load-bearing exactly like shrink's: it keeps the fresh-store
-  `FollowState{}.LastSize == 0` + its zero `[32]byte` root from being misread as a fork. Array `!=` is
-  Go's elementwise compare on `[32]byte` — no `bytes` import; the only `bytes` token in the file is a
-  comment explaining why.
-- Branch is `develop`; remote `origin` configured. Pushing on PASS.
+- **Alert seam is a `func(hubID int64, kind string)` field/param** (`AlertFunc`), not an interface
+  (YAGNI per `next.md`). It only signals the not-frozen→frozen transition; real delivery
+  (email/webhook/log) and frozen-hub re-poll cadence stay out of scope.
+- **`rootBytes` is package-private to `logclient`**, so the follower copies the stored `[]byte` root
+  into a plain `[32]byte` (`copy(prevRoot[:], prevRootBytes)`) before calling `CheckFork`. `[32]byte`
+  is the concrete type of both `CheckpointInfo.Root` and `CheckFork`'s `[rootBytes]byte` params, so
+  this compiles cleanly without exposing the constant.
+- **Test assertions read rows over an independent `sql.Open("sqlite", path)` connection** rather than
+  store internals or test-only exported store helpers. `export_test.go` would not have been visible
+  across the package-boundary (follower test is package `follower`, store test is package `store`), so
+  a separate read-only connection on the same WAL file is the clean observable-output seam. This adds
+  the `modernc.org/sqlite` blank import to the follower *test* only — `go.mod`/`go.sum` unchanged
+  (already a dep), and the production follower package's import graph is untouched (still
+  follower → {logclient, store}, no `net/http`/`sqlite` in the follower's own imports).
+- **Fork test non-vacuousness:** the seeded prior root (`"fork-seed-root-distinct-padding32"`) is
+  pinned-distinct from the real sb0 fixture root (base64 `uir3z5T1…`, asserted via the
+  `sb0FixtureRootB64` const guard), and the test asserts kind `"fork"` (not `"shrink"`) at equal size
+  10183 — so the fork branch genuinely fired, not the size-only shrink path.
+- **`fs.LastSize == 0` fresh-store guard:** `checkConsistency` early-returns on `prevSize == 0` and
+  both `CheckShrink`/`CheckFork` carry the `prev>0` guard, so a never-advanced hub (and the clean
+  first-observation tests) never trip a violation.
+- **Conformance/oracle gate: N/A for this slice** (composes pure size/root verdicts + store CRUD;
+  no signature, RFC-6962 proof, didweb, or merkle code touched). The didweb + logclient golden suites
+  still pass (no regression). The equivocation slice will trip that gate.
