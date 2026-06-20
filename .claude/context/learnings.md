@@ -230,6 +230,27 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   is justified inline. Verify `time.Now()` never appears in `loop.go` (the ticker delivers `t` via
   `ticker.C`) — the only wall-clock source is `time.NewTicker(l.Normal)`.
 
+## hub_keys cache wiring (`internal/follower` + `internal/logclient/keyid.go`)
+
+- **`cacheHubKey` is wired ONLY on the verified, non-violation `PollHub` path** (after
+  `AdvanceFollowState`, mirroring coverage placement), never inside `freeze` and never on a
+  non-verified verdict — the fork/shrink/unverified tests assert `countRows(…, "hub_keys")==0`, the
+  verified test asserts exactly 1 row with `key_id==0x40b74463` + 32-byte `pubkey_raw` + refresh-in-place.
+  A `ResolveVerifierKey` failure here is wrapped (`cache hub key: %w`) and surfaced, never swallowed.
+- **`KeyIDFromVerifier` recovers the key id from the vkey STRING, it does not re-derive crypto.**
+  `SplitN(vkey, "+", 3)` (n=3 load-bearing: sb0's base64 tail `AaV+ivnly67…` itself has a `+`, so a
+  plain `Split` over-splits), require 3 fields, `ParseUint(parts[1], 16, 32)`. The middle `+<hex>+`
+  field IS the signed-note keyhash — reviewer independently decoded the sb0 checkpoint sig line
+  (`base64→ raw[:4]`) to `40b74463` with a 64-byte sig, matching the golden vector, so the trust-root
+  value is confirmed from the fixture, not the author. Oracle gate correctly N/A (string parse, not a
+  derivation; `go.mod`/`go.sum`/`schema.sql` byte-identical), but the golden still pins it to
+  `VerifierKey`'s `"%s+%08x+%s"` output so it cannot silently diverge.
+- **The verified path now fetches the did.json TWICE per poll** (once in `AcceptCheckpoint`, once in
+  `cacheHubKey`'s `ResolveVerifierKey`). `next.md` explicitly allowed this (YAGNI, refactoring
+  `AcceptCheckpoint` to surface its already-resolved key was Not In Scope). A caching fetcher or a
+  signature change to thread the key out is a later optimization — not a defect, but the obvious next
+  efficiency win once a key *reader* lands.
+
 ## Realm registry (`internal/registry`)
 
 - **`Parse([]byte) ([]Entry, error)` is the pure domains-only membership leaf (ADR-0009).** Line-based,
