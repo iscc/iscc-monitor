@@ -1,65 +1,58 @@
 # Handoff
 
-## 2026-06-20 — Review of: `hub_keys` did:web key cache — store-leaf `RecordHubKey` upsert
+## 2026-06-20 — Wire the `hub_keys` did:web key cache write into `PollHub`
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Connected the dangling `store.RecordHubKey` seam: on the verified, non-violation `PollHub`
+path (alongside `SetCoverage`/`AdvanceFollowState`) the follower now resolves the hub's did:web key,
+recovers its key id from the verifier-key string, and upserts the `hub_keys` cache row. Added a tiny
+pure `logclient.KeyIDFromVerifier` helper that inverts `didweb.VerifierKey`'s `<name>+<keyid:08x>+
+<base64>` format, golden-tested against both live vkeys.
 
-**Summary:** `advance` added a `HubKey` struct + `RecordHubKey(ctx, HubKey) error` to the store as a
-guarded `UPDATE … WHERE hub_id=? AND key_id=?` followed by an `INSERT` on zero `RowsAffected` (the
-`SetCoverage` idiom, no `ON CONFLICT` since `hub_keys` has no UNIQUE), plus a `nullStringOrNil` helper
-mirroring `unixOrNil`. Implementation matches `next.md` exactly: dedupe per `(hub_id, key_id)`, refresh
-in place, rotation appends a row, NULL handling for empty `pubkey_z`/zero `revoked_at`, FK enforced,
-store stays a leaf, no new dependency, no schema change. Scope is tight (1 production file + 1 test
-file), tests are non-vacuous, all gates green.
+**Files changed:**
+- `internal/logclient/keyid.go` (new): `KeyIDFromVerifier(vkey string) (uint32, error)` — `SplitN(vkey,
+  "+", 3)`, require 3 fields, `strconv.ParseUint(parts[1], 16, 32)`. Pure (`{fmt,strconv,strings}`).
+  The `SplitN` n=3 is load-bearing: sb0's base64 tail itself contains a `+` (`AaV+ivnly67…`), so a plain
+  `Split` would over-split and read the wrong middle field.
+- `internal/logclient/keyid_test.go` (new): golden vectors (sb0 `0x40b74463` incl. the `+`-in-tail case,
+  sb1 `0x069d0f14`) + 5 malformed-input error cases.
+- `internal/follower/follower.go`: new `cacheHubKey` helper called only after `AdvanceFollowState` on the
+  verified non-violation path. Re-runs `ResolveVerifierKey`, derives `key_id` via `KeyIDFromVerifier`,
+  maps `DIDKey`→`store.HubKey` (`PublicKey`→`PubkeyRaw`, `Multibase`→`PubkeyZ`, `Revoked`→`Revoked`,
+  injected `observedAt`→`ResolvedAt`), calls `st.RecordHubKey`. A failure here is wrapped as a fault
+  (`follower.PollHub: hub %d: cache hub key: %w`) and surfaced, never swallowed. Doc comment updated.
+- `internal/follower/follower_test.go`: `openTemp` now returns `(*store.Store, path)`; added `readHubKey`
+  inspector helper; `TestPollHubVerifiedAdvances` asserts `hub_keys==1`, `key_id==0x40b74463`,
+  `len(pubkey_raw)==32`, and that a second poll refreshes in place (still 1 row); fork/shrink/unverified
+  tests assert `hub_keys==0` (no cache write on contradictory/unverified observations).
 
-**Verification:**
-- [x] `mise run check` — green: `go build` / `go vet` / `go test ./...` all `ok` (7 packages).
-- [x] `gofmt -l .` — empty (clean).
-- [x] `go test -run TestRecordHubKey ./internal/store` — PASS (all 5): Insert / Refresh / Rotation /
-  Nullable / ForeignKey.
-- [x] happy-path insert — `count(*) WHERE hub_id=? AND key_id=?` == 1; `pubkey_raw`/`pubkey_z`/
-  `resolved_at` read back equal to input.
-- [x] refresh/dedupe — same `(hub_id, key_id)`, later `ResolvedAt` + set `Revoked` → count stays 1,
-  columns updated in place. Independently probed an extra case: re-resolving with an *empty* `PubkeyZ`
-  correctly rewrites `pubkey_z` back to NULL (the UPDATE rewrites all mutable columns — true cache of
-  the DID doc, not append-only).
-- [x] rotation — different `key_id` for the same hub → `count(*) WHERE hub_id=?` == 2.
-- [x] nullability — empty `PubkeyZ` + zero `Revoked` selectable via `WHERE pubkey_z IS NULL AND
-  revoked_at IS NULL`.
-- [x] FK guard — independently reconfirmed the error is a genuine SQLite `FOREIGN KEY constraint failed
-  (787)`, not a vacuous non-nil from some other path.
-- [x] `go list -deps ./internal/store | grep '^github.com/iscc/iscc-monitor'` — only the self line
-  (store stays a leaf; no `didweb`/`logclient` leaked).
-- [x] `go list -deps ./internal/store | grep '^net/http$'` — empty.
-- [x] `git diff HEAD~1..HEAD -- internal/store/schema.sql` — empty (no schema/migration change).
-- [x] `git diff HEAD~1..HEAD -- go.mod go.sum` — empty (no new dependency).
-- [x] Scope discipline — only `internal/store/checkpoints.go` (1 production file, ≤3 limit) + its
-  `_test.go`; nothing from `## Not In Scope` (follower wiring, fixture refresh, merkle trigger, schema)
-  touched.
-- [x] Quality-gate integrity — scanned all unpushed commits: no `//nolint`/`t.Skip`/build-tag/swallowed
-  error in code (the only matches are handoff prose describing their absence); no deleted tests or
-  assertions; all changes additive.
-- [x] Oracle/conformance gate — correctly **N/A**: no proof/verify/didweb/merkle/consistency/fsck/
-  notecheck/signature path touched (plain `hub_keys`-column CRUD with NULL handling + FK); go.mod/go.sum
-  byte-identical.
+**Verification:** `mise run check` → green (build / vet / test all ok, 7 packages). Per-criterion:
+- [x] `gofmt -l .` empty.
+- [x] `go test -run TestKeyIDFromVerifier ./internal/logclient` PASS — both live vkeys round-trip
+  (incl. sb0's `+`-bearing tail); malformed inputs error.
+- [x] `go test -run TestPollHub ./internal/follower` PASS — verified poll writes exactly one `hub_keys`
+  row, `key_id==0x40b74463`, `pubkey_raw` reads back as 32 bytes; second poll stays at 1 (refresh).
+- [x] `go test -run "TestPollHubFork|TestPollHubShrink|TestPollHubUnverifiedDoesNotAdvance"
+  ./internal/follower` PASS — freeze/unverified cases assert `hub_keys==0`.
+- [x] `go list -deps ./internal/store | grep '^github.com/iscc/iscc-monitor'` → only the self line
+  (store stays a leaf; no `logclient`/`didweb` leaked). No `net/http` in the store closure.
+- [x] `git diff --quiet HEAD -- internal/store/schema.sql go.mod go.sum` → exit 0 (no schema/dep change).
+- [x] Follower production imports unchanged: `{context fmt logclient store time}`; `keyid.go` imports
+  `{fmt strconv strings}`.
 
-**Issues found:** (none)
-
-**Next:** The follower→store wiring slice — call `RecordHubKey` from `PollHub` after a successful
-`ResolveVerifierKey`, mapping its `DIDKey` (`PublicKey`→`PubkeyRaw`, `Multibase`→`PubkeyZ`,
-`Revoked`→`Revoked`) + the derived key_id (verifier-string middle `+<hex>+`) + injected
-`observedAt`→`ResolvedAt` into a `HubKey`. That step also needs a *reader* (a `HubKey` lookup) and is
-where the stale `sb1.amlet.id_did.json` fixture + `derive_vkey.py` HUBS must finally be refreshed to
-signer `069d0f14` (first live resolution into the cache — touches the trust-root, so the oracle gate
-re-arms there). Alternatively, the merkle-backed **equivocation** trigger remains the headline M1 gap
-(needs `transparency-dev/merkle` + tile fixtures + a conformance/oracle package + CI `notecheck` — more
-than one verifiable slice).
+**Next:** The key *reader* slice — a `store.LookupHubKey` (or similar) so verification/serving can consult
+the cache. After that, the headline remaining M1 gap is the merkle-backed **equivocation** trigger
+(needs `transparency-dev/merkle` + tile fixtures + a conformance/oracle package + a CI `notecheck` job),
+which is more than one verifiable slice. The sb1 fixture refresh (`22b08f3e`→`069d0f14`) + `derive_vkey.py`
+HUBS update remains its own trust-root step (re-arms the oracle gate); it was explicitly out of scope here
+and was not touched.
 
 **Notes:**
-- The follower-wiring slice will be the first to touch a trust-root path since the consistency triggers
-  — it must re-arm the oracle gate (`derive_vkey.py` parity once the sb1 fixture is refreshed) and is a
-  good candidate to finally land a CI `notecheck` job, which is still absent (`.github/workflows/`
-  empty) and becomes load-bearing the moment a signature/merkle path lands.
-- No reader was added this slice (intentional, per `next.md`); the wiring step owns it.
-- Working tree clean; commits are on `develop`; remote `origin` configured (push attempted below).
+- Oracle/conformance gate correctly **N/A** this step: `KeyIDFromVerifier` is a string parse, not a crypto
+  derivation; no proof/verify/didweb-derivation/merkle/fsck math changed; `go.mod`/`go.sum`/`schema.sql`
+  byte-identical. The golden vectors still pin it to `VerifierKey`'s output so it cannot silently diverge.
+- Per `next.md`'s allowance, `cacheHubKey` re-runs `ResolveVerifierKey` (a second call on the verified
+  path) rather than threading the already-resolved key out of `AcceptCheckpoint` — same offline `Fetcher`
+  seam, YAGNI. A caching fetcher or an `AcceptCheckpoint` signature change to surface the key is a later
+  optimization, not this step (it was listed under Not In Scope).
+- `openTemp`'s signature changed to return the path (test-only helper); both existing call sites updated.
+  No production API changed.

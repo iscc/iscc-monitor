@@ -69,8 +69,10 @@ func readCheckpoint(t *testing.T, name string) []byte {
 	return data
 }
 
-// openTemp opens a fresh store in a temp dir and registers cleanup.
-func openTemp(t *testing.T) *store.Store {
+// openTemp opens a fresh store in a temp dir, registers cleanup, and returns the
+// store alongside its file path so a test can open an independent inspector
+// connection (countRows/readHubKey) against the same WAL file.
+func openTemp(t *testing.T) (*store.Store, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "testnet.db")
 	s, err := store.Open(path)
@@ -78,7 +80,28 @@ func openTemp(t *testing.T) *store.Store {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	return s
+	return s, path
+}
+
+// readHubKey reads the (key_id, pubkey_raw) of a hub's single cached key over an
+// independent read-only connection, so the assertion pins the observable cache row
+// without reaching into follower or store internals.
+func readHubKey(t *testing.T, dbPath string, hubID int64) (uint32, []byte) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open inspector db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	var (
+		keyID  int64
+		pubkey []byte
+	)
+	err = db.QueryRow("SELECT key_id, pubkey_raw FROM hub_keys WHERE hub_id = ? LIMIT 1", hubID).Scan(&keyID, &pubkey)
+	if err != nil {
+		t.Fatalf("read hub_key for hub %d: %v", hubID, err)
+	}
+	return uint32(keyID), pubkey
 }
 
 // didJSON builds a minimal one-method did:web document for the sb0 origin using
@@ -219,6 +242,12 @@ func TestPollHubFork(t *testing.T) {
 		t.Errorf("coverage Set after a fork freeze, want unset (a violation must not start coverage)")
 	}
 
+	// A frozen/violating observation must not cache a key either: the key cache is
+	// on the verified, non-violation path, never inside freeze.
+	if n := countRows(t, path, "hub_keys"); n != 0 {
+		t.Errorf("hub_keys rows after a fork freeze = %d, want 0 (a violation must not cache a key)", n)
+	}
+
 	// Re-poll the already-frozen hub: re-detection is itself evidence, so a second
 	// violation row is recorded, but the alert must not fire again.
 	if _, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", sb0ObservedAt(), alert); err != nil {
@@ -326,6 +355,11 @@ func TestPollHubShrink(t *testing.T) {
 	if alerts != 1 {
 		t.Errorf("alerts = %d after shrink detection, want 1", alerts)
 	}
+
+	// A frozen/violating observation must not cache a key (verified-path only).
+	if n := countRows(t, path, "hub_keys"); n != 0 {
+		t.Errorf("hub_keys rows after a shrink freeze = %d, want 0 (a violation must not cache a key)", n)
+	}
 }
 
 // assertViolation confirms a violation of the given kind exists for a hub by
@@ -354,7 +388,7 @@ func assertViolation(t *testing.T, dbPath string, hubID int64, kind string) {
 // tree size.
 func TestPollHubVerifiedAdvances(t *testing.T) {
 	ctx := context.Background()
-	s := openTemp(t)
+	s, path := openTemp(t)
 	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
 	if err != nil {
 		t.Fatalf("UpsertHub: %v", err)
@@ -385,6 +419,27 @@ func TestPollHubVerifiedAdvances(t *testing.T) {
 	}
 	if fs.Frozen {
 		t.Errorf("Frozen = true after a clean verified poll, want false")
+	}
+
+	// The resolved did:web key is cached exactly once: one hub_keys row, keyed by
+	// sb0's signed-note keyhash (0x40b74463), with the 32-byte Ed25519 pubkey.
+	if n := countRows(t, path, "hub_keys"); n != 1 {
+		t.Errorf("hub_keys rows = %d, want 1 (a verified poll caches the key)", n)
+	}
+	keyID, pubkey := readHubKey(t, path, hubID)
+	if keyID != 0x40b74463 {
+		t.Errorf("hub_keys key_id = %08x, want 40b74463 (sb0 signed-note keyhash)", keyID)
+	}
+	if len(pubkey) != 32 {
+		t.Errorf("hub_keys pubkey_raw = %d bytes, want 32 (Ed25519 key)", len(pubkey))
+	}
+
+	// A second verified poll refreshes the same key in place: still exactly one row.
+	if _, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert); err != nil {
+		t.Fatalf("second PollHub for key cache: %v", err)
+	}
+	if n := countRows(t, path, "hub_keys"); n != 1 {
+		t.Errorf("hub_keys rows after second poll = %d, want 1 (refresh in place)", n)
 	}
 
 	// Coverage is recorded on the first verified observation at the fixture size and
@@ -424,7 +479,7 @@ func TestPollHubVerifiedAdvances(t *testing.T) {
 // leaves the follow cursor at zero.
 func TestPollHubUnverifiedDoesNotAdvance(t *testing.T) {
 	ctx := context.Background()
-	s := openTemp(t)
+	s, path := openTemp(t)
 	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
 	if err != nil {
 		t.Fatalf("UpsertHub: %v", err)
@@ -459,5 +514,11 @@ func TestPollHubUnverifiedDoesNotAdvance(t *testing.T) {
 	}
 	if cov.Set {
 		t.Errorf("coverage Set after an unverified poll, want unset (only a clean verified observation starts coverage)")
+	}
+
+	// A non-verified verdict must not cache a key either (the key cache is on the
+	// verified, non-violation path only).
+	if n := countRows(t, path, "hub_keys"); n != 0 {
+		t.Errorf("hub_keys rows after an unverified poll = %d, want 0", n)
 	}
 }

@@ -9,9 +9,10 @@
 // accepted checkpoint, and then either freezes the hub on a violation or advances
 // the follow cursor — but only a StatusVerified observation may advance accepted
 // state (ADR-0009). On that verified, non-violation path it also records the hub's
-// coverage start once (ADR-0001, set-once). The merkle-backed equivocation trigger,
-// the poll loop, and the did:web key cache are each their own later steps; PollHub
-// does exactly one observation per call and returns.
+// coverage start once (ADR-0001, set-once) and caches the resolved did:web signing
+// key (ADR-0009, hub_keys). The merkle-backed equivocation trigger and the poll
+// loop are each their own later steps; PollHub does exactly one observation per
+// call and returns.
 //
 // Record-only-on-verified: only a StatusVerified observation is persisted, since
 // the non-verified verdicts carry a zero CheckpointInfo and therefore no
@@ -117,7 +118,42 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	if err := st.AdvanceFollowState(ctx, hubID, info.TreeSize); err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: advance follow state: %w", hubID, err)
 	}
+	// Cache the resolved did:web signing key (ADR-0009). Only a verified,
+	// non-violation observation writes a cache row, mirroring coverage: a
+	// contradictory or unverified observation must never populate the key cache.
+	if err := cacheHubKey(ctx, st, fetcher, hubID, baseURL, observedAt); err != nil {
+		return status, fmt.Errorf("follower.PollHub: hub %d: cache hub key: %w", hubID, err)
+	}
 	return status, nil
+}
+
+// cacheHubKey resolves the hub's did:web signing key and upserts it into the
+// hub_keys cache (ADR-0009: the DID document is the source of truth, this is a
+// refreshed cache). It re-runs ResolveVerifierKey on the verified path — the key
+// just resolved inside AcceptCheckpoint, so a failure here is an unexpected fault
+// and is returned to the caller rather than swallowed. The key id is recovered
+// from the vkey string's middle "+<hex>+" field (KeyIDFromVerifier) rather than
+// re-derived, and the DIDKey maps field-for-field into store.HubKey
+// (PublicKey->PubkeyRaw, Multibase->PubkeyZ, Revoked->Revoked); the injected
+// observedAt is the resolution time. The follower owns this mapping so store stays
+// a leaf (it never imports logclient/didweb).
+func cacheHubKey(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string, observedAt time.Time) error {
+	vkey, didKey, err := logclient.ResolveVerifierKey(ctx, fetcher, baseURL)
+	if err != nil {
+		return fmt.Errorf("resolve verifier key: %w", err)
+	}
+	keyID, err := logclient.KeyIDFromVerifier(vkey)
+	if err != nil {
+		return fmt.Errorf("recover key id: %w", err)
+	}
+	return st.RecordHubKey(ctx, store.HubKey{
+		HubID:      hubID,
+		KeyID:      keyID,
+		PubkeyRaw:  didKey.PublicKey,
+		PubkeyZ:    didKey.Multibase,
+		Revoked:    didKey.Revoked,
+		ResolvedAt: observedAt,
+	})
 }
 
 // checkConsistency runs the dep-free shrink/fork triggers against the prior
