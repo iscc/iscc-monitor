@@ -1,133 +1,123 @@
 # Next Work Package
 
-## Step: Wire CheckShrink + CheckFork into follower.PollHub (freeze + alert-once)
+## Step: Poll-loop wrapper over PollHub (single-writer cadence + frozen back-off)
 
 ## Goal
-Turn the two landed pure verdicts (`CheckShrink`/`CheckFork`) into M1's freeze behavior: when a
-verified observation contradicts the prior accepted checkpoint for the same hub, record the violation,
-freeze the hub, and alert exactly once — without advancing the cursor. This converts detection into the
-ADR-0006 freeze, the largest remaining piece of M1's Verify criteria.
+Turn the follower from "one observation per explicit call" into a per-network driver that polls every
+registered hub on a cadence from a single goroutine (the single writer per DB, ADR-0005/0007), with a
+frozen hub re-polled on a backed-off evidence-only cadence (ADR-0006). This closes the named M1
+"per-hub follower" loop and the "keep polling evidence-only at a backed-off cadence" correctness rule
+without touching any crypto/merkle/oracle path.
 
 ## Goal-fit (state → target gap)
-M1's first Verify half (`origin` / `verifierKey` / single-poll) is met; the dominant remaining half is
-*synthetic fork/shrink/equivocation → correct `violations.kind` + `frozen=1` + exactly one alert +
-other hubs unaffected + evidence survives restart*. Shrink and fork are both landed pure verdicts but
-unwired; `RecordViolation`/`Freeze` are landed persistence seams but uncalled. This slice composes them
-in `follower.PollHub` — the exact step the review handoff `**Next:**` names. It builds directly on the
-existing single-observation `PollHub` and the two pure triggers; the merkle-backed equivocation trigger
-stays deferred to its own slice (no skipping ahead into Merkle math).
+M1's first Verify half (`origin`/`verifierKey`/single-poll) and two of three triggers (shrink+fork
+freeze) are met end-to-end. The remaining M1 majority is connective tissue: a poll loop, the did:web
+key cache, the equivocation trigger, coverage, structured logs, `/metrics`, and a `cmd/` binary. The
+equivocation trigger is the highest *value* but the highest *risk* — it needs `transparency-dev/merkle`
+(NOT vendored under `cauldron/`, so a brand-new dependency) plus tile fixtures that do not exist yet,
+making it a multi-concern step that also trips the oracle gate. The `hub_keys` cache write couples to a
+stale-fixture + `derive_vkey.py` refresh that re-triggers the crypto parity oracle. The **poll loop**
+is the cleanest unblocked slice the review handoff names: pure-Go orchestration over the already-tested
+`PollHub`, no new deps, no fixtures, no crypto path, fully deterministic with an injected clock. It
+builds directly on what exists and unblocks the eventual `cmd/` binary.
 
 ## Scope
-- **Create**: (none)
-- **Modify** (2 of ≤3 non-test/doc files):
-  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — add ONE read method returning the
-    persisted `(root, raw)` for a given `(hubID, treeSize)`. `follow_state` deliberately does not
-    persist `LastRoot`, so the fork check needs the prior root and the violation evidence needs the
-    prior raw bytes; both come from a `checkpoints` lookup at the prior accepted size.
-  - `/workspace/iscc-monitor/internal/follower/follower.go` — wire the consistency check + freeze +
-    alert-once into `PollHub` and update the file/package doc prose (the freeze/alert step it currently
-    lists as "a later step" lands here).
-- **Modify (tests/docs, not counted against the ≤3 budget)**:
-  - `/workspace/iscc-monitor/internal/follower/follower_test.go` — add synthetic shrink + fork tests.
-  - `/workspace/iscc-monitor/internal/store/checkpoints_test.go` — test the new read method
-    (round-trip + absent-row).
+- **Create**: `/workspace/iscc-monitor/internal/follower/loop.go` — the cadence wrapper: a
+  `HubTarget{HubID int64, BaseURL string}` value; a pure `due(...)` predicate deciding whether a hub is
+  due this tick (normal vs. frozen back-off interval); a `Tick(ctx, ...)` that makes one pass over the
+  targets, polling each *due* hub through the existing `PollHub`; and a thin `Run(ctx, ...)` that calls
+  `Tick` on a `time.Ticker` until `ctx.Done()`.
+- **Create**: `/workspace/iscc-monitor/internal/follower/loop_test.go` — seam tests (no wall-clock
+  sleeps; drive `Tick`/`due` directly with an injected `now`, reusing the existing offline helpers).
+- **Modify**: (none expected). `PollHub`, `store.FollowState`, and the `logclient.Fetcher` seam are
+  already sufficient. Do **not** edit `follower.go` unless a tiny exported-helper extraction is
+  genuinely unavoidable; if so, keep it to that ONE production file and within the ≤3-file cap.
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/logclient/consistency.go` — `CheckShrink(prev, next)`,
-    `CheckFork(prevSize, prevRoot, nextSize, nextRoot)`, `ViolationShrink`/`ViolationFork`, and the
-    `prevSize > 0` guard rationale.
-  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — `RecordViolation`, `Freeze`,
-    `FollowState` (carries `LastSize` + `Frozen`), `RecordCheckpoint`, `AdvanceFollowState`, and
-    `Violation{HubID, Kind, RawA, RawB, ProofJSON, DetectedAt}`.
-  - `/workspace/iscc-monitor/internal/logclient/accept.go` — `AcceptCheckpoint` returns
-    `(Status, CheckpointInfo, error)`; `CheckpointInfo{TreeSize, Root [rootBytes]byte}` is the zero
-    value on every non-verified verdict (lines 57–66, 84–105).
-  - `/workspace/iscc-monitor/internal/follower/follower.go` — current `PollHub`
-    (record-only-on-verified, err-before-status; lines 45–79).
-  - `/workspace/iscc-monitor/internal/follower/follower_test.go` — the `compositeFetcher` pattern and
-    the existing two tests whose `PollHub` call signature this slice changes.
-  - `/workspace/iscc-monitor/internal/store/schema.sql` — `checkpoints` columns (`root`, `raw`,
-    `tree_size`) and `follow_state.frozen` (lines 42–56, 115–123).
-  - `/workspace/iscc-monitor/.claude/context/learnings.md` — the ADR-0006 freeze rule and the
-    "intentional unused-until-wired export seam" notes for the two triggers and the freeze path.
+  - `/workspace/iscc-monitor/internal/follower/follower.go` — `PollHub` signature
+    `(ctx, *store.Store, logclient.Fetcher, hubID int64, baseURL string, observedAt time.Time,
+    alert AlertFunc) (logclient.Status, error)`, the `AlertFunc` seam, and the freeze-on-frozen-hub
+    re-detection behavior the loop relies on (a frozen hub re-polled records evidence + never re-alerts).
+  - `/workspace/iscc-monitor/internal/follower/follower_test.go` — the established offline test pattern
+    to reuse verbatim: `compositeFetcher`, `openTemp`, `countRows`, `assertViolation`, `sb0ObservedAt`,
+    `noopAlert`, `sb0VerifiedFetcher`, and the shrink/fork seed pattern (`RecordCheckpoint` +
+    `AdvanceFollowState`).
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — `FollowState{LastSize, Frozen, LastError}`
+    (the `Frozen` flag the back-off decision reads) and `AdvanceFollowState` (the cursor `PollHub`
+    advances).
+  - `/workspace/iscc-monitor/.claude/context/learnings.md` — "freeze, never crash" / "no auto-unfreeze"
+    / "re-detection is itself evidence" / "single writer per DB (ADR-0005/0007)".
 
 ## Not In Scope
-- The **equivocation** trigger (RFC-6962 consistency-proof failure across growing sizes) — needs
-  `transparency-dev/merkle` + tile fixtures and trips the oracle gate; keep it deferred to its own slice.
-- The **poll loop / single-writer goroutine wrapper** — `PollHub` stays one observation per call.
-- The **`hub_keys` did:web cache write** and the stale-sb1-fixture refresh — a separate slice.
-- A real alerting transport (email/webhook/log sink) — inject a minimal alert seam (a func field or a
-  1-method interface) so the test counts invocations; do NOT build delivery here.
-- Backed-off evidence-only re-polling cadence of a frozen hub — record the freeze now; cadence is the
-  poll-loop slice.
-- Persisting `consistent`/`root_rebuilt` on `checkpoints` — those wait for the merkle/fsck path.
+- The merkle-backed **equivocation** trigger — needs `transparency-dev/merkle` (a new dep, not in
+  `cauldron/`) plus tile fixtures that do not exist; its own later step, and it trips the oracle gate.
+- The `hub_keys` did:web cache write and the stale `sb1.amlet.id_did.json` / `derive_vkey.py` HUBS
+  refresh (couples to the crypto parity oracle — separate step).
+- A `cmd/` binary entrypoint, config loading, and the realm registry — the loop stays a pure library
+  function with injected `targets`, `now`, `fetcher`, and `alert`; wiring it to a binary is later.
+- `/metrics`, structured logging, and a real alert transport.
+- Coverage tracking — do **not** write `hubs.monitored_since_*` here.
+- Any schema change — do **not** add a `last_poll` column; track last-poll times in-memory in the loop
+  state for v1.
 - Adding any dependency — `go.mod`/`go.sum` must stay byte-identical.
+- Spawning a goroutine per hub — the loop is single-goroutine to preserve the single-writer discipline.
+- Calling `time.Now()` inside `Tick`/`due` — inject `now time.Time` so tests stay deterministic and
+  never sleep; `time.Now()` may appear only inside `Run`'s ticker plumbing.
 
 ## Implementation Notes
-- **New store method** (suggested `CheckpointAt(ctx, hubID int64, treeSize uint64) (root []byte, raw
-  []byte, found bool, err error)`): `SELECT root, raw FROM checkpoints WHERE hub_id=? AND tree_size=?
-  LIMIT 1`. On `sql.ErrNoRows` return `found=false` with a **nil** error — mirror `FollowState`'s
-  "absent row is not an error" convention. Keep `store` a leaf: return `[]byte`, never a logclient
-  type; the follower copies the `[]byte` root into a `[rootBytes]byte` at the call site.
-- **PollHub ordering** — on a `StatusVerified` observation, run the consistency check BEFORE
-  `RecordCheckpoint`/`AdvanceFollowState`:
-  1. `fs, _ := st.FollowState(ctx, hubID)` → `prevSize := fs.LastSize`, `wasFrozen := fs.Frozen`.
-  2. If `prevSize > 0`, call `CheckpointAt(ctx, hubID, prevSize)` → `prevRoot`/`prevRaw`/`prevFound`.
-     Copy `prevRoot` into a local `[rootBytes]byte` (via `copy`) for `CheckFork`. If `prevFound == false`
-     (a hub advanced before this slice existed, leaving no stored root at that size), skip the fork
-     check but still run the size-only shrink check.
-  3. `shrink := logclient.CheckShrink(prevSize, info.TreeSize)`;
-     `fork := prevFound && logclient.CheckFork(prevSize, prevRootArr, info.TreeSize, info.Root)`.
-  4. On a true verdict, pick `kind := logclient.ViolationShrink` when `shrink`, else
-     `logclient.ViolationFork`. Call `st.RecordViolation(ctx, store.Violation{HubID: hubID, Kind:
-     string(kind), RawA: prevRaw, RawB: raw, DetectedAt: observedAt})`, then `st.Freeze(ctx, hubID)`.
-     Persist the contradictory checkpoint as evidence (`RecordCheckpoint` for `raw`) but **do NOT**
-     `AdvanceFollowState` — a frozen hub does not advance accepted state. Return the verdict status
-     (still `StatusVerified` — the signature was valid; the violation is a separate axis) with a **nil**
-     error: a violation freezes, never crashes (ADR-0006).
-  5. **Alert-once**: fire the injected alert only when `!wasFrozen` (the not-frozen → frozen
-     transition). A later poll of an already-frozen hub that re-detects MUST record the violation again
-     (re-detection is itself evidence — `RecordViolation` has no `ON CONFLICT`) but MUST NOT re-alert.
-     This is the load-bearing exactly-one-alert rule from `target.md` and the ADR-0006 learning.
-  6. No violation → keep the existing `RecordCheckpoint` → `AdvanceFollowState` path unchanged.
-- **Alert seam**: add a minimal injected sink to `PollHub`'s signature — prefer a func field/parameter
-  (e.g. `alert func(hubID int64, kind string)`) over an interface for YAGNI. Both existing tests must be
-  updated to pass a no-op or counter; that signature change is the reason `follower_test.go` is touched.
-- **Correctness rules in play (learnings.md / ADR-0006)**: the `prevSize > 0` guard already lives in
-  both `CheckShrink`/`CheckFork` — rely on it (do not duplicate) so a fresh-store `LastSize == 0` is
-  never misread. A violation **freezes, never crashes** — every branch returns `(status, nil)` on a
-  true verdict, never a panic/error. `store` stays import-free of `logclient` (return `[]byte`, convert
-  in the follower). No auto-unfreeze: `AdvanceFollowState` already omits `frozen` from its conflict
-  update, and this slice never clears it.
-- **Shrink/fork are mutually exclusive by size** (`next < prev` vs `next == prev`), so order is
-  immaterial — evaluate shrink first and use its kind when true to keep the mapping obvious.
-- Style: short single-purpose functions, evergreen docstrings, no `t.Skip` / `//nolint` / swallowed
-  errors / build tags. The `err`-before-status contract on `AcceptCheckpoint`/`FetchCheckpoint` stays
-  intact (the existing fault paths are untouched).
-- **Conformance/oracle gate**: N/A for this slice — it composes pure size/root verdicts and store CRUD,
-  touching no signature, RFC-6962 proof, didweb, or merkle code. That gate trips only when the
+- **Keep `PollHub` the single source of poll behavior.** `Tick` must call the existing
+  `PollHub(ctx, st, fetcher, hubID, baseURL, now, alert)` for each due hub and must not duplicate the
+  fetch/verify/freeze logic. A frozen hub re-polled through `PollHub` already re-records the violation
+  as evidence and never re-alerts (`wasFrozen` gates the alert), which is exactly the evidence-only
+  re-poll behavior. The loop's only added responsibility is *when* (cadence), never *what*.
+- **`due` is a pure predicate** — the one easily golden-testable unit. Suggested signature:
+  `due(frozen bool, lastPoll, now time.Time, normal, frozenInterval time.Duration) bool` returning
+  `now.Sub(lastPoll) >= interval`, where `interval = frozenInterval` when `frozen` else `normal`. A
+  zero `lastPoll` (never polled) is always due. `frozenInterval >= normal` encodes the back-off. Read
+  `frozen` from `store.FollowState(ctx, hubID).Frozen` inside `Tick` (it is not carried on the target).
+- **Single goroutine, single writer (ADR-0005/0007).** `Run` owns one `time.Ticker`; each tick calls
+  `Tick`, which iterates the targets sequentially in the same goroutine so all writes serialize. Use
+  `select { case <-ctx.Done(): return ctx.Err(); case <-ticker.C: ... }` with `defer ticker.Stop()`.
+  `Run` returns `ctx.Err()` on cancellation and never panics. The loop should hold its own
+  `map[int64]time.Time` of last-poll times (keyed by hubID), updated after a successful `PollHub`.
+- **Errors don't kill the loop.** A per-hub `PollHub` error (transport / garbled body / store fault)
+  must not abort the pass over the other hubs — a flaky single hub never stalls the network's loop.
+  Pick ONE explicit policy and document it: e.g. `Tick` attempts every hub, then returns the first
+  error encountered (or `nil`); `Run` logs/ignores a `Tick` error and continues to the next tick. Do
+  not swallow the error silently inside `Tick` without surfacing it to the caller.
+- **Correctness rule (learnings / ADR-0006):** "A self-consistency violation freezes, never crashes …
+  keep polling evidence-only at a backed-off cadence, no auto-unfreeze, survive restart, other hubs
+  unaffected." The loop must (a) re-poll a frozen hub only at the longer `frozenInterval`, (b) never
+  clear `frozen` (it already cannot — `PollHub`/`AdvanceFollowState` never unfreeze), and (c) keep
+  advancing the other unfrozen hubs in the same pass.
+- **Style:** short single-purpose functions, evergreen docstrings, file-level docstring explaining the
+  loop's purpose. No `t.Skip` / `//nolint` / swallowed errors / build tags. Keep the package import set
+  free of any `net/http` beyond what `PollHub` already pulls through the `logclient.Fetcher` seam, and
+  reuse the test helpers rather than re-declaring fetchers.
+- **Conformance/oracle gate:** N/A for this slice — it is pure orchestration over `PollHub` + store
+  reads, touching no signature, RFC-6962 proof, didweb, or merkle code. That gate trips only when the
   merkle-backed equivocation slice lands.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -count=1 -run TestPollHub ./internal/follower` passes (existing verified-advances +
-  unverified-no-advance tests still green after the signature change).
-- New `go test -count=1 -run TestPollHubFork ./internal/follower`: a second verified observation at the
-  same `tree_size` with a different root yields a `violations` row with `kind == "fork"`, `frozen == 1`,
-  the cursor does NOT advance past the prior size, and the alert fired exactly once.
-- New `go test -count=1 -run TestPollHubShrink ./internal/follower`: a verified observation at a
-  strictly smaller `tree_size` than the prior accepted size yields a `violations` row with
-  `kind == "shrink"`, `frozen == 1`, and exactly one alert.
-- Assertion: a third poll of the already-frozen hub records another `violations` row (re-detection is
-  evidence) but the alert count stays at 1 (exactly-one-alert across re-detection).
-- Assertion: a second registered hub polled with a clean verified checkpoint advances normally and
-  stays `frozen == 0` (other hubs unaffected).
-- Assertion: after re-opening the store from the same path, `FollowState(...).Frozen == true` for the
-  frozen hub (freeze survives restart) and the violation row is still present.
-- New `go test -count=1 -run TestCheckpointAt ./internal/store`: round-trips a recorded `(root, raw)`
-  and returns `found == false` with a nil error for an absent `(hubID, treeSize)`.
-- `git status --short go.mod go.sum` is empty (no dependency added).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass; `gofmt -l .`
+  empty).
+- `go test -count=1 -run TestDue ./internal/follower` passes — the pure `due` table covers: a zero
+  `lastPoll` (never polled) is always due; an unfrozen hub polled `< normal` ago is NOT due; a frozen
+  hub polled past `normal` but `< frozenInterval` ago is NOT due (proves back-off); each is due at/past
+  its relevant interval.
+- `go test -count=1 -run TestTick ./internal/follower` passes — driving `Tick` with an injected `now`
+  and `sb0VerifiedFetcher` over two registered clean hubs advances each due hub's
+  `FollowState.LastSize` to `10183` (asserted via `store.FollowState`); a second `Tick` at the *same*
+  `now` does not re-poll (cursor unchanged and `countRows(path, "checkpoints")` unchanged).
+- `go test -count=1 -run TestTickFrozenUnaffected ./internal/follower` passes — with one hub seeded to
+  freeze on the next poll (a shrink/fork seed like `TestPollHubShrink`) and one clean hub, a `Tick`
+  re-polls the frozen hub only at `frozenInterval`, never clears its `Frozen` flag, records the
+  violation again as evidence (`countRows(path, "violations")` increments on the back-off re-poll),
+  fires no new alert, and still advances the clean hub to `10183` in the same pass.
+- `go test -count=1 ./internal/follower` passes — the existing `TestPollHub*` tests stay green
+  (`PollHub` unchanged).
+- `git status --short go.mod go.sum` is empty (no dependency added; `go.mod`/`go.sum` byte-identical).
 
 ## Done When
-`PollHub` records the violation + freezes + alerts exactly once on a true shrink/fork verdict (without
-advancing, surviving restart, other hubs unaffected) and every Verification criterion above passes with
-`mise run check` green.
+`internal/follower/loop.go` drives `PollHub` over multiple hubs from one goroutine on a cadence with a
+frozen-hub back-off, every listed `go test -run` check passes, and `mise run check` is green with no
+new dependency added.
