@@ -1,104 +1,117 @@
 # Next Work Package
 
-## Step: Pure checkpoint-acceptance decision (`AcceptCheckpoint`) + close the `parseTime` fail-open gap
+## Step: Bootstrap the per-network SQLite store (`internal/store`): WAL + single-writer open + embedded schema
 
 ## Goal
-Compose the three existing verification primitives (`ResolveVerifierKey` → `VerifyCheckpoint` →
-`DIDKey.ValidAt`) into ONE pure function that returns the four-way hub-status verdict the follower
-will consume, and make a malformed CID 1.0 validity timestamp fail *closed* at the parse boundary.
-This is the natural seam between today's pure primitives and the upcoming stateful follower, and it
-resolves the open `normal` `parseTime` issue — both prerequisites for the SQLite `hub_keys` + follower
-loop that follows.
+Stand up the stateful foundation every later M1 unit needs: open a per-network SQLite database with
+the ADR-0005/0007 single-writer discipline (WAL + `busy_timeout`), apply the core M1 schema idempotently
+from an embedded `schema.sql`, and prove the DB + schema survive a close/reopen (restart). Nothing
+consumes `AcceptCheckpoint` yet without somewhere to persist; this is that somewhere. It also wires the
+pure-Go `modernc.org/sqlite` driver (`CGO_ENABLED=0`) for the first time.
 
 ## Scope
 - **Create**:
-  - `/workspace/iscc-monitor/internal/logclient/accept.go` — a pure `Status` enum + `AcceptCheckpoint` decision function.
-  - `/workspace/iscc-monitor/internal/logclient/accept_test.go` — table-driven test (test file, not counted).
+  - `/workspace/iscc-monitor/internal/store/sqlite.go` — `Open(path string) (*Store, error)`, `Close()`,
+    embedded-schema application, single-writer pragmas. (1 of ≤3 non-test/doc files.)
+  - `/workspace/iscc-monitor/internal/store/schema.sql` — `//go:embed`-ed DDL for the core M1 tables
+    (`CREATE TABLE IF NOT EXISTS …`). (Counts as a non-test/doc file: 2 of ≤3.)
+  - `/workspace/iscc-monitor/internal/store/sqlite_test.go` — table/scenario tests (test file, not counted).
 - **Modify**:
-  - `/workspace/iscc-monitor/internal/didweb/resolve.go` — make `ParseDIDDocument` reject a
-    non-empty-but-unparseable `validFrom`/`validUntil`/`revoked` (fail-closed); keep absent → zero
-    (unconstrained) unchanged. (1 of ≤3 non-test/doc files.)
+  - `/workspace/iscc-monitor/go.mod` + `/workspace/iscc-monitor/go.sum` — add `modernc.org/sqlite`
+    (and its indirect deps). **Counts as the 3rd file slot conceptually but is dependency wiring, not logic.**
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/logclient/verify.go` — `VerifyCheckpoint` signature, `ErrUnverified`.
-  - `/workspace/iscc-monitor/internal/logclient/didresolve.go` — `ResolveVerifierKey` signature, `ErrUnresolvable`, the `Fetcher` seam.
-  - `/workspace/iscc-monitor/internal/didweb/validity.go` — `DIDKey.ValidAt(now) bool`.
-  - `/workspace/iscc-monitor/internal/didweb/resolve.go` — `parseTime`, `DIDKey`, `ParseDIDDocument`.
-  - `/workspace/iscc-monitor/.claude/adr/0009-didweb-trust-root.md` — the `verified`/`unresolvable`/`unverified` taxonomy; an out-of-window key is rotation/revocation, not `unverified`.
-  - `/workspace/iscc-monitor/.claude/context/issues.md` — the `parseTime` fail-open issue this step closes.
+  - `/workspace/iscc-monitor/.claude/plans/cosmic-baking-octopus.md` — the "SQLite schema (core tables…)"
+    block (lines ~135-147) is the authoritative column list; correctness rule 6 (single writer per DB).
+  - `/workspace/iscc-monitor/.claude/adr/0005-single-sqlite-store.md` — WAL, single writer, one file,
+    fetch-outside-the-write-transaction (the last point constrains *later* steps, not this one).
+  - `/workspace/iscc-monitor/.claude/adr/0007-per-network-db-and-evidence-retention.md` — one file per
+    network (`mainnet.db` / `testnet.db`); **no `network` column** in any table.
+  - `/workspace/iscc-monitor/cauldron/tessera/client/fetcher.go` — the `Fetcher` 3-method interface
+    (`ReadCheckpoint`, `ReadTile`, `ReadEntryBundle`) that a future `SQLiteFetcher` will implement over
+    the `tiles`/`entry_bundles`/`checkpoints` BLOBs — informs the BLOB column shape, but **do not build
+    the fetcher here**.
+  - `/workspace/iscc-monitor/internal/didweb/resolve.go` — existing `//go:embed`-free package style /
+    file-docstring convention to match.
 
 ## Not In Scope
-- **No SQLite / `hub_keys` cache / persistence of any kind.** This step is pure and in-memory; the
-  store lands in the next step and consumes `AcceptCheckpoint`.
-- **No follower loop, no polling, no goroutine, no `cmd/` binary, no freeze/alert.** Decision only.
-- **No RFC-6962 three-trigger consistency check** (fork/shrink/equivocation) — that is the step after
-  the store, and needs tiles in `testdata/live/` that do not exist yet.
+- **No follower loop, no polling, no goroutine supervisor, no `cmd/` binary.** This step only opens the
+  store and applies the schema; the follower that calls `AcceptCheckpoint` and writes rows is the *next*
+  step.
+- **No typed insert/query/CRUD methods** (no `InsertCheckpoint`, no `hub_keys` upsert, no `follow_state`
+  read/write helpers). Schema + open/close only. Row-access methods land with the follower so their
+  shape is driven by a real caller (avoid speculative APIs — YAGNI).
+- **No `SQLiteFetcher`** implementing `client.Fetcher` — that is M2 (Aggregator), and needs tiles in the
+  store first.
+- **No RFC-6962 consistency check, freeze/alert, OTS, metrics, or `iscc_index` logic.**
 - **No sb1 fixture / `derive_vkey.py` `HUBS` refresh to `069d0f14`.** That belongs with the `hub_keys`
-  cache step; touching it here would mix concerns and risk the golden-vector oracle. The existing
-  `22b08f3e` fixture (and the genuine "stale rotated key → `ErrUnverified`" negative) stays as-is.
-- **No change to `DIDKey.ValidAt` or `validity_test.go`** — the fail-closed fix lives in the parser,
-  not the predicate, so the 12-case boundary golden test is untouched.
+  write path (the follower step), not the empty-schema bootstrap.
+- **Do NOT let `go get` bump the `go` directive to `1.25.0`** (see Implementation Notes) — the mise
+  toolchain is pinned to `go 1.24`; a `go 1.25.0` minimum would fail the gate on a 1.24 toolchain.
 
 ## Implementation Notes
-- **Decision shape.** Add an exported status type to `accept.go`, e.g.
-  `type Status int` with `const ( StatusVerified Status = iota; StatusUnverified; StatusUnresolvable;
-  StatusRotated )` plus a `String()` for logs/tests. The names must map onto the ADR-0009 taxonomy:
-  `verified` / `unverified` / `unresolvable`, with the out-of-window case as a **distinct** outcome
-  (rotation/revocation) — per learnings it is *not* `unverified` and *not* `unresolvable`.
-- **`AcceptCheckpoint` signature.** Keep it pure and dependency-injected via the existing `Fetcher`
-  seam so tests stay offline. Suggested:
-  `func AcceptCheckpoint(ctx context.Context, fetcher Fetcher, baseURL string, raw []byte, observedAt time.Time) (Status, CheckpointInfo, error)`
-  where `CheckpointInfo` carries the verified `{Origin string; TreeSize uint64; Root [32]byte}` on
-  success (zero on non-`verified`). `observedAt` is passed in (never `time.Now()` inside) so the
-  decision is deterministic and table-testable — mirror the `DIDKey.ValidAt(now)` discipline.
-- **Ordering of the verdict (this is load-bearing):**
-  1. `ResolveVerifierKey(ctx, fetcher, baseURL)` — if `errors.Is(err, ErrUnresolvable)` →
-     `StatusUnresolvable`. (A malformed validity timestamp now also collapses here via the parser fix
-     below — fail-closed.)
-  2. `VerifyCheckpoint(vkey, raw)` — if `errors.Is(err, ErrUnverified)` → `StatusUnverified`. A
-     well-signed-but-malformed body (non-`ErrUnverified` parse error) is a real error: return it as a
-     wrapped `error`, NOT a status (keep "signature didn't match" separable from "body was garbage",
-     exactly as `VerifyCheckpoint` already does).
-  3. Only if the signature verified, evaluate `key.ValidAt(observedAt)`: in-window → `StatusVerified`;
-     out-of-window → `StatusRotated`. **Validity is checked only after a good signature** — an
-     out-of-window key whose signature also fails is `unverified`, not rotated.
-- **`parseTime` fail-closed fix (`internal/didweb/resolve.go`).** Today `parseTime` returns the zero
-  time for BOTH absent and non-empty-unparseable input, so a garbled `revoked` silently fails open.
-  Change `ParseDIDDocument` to distinguish: introduce a parse helper that returns
-  `(time.Time, error)` — empty string → `(zero, nil)` (unconstrained, unchanged); non-empty +
-  `time.Parse` failure → a wrapped error. `ParseDIDDocument` returns that error (wrapped, like its
-  other failures), which `ResolveVerifierKey` already maps to `ErrUnresolvable`. Net effect: a hub
-  serving `"revoked": "not-a-date"` resolves to `StatusUnresolvable`, never `verified`. Update the
-  `parseTime`/`ParseDIDDocument` doc comments to match the fail-closed semantics.
-- **Correctness rules in play (learnings.md):** "did:web is the only key source — resolution failure →
-  `unresolvable`; a signature matching no listed key → `unverified`"; the out-of-window outcome is the
-  *distinct* rotation/revocation case (learnings, `ValidAt` entry) — do not fold it into `unverified`.
-  Keep `accept.go` import-clean of `database/sql`/`sqlite` (it may import `context`/`time`/`errors`
-  and the sibling primitives; it is the follower seam, not part of the WASM-pure `internal/proof`).
-- **Tests** drive `AcceptCheckpoint` through a fake `Fetcher` returning fixture `did.json` bytes (reuse
-  `internal/logclient/testdata/sb0.iscc.id_did.json` + `testdata/live/sb0.iscc.id_checkpoint`) and
-  assert on the returned `Status` — never on internals. Cover all four statuses: `verified` (sb0 real
-  checkpoint + sb0 did.json + `observedAt` = now), `unverified` (a fetcher returning a mismatching key,
-  or a tampered sig byte), `unresolvable` (a fetcher returning `os.ErrNotExist` AND a fetcher returning
-  a did.json with a malformed `revoked`), and `rotated` (a did.json fixture whose key matches the
-  checkpoint signer but carries `validUntil` in the past relative to `observedAt`). For the
-  malformed-timestamp and expired-window cases, construct the did.json bytes inline in the test (do not
-  add a committed fixture) so the golden fixtures stay stable.
+- **Driver + go-directive footgun (verified).** `go get modernc.org/sqlite@latest` currently pulls
+  `v1.52.0` **and rewrites `go 1.24.0 → go 1.25.0`** plus a `toolchain go1.25.x` line. The mise gate runs
+  `go = "1.24"`, so this *will* break `mise run check`. After adding the dep, **reset the directive back
+  to `go 1.24.0`** and **delete any `toolchain` line** from `go.mod` (same discipline learnings already
+  record for `x/mod`). Verify `mise run check` is green on the 1.24 toolchain afterward; if `v1.52.0`
+  genuinely requires ≥1.25 to *build*, pin an older `modernc.org/sqlite` that builds on 1.24 rather than
+  bumping the directive — and record which version in the commit body. The driver registers itself as
+  the `"sqlite"` database/sql driver name (`import _ "modernc.org/sqlite"`), pure-Go, no cgo.
+- **Open shape.** `func Open(path string) (*Store, error)` returning a small `type Store struct { db *sql.DB }`
+  with a `func (s *Store) Close() error`. Use `database/sql` with driver name `"sqlite"`. This is the
+  pure-Go driver chosen precisely because `CGO_ENABLED=0` forbids cgo SQLite (learnings).
+- **Single-writer pragmas (ADR-0005/0007, correctness rule 6).** Set on open, in order:
+  `PRAGMA journal_mode=WAL;`, `PRAGMA busy_timeout=5000;` (ms), `PRAGMA foreign_keys=ON;`,
+  `PRAGMA synchronous=NORMAL;` (safe + fast under WAL). Enforce the single-writer invariant at the
+  connection-pool level with `db.SetMaxOpenConns(1)` so all writes serialize through one connection —
+  the goroutine-ownership wrapper comes with the follower; this step just guarantees the pool can't
+  open a second writer. (Reads will also serialize for now; that is fine pre-serving and avoids
+  `SQLITE_BUSY` flakes in tests. A read pool split can come when serving lands.)
+- **Embedded schema.** Put the DDL in `schema.sql`, embed it with
+  `import _ "embed"` + `//go:embed schema.sql` into a `var schemaSQL string`, and apply it on open via
+  one `db.Exec(schemaSQL)`. Every statement is `CREATE TABLE IF NOT EXISTS …` (and `CREATE INDEX IF NOT
+  EXISTS …`) so `Open` on an existing DB is a no-op — that is what makes restart-survival trivially true.
+- **Schema = the plan's core tables verbatim, minus the dropped `network` column (ADR-0007).** Create
+  exactly these, with the columns from the plan's "SQLite schema" block:
+  `hubs`, `hub_keys`, `checkpoints` (`UNIQUE(hub_id,tree_size,root)`), `violations`, `tiles`
+  (`PK(hub_id,level,tile_index,width)`), `entry_bundles` (`PK(hub_id,bundle_index,width)`), `iscc_index`
+  (`seq` PK, `INDEX(iscc_id)`), `follow_state` (`hub_id` PK), `ots` (`UNIQUE(hub_id,tree_size,root)`).
+  Use `BLOB` for `root`/`data`/`iscc_id`/`raw_*`/`ots_bytes`, `INTEGER` for sizes/booleans/timestamps
+  (store times as unix-seconds or RFC-3339 TEXT — pick one and document it in the file docstring; unix
+  INTEGER is simplest and matches `observed_at`-style comparisons). No `cosigs` table (deferred to M7).
+  Keep the DDL readable and commented per table; this file is load-bearing documentation of the data
+  model.
+- **Correctness rules in play (learnings.md / plan):** rule 6 "SQLite single writer per DB — WAL +
+  busy_timeout; one goroutine owns all writes" (enforced here by `SetMaxOpenConns(1)` + WAL; the
+  goroutine wrapper is the follower's job); ADR-0007 "no `network` column"; `CGO_ENABLED=0` →
+  `modernc.org/sqlite`, never a cgo driver, and **no `go test -race`**.
+- **Tests** (offline, deterministic): use `t.TempDir()` for the DB path.
+  1. `Open` on a fresh path succeeds and the expected tables exist — assert via
+     `SELECT name FROM sqlite_master WHERE type='table'` and check the set contains every table above.
+  2. `PRAGMA journal_mode` returns `wal` after open.
+  3. **Restart survival**: `Open` → write a sentinel row into one table (e.g. an INSERT into `hubs`) →
+     `Close()` → `Open()` the same path again → the row and all tables are still present. (A direct
+     `db.Exec` INSERT in the test is fine even though the store exposes no insert method yet — the test
+     drives raw SQL to prove persistence, not a public API.)
+  4. `Open` twice on the same path (sequentially, after Close) is idempotent (schema re-apply is a
+     no-op, no error).
+  Assert on observable DB state (rows, pragma values), never on `Store` internals.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` exit 0; `gofmt -l .` empty).
-- `go test -run TestAcceptCheckpoint ./internal/logclient` passes (all four status subcases).
-- `go test -run TestParseDIDDocument ./internal/didweb` passes (existing tests still green after the
-  parser change) AND a new subcase asserts a non-empty unparseable `revoked`/`validUntil` makes
-  `ParseDIDDocument` return a non-nil error.
-- Assertion: `AcceptCheckpoint(ctx, fakeSb0, "https://sb0.iscc.id", sb0CheckpointBytes, time.Now())`
-  returns `StatusVerified` with `CheckpointInfo.TreeSize == 10183`.
-- Assertion: a fetcher returning a did.json with `"revoked":"not-a-date"` yields `StatusUnresolvable`
-  (NOT `StatusVerified`) — the closed `parseTime` fail-open issue.
-- Assertion: a did.json whose key matches the sb0 checkpoint signer but with `validUntil` before
-  `observedAt` yields `StatusRotated` (distinct from `StatusUnverified` and `StatusUnresolvable`).
-- `GOOS=js GOARCH=wasm go build ./internal/didweb` still exits 0 (parser fix imports only stdlib).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` exit 0; `gofmt -l .` empty)
+  **on the pinned `go 1.24` toolchain** — i.e. `go.mod` still reads `go 1.24.0` with no `toolchain` line.
+- `go test -run TestStore ./internal/store` passes (fresh-open, pragma, restart-survival, idempotent-reopen).
+- Assertion: after `Open(filepath.Join(t.TempDir(), "testnet.db"))`, a
+  `SELECT name FROM sqlite_master WHERE type='table'` result set contains all of:
+  `hubs hub_keys checkpoints violations tiles entry_bundles iscc_index follow_state ots`.
+- Assertion: `PRAGMA journal_mode` query returns `"wal"`.
+- Assertion: a row inserted before `Close()` is still readable after reopening the same file path
+  (restart survival).
+- Assertion: `grep -R "network" internal/store/schema.sql` finds no `network` *column* (ADR-0007 — the
+  word may appear only in a comment; the column is gone).
+- `go.mod` `go` directive is `1.24.0` and contains no `toolchain` directive (run `grep -E '^(go|toolchain)' go.mod`).
 
 ## Done When
-`AcceptCheckpoint` returns the correct four-way verdict for the verified/unverified/unresolvable/rotated
-fixtures, a malformed validity timestamp fails closed to `StatusUnresolvable`, and every Verification
-criterion passes with `mise run check` green.
+`internal/store.Open` opens a WAL, single-writer SQLite DB with all nine core M1 tables applied
+idempotently from the embedded `schema.sql`, the data survives a close/reopen, and every Verification
+criterion passes with `mise run check` green on the `go 1.24` toolchain.
