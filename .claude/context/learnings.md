@@ -89,6 +89,19 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   `ErrUnresolvable`. So a hub serving `"revoked":"not-a-date"` collapses to `StatusUnresolvable`, never
   `verified`. The fix lives in the parser, NOT `ValidAt` — the 12-case `ValidAt` boundary golden and
   the `derive_vkey.py` vectors are unchanged (reconfirmed `40b74463`/`22b08f3e`).
+- **`FetchCheckpoint(ctx, Fetcher, baseURL)` is the transport-only checkpoint fetch** (`logclient/
+  checkpoint.go`, imports only `context`+`fmt`): `origin(baseURL)` → `"https://"+name+"/checkpoint"`
+  by concatenation (NOT a second `net/url` parse), returns bytes verbatim, wraps both `origin()` and
+  Fetcher errors with `%w` so a 404's `errors.Is(err, os.ErrNotExist)` survives. It does NOT wrap in
+  `ErrUnresolvable` — that sentinel is did:web-only; a checkpoint-fetch fault is a plain transport
+  error the follower classifies separately.
+- **An `httptest` round-trip can prove *fetch* but NOT *verify* against a live-host URL** — `Accept`/
+  `ResolveVerifierKey` derive the verifier key from `origin(baseURL)`, and the key is origin-bound
+  (`SHA-256(name||…)`). A `127.0.0.1:<port>` host derives a different origin than the fixture's
+  `sb0.iscc.id/log` signature → always `ErrUnverified`. The correct pattern (used by both
+  `TestAcceptCheckpoint` and `TestFetchCheckpointOverHTTP`): fetch over real HTTP via `srv.URL`, then
+  verify the fetched bytes with `baseURL="https://sb0.iscc.id"` + a fake Fetcher for the did.json. Do
+  not expect `AcceptCheckpoint(srv.URL, …)` to yield `StatusVerified` with captured fixtures.
 - **`AcceptCheckpoint` is the pure 4-way verdict seam the follower consumes** (`logclient/accept.go`):
   composes `ResolveVerifierKey → VerifyCheckpoint → DIDKey.ValidAt(observedAt)` into
   `StatusVerified/Unverified/Unresolvable/Rotated`. `observedAt` is injected (never `time.Now()`),

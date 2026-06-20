@@ -1,63 +1,70 @@
 # Handoff
 
-## 2026-06-20 — Networked checkpoint fetch over the Fetcher seam (`FetchCheckpoint`)
+## 2026-06-20 — Review of: Networked checkpoint fetch over the Fetcher seam (`FetchCheckpoint`)
 
-**Done:** Added the transport-only `FetchCheckpoint(ctx, fetcher, baseURL) ([]byte, error)` to
-`internal/logclient`, parallel to `ResolveVerifierKey`: it derives the canonical
-`https://<domain>/log/checkpoint` URL by reusing the shared `origin()` helper (never the bare domain)
-and returns the hub's signed-checkpoint body verbatim through the injected `Fetcher`, propagating a
-404's `os.ErrNotExist` through the `%w` wrapper. Purely additive — no existing source file changed.
+**Verdict:** PASS_WITH_NOTES
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/logclient/checkpoint.go` (new): `FetchCheckpoint` free function + file/function docstrings.
-  Imports only `context` + `fmt`; URL built by concatenation (`"https://" + name + "/checkpoint"`), no
-  second `net/url` parse, no `net/http`/`os`/`database/sql`.
-- `internal/logclient/checkpoint_test.go` (new): fake-`Fetcher` URL-golden + pass-through tests, 404
-  contract, empty-URL error, and one real-HTTP `httptest` round-trip composing fetch → verify.
+**Summary:** `advance` added the transport-only `FetchCheckpoint(ctx, Fetcher, baseURL) ([]byte, error)`
+to `internal/logclient` — one new source file (imports only `context`+`fmt`) plus a driving test file,
+purely additive (no existing source changed). It reuses the shared `origin()` helper to derive
+`https://<domain>/log/checkpoint`, returns the body verbatim, and propagates a 404's `os.ErrNotExist`
+through the `%w` wrapper. Scope is exactly what `next.md` asked, all gates are green, and the
+oracle/purity invariants are untouched. One verification criterion was substituted (see Notes) — sound
+and transparently flagged — hence PASS_WITH_NOTES rather than PASS.
 
-**Verification:** `mise run check` → green (`go build ./...`, `go vet ./...`, `go test ./...` all exit
-0; `gofmt -l .` empty). `go test -run TestFetchCheckpoint ./internal/logclient` → PASS.
-- [x] Offline URL golden: `FetchCheckpoint(ctx, fake, "https://sb0.iscc.id")` records
-  `gotURL == "https://sb0.iscc.id/log/checkpoint"` and returns canned bytes unchanged (`bytes.Equal`).
-- [x] Bare-host input `"sb0.iscc.id"` (no scheme) also yields `gotURL == "https://sb0.iscc.id/log/checkpoint"`.
-- [x] 404 contract: `fakeFetcher{err: os.ErrNotExist}` → non-nil err with `errors.Is(err, os.ErrNotExist)`.
-- [x] Empty base URL: `FetchCheckpoint(ctx, fake, "")` → non-nil err (propagated from `origin()`).
-- [x] End-to-end over real HTTP: fetch sb0 checkpoint at `/log/checkpoint` via `httptest.NewTLSServer`
-  + `NewHTTPFetcher(srv.Client())`, fed into `AcceptCheckpoint` → `StatusVerified`, `info.TreeSize == 10183`.
+**Verification:**
+- [x] `mise run check` → green (build + vet + test all exit 0, go1.24).
+- [x] `gofmt -l .` → empty (no listed files).
+- [x] `go test -count=1 -run TestFetchCheckpoint ./internal/logclient` → PASS (all 5 subtests).
+- [x] Offline URL golden: `FetchCheckpoint(ctx, fake, "https://sb0.iscc.id")` →
+  `gotURL == "https://sb0.iscc.id/log/checkpoint"`, bytes pass through unchanged (`bytes.Equal`).
+- [x] Bare-host input `"sb0.iscc.id"` (no scheme) → same `/log/checkpoint` URL.
+- [x] 404 contract: `fakeFetcher{err: os.ErrNotExist}` → `errors.Is(err, os.ErrNotExist)` holds.
+- [x] Empty base URL → non-nil error (propagated from `origin()`).
+- [~] End-to-end over real HTTP: the *fetch* runs over `httptest.NewTLSServer` + `NewHTTPFetcher`
+  (proving transport + URL derivation), then the fetched bytes verify to `StatusVerified`,
+  `TreeSize == 10183`. The literal `next.md` shape — `AcceptCheckpoint(srv.URL, …) == StatusVerified` —
+  is unsatisfiable (origin-bound key; see Notes); the substitute preserves the intent faithfully.
+- [x] Purity: `checkpoint.go` adds no `net/http`/`os`/`database/sql` import; `internal/didweb` WASM
+  build still green; `internal/proof` not yet created (pre-M2).
+- [x] Oracle sanity: `derive_vkey.py` prints both golden vectors exactly (`sb0…+40b74463…`,
+  `sb1…+22b08f3e…`); scratch cleaned, tree clean.
+- [x] Gate integrity: scanned all unpushed Go diff — no `//nolint`, `t.Skip`, build-tag exclusions,
+  deleted tests, or swallowed errors. The lone `_, _ = w.Write(...)` is the standard httptest-handler
+  idiom, not a dodged check.
 
-**Conformance/oracle gate:** N/A this step. The diff adds a transport-only fetch primitive; it touches
-no signature verification, RFC-6962/Merkle, proof code (`internal/proof` still does not exist, pre-M2),
-or split-view logic. The existing pure verify chain (`ResolveVerifierKey`/`VerifyCheckpoint`/`ValidAt`/
-`AcceptCheckpoint`) is reused **unchanged** — the `derive_vkey.py` parity + `notecheck` oracle gates
-have nothing to regress here and re-apply at the next step (which refreshes the sb1 fixture).
+**Conformance/oracle gate:** N/A this step (correctly). The diff is transport-only — it touches no
+signature verification, RFC-6962/Merkle, proof code, `internal/didweb`, or split-view logic. The pure
+verify chain is reused unchanged. No CI is configured yet, so the `notecheck` external-oracle job does
+not exist — an infrastructure gap to wire when the trust-root code lands, not a regression here.
+
+**Issues found:** (none)
 
 **Next:** The follower poll loop — the real caller. It calls `FetchCheckpoint` then `AcceptCheckpoint`
 (**check `err` before the status**; a verified-but-garbled body returns non-nil err alongside
 `StatusUnverified`'s zero), maps `Status.String()` + `CheckpointInfo{Origin,TreeSize,Root}` into a
-`CheckpointRecord` (Root `[32]byte` → `[]byte`, `ObservedAt` injected, never `time.Now()` in the pure
+`CheckpointRecord` (Root `[32]byte` → `[]byte`, `ObservedAt` injected — never `time.Now()` in the pure
 layer), persists via `RecordCheckpoint`, and calls `AdvanceFollowState` **only** on `StatusVerified`.
-It also writes the `hub_keys` did:web cache and refreshes the stale sb1 `did.json` fixture +
-`derive_vkey.py` `HUBS` to the current key `069d0f14`. The single-writer goroutine wrapper is the
-follower's concern. That step touches the trust root indirectly and refreshes a golden fixture, so the
-`derive_vkey.py` parity + `notecheck` oracle gates re-apply there.
+That step also writes the `hub_keys` did:web cache and refreshes the stale sb1 `did.json` fixture +
+`derive_vkey.py` `HUBS` to the current key `069d0f14` — so the `derive_vkey.py` parity + (future)
+`notecheck` oracle gates re-apply there. The single-writer goroutine wrapper is the follower's concern.
 
 **Notes:**
-- **Deviation from the literal end-to-end criterion (Verification line 98-102).** `next.md` asked the
-  `httptest` round-trip to call `AcceptCheckpoint(ctx, NewHTTPFetcher(srv.Client()), srv.URL, raw, ...)`
-  and get `StatusVerified`. That is **not achievable**: `AcceptCheckpoint` re-derives the verifier-key
-  origin from its `baseURL`, and `VerifierKey`/keyhash are origin-dependent (`SHA-256(name||0x0A||...)`).
-  A live `httptest` host is `127.0.0.1:<random-port>`, so passing `srv.URL` derives origin
-  `127.0.0.1:<port>/log` — which cannot match the fixture's `sb0.iscc.id/log` signature → `ErrUnverified`,
-  never `StatusVerified`. The existing `TestAcceptCheckpoint` already side-steps this by passing
-  `baseURL = "https://sb0.iscc.id"` with a **fake** Fetcher for the did.json (so origin is correct AND
-  no live net). I kept the spirit faithfully: the **fetch** runs over real HTTP via
-  `FetchCheckpoint(srv.URL)` (proving the transport + URL derivation), then those exact fetched bytes are
-  verified through `AcceptCheckpoint(didFetcher, "https://sb0.iscc.id", raw, fixedObservedAt)` →
-  `StatusVerified`, `TreeSize == 10183`. This proves fetch → verify composes end-to-end while respecting
-  the verify chain's origin binding. Not a code-behavior change, only a test-wiring choice; flagging for
-  `review` since it diverges from the criterion's exact call shape.
-- `observedAt` in the round-trip is fixed (`2026-06-20`) inside sb0's CID 1.0 validity window so the
-  in-window key yields `StatusVerified` rather than `StatusRotated` — deterministic, no `time.Now()`.
-- Reused the package-shared helpers `fakeFetcher` (didresolve_test.go), `readCheckpoint`
-  (verify_test.go, module-root `testdata/live/`), and `readFixture` (didresolve_test.go, package
-  `testdata/`); none re-declared.
+- **Substituted end-to-end criterion (PASS_WITH_NOTES driver).** `next.md` lines 98-102 asked the
+  round-trip to call `AcceptCheckpoint(ctx, NewHTTPFetcher(srv.Client()), srv.URL, raw, …)` and get
+  `StatusVerified`. That is provably unsatisfiable: `AcceptCheckpoint` re-derives the verifier-key
+  origin from its `baseURL` via `origin()`, and the key is origin-bound (`SHA-256(name||…)`). A live
+  `httptest` host is `127.0.0.1:<random-port>`, deriving origin `127.0.0.1:<port>/log`, which cannot
+  match the sb0 fixture's `sb0.iscc.id/log` signature → always `ErrUnverified`. The author kept the
+  intent: the **fetch** runs over real HTTP (`FetchCheckpoint(srv.URL)` → `/log/checkpoint`), then those
+  exact bytes verify via `AcceptCheckpoint(didFetcher, "https://sb0.iscc.id", raw, fixedObservedAt)` →
+  `StatusVerified`, `TreeSize == 10183`. I independently confirmed the existing `TestAcceptCheckpoint`
+  uses the identical `baseURL="https://sb0.iscc.id"` + fake-did-Fetcher pattern, so this is established
+  precedent, not an ad-hoc workaround. A test-wiring choice, no code-behavior change.
+- The flaw is in the `next.md` criterion's call shape, not the implementation; recorded in learnings so
+  define-next does not re-request the unsatisfiable form.
+- sb1 fixture is still the pre-rotation key `22b08f3e` — correctly out of scope (deferred to the
+  follower/`hub_keys` step per `next.md` Not In Scope); not a regression.
+- No remote-push issues: pushed to `origin/develop` on this PASS_WITH_NOTES verdict (human merges
+  develop→main via CI-gated PR; never push main).
