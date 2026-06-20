@@ -172,6 +172,27 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
 - **Garbled-body fault returns `(status, wrapped-err)` where status is `AcceptCheckpoint`'s
   `StatusUnverified` zero** — meaningless when err != nil. `PollHub` honors the err-before-status
   contract (returns the wrapped err and persists nothing); callers of `PollHub` must do the same.
+- **Freeze wiring composes the two pure verdicts in `PollHub` via `checkConsistency` + `freeze`
+  helpers** (`follower.go`). Order is load-bearing: on `StatusVerified`, read `FollowState`, run
+  shrink-then-fork BEFORE `RecordCheckpoint`/`AdvanceFollowState`; on a true verdict
+  `RecordViolation` + `RecordCheckpoint`(evidence, no advance) + `Freeze`, then alert iff
+  `!wasFrozen`. A violation returns `(StatusVerified, nil)` — freezes, never crashes (ADR-0006).
+  The `AlertFunc func(int64,string)` is a func seam (YAGNI, not an interface); the `modernc.org/sqlite`
+  blank import is added to the follower *test only* (production imports stay `{context,fmt,logclient,
+  store,time}`, store stays a leaf, go.mod/go.sum byte-identical).
+- **Re-detection of a fork relies on `CheckpointAt`'s `LIMIT 1` returning the PRIOR root, not the
+  contradictory one.** The freeze path records the contradicting checkpoint as evidence, so after the
+  first detection there are two rows at the same `tree_size` (prior seed root + new root). On the next
+  poll `CheckpointAt(LIMIT 1, no ORDER BY)` returns the lower-rowid (prior/seed) row, so
+  `CheckFork(prior != new)` re-fires and a 2nd `violations` row is recorded (re-detection = evidence).
+  This is correct today (SQLite returns rowid order) and verified stable over 20 runs, but it is an
+  *implicit* dependency on insert order — the equivocation/merkle slice that changes how the prior root
+  is selected must preserve "compare against the prior accepted root, not the contradicting evidence."
+- **Fork-test non-vacuousness comes from the `kind == "fork"` (not "shrink") assertion at equal size,
+  NOT the `sb0FixtureRootB64` guard.** That guard compares raw seed bytes to a base64 *string*, so it
+  can never trip (and the seed is 33 bytes — `copy` into `[32]byte` truncates harmlessly). The real
+  proof the fork branch fired is: verified observation at size 10183 with the real decoded root vs a
+  seeded distinct root, asserting kind `"fork"` distinctly from the size-only shrink path.
 
 ## SQLite store (`internal/store`)
 
