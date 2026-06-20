@@ -1,87 +1,104 @@
 # Next Work Package
 
-## Step: Enforce the CID 1.0 key validity window (pure `DIDKey.ValidAt`)
+## Step: Pure checkpoint-acceptance decision (`AcceptCheckpoint`) + close the `parseTime` fail-open gap
 
 ## Goal
-Turn the parsed-but-unenforced CID 1.0 validity fields on `DIDKey`
-(`ValidFrom`/`ValidUntil`/`Revoked`) into a pure, golden-tested predicate that decides whether a
-resolved key is valid at a given observation time. This is the precondition the follower's
-checkpoint-acceptance path needs before it can trust a `verified` verdict, and it closes the
-documented "parses-but-does-not-enforce" gap — without yet pulling in SQLite or the follower.
+Compose the three existing verification primitives (`ResolveVerifierKey` → `VerifyCheckpoint` →
+`DIDKey.ValidAt`) into ONE pure function that returns the four-way hub-status verdict the follower
+will consume, and make a malformed CID 1.0 validity timestamp fail *closed* at the parse boundary.
+This is the natural seam between today's pure primitives and the upcoming stateful follower, and it
+resolves the open `normal` `parseTime` issue — both prerequisites for the SQLite `hub_keys` + follower
+loop that follows.
 
 ## Scope
-- **Create**: `/workspace/iscc-monitor/internal/didweb/validity.go` (a single pure method on `DIDKey`)
-- **Create**: `/workspace/iscc-monitor/internal/didweb/validity_test.go` (table-driven test)
-- **Modify**: `/workspace/iscc-monitor/internal/didweb/resolve.go` — only the `DIDKey` doc comment
-  that today says the follower "decides enforcement later, not this parser", to point at the new
-  `ValidAt`. No logic change to `ParseDIDDocument` or `parseTime`. (Counts as the single non-test
-  source touch besides the new file; total ≤3.)
+- **Create**:
+  - `/workspace/iscc-monitor/internal/logclient/accept.go` — a pure `Status` enum + `AcceptCheckpoint` decision function.
+  - `/workspace/iscc-monitor/internal/logclient/accept_test.go` — table-driven test (test file, not counted).
+- **Modify**:
+  - `/workspace/iscc-monitor/internal/didweb/resolve.go` — make `ParseDIDDocument` reject a
+    non-empty-but-unparseable `validFrom`/`validUntil`/`revoked` (fail-closed); keep absent → zero
+    (unconstrained) unchanged. (1 of ≤3 non-test/doc files.)
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/didweb/resolve.go` (the `DIDKey` struct + `parseTime` it builds
-    on; note `parseTime` maps absent/unparseable timestamps to the zero `time.Time`)
-  - `/workspace/iscc-monitor/.claude/adr/0009-didweb-trust-root.md` (validity windows are the domain
-    owner's rotation/revocation mechanism — `verificationMethod` + `revoked` validity windows; a
-    signature outside the window must not be `verified`)
-  - `/workspace/iscc-monitor/internal/didweb/resolve_test.go` (existing assertion that live fixtures
-    have zero-valued validity fields = "currently valid" — the new predicate must agree)
+  - `/workspace/iscc-monitor/internal/logclient/verify.go` — `VerifyCheckpoint` signature, `ErrUnverified`.
+  - `/workspace/iscc-monitor/internal/logclient/didresolve.go` — `ResolveVerifierKey` signature, `ErrUnresolvable`, the `Fetcher` seam.
+  - `/workspace/iscc-monitor/internal/didweb/validity.go` — `DIDKey.ValidAt(now) bool`.
+  - `/workspace/iscc-monitor/internal/didweb/resolve.go` — `parseTime`, `DIDKey`, `ParseDIDDocument`.
+  - `/workspace/iscc-monitor/.claude/adr/0009-didweb-trust-root.md` — the `verified`/`unresolvable`/`unverified` taxonomy; an out-of-window key is rotation/revocation, not `unverified`.
+  - `/workspace/iscc-monitor/.claude/context/issues.md` — the `parseTime` fail-open issue this step closes.
 
 ## Not In Scope
-- **No SQLite, no `hub_keys` cache, no follower acceptance path** — those are the next step. This
-  step only adds the pure predicate that step will call.
-- **No status mapping** (`unresolvable`/`unverified`/`verified`) and no wiring into `VerifyCheckpoint`
-  or `ResolveVerifierKey`. `ValidAt` returns a bool; the caller decides what an out-of-window key
-  means for hub status.
-- **No fixture refresh** (`sb1.amlet.id_did.json` / `derive_vkey.py` to `069d0f14`) — handoff pins
-  that to the `hub_keys`/validity-cache step, not here.
-- **Do not change `parseTime`'s lenient behavior** (unparseable → zero time). Changing it would alter
-  parsing semantics and the existing golden test; if fail-open on a *malformed* (non-empty) timestamp
-  is a concern, file it as an issue for the parser/fixture step rather than fixing it here.
+- **No SQLite / `hub_keys` cache / persistence of any kind.** This step is pure and in-memory; the
+  store lands in the next step and consumes `AcceptCheckpoint`.
+- **No follower loop, no polling, no goroutine, no `cmd/` binary, no freeze/alert.** Decision only.
+- **No RFC-6962 three-trigger consistency check** (fork/shrink/equivocation) — that is the step after
+  the store, and needs tiles in `testdata/live/` that do not exist yet.
+- **No sb1 fixture / `derive_vkey.py` `HUBS` refresh to `069d0f14`.** That belongs with the `hub_keys`
+  cache step; touching it here would mix concerns and risk the golden-vector oracle. The existing
+  `22b08f3e` fixture (and the genuine "stale rotated key → `ErrUnverified`" negative) stays as-is.
+- **No change to `DIDKey.ValidAt` or `validity_test.go`** — the fail-closed fix lives in the parser,
+  not the predicate, so the 12-case boundary golden test is untouched.
 
 ## Implementation Notes
-- Add a method on the value type: `func (k DIDKey) ValidAt(now time.Time) bool` — pure, takes the
-  observation time as an argument so it never reads the wall clock itself (deterministic, testable).
-  Returning a bool keeps it minimal; the follower owns the status decision. (If a reason string is
-  wanted later, add it then — YAGNI now.)
-- Semantics (CID 1.0 / ADR-0009 wall-clock window; the zero `time.Time` means "no constraint",
-  matching `parseTime` and the existing `resolve_test.go` assertion that live docs are "currently
-  valid"):
-  - `ValidFrom` non-zero and `now.Before(k.ValidFrom)` → not valid (key not yet active).
-  - `ValidUntil` non-zero and `!now.Before(k.ValidUntil)` → not valid (half-open `[from, until)`;
-    `now == ValidUntil` is expired).
-  - `Revoked` non-zero and `!now.Before(k.Revoked)` → not valid (revoked at/after that instant;
-    half-open the same way, so `now == Revoked` is already revoked).
-  - All-zero validity fields (the live testnet case) → always valid.
-- Guard each field with `!field.IsZero()` before comparing, so an absent field never constrains.
-  Compare with `time.Time.Before` only (avoid `==`/`After` on `time.Time` — monotonic-clock and
-  half-open-boundary pitfalls). Pin the boundary instants explicitly in tests.
-- Keep the file pure: import only `time`. No `net`/`os`/`database/sql`. This is the same WASM-purity
-  rule as the rest of `internal/didweb` (Correctness rule: `proof/verify`/`didweb` stay import-clean
-  so the WASM build does not break). Verify with the `GOOS=js GOARCH=wasm` build below.
-- Start the new file with a docstring explaining it enforces the CID 1.0 validity window parsed by
-  `ParseDIDDocument`, consumed later by the follower's checkpoint-acceptance path. Short, pure
-  function, evergreen docstring.
-- Relevant Correctness rule (learnings.md): "**did:web is the only key source (ADR-0009).** … A
-  signature matching no listed key → `unverified`." A key that verifies a signature but is *outside
-  its validity window* is the rotation/revocation case this predicate gates — the follower will treat
-  an out-of-window key as not-`verified`, exactly as a key rotation/revocation should.
-- Do NOT use `t.Skip`, `//nolint`, build tags, or swallow errors to pass the gate (target quality
-  bar; learnings "Never weaken a gate").
+- **Decision shape.** Add an exported status type to `accept.go`, e.g.
+  `type Status int` with `const ( StatusVerified Status = iota; StatusUnverified; StatusUnresolvable;
+  StatusRotated )` plus a `String()` for logs/tests. The names must map onto the ADR-0009 taxonomy:
+  `verified` / `unverified` / `unresolvable`, with the out-of-window case as a **distinct** outcome
+  (rotation/revocation) — per learnings it is *not* `unverified` and *not* `unresolvable`.
+- **`AcceptCheckpoint` signature.** Keep it pure and dependency-injected via the existing `Fetcher`
+  seam so tests stay offline. Suggested:
+  `func AcceptCheckpoint(ctx context.Context, fetcher Fetcher, baseURL string, raw []byte, observedAt time.Time) (Status, CheckpointInfo, error)`
+  where `CheckpointInfo` carries the verified `{Origin string; TreeSize uint64; Root [32]byte}` on
+  success (zero on non-`verified`). `observedAt` is passed in (never `time.Now()` inside) so the
+  decision is deterministic and table-testable — mirror the `DIDKey.ValidAt(now)` discipline.
+- **Ordering of the verdict (this is load-bearing):**
+  1. `ResolveVerifierKey(ctx, fetcher, baseURL)` — if `errors.Is(err, ErrUnresolvable)` →
+     `StatusUnresolvable`. (A malformed validity timestamp now also collapses here via the parser fix
+     below — fail-closed.)
+  2. `VerifyCheckpoint(vkey, raw)` — if `errors.Is(err, ErrUnverified)` → `StatusUnverified`. A
+     well-signed-but-malformed body (non-`ErrUnverified` parse error) is a real error: return it as a
+     wrapped `error`, NOT a status (keep "signature didn't match" separable from "body was garbage",
+     exactly as `VerifyCheckpoint` already does).
+  3. Only if the signature verified, evaluate `key.ValidAt(observedAt)`: in-window → `StatusVerified`;
+     out-of-window → `StatusRotated`. **Validity is checked only after a good signature** — an
+     out-of-window key whose signature also fails is `unverified`, not rotated.
+- **`parseTime` fail-closed fix (`internal/didweb/resolve.go`).** Today `parseTime` returns the zero
+  time for BOTH absent and non-empty-unparseable input, so a garbled `revoked` silently fails open.
+  Change `ParseDIDDocument` to distinguish: introduce a parse helper that returns
+  `(time.Time, error)` — empty string → `(zero, nil)` (unconstrained, unchanged); non-empty +
+  `time.Parse` failure → a wrapped error. `ParseDIDDocument` returns that error (wrapped, like its
+  other failures), which `ResolveVerifierKey` already maps to `ErrUnresolvable`. Net effect: a hub
+  serving `"revoked": "not-a-date"` resolves to `StatusUnresolvable`, never `verified`. Update the
+  `parseTime`/`ParseDIDDocument` doc comments to match the fail-closed semantics.
+- **Correctness rules in play (learnings.md):** "did:web is the only key source — resolution failure →
+  `unresolvable`; a signature matching no listed key → `unverified`"; the out-of-window outcome is the
+  *distinct* rotation/revocation case (learnings, `ValidAt` entry) — do not fold it into `unverified`.
+  Keep `accept.go` import-clean of `database/sql`/`sqlite` (it may import `context`/`time`/`errors`
+  and the sibling primitives; it is the follower seam, not part of the WASM-pure `internal/proof`).
+- **Tests** drive `AcceptCheckpoint` through a fake `Fetcher` returning fixture `did.json` bytes (reuse
+  `internal/logclient/testdata/sb0.iscc.id_did.json` + `testdata/live/sb0.iscc.id_checkpoint`) and
+  assert on the returned `Status` — never on internals. Cover all four statuses: `verified` (sb0 real
+  checkpoint + sb0 did.json + `observedAt` = now), `unverified` (a fetcher returning a mismatching key,
+  or a tampered sig byte), `unresolvable` (a fetcher returning `os.ErrNotExist` AND a fetcher returning
+  a did.json with a malformed `revoked`), and `rotated` (a did.json fixture whose key matches the
+  checkpoint signer but carries `validUntil` in the past relative to `observedAt`). For the
+  malformed-timestamp and expired-window cases, construct the did.json bytes inline in the test (do not
+  add a committed fixture) so the golden fixtures stay stable.
 
 ## Verification
-- `mise run check` is green (`go build ./...` + `go vet ./...` + `go test ./...` all exit 0).
-- `gofmt -l /workspace/iscc-monitor/internal/didweb` prints nothing.
-- `go test -run TestValidAt ./internal/didweb` passes (all subtests).
-- Assertion: a zero-value `DIDKey{}` (no validity fields) `.ValidAt(time.Now())` returns `true`
-  (matches the live-fixture "currently valid" case in `resolve_test.go`).
-- Assertion: with `ValidUntil = 2020-01-01T00:00:00Z`, `.ValidAt(2026-06-20T00:00:00Z)` returns
-  `false` (expired); with `ValidFrom = 2030-01-01T00:00:00Z`, `.ValidAt(2026-06-20T00:00:00Z)`
-  returns `false` (not yet active); with `Revoked = 2020-01-01T00:00:00Z`,
-  `.ValidAt(2026-06-20T00:00:00Z)` returns `false`.
-- Assertion (half-open boundary): for `ValidUntil = T`, `.ValidAt(T)` returns `false` and
-  `.ValidAt(T.Add(-time.Nanosecond))` returns `true`.
-- `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (validity.go stays WASM-pure).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` exit 0; `gofmt -l .` empty).
+- `go test -run TestAcceptCheckpoint ./internal/logclient` passes (all four status subcases).
+- `go test -run TestParseDIDDocument ./internal/didweb` passes (existing tests still green after the
+  parser change) AND a new subcase asserts a non-empty unparseable `revoked`/`validUntil` makes
+  `ParseDIDDocument` return a non-nil error.
+- Assertion: `AcceptCheckpoint(ctx, fakeSb0, "https://sb0.iscc.id", sb0CheckpointBytes, time.Now())`
+  returns `StatusVerified` with `CheckpointInfo.TreeSize == 10183`.
+- Assertion: a fetcher returning a did.json with `"revoked":"not-a-date"` yields `StatusUnresolvable`
+  (NOT `StatusVerified`) — the closed `parseTime` fail-open issue.
+- Assertion: a did.json whose key matches the sb0 checkpoint signer but with `validUntil` before
+  `observedAt` yields `StatusRotated` (distinct from `StatusUnverified` and `StatusUnresolvable`).
+- `GOOS=js GOARCH=wasm go build ./internal/didweb` still exits 0 (parser fix imports only stdlib).
 
 ## Done When
-`internal/didweb` exposes a pure `DIDKey.ValidAt(now)` predicate enforcing the CID 1.0
-`ValidFrom`/`ValidUntil`/`Revoked` window with half-open boundaries and zero = "no constraint", all
-Verification criteria pass, and the WASM build stays green.
+`AcceptCheckpoint` returns the correct four-way verdict for the verified/unverified/unresolvable/rotated
+fixtures, a malformed validity timestamp fails closed to `StatusUnresolvable`, and every Verification
+criterion passes with `mise run check` green.
