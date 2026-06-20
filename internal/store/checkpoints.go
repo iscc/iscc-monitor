@@ -48,6 +48,17 @@ type FollowState struct {
 	LastError string
 }
 
+// CoverageInfo is the per-hub coverage start read from
+// hubs.monitored_since_{size,time} (ADR-0001). Set reports whether coverage has
+// been recorded yet: a hub that has never yielded a verified observation returns
+// Set false with zero Size / Since, and guarantees hold only from the coverage
+// start onward.
+type CoverageInfo struct {
+	Size  uint64
+	Since time.Time
+	Set   bool
+}
+
 // UpsertHub inserts-or-gets the hubs row for a hub and returns its hub_id. It is
 // idempotent on the domain: a re-register with the same domain returns the
 // existing id without rewriting columns. hubs carries no UNIQUE on domain, so
@@ -228,6 +239,56 @@ func (s *Store) Freeze(ctx context.Context, hubID int64) error {
 		return fmt.Errorf("store.Freeze: hub %d: %w", hubID, err)
 	}
 	return nil
+}
+
+// SetCoverage records the hub's coverage start (monitored_since_{size,time}) the
+// first time the hub yields a verified observation, and never moves it thereafter
+// (ADR-0001, coverage honesty: the start is immutable). It is a guarded UPDATE —
+// the monitored_since_size IS NULL clause means a re-call after the start is set is
+// a silent no-op, so it does NOT rely on RowsAffected to signal success (zero rows
+// affected once the start is set is the correct, non-error case). A zero observedAt
+// is written as NULL via unixOrNil, mirroring RecordCheckpoint.
+func (s *Store) SetCoverage(ctx context.Context, hubID int64, size uint64, observedAt time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE hubs SET monitored_since_size = ?, monitored_since_time = ? "+
+			"WHERE hub_id = ? AND monitored_since_size IS NULL",
+		int64(size), unixOrNil(observedAt), hubID,
+	)
+	if err != nil {
+		return fmt.Errorf("store.SetCoverage: hub %d: %w", hubID, err)
+	}
+	return nil
+}
+
+// Coverage reads the hub's coverage start back from
+// hubs.monitored_since_{size,time}. A hub that has never started coverage (or an
+// absent hub) returns CoverageInfo{} with Set false and a nil error, mirroring
+// FollowState's "absent row is not an error" convention. monitored_since_time is
+// read through sql.NullInt64 so an unset time degrades to a zero time.Time.
+func (s *Store) Coverage(ctx context.Context, hubID int64) (CoverageInfo, error) {
+	var (
+		info      CoverageInfo
+		sinceSize sql.NullInt64
+		sinceTime sql.NullInt64
+	)
+	err := s.db.QueryRowContext(ctx,
+		"SELECT monitored_since_size, monitored_since_time FROM hubs WHERE hub_id = ?", hubID,
+	).Scan(&sinceSize, &sinceTime)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return CoverageInfo{}, nil
+	case err != nil:
+		return CoverageInfo{}, fmt.Errorf("store.Coverage: hub %d: %w", hubID, err)
+	}
+	if !sinceSize.Valid {
+		return CoverageInfo{}, nil
+	}
+	info.Set = true
+	info.Size = uint64(sinceSize.Int64)
+	if sinceTime.Valid {
+		info.Since = time.Unix(sinceTime.Int64, 0)
+	}
+	return info, nil
 }
 
 // unixOrNil maps a time.Time to the schema's INTEGER unix-seconds, writing a zero

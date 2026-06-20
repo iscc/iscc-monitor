@@ -336,6 +336,122 @@ func TestAdvanceFollowStateNoAutoUnfreeze(t *testing.T) {
 	}
 }
 
+// TestCoverageSetOnce proves SetCoverage records the coverage start on the first
+// call and never moves it (ADR-0001, coverage honesty): after SetCoverage(100, t0)
+// then SetCoverage(500, t1), Coverage reports size 100 / since t0, ignoring the
+// larger/later values. A re-call after the start is set returns a nil error.
+func TestCoverageSetOnce(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	t0 := time.Unix(1_700_000_000, 0)
+	t1 := time.Unix(1_700_009_999, 0)
+	if err := s.SetCoverage(ctx, hubID, 100, t0); err != nil {
+		t.Fatalf("first SetCoverage: %v", err)
+	}
+	// A larger, later observation must NOT move the start; the re-call is a no-op
+	// and returns a nil error (it does not rely on RowsAffected to signal success).
+	if err := s.SetCoverage(ctx, hubID, 500, t1); err != nil {
+		t.Fatalf("second SetCoverage: %v", err)
+	}
+
+	info, err := s.Coverage(ctx, hubID)
+	if err != nil {
+		t.Fatalf("Coverage: %v", err)
+	}
+	if !info.Set {
+		t.Fatalf("Set = false after SetCoverage, want true")
+	}
+	if info.Size != 100 {
+		t.Errorf("Size = %d, want 100 (set-once; the larger value is ignored)", info.Size)
+	}
+	if !info.Since.Equal(t0) {
+		t.Errorf("Since = %v, want %v (set-once; the later time is ignored)", info.Since, t0)
+	}
+
+	// Independently confirm the raw columns were not overwritten.
+	var size, since int64
+	err = s.db.QueryRow(
+		"SELECT monitored_since_size, monitored_since_time FROM hubs WHERE hub_id = ?", hubID,
+	).Scan(&size, &since)
+	if err != nil {
+		t.Fatalf("read raw coverage columns: %v", err)
+	}
+	if size != 100 || since != t0.Unix() {
+		t.Errorf("raw (size, since) = (%d, %d), want (100, %d)", size, since, t0.Unix())
+	}
+}
+
+// TestCoverageUnset confirms a hub that has never started coverage reports Set
+// false with zero Size / Since (and a nil error), and that an absent hub likewise
+// returns Set false — mirroring FollowState's "absent row is not an error".
+func TestCoverageUnset(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	info, err := s.Coverage(ctx, hubID)
+	if err != nil {
+		t.Fatalf("Coverage for a hub with no coverage: %v", err)
+	}
+	if info != (CoverageInfo{}) {
+		t.Errorf("Coverage of an un-started hub = %+v, want zero value", info)
+	}
+
+	// An absent hub is likewise not an error.
+	info, err = s.Coverage(ctx, 999)
+	if err != nil {
+		t.Fatalf("Coverage for an absent hub: %v", err)
+	}
+	if info.Set {
+		t.Errorf("Set = true for an absent hub, want false")
+	}
+}
+
+// TestCoverageZeroObservedAtNull confirms a zero observedAt writes monitored_since_time
+// as NULL (size still set), keeping "never observed" distinct from the unix epoch,
+// and that Coverage reads it back as a zero Since with Set true.
+func TestCoverageZeroObservedAtNull(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	if err := s.SetCoverage(ctx, hubID, 7, time.Time{}); err != nil {
+		t.Fatalf("SetCoverage: %v", err)
+	}
+
+	var since any
+	if err := s.db.QueryRow("SELECT monitored_since_time FROM hubs WHERE hub_id = ?", hubID).Scan(&since); err != nil {
+		t.Fatalf("read monitored_since_time: %v", err)
+	}
+	if since != nil {
+		t.Errorf("zero observedAt stored as %v, want NULL", since)
+	}
+
+	info, err := s.Coverage(ctx, hubID)
+	if err != nil {
+		t.Fatalf("Coverage: %v", err)
+	}
+	if !info.Set || info.Size != 7 {
+		t.Errorf("Coverage = %+v, want {Size:7 Set:true}", info)
+	}
+	if !info.Since.IsZero() {
+		t.Errorf("Since = %v, want zero (NULL time)", info.Since)
+	}
+}
+
 // TestRecordViolation confirms a violation round-trips its kind, both raw
 // contradictory checkpoints, and the proof JSON, and returns a positive id.
 func TestRecordViolation(t *testing.T) {

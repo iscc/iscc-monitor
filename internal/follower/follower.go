@@ -8,8 +8,9 @@
 // the dep-free RFC-6962 self-consistency checks (shrink/fork) against the prior
 // accepted checkpoint, and then either freezes the hub on a violation or advances
 // the follow cursor — but only a StatusVerified observation may advance accepted
-// state (ADR-0009). The merkle-backed equivocation trigger, the poll loop,
-// coverage, and the did:web key cache are each their own later steps; PollHub
+// state (ADR-0009). On that verified, non-violation path it also records the hub's
+// coverage start once (ADR-0001, set-once). The merkle-backed equivocation trigger,
+// the poll loop, and the did:web key cache are each their own later steps; PollHub
 // does exactly one observation per call and returns.
 //
 // Record-only-on-verified: only a StatusVerified observation is persisted, since
@@ -107,6 +108,11 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	}
 	if _, _, err := st.RecordCheckpoint(ctx, rec); err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: record checkpoint: %w", hubID, err)
+	}
+	// Record coverage start once on the first verified, non-violation observation
+	// (ADR-0001); SetCoverage is set-once, so a later poll never moves it.
+	if err := st.SetCoverage(ctx, hubID, info.TreeSize, observedAt); err != nil {
+		return status, fmt.Errorf("follower.PollHub: hub %d: set coverage: %w", hubID, err)
 	}
 	if err := st.AdvanceFollowState(ctx, hubID, info.TreeSize); err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: advance follow state: %w", hubID, err)

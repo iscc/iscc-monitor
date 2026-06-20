@@ -209,6 +209,16 @@ func TestPollHubFork(t *testing.T) {
 		t.Errorf("alerts = %d after first fork detection, want 1", alerts)
 	}
 
+	// A frozen/violating observation must not start coverage from the contradictory
+	// checkpoint: the seed used RecordCheckpoint/AdvanceFollowState, not SetCoverage.
+	cov, err := s.Coverage(ctx, hubID)
+	if err != nil {
+		t.Fatalf("Coverage: %v", err)
+	}
+	if cov.Set {
+		t.Errorf("coverage Set after a fork freeze, want unset (a violation must not start coverage)")
+	}
+
 	// Re-poll the already-frozen hub: re-detection is itself evidence, so a second
 	// violation row is recorded, but the alert must not fire again.
 	if _, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", sb0ObservedAt(), alert); err != nil {
@@ -376,6 +386,36 @@ func TestPollHubVerifiedAdvances(t *testing.T) {
 	if fs.Frozen {
 		t.Errorf("Frozen = true after a clean verified poll, want false")
 	}
+
+	// Coverage is recorded on the first verified observation at the fixture size and
+	// the observed time (ADR-0001, coverage honesty).
+	cov, err := s.Coverage(ctx, hubID)
+	if err != nil {
+		t.Fatalf("Coverage: %v", err)
+	}
+	if !cov.Set {
+		t.Fatalf("coverage Set = false after a verified poll, want true")
+	}
+	if cov.Size != 10183 {
+		t.Errorf("coverage Size = %d, want 10183 (sb0 fixture)", cov.Size)
+	}
+	if !cov.Since.Equal(observedAt) {
+		t.Errorf("coverage Since = %v, want %v (the observed time)", cov.Since, observedAt)
+	}
+
+	// A second verified poll at a later time does not move the immutable start.
+	later := observedAt.Add(24 * time.Hour)
+	if _, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", later, noopAlert); err != nil {
+		t.Fatalf("second PollHub: %v", err)
+	}
+	cov2, err := s.Coverage(ctx, hubID)
+	if err != nil {
+		t.Fatalf("Coverage after second poll: %v", err)
+	}
+	if cov2.Size != 10183 || !cov2.Since.Equal(observedAt) {
+		t.Errorf("coverage moved on a second poll: got (size %d, since %v), want (10183, %v)",
+			cov2.Size, cov2.Since, observedAt)
+	}
 }
 
 // TestPollHubUnverifiedDoesNotAdvance drives one non-verified observation: the
@@ -410,5 +450,14 @@ func TestPollHubUnverifiedDoesNotAdvance(t *testing.T) {
 	}
 	if fs.LastSize != 0 {
 		t.Errorf("LastSize = %d, want 0 (non-verified must not advance)", fs.LastSize)
+	}
+
+	// A non-verified verdict must not start coverage.
+	cov, err := s.Coverage(ctx, hubID)
+	if err != nil {
+		t.Fatalf("Coverage: %v", err)
+	}
+	if cov.Set {
+		t.Errorf("coverage Set after an unverified poll, want unset (only a clean verified observation starts coverage)")
 	}
 }
