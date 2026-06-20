@@ -131,6 +131,22 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   yields a trailing empty element; `len >= 3` + reading `lines[0:3]` is correct and tolerates C2SP
   extension lines after the root. Verify `note.Open`'s framing — never re-parse the sig line by hand.
 
+## Follower composition (`internal/follower`)
+
+- **`PollHub` is the first real caller composing the M1 chain + store CRUD** (`follower.go`):
+  `FetchCheckpoint → AcceptCheckpoint → (only on StatusVerified) RecordCheckpoint → AdvanceFollowState`.
+  Verified independently: `go list -deps ./internal/store` stays a single self-only line (store is a
+  leaf), `./internal/follower` pulls in `logclient`+`store`(+transitive `didweb`) — direction
+  follower → {logclient, store}, never the reverse, so `net/http` never enters the store closure.
+- **The verified-path assertion `FollowState.LastSize == 10183` is non-vacuous** — `10183` is line 2
+  of the `testdata/live/sb0.iscc.id_checkpoint` fixture (the signed tree size), so it proves the value
+  flowed `info.TreeSize → AdvanceFollowState → persisted cursor`. The complementary non-advancing test
+  asserts `== 0` after a mismatching-key `StatusUnverified`, so neither case is vacuously satisfied by
+  the fresh-store zero.
+- **Garbled-body fault returns `(status, wrapped-err)` where status is `AcceptCheckpoint`'s
+  `StatusUnverified` zero** — meaningless when err != nil. `PollHub` honors the err-before-status
+  contract (returns the wrapped err and persists nothing); callers of `PollHub` must do the same.
+
 ## SQLite store (`internal/store`)
 
 - **`modernc.org/sqlite` pin is `v1.46.1` (last version requiring only `go 1.24.0`).** `v1.46.2`+ bump
