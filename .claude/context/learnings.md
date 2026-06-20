@@ -193,6 +193,21 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   can never trip (and the seed is 33 bytes — `copy` into `[32]byte` truncates harmlessly). The real
   proof the fork branch fired is: verified observation at size 10183 with the real decoded root vs a
   seeded distinct root, asserting kind `"fork"` distinctly from the size-only shrink path.
+- **The poll loop (`loop.go`) is pure cadence over `PollHub` — `due()` is the only testable unit, and
+  the back-off works *because a freeze returns `(StatusVerified, nil)`*.** `Tick` marks `lastPoll[hub]
+  = now` only on a nil-error `PollHub`, and a freeze is a nil error, so a just-frozen hub *does* get
+  its `lastPoll` recorded → the next due decision correctly uses the longer `Frozen` interval. If a
+  later change ever made freeze return a non-nil error, the frozen hub would be left unmarked and
+  re-polled every `Normal` tick (no back-off) — keep freeze on the nil-error path. `due()` uses `>=`
+  (exactly-at-interval is due); zero `lastPoll` is always due (fresh hub polled on tick 1, restart
+  re-polls all — harmless, `PollHub` is idempotent on an unchanged checkpoint).
+- **`Run` is deliberately untested and that is correct here** — it is a 12-line `select` over
+  `ctx.Done()`/`ticker.C` with `defer ticker.Stop()` and one documented `_ = l.Tick(ctx, t)` (a flaky
+  hub must not abort the network loop; `Tick` already surfaces the error to its caller, so this is not
+  gate-dodging). All branching logic lives in the injected-`now` `Tick` + pure `due()`, both covered;
+  the spec forbids wall-clock sleeps so testing `Run` would mean sleeping. The single swallowed error
+  is justified inline. Verify `time.Now()` never appears in `loop.go` (the ticker delivers `t` via
+  `ticker.C`) — the only wall-clock source is `time.NewTicker(l.Normal)`.
 
 ## SQLite store (`internal/store`)
 
