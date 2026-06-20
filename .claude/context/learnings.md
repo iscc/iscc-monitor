@@ -43,3 +43,16 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   `.claude/derive_vkey.py` byte-for-byte (keyid = BE-uint32 of `SHA-256(name||0x0A||0x01||pub)[:4]`,
   base64 **Std** padded). Go added a defensive `len(raw) < 34` check before the multicodec assert —
   the Python port would index-panic on a short key instead. Keep this guard when porting crypto.
+- **Oracle parity is reproducible and external, not self-referential.** Reviewer can re-run
+  `python3 .claude/derive_vkey.py` (Python 3.11 present, no deps) → both golden vectors print exactly
+  (`sb0…+40b74463+…`, `sb1…+22b08f3e+…`), and the testdata `publicKeyMultibase` values equal the
+  oracle's `HUBS` map. Side effect: the oracle writes `.claude/.scratch/` (NOT gitignored) — `rm -rf`
+  it after running so it doesn't dirty the tree.
+- **`internal/didweb` purity nuance:** `go list -deps` shows `os` in the closure even for a pure
+  parser, because `fmt` transitively imports `os`. That is stdlib and unavoidable; the load-bearing
+  rule (no `net`/`net/http`/`database/sql`, WASM-shareable) holds — verify with
+  `GOOS=js GOARCH=wasm go build ./internal/didweb`, not by grepping `os` out of the dep list.
+- **did:web `assertionMethod` is polymorphic** — an entry is either a JSON string (`#fragment` DID-URL
+  ref into `verificationMethod`) or an inline object. The clean decode is `[]json.RawMessage` then
+  try-string-first (a JSON object fails to unmarshal into a Go `string`, so it falls through to the
+  inline path unambiguously). Live testnet docs use the string-ref form.
