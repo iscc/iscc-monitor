@@ -157,6 +157,27 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   consistency-proof) now remains deferred to the merkle-backed slice. Test guard `if rootA == rootB
   { t.Fatal }` makes the "different root" cases non-vacuous.
 
+## Monitor binary (`cmd/iscc-monitor`)
+
+- **The binary is the only consumer that wires all four M1 leaves**: `config.Load(os.LookupEnv)` →
+  `os.ReadFile(RealmPath)` → `registry.Parse` → `store.Open` → `registerHubs` → `follower.Loop.Run`.
+  `main` stays thin (owns the single `os.Exit`); all branching lives in the testable `registerHubs`
+  (`Loop.Run` is correctly untested — blocking ticker select). Verified end-to-end offline: a long
+  `NORMAL=10m` means no tick fires, SIGINT exits 0, and the `hubs` rows persist with
+  `origin == <domain>/log` (sb0→`sb0.iscc.id/log`, sb1→`sb1.amlet.id/log`) — never the bare domain.
+- **`Origin(baseURL)` is a one-line re-export of the private `origin`, NOT a second deriver** — the
+  golden `TestOrigin` vectors cover it because `Origin` delegates; `TestOriginExport` only re-asserts
+  the two live-hub vectors. The private `origin` body and its two internal callers stayed byte-identical.
+- **`Loop.lastPoll` is lazily inited inside `Tick` (`if l.lastPoll == nil`), so the binary can build
+  `&follower.Loop{…}` without setting the unexported `lastPoll`** — no nil-map-write panic. Confirms
+  the follower author handled the bare-struct construction the binary relies on.
+- **`Run` returns `ctx.Err()` unwrapped**, so `main.go`'s `err != context.Canceled` (a `==`, not
+  `errors.Is`) is correct for a `signal.NotifyContext(os.Interrupt)` cancel → clean exit 0. If `Run`
+  ever wraps the cancel error, switch to `errors.Is`; today the bare `==` holds (smoke-verified).
+- **Whitespace-only `RealmPath` now fails cleanly at the binary's `os.ReadFile`** with the path named
+  (`read realm document "   ": open …: no such file or directory`), closing the config presence-only
+  gap noted in earlier learnings — the binary owns the fs error, config owns presence.
+
 ## Follower composition (`internal/follower`)
 
 - **`PollHub` is the first real caller composing the M1 chain + store CRUD** (`follower.go`):
