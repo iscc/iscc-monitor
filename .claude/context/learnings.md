@@ -209,6 +209,21 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   is justified inline. Verify `time.Now()` never appears in `loop.go` (the ticker delivers `t` via
   `ticker.C`) — the only wall-clock source is `time.NewTicker(l.Normal)`.
 
+## Realm registry (`internal/registry`)
+
+- **`Parse([]byte) ([]Entry, error)` is the pure domains-only membership leaf (ADR-0009).** Line-based,
+  drops blank/`#`-comment lines, trims, preserves input order (no sort/dedupe — reconciliation is the
+  store-coupled wiring step's job). Fails closed on URL-shaped lines: `://` (scheme) or `/` (path) →
+  wrapped error naming the bad line; returns `nil` entries alongside the error. Imports are exactly
+  `{bufio bytes fmt strings}` — verified no `net`/`net/http`/`os` in the closure (oracle gate correctly
+  N/A: no proof/verify/didweb/merkle path touched, go.mod/go.sum byte-identical). `Entry.BaseURL =
+  "https://"+Domain`; the follower derives origin+vkey from BaseURL inside `PollHub`, so the registry
+  intentionally carries no key field and never reaches for the package-private `logclient.origin`.
+- **The golden fixture's `sb0.iscc.id`/`sb1.amlet.id` are the real testnet hubs**, consistent with the
+  existing `didweb`/`logclient`/`follower` fixtures and `derive_vkey.py`'s HUBS — not invented. The
+  registry→`HubTarget` mapping is deferred to wiring (needs `HubID` from `store.UpsertHub`), so
+  `Loop`/`HubTarget`/`cmd/` stay untouched here, as scoped.
+
 ## SQLite store (`internal/store`)
 
 - **`modernc.org/sqlite` pin is `v1.46.1` (last version requiring only `go 1.24.0`).** `v1.46.2`+ bump
