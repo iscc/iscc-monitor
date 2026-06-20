@@ -7,7 +7,7 @@
 // Key selection follows the hub's signing convention: checkpoints are signed as
 // an assertion (cryptosuite eddsa-jcs-2022, proofPurpose assertionMethod), so we
 // take the verification method referenced by assertionMethod. The extracted
-// publicKeyMultibase feeds the oracle-verified pubkeyFromDID/verifierKey path
+// publicKeyMultibase feeds the oracle-verified pubkeyFromDID/VerifierKey path
 // unchanged, keeping the trust root single-sourced.
 package didweb
 

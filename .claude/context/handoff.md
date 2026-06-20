@@ -1,60 +1,62 @@
 # Handoff
 
-## 2026-06-20 — did:web identifier → did.json URL mapping (pure) + export the didweb resolve surface
+## 2026-06-20 — Review of: did:web identifier → did.json URL mapping (pure) + export the didweb resolve surface
 
-**Done:** Added the pure `didweb.DocumentURL(did string) (string, error)` that maps a
-`did:web:<method-specific-id>` identifier to its `did.json` HTTPS URL per the W3C did:web method spec
-(colon-separated segments, percent-decoded, `/.well-known/did.json` vs `/<path>/did.json`). Promoted
-the minimal resolve surface across the package boundary by mechanically renaming
-`parseDIDDocument`→`ParseDIDDocument` and `verifierKey`→`VerifierKey`; `pubkeyFromDID`/`keyID`/
-`b58decode` stay unexported. No `net/http`, no fetch, no status mapping (deferred to the next step).
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/didweb/url.go` (new): pure `DocumentURL` mapping; imports only `fmt`, `net/url`
-  (`PathUnescape`), `strings`. WASM-shareable.
-- `internal/didweb/resolve.go`: `parseDIDDocument`→`ParseDIDDocument` (signature, docstring, three
-  wrapped-error prefixes `parseDIDDocument:`→`ParseDIDDocument:`). Logic unchanged.
-- `internal/didweb/vkey.go`: `verifierKey`→`VerifierKey` (signature + docstring). Derivation bytes
-  unchanged.
-- `internal/didweb/url_test.go` (new): table-driven golden (sb0, sb1, port+path, path-only,
-  port-only) + error tests (empty, wrong method, bare prefix, empty host, bad percent-encoding).
-- `internal/didweb/resolve_test.go`, `internal/didweb/vkey_test.go`: updated call sites/comments to
-  the exported names.
+**Summary:** `advance` added the pure `didweb.DocumentURL(did) (string, error)` mapping a
+`did:web:<msid>` identifier to its `did.json` HTTPS URL per the W3C did:web method spec, and
+mechanically exported the minimal follower-facing surface (`parseDIDDocument`→`ParseDIDDocument`,
+`verifierKey`→`VerifierKey`). The mapping is correct against all golden + error cases, the renames
+moved no derived bytes, and the package stays pure/WASM-shareable. Scope is exactly what `next.md`
+asked (2 non-test source files modified + 1 created); nothing from `## Not In Scope` was touched.
 
-**Verification:** `mise run check` (build + vet + test) → green, exit 0
-(`internal/didweb`, `internal/logclient`). `gofmt -l .` → prints nothing. Per-criterion:
-- [x] `go test -run TestDocumentURL ./internal/didweb` PASS; all five golden cases match, including
+**Verification:**
+- [x] `mise run check` (build + vet + test) — green, exit 0 (`internal/didweb`, `internal/logclient`).
+- [x] `gofmt -l .` — prints nothing (re-checked after my one-char doc fix).
+- [x] `go test -run TestDocumentURL ./internal/didweb` — PASS. All five goldens match, incl.
   `did:web:sb0.iscc.id`→`https://sb0.iscc.id/.well-known/did.json`,
-  `did:web:sb1.amlet.id`→`https://sb1.amlet.id/.well-known/did.json`, and
+  `did:web:sb1.amlet.id`→`https://sb1.amlet.id/.well-known/did.json`,
   `did:web:example.com%3A3000:user:alice`→`https://example.com:3000/user/alice/did.json`.
-- [x] `DocumentURL("")` and `DocumentURL("did:key:z6Mkabc")` each return non-nil error (plus bare
-  prefix, empty host, invalid percent-encoding).
-- [x] `go test -run TestParseDIDDocument` / `-run TestVerifierKey` still PASS after the renames — no
-  regression to the golden vectors `sb0…+40b74463+…` / `sb1…+22b08f3e+…`.
-- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` succeeds — package stays WASM-shareable.
-- [x] Oracle parity: re-ran `python3 .claude/derive_vkey.py` — both vectors print byte-for-byte equal
-  to the test asserts; the rename did not change derived bytes. Removed the `.claude/.scratch/` the
-  oracle writes (not gitignored).
+- [x] `DocumentURL("")` and `DocumentURL("did:key:z6Mkabc")` each return non-nil error
+  (`TestDocumentURLErrors` PASS — also bare prefix, empty host segment, invalid percent-encoding).
+- [x] `go test -run TestParseDIDDocument` / `-run TestVerifierKey ./internal/didweb` — PASS after the
+  renames. No regression to goldens `sb0…+40b74463+…` / `sb1…+22b08f3e+…`.
+- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` — succeeds; package stays WASM-shareable.
+- [x] Purity — `go list -deps ./internal/didweb` shows no `net`/`net/http`/`database/sql` in the
+  closure. `net/url` is the URL-parsing half only; it does not drag in the networking stack.
+- [x] **Oracle / trust-root parity (independent)** — re-ran `python3 .claude/derive_vkey.py`: both
+  vectors print byte-for-byte equal to the test asserts, confirming the export rename did not change
+  derived bytes. (`notecheck` CI job still not wired this early in M1 — no end-to-end signature
+  verification code exists yet; flagged, not a gate failure.)
+- [x] Gate-integrity scan over the 3 unpushed commits — no `//nolint`, `t.Skip`, build tags, swallowed
+  errors, deleted assertions, or loosened gates. Only matches were policy prose in `handoff.md`/
+  `next.md`.
+- [x] Scope — `url.go` + `url_test.go` created; `resolve.go` + `vkey.go` modified (rename); two test
+  files updated. 2 non-test source files modified (≤3 budget). Export surface is exactly
+  `DocumentURL` + `ParseDIDDocument` + `VerifierKey`; `pubkeyFromDID`/`keyID`/`b58decode` stay private.
 
-**Next:** Wire the did:web HTTP fetch at the outbound-fetch seam (follower step): inject a
+**Issues found:** (none)
+
+**Minor fixes by reviewer:** (1) `resolve.go` package docstring still referenced the pre-rename
+`verifierKey` symbol in prose — corrected to `VerifierKey` so the doc tracks the exported name.
+(2) Removed the `.claude/.scratch/` dir the `derive_vkey.py` oracle writes during verification (not
+gitignored), keeping the tree clean.
+
+**Next:** Wire the did:web HTTP fetch at the follower's outbound-fetch seam — inject a
 `Fetcher`/`*http.Client`, call `DocumentURL(did)` → fetch → `ParseDIDDocument(bytes)` →
 `VerifierKey(origin, key.PublicKey)`, and map outcomes to hub status (`unresolvable` on fetch/parse
-failure, `unverified` on signature mismatch). The `hub_keys(... pubkey_z, revoked_at ...)` cache and
-now-vs-window validity enforcement (consuming the already-surfaced `ValidFrom`/`ValidUntil`/`Revoked`
-from `DIDKey`) belong to that store/follower step. Note that step crosses into `net`/`sql`, so it
-must live OUTSIDE `internal/didweb` (or in a non-WASM file) to keep this package pure.
+failure, `unverified` on signature mismatch). This crosses into `net`/`sql`, so it must live OUTSIDE
+`internal/didweb` (or a non-WASM file) to keep the package pure. The `hub_keys(... pubkey_z,
+revoked_at ...)` cache + now-vs-window validity enforcement (consuming `DIDKey`'s
+`ValidFrom`/`ValidUntil`/`Revoked`) belong to that store/follower step.
 
 **Notes:**
-- **W3C did:web mapping ported from the method-spec rule in `next.md`** (no usable copy in
-  `cauldron/`). Decode rule: first colon-segment is `host[:port]`, rest are path; each segment
-  `url.PathUnescape`d; no path → `/.well-known/did.json`, path → `/<segs>/did.json`. The two live
-  hubs have no path and no port, so they hit the `.well-known` branch.
-- **Export surface widened to exactly `DocumentURL` + `ParseDIDDocument` + `VerifierKey`** (YAGNI per
-  `next.md`); `pubkeyFromDID`/`keyID`/`b58decode` remain package-private in-package helpers.
-- **Validity-field lenient parse still stands as flagged in the prior handoff**: `parseTime` returns
-  zero on empty/unparseable input; the meaning of an unparseable/expired value is the follower's
-  decision at the enforcement seam — re-examine when validity enforcement lands.
-- `notecheck` external-oracle CI job still does not exist this early in M1 (no end-to-end signature
-  verification yet); the trust-root gate this iteration remains `derive_vkey.py` parity, confirmed
-  byte-for-byte. No signature/consistency/proof code touched beyond the mechanical export rename.
-- File budget: 3 non-test/doc files touched (`url.go` created, `resolve.go` + `vkey.go` modified).
+- **Validity-field lenient parse still pending the enforcement seam:** `parseTime` returns zero on
+  empty/unparseable input. An unparseable `revoked` silently meaning "valid" is a foot-gun to
+  re-examine when the follower lands enforcement — not a defect in this pure parser.
+- **`.claude/.scratch/` is not gitignored.** Any iteration that runs `derive_vkey.py` for oracle
+  parity must `rm -rf .claude/.scratch` afterward, or consider adding it to `.gitignore` (a candidate
+  trivial cleanup for a future iteration; not filed as an issue since it's reviewer-handled each run).
+- Branch `develop` is 3 commits ahead of `origin/develop`; remote configured. Pushing on PASS.

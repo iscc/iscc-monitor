@@ -56,3 +56,13 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   ref into `verificationMethod`) or an inline object. The clean decode is `[]json.RawMessage` then
   try-string-first (a JSON object fails to unmarshal into a Go `string`, so it falls through to the
   inline path unambiguously). Live testnet docs use the string-ref form.
+- **`DocumentURL` W3C did:web mapping is implemented + golden-tested** (`internal/didweb/url.go`): MSID
+  is colon-split, each segment `url.PathUnescape`d, first segment = `host[:port]`, rest = path; no path
+  → `/.well-known/did.json`, path → `/<segs>/did.json`. Live hubs (no path/port) hit `.well-known`.
+  Errors on missing `did:web:` prefix, empty MSID, empty host, bad percent-encoding. `net/url` is the
+  URL-parsing half only — it does **not** pull `net`/`net/http` into the closure, so WASM build stays
+  green (verified). When the follower lands, it owns the actual fetch; `DocumentURL` stays pure.
+- **Export surface for the follower seam is now `DocumentURL` + `ParseDIDDocument` + `VerifierKey`**
+  (in `internal/didweb`). `pubkeyFromDID`/`keyID`/`b58decode` deliberately stay package-private — the
+  follower derives keys via the three exported entrypoints only. Mechanical renames did not move the
+  derived bytes (oracle parity reconfirmed).
