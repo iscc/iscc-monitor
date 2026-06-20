@@ -40,3 +40,11 @@ func origin(baseURL string) (string, error) {
 	}
 	return host + "/log", nil
 }
+
+// Origin exposes the package's single origin derivation (<domain>/log) so the
+// binary can feed store.UpsertHub its origin argument. It delegates to the
+// private origin — there is exactly one deriver — and does not duplicate the
+// math, so the golden TestOrigin vectors cover this path too.
+func Origin(baseURL string) (string, error) {
+	return origin(baseURL)
+}

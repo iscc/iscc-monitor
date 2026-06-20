@@ -31,6 +31,25 @@ func TestOrigin(t *testing.T) {
 	}
 }
 
+func TestOriginExport(t *testing.T) {
+	cases := []struct {
+		baseURL string
+		want    string
+	}{
+		{baseURL: "https://sb0.iscc.id", want: "sb0.iscc.id/log"},
+		{baseURL: "https://sb1.amlet.id", want: "sb1.amlet.id/log"},
+	}
+	for _, tc := range cases {
+		got, err := Origin(tc.baseURL)
+		if err != nil {
+			t.Fatalf("Origin(%q) error: %v", tc.baseURL, err)
+		}
+		if got != tc.want {
+			t.Errorf("Origin(%q) = %q, want %q", tc.baseURL, got, tc.want)
+		}
+	}
+}
+
 func TestOriginErrors(t *testing.T) {
 	cases := []struct {
 		name    string
