@@ -1,84 +1,85 @@
 # Next Work Package
 
-## Step: Add `store.LookupHubKey` — the read side of the `hub_keys` did:web key cache
+## Step: Add pure `logclient.KeyIDFromCheckpoint` — recover the signed-note keyhash from raw checkpoint bytes
 
 ## Goal
-The follower now *writes* `hub_keys` via `RecordHubKey`/`cacheHubKey`, but nothing can read it back, so
-no consumer (offline verification, future serving) can consult the cache. Add a typed reader keyed on
-`(hub_id, key_id)` so the write-only cache becomes usable. This is the cheapest open M1 slice (the
-handoff `Next:` and `state.md`'s candidate ordering both put it first) and unblocks consulting the
-cache without touching the crypto/merkle path.
+Add a pure helper that extracts the C2SP signed-note `(name, keyID)` directly from a raw checkpoint's
+signature line — **without** fetching did.json. This is the missing piece that lets the verified
+`PollHub` path consult `store.LookupHubKey(hubID, keyID)` *before* re-resolving the key (the handoff's
+"thread `LookupHubKey` into `PollHub` to skip the second did.json fetch"). The cache lookup key is the
+keyhash; today the only source of the keyhash is `ResolveVerifierKey`, the very fetch we want to skip —
+this helper breaks that chicken-and-egg without touching `AcceptCheckpoint`'s signature or the schema.
 
 ## Scope
-- **Modify**: `internal/store/checkpoints.go` — add one method `LookupHubKey(ctx, hubID int64, keyID
-  uint32) (HubKey, bool, error)` (the only non-test/doc file changed).
-- **Create**: tests for the reader — add `func Test…` cases to the existing
-  `internal/store/checkpoints_test.go` (the package keeps one test file; do not create a new one).
-  (Tests do not count against the ≤3 non-test/doc budget.)
+- **Create**: `internal/logclient/checkpointkey.go` — `KeyIDFromCheckpoint(raw []byte) (name string, keyID uint32, err error)`
+- **Create**: `internal/logclient/checkpointkey_test.go` — golden + edge-case tests (test file, not counted)
+- **Modify**: (none — the only production file is the new one)
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — port the shape from the sibling readers
-    `FollowState` (lines ~172–192) and `Coverage` (lines ~286–310): the "absent row → zero value +
-    `found=false` + nil error" convention, `sql.NullInt64`/`sql.NullString` scanning, and the
-    `errors.Is(err, sql.ErrNoRows)` switch.
-  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — the `HubKey` struct (lines ~71–78) is the
-    return type; the `RecordHubKey` writer (lines ~324–352) plus `unixOrNil` (line ~356) and
-    `nullStringOrNil` (line ~365) are the exact column/nullability contract to invert on read.
-  - `/workspace/iscc-monitor/internal/store/checkpoints_test.go` — `TestRecordHubKeyInsert`/`Refresh`/
-    `Rotation`/`Nullable` (lines ~719–921) for the `openTemp(t)` + `UpsertHub` + column-scan test idiom
-    and the live key ids (`0x40b74463`, `0x069d0f14`, `0x22b08f3e`).
-  - `/workspace/iscc-monitor/internal/store/schema.sql` — the `hub_keys` table (lines 33–40): no UNIQUE,
-    `pubkey_z`/`revoked_at`/`resolved_at` nullable, `pubkey_raw` BLOB NOT NULL.
+  - `/home/dev/go/pkg/mod/golang.org/x/mod@v0.33.0/sumdb/note/note.go` — `note.Open` (lines 504–600),
+    `note.Signature{Name, Hash, Base64}` (line 450), `*UnverifiedNoteError{Note}` (lines 462–464),
+    `VerifierList()` (line 415). On an empty verifier list every sig line lands in `UnverifiedSigs` with
+    its `Hash` already decoded as `binary.BigEndian.Uint32(sig[0:4])` (note.go:554), and `Open` returns
+    `*UnverifiedNoteError` because `len(n.Sigs) == 0` (note.go:596–597).
+  - `/workspace/iscc-monitor/internal/logclient/keyid.go` — the sibling `KeyIDFromVerifier` (recovers the
+    same keyhash from the *vkey string*); the new helper recovers it from the *raw checkpoint*. Same
+    `uint32` id type, same value for the same hub.
+  - `/workspace/iscc-monitor/internal/logclient/verify.go` — already calls `note.Open` for the framing;
+    follow its idiom. Learnings rule: "never re-parse the sig line by hand — let `note.Open` own it."
+  - `/workspace/iscc-monitor/testdata/live/sb0.iscc.id_checkpoint` — golden vector (signer
+    `sb0.iscc.id/log`, keyhash `0x40b74463`; the follower test `readCheckpoint(t, "sb0.iscc.id_checkpoint")`
+    loads it from `testdata/live/`).
 
 ## Not In Scope
-- Wiring `LookupHubKey` into the follower or any verification path — this step only adds the read method
-  and its tests; the consumer is a later slice.
-- The merkle-backed **equivocation** trigger, `transparency-dev/merkle`, or tile fixtures (the large
-  remaining M1 gap — needs its own decomposition and trips the oracle gate; not this slice).
-- The sb1 fixture refresh (`22b08f3e`→`069d0f14` in the two `sb1.amlet.id_did.json` + `derive_vkey.py`)
-  — a separate trust-root step.
-- Any list-all-keys-for-a-hub variant or "latest/active key" selection logic — keep the reader a
-  single-row `(hub_id, key_id)` lookup symmetric with the `(hub_id, key_id)`-keyed write. A multi-row
-  reader is a later slice only if a consumer needs it (YAGNI).
-- Schema changes, new columns, structured logs, `/metrics`, or any `go.mod`/`go.sum`/`schema.sql` edit.
+- **Do NOT modify `internal/follower/follower.go`.** Wiring `cacheHubKey` to consult `LookupHubKey` (the
+  cache-hit fast path that actually skips the fetch) is the *next* slice; this step lands only the pure
+  prerequisite so the follower change stays a small, separately-verifiable increment.
+- **Do NOT change `AcceptCheckpoint`'s signature** to surface its already-resolved key (explicitly out of
+  scope per the prior `next.md` and learnings; this helper is the alternative that avoids that refactor).
+- Do not add `valid_from`/`valid_until` columns to `hub_keys` or attempt full CID-1.0 window re-checking
+  from the cache — the cached row carries only `revoked_at`; the schema is unchanged this step.
+- No new `go.mod`/`go.sum` dependency — `golang.org/x/mod/sumdb/note` is already wired.
+- No `transparency-dev/merkle`, equivocation trigger, tile fixtures, structured logs, or `/metrics`.
 
 ## Implementation Notes
-- Signature: `func (s *Store) LookupHubKey(ctx context.Context, hubID int64, keyID uint32) (HubKey,
-  bool, error)`. Return `(HubKey{}, false, nil)` for an absent `(hub_id, key_id)` — mirror `FollowState`
-  /`Coverage`'s "absent row is not an error" convention (keep store's readers total; absent ≠ error).
-  Return `(HubKey{}, false, err)` only on a real query fault.
-- Query `SELECT pubkey_raw, pubkey_z, revoked_at, resolved_at FROM hub_keys WHERE hub_id = ? AND
-  key_id = ? LIMIT 1` (cast `keyID` to `int64` for the parameter, mirroring `RecordHubKey`'s
-  `int64(k.KeyID)` bind). `LIMIT 1` is defensive: `hub_keys` has no UNIQUE, but the write path keeps at
-  most one row per `(hub_id, key_id)` (UPDATE-then-INSERT), so a match is single by construction.
-- Scan the nullable columns through `sql.NullString` (`pubkey_z`) and `sql.NullInt64` (`revoked_at`,
-  `resolved_at`); map an invalid `pubkey_z` back to `""` and an invalid time back to the zero
-  `time.Time` (`time.Unix(n, 0)` only when `.Valid`) — the exact inverse of `nullStringOrNil`/
-  `unixOrNil`, so a `RecordHubKey` → `LookupHubKey` round-trip is lossless for the empty/zero cases.
-- Set the returned `HubKey.HubID`/`KeyID` from the in-args (not re-scanned) so the struct is fully
-  populated; `pubkey_raw` is BLOB NOT NULL, scan straight into `[]byte`.
-- Write a fresh evergreen docstring describing current behavior (the "absent → not an error" contract).
-  Do **not** add an import — `context`/`database/sql`/`errors`/`fmt`/`time` are already imported.
-- Oracle/conformance gate is correctly **N/A**: plain CRUD, no proof/verify/didweb/merkle/fsck path and
-  no `go.mod`/`go.sum`/`schema.sql` change.
+- **Use `note.Open`, never a hand-written sig-line parser.** Call `note.Open(raw, note.VerifierList())`
+  — pass `note.VerifierList()` with no args for an *empty* list (not `nil`). With no known verifier every
+  sig line lands in `UnverifiedSigs`, and `Open` returns a `*note.UnverifiedNoteError` whose embedded
+  `.Note` exposes `UnverifiedSigs[0].Name` and `.Hash` (the BE-uint32 keyhash the library already decoded).
+- **Extract via `errors.As`**, not a string match: `var ue *note.UnverifiedNoteError; if
+  errors.As(err, &ue) { … }`. On that path read `ue.Note.UnverifiedSigs`. A non-`UnverifiedNoteError`
+  error (a malformed note) is a real parse failure — wrap it with `%w` and return. A `nil` error from
+  `Open` is unreachable with an empty verifier list (no sig can verify), but if it ever returns one,
+  treat zero `UnverifiedSigs` as an error rather than indexing `[0]`.
+- **Guard `len(ue.Note.UnverifiedSigs) >= 1`** before `[0]` (defensive; `Open` only emits the error after
+  appending ≥1, but never index-panic). Take `[0].Name` and `[0].Hash` — checkpoints carry one hub sig in
+  v1. (M7 cosigner note: a second unverified sig line could appear later; `[0]` is the hub sig today. A
+  future multi-sig selection is out of scope and flagged in the docstring, not handled here.)
+- **Return shape `(name string, keyID uint32, err error)`** mirrors `VerifyCheckpoint`'s field-style
+  return and `KeyIDFromVerifier`'s `uint32`. Return `name` (the signer name, `sb0.iscc.id/log`) so the
+  follower can later assert it equals the hub origin before trusting a cache hit — do not discard it.
+- **Purity / imports:** exactly `{errors, fmt, golang.org/x/mod/sumdb/note}` — stdlib + the already-wired
+  note dep, no `net`/`os`/`sqlite`. `binary` is NOT needed (note already decoded the `Hash`).
+- **Correctness rule (learnings):** the vkey's middle `+<hex>+` field and the sig line's keyhash are the
+  *same* value, so `KeyIDFromCheckpoint` and `KeyIDFromVerifier` must agree for one hub. The golden test
+  pins both to `0x40b74463` for sb0, catching any future divergence.
+- Start the file with a docstring: it recovers the keyhash from the *raw checkpoint* (answering "which
+  cached key id signed this, before resolving did.json"), distinct from `keyid.go` which reads the vkey
+  string after resolution.
 
 ## Verification
-- `mise run check` is green (build + vet + test) and `gofmt -l .` is empty.
-- `go test -run TestLookupHubKey ./internal/store` passes, covering at minimum:
-  - **round-trip**: `RecordHubKey` then `LookupHubKey(hubID, 0x40b74463)` returns `found=true` with
-    `PubkeyRaw`/`PubkeyZ`/`Revoked`/`ResolvedAt` byte/field-equal to what was written (reuse the
-    `TestRecordHubKeyInsert` fixture: 32-byte `pubkey_raw`, set `PubkeyZ`, set `ResolvedAt`).
-  - **nullable round-trip**: a key written with empty `PubkeyZ` and zero `Revoked` reads back
-    `PubkeyZ == ""` and `Revoked.IsZero() == true` (proves the NULL→zero inverse of `nullStringOrNil`/
-    `unixOrNil`).
-  - **absent**: `LookupHubKey` for a `(hubID, keyID)` with no row returns `(HubKey{}, false, nil)` — no
-    error.
-  - **key-id discrimination**: after a rotation (two rows, `0x22b08f3e` and `0x069d0f14`, written via
-    distinct `RecordHubKey` calls per `TestRecordHubKeyRotation`), `LookupHubKey` for each key id
-    returns that key's own `pubkey_raw`, not the other's (non-vacuous: the two `PubkeyRaw` values
-    differ, so assert each lookup returns the matching one).
-- `go list -deps ./internal/store | grep '^net/http'` is empty (store stays a leaf; no new import).
-- `git diff --quiet HEAD -- internal/store/schema.sql go.mod go.sum` exits 0 (no schema/dep change).
+- `mise run check` is green (build + vet + test, all packages).
+- `gofmt -l internal/logclient/checkpointkey.go internal/logclient/checkpointkey_test.go` prints nothing.
+- `go test -run TestKeyIDFromCheckpoint ./internal/logclient` passes, asserting on the real sb0 fixture
+  (`testdata/live/sb0.iscc.id_checkpoint`): `name == "sb0.iscc.id/log"` and `keyID == 0x40b74463`.
+- Cross-check in the same test: `KeyIDFromCheckpoint(raw)`'s `keyID` equals
+  `KeyIDFromVerifier(VerifierKey("sb0.iscc.id/log", sb0pub))` for the sb0 fixture — the two recovery
+  paths agree (derive `sb0pub` via the existing didweb/logclient fixtures or pin the known `0x40b74463`).
+- Garbled-input case: `KeyIDFromCheckpoint([]byte("not a note"))` returns a non-nil error and does NOT
+  panic.
+- `internal/logclient/checkpointkey.go`'s import block is exactly `{errors, fmt,
+  golang.org/x/mod/sumdb/note}` (no new dep beyond what logclient already pulls).
 
 ## Done When
-`store.LookupHubKey` is the round-trip-tested, leaf-clean read side of the `hub_keys` cache and all
-Verification criteria pass.
+`logclient.KeyIDFromCheckpoint` recovers `("sb0.iscc.id/log", 0x40b74463)` from the sb0 checkpoint
+fixture, agrees with `KeyIDFromVerifier`, errors cleanly (no panic) on garbled input, and `mise run check`
+is green with `gofmt` clean — all without touching `follower.go`, `AcceptCheckpoint`, the schema, or go.mod.
