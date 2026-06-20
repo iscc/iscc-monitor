@@ -77,3 +77,23 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   1)`).** Otherwise a `host:port` splits at the colon into a path segment. Live hubs have no port so
   this is exercised only by the `httptest` random-port path — but it is required there and matches the
   `did:web:example.com%3A3000` golden.
+
+## Checkpoint signed-note verification (`logclient/verify.go`)
+
+- **Signed-note keyhash is independently checkable from the raw sig line.** A C2SP sig line decodes
+  to `keyhash(BE-uint32, 4 bytes) || ed25519_sig(64 bytes)`; the vkey's middle `+<hex>+` field IS that
+  keyhash. Reviewer can confirm a fixture's signer without trusting the author: sb0 sig→`40b74463`,
+  sb1 sig→`069d0f14` (both 64-byte sigs), matching their vkeys. sb1's live key really did rotate
+  (`22b08f3e`→`069d0f14`), so the "stale rotated key→ErrUnverified" negative is a genuine real-world
+  case, not a contrived one.
+- **`note.Open` success check mirrors the notecheck oracle exactly:** `len(n.Sigs) == 0 ||
+  len(n.UnverifiedSigs) != 0` → reject. Watch for M7: a future *cosigner* sig line whose key isn't in
+  the verifier list lands in `UnverifiedSigs`, so this strict check would reject an otherwise-valid
+  hub checkpoint that also carries a witness cosig. Fine for v1 (single hub sig); revisit at gossip.
+- **`x/mod v0.33.0` forces the `go` directive to canonical-patch form `go 1.24.0`.** The dep declares
+  `go 1.24.0`; under `-mod=readonly` a bare `go 1.24` consumer fails with "updates to go.mod needed".
+  `go 1.24.0` is the same minimum (still Go 1.24, NOT ≥1.25) — accept it; it is not a version bump.
+  Auto-injected `toolchain go1.24.13` lines should be dropped so go.mod doesn't pin a patch CI may lack.
+- **`note.Open` returns `n.Text` as the clean trailing-`\n` body**, so `strings.Split(text, "\n")`
+  yields a trailing empty element; `len >= 3` + reading `lines[0:3]` is correct and tolerates C2SP
+  extension lines after the root. Verify `note.Open`'s framing — never re-parse the sig line by hand.
