@@ -351,6 +351,50 @@ func (s *Store) RecordHubKey(ctx context.Context, k HubKey) error {
 	return nil
 }
 
+// LookupHubKey reads one cached did:web key back by (hub_id, key_id) — the read
+// side of RecordHubKey. An absent (hub_id, key_id) returns (HubKey{}, false, nil)
+// (not an error), mirroring FollowState / Coverage's "absent row is not an error"
+// convention so callers can treat "not cached yet" as a plain miss; only a real
+// query fault returns a non-nil error. The nullable columns are the exact inverse
+// of RecordHubKey's nullStringOrNil / unixOrNil: a NULL pubkey_z reads back as ""
+// and a NULL revoked_at / resolved_at as the zero time.Time, so a RecordHubKey →
+// LookupHubKey round-trip is lossless for the empty/zero cases. HubID / KeyID come
+// from the in-args (the lookup key), so the returned struct is fully populated.
+// LIMIT 1 is defensive: hub_keys has no UNIQUE, but the write path keeps at most
+// one row per (hub_id, key_id), so a match is single by construction.
+func (s *Store) LookupHubKey(ctx context.Context, hubID int64, keyID uint32) (HubKey, bool, error) {
+	var (
+		pubkeyRaw  []byte
+		pubkeyZ    sql.NullString
+		revoked    sql.NullInt64
+		resolvedAt sql.NullInt64
+	)
+	err := s.db.QueryRowContext(ctx,
+		"SELECT pubkey_raw, pubkey_z, revoked_at, resolved_at FROM hub_keys "+
+			"WHERE hub_id = ? AND key_id = ? LIMIT 1",
+		hubID, int64(keyID),
+	).Scan(&pubkeyRaw, &pubkeyZ, &revoked, &resolvedAt)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return HubKey{}, false, nil
+	case err != nil:
+		return HubKey{}, false, fmt.Errorf("store.LookupHubKey: hub %d key %08x: %w", hubID, keyID, err)
+	}
+	k := HubKey{
+		HubID:     hubID,
+		KeyID:     keyID,
+		PubkeyRaw: pubkeyRaw,
+		PubkeyZ:   pubkeyZ.String,
+	}
+	if revoked.Valid {
+		k.Revoked = time.Unix(revoked.Int64, 0)
+	}
+	if resolvedAt.Valid {
+		k.ResolvedAt = time.Unix(resolvedAt.Int64, 0)
+	}
+	return k, true, nil
+}
+
 // unixOrNil maps a time.Time to the schema's INTEGER unix-seconds, writing a zero
 // time as NULL so "never observed" stays distinct from the unix epoch.
 func unixOrNil(t time.Time) any {

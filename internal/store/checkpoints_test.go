@@ -937,6 +937,176 @@ func TestRecordHubKeyForeignKey(t *testing.T) {
 	}
 }
 
+// TestLookupHubKeyRoundTrip confirms a RecordHubKey then LookupHubKey returns
+// found=true with every field byte/value-equal to what was written (the read side
+// of the cache is lossless for the set columns).
+func TestLookupHubKeyRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	pubRaw := []byte("0123456789abcdef0123456789abcdef") // 32 bytes
+	resolved := time.Unix(1_700_000_000, 0)
+	revoked := time.Unix(1_700_005_000, 0)
+	want := HubKey{
+		HubID:      hubID,
+		KeyID:      0x40b74463,
+		PubkeyRaw:  pubRaw,
+		PubkeyZ:    "z6MkExampleMultibaseValue",
+		Revoked:    revoked,
+		ResolvedAt: resolved,
+	}
+	if err := s.RecordHubKey(ctx, want); err != nil {
+		t.Fatalf("RecordHubKey: %v", err)
+	}
+
+	got, found, err := s.LookupHubKey(ctx, hubID, want.KeyID)
+	if err != nil {
+		t.Fatalf("LookupHubKey: %v", err)
+	}
+	if !found {
+		t.Fatalf("LookupHubKey found = false, want true")
+	}
+	if got.HubID != hubID {
+		t.Errorf("HubID = %d, want %d", got.HubID, hubID)
+	}
+	if got.KeyID != want.KeyID {
+		t.Errorf("KeyID = %08x, want %08x", got.KeyID, want.KeyID)
+	}
+	if string(got.PubkeyRaw) != string(pubRaw) {
+		t.Errorf("PubkeyRaw = %q, want %q", got.PubkeyRaw, pubRaw)
+	}
+	if got.PubkeyZ != want.PubkeyZ {
+		t.Errorf("PubkeyZ = %q, want %q", got.PubkeyZ, want.PubkeyZ)
+	}
+	if !got.Revoked.Equal(revoked) {
+		t.Errorf("Revoked = %v, want %v", got.Revoked, revoked)
+	}
+	if !got.ResolvedAt.Equal(resolved) {
+		t.Errorf("ResolvedAt = %v, want %v", got.ResolvedAt, resolved)
+	}
+}
+
+// TestLookupHubKeyNullableRoundTrip proves a key written with an empty PubkeyZ and
+// a zero Revoked reads back PubkeyZ == "" and Revoked.IsZero() == true — the NULL
+// → zero inverse of nullStringOrNil / unixOrNil.
+func TestLookupHubKeyNullableRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	const keyID = uint32(0x40b74463)
+	if err := s.RecordHubKey(ctx, HubKey{
+		HubID:      hubID,
+		KeyID:      keyID,
+		PubkeyRaw:  []byte("nullable-test-pubkey-padding-32b"),
+		ResolvedAt: time.Unix(1_700_000_000, 0),
+		// PubkeyZ empty, Revoked zero.
+	}); err != nil {
+		t.Fatalf("RecordHubKey: %v", err)
+	}
+
+	got, found, err := s.LookupHubKey(ctx, hubID, keyID)
+	if err != nil {
+		t.Fatalf("LookupHubKey: %v", err)
+	}
+	if !found {
+		t.Fatalf("LookupHubKey found = false, want true")
+	}
+	if got.PubkeyZ != "" {
+		t.Errorf("PubkeyZ = %q, want \"\" (NULL → empty)", got.PubkeyZ)
+	}
+	if !got.Revoked.IsZero() {
+		t.Errorf("Revoked = %v, want zero (NULL → zero time)", got.Revoked)
+	}
+}
+
+// TestLookupHubKeyAbsent confirms a lookup for a (hub_id, key_id) with no row
+// returns (HubKey{}, false, nil) — an absent key is a miss, not an error.
+func TestLookupHubKeyAbsent(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	got, found, err := s.LookupHubKey(ctx, hubID, 0xdeadbeef)
+	if err != nil {
+		t.Fatalf("LookupHubKey for absent key returned err = %v, want nil", err)
+	}
+	if found {
+		t.Errorf("found = true for an absent (hub, key), want false")
+	}
+	// HubKey holds a []byte (not comparable with ==); assert each field is zero.
+	if got.HubID != 0 || got.KeyID != 0 || got.PubkeyRaw != nil || got.PubkeyZ != "" ||
+		!got.Revoked.IsZero() || !got.ResolvedAt.IsZero() {
+		t.Errorf("HubKey = %+v, want zero value", got)
+	}
+}
+
+// TestLookupHubKeyDiscriminatesKeyID proves that after a rotation (two rows with
+// distinct key ids and distinct pubkey_raw), each LookupHubKey returns its own
+// key's bytes, not the other's.
+func TestLookupHubKeyDiscriminatesKeyID(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	const oldKeyID = uint32(0x22b08f3e)
+	const newKeyID = uint32(0x069d0f14)
+	oldRaw := []byte("old-rotated-out-pubkey-padding-3")
+	newRaw := []byte("new-rotated-in-pubkey-padding-32")
+	// Non-vacuous: the two keys must differ for the discrimination to mean anything.
+	if string(oldRaw) == string(newRaw) {
+		t.Fatal("test fixture broken: old and new pubkey_raw are equal")
+	}
+	if err := s.RecordHubKey(ctx, HubKey{
+		HubID:      hubID,
+		KeyID:      oldKeyID,
+		PubkeyRaw:  oldRaw,
+		ResolvedAt: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("RecordHubKey old key: %v", err)
+	}
+	if err := s.RecordHubKey(ctx, HubKey{
+		HubID:      hubID,
+		KeyID:      newKeyID,
+		PubkeyRaw:  newRaw,
+		ResolvedAt: time.Unix(1_700_009_999, 0),
+	}); err != nil {
+		t.Fatalf("RecordHubKey new key: %v", err)
+	}
+
+	gotOld, found, err := s.LookupHubKey(ctx, hubID, oldKeyID)
+	if err != nil || !found {
+		t.Fatalf("LookupHubKey old: found=%v err=%v", found, err)
+	}
+	if string(gotOld.PubkeyRaw) != string(oldRaw) {
+		t.Errorf("old key PubkeyRaw = %q, want %q", gotOld.PubkeyRaw, oldRaw)
+	}
+
+	gotNew, found, err := s.LookupHubKey(ctx, hubID, newKeyID)
+	if err != nil || !found {
+		t.Fatalf("LookupHubKey new: found=%v err=%v", found, err)
+	}
+	if string(gotNew.PubkeyRaw) != string(newRaw) {
+		t.Errorf("new key PubkeyRaw = %q, want %q", gotNew.PubkeyRaw, newRaw)
+	}
+}
+
 // TestCheckpointHelpersRestartSurvival writes via the typed methods, closes the
 // store, reopens the same path, and confirms the rows are still readable —
 // mirroring TestStoreRestartSurvival but exercising the new helpers.
