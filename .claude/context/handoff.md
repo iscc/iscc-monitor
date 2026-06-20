@@ -1,64 +1,58 @@
 # Handoff
 
-## 2026-06-20 — Review of: Pure checkpoint-acceptance decision (`AcceptCheckpoint`) + close the `parseTime` fail-open gap
+## 2026-06-20 — Bootstrap the per-network SQLite store (`internal/store`): WAL + single-writer open + embedded schema
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Stood up `internal/store` — `Open(path)`/`Close()` over the pure-Go `modernc.org/sqlite`
+driver (`CGO_ENABLED=0`), applying the single-writer discipline (WAL + `busy_timeout=5000` +
+`foreign_keys=ON` + `synchronous=NORMAL`, `SetMaxOpenConns(1)`) and an embedded `schema.sql` of the
+nine core M1 tables idempotently on every open. No insert/query/CRUD methods, no fetcher, no follower
+— schema + open/close only, as scoped.
 
-**Summary:** `advance` added `internal/logclient/accept.go` — a pure `Status` enum
-(`StatusVerified/Unverified/Unresolvable/Rotated` + `String()`) and `AcceptCheckpoint`, which composes
-`ResolveVerifierKey → VerifyCheckpoint → DIDKey.ValidAt(observedAt)` into the four-way ADR-0009 verdict
-(zero `CheckpointInfo` on every non-verified outcome), and made `internal/didweb`'s `parseTime` return
-an error on a non-empty-but-unparseable validity timestamp so a garbled window fails *closed* to
-`StatusUnresolvable`. Diff is tightly scoped (2 non-test files + 2 test files), import-clean, oracle
-parity intact, and every Verification criterion passes. Independently confirmed the four-way mapping is
-real (sb1's prior key forces `unverified`, not a false `unresolvable`) and the trust root is untouched.
+**Files changed:**
+- `internal/store/sqlite.go` (new): `Open`/`Close`, `//go:embed schema.sql`, ordered pragmas,
+  `SetMaxOpenConns(1)`, `database/sql` with driver name `"sqlite"`.
+- `internal/store/schema.sql` (new): `CREATE TABLE IF NOT EXISTS` DDL for `hubs`, `hub_keys`,
+  `checkpoints` (`UNIQUE(hub_id,tree_size,root)`), `violations`, `tiles` (`PK(hub_id,level,tile_index,
+  width)`), `entry_bundles` (`PK(hub_id,bundle_index,width)`), `iscc_index` (`seq` PK +
+  `INDEX(iscc_id)`), `follow_state` (`hub_id` PK), `ots` (`UNIQUE(hub_id,tree_size,root)`). No
+  `network` column (ADR-0007). Times = INTEGER unix-seconds (documented in the file docstring).
+- `internal/store/sqlite_test.go` (new): fresh-open table-set, WAL pragma, restart-survival,
+  idempotent-reopen — all assert on observable DB state via raw SQL, never on `Store` internals.
+- `go.mod` + `go.sum`: added `modernc.org/sqlite v1.46.1` (direct) + indirect deps.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green; `go build ./...` + `go vet ./...` exit 0.
-- [x] `gofmt -l .` — empty (no formatting failures).
-- [x] `go test -run TestAcceptCheckpoint ./internal/logclient` — PASS (6 subcases: verified, unverified,
-  unresolvable×2 [not-found + malformed-revoked], rotated×2 [validUntil + revoked in the past]).
-- [x] `go test -run TestParseDIDDocument ./internal/didweb` — PASS (existing sb0/sb1 goldens + the two
-  new malformed-timestamp error subcases).
-- [x] Assertion: sb0 fixture + sb0 checkpoint + `observedAt=now` → `StatusVerified`,
-  `CheckpointInfo.TreeSize == 10183`, non-zero root, `Origin == sb0.iscc.id/log`.
-- [x] Assertion: did.json with `"revoked":"not-a-date"` → `StatusUnresolvable` (NOT `StatusVerified`) —
-  the closed `parseTime` fail-open issue.
-- [x] Assertion: sb0 signer key with `validUntil`/`revoked` before `observedAt` → `StatusRotated`,
-  distinct from unverified/unresolvable.
-- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (parser fix imports only stdlib).
-- [x] Trust-root oracle: `python3 .claude/derive_vkey.py` prints both golden vectors byte-exact
-  (`sb0…+40b74463+…`, `sb1…+22b08f3e+…`) — derivation path untouched; `.claude/.scratch/` removed.
-- [x] Gate-integrity sweep over all unpushed commits (`origin/develop..HEAD`): no `//nolint`, no
-  `t.Skip`, no swallowed errors, no removed assertions, no loosened gate, `go.mod`/`go.sum`/`mise.toml`
-  untouched.
+**Verification:** `mise run check` → green (`go build`/`go vet`/`go test` exit 0). Per-criterion:
+- [x] `gofmt -l .` empty.
+- [x] `go test -run TestStore ./internal/store` → PASS (4 subtests: CreatesCoreTables, EnablesWAL,
+  RestartSurvival, ReopenIdempotent).
+- [x] `SELECT name FROM sqlite_master WHERE type='table'` contains all nine core tables (asserted).
+- [x] `PRAGMA journal_mode` returns `"wal"`.
+- [x] Sentinel `hubs` row inserted before `Close()` is readable after reopening the same path.
+- [x] `grep "network" internal/store/schema.sql` matches only comment lines (no column).
+- [x] `grep -E '^(go|toolchain)' go.mod` → `go 1.24.0`, no `toolchain` line. Gate ran on go1.24.13.
 
-**Issues found:** (none) — closed the open `normal` `parseTime` fail-open issue (verified fixed + tested);
-`issues.md` now empty.
-
-**Next:** Wire the SQLite `hub_keys` cache + the stateful follower poll loop that calls
-`AcceptCheckpoint` and persists the verdict — only `StatusVerified` advances accepted state; the other
-three are recorded findings while mirroring continues. That step also refreshes the sb1 did.json fixture
-+ `derive_vkey.py` `HUBS` to the current key (`069d0f14`). The three-trigger RFC-6962 consistency check
-(fork/shrink/equivocation via `transparency-dev/merkle`) is the step after, once tiles land in
-`testdata/live/`.
+**Next:** Wire the stateful follower poll loop + the typed insert/query helpers whose shape the
+follower drives (per Not-In-Scope, row-access methods land with a real caller). The follower calls
+`AcceptCheckpoint`, persists the verdict into `checkpoints`/`follow_state` (only `StatusVerified`
+advances accepted state; the other three are recorded findings while mirroring continues), and writes
+the `hub_keys` did:web cache — that step also refreshes the sb1 did.json fixture + `derive_vkey.py`
+`HUBS` to the current key (`069d0f14`). Carry the `AcceptCheckpoint` caller contract forward (check
+`err` before the status — a verified-but-garbled body is a non-nil error alongside
+`StatusUnverified`'s zero).
 
 **Notes:**
-- **Caller contract to carry into the follower:** `AcceptCheckpoint` returns a non-nil `error` (paired
-  with `StatusUnverified`'s zero value) only for a genuine fault — a verified-but-garbled body (a
-  non-`ErrUnverified` `VerifyCheckpoint` parse error). So the follower **must check `err` before the
-  status**. This keeps "signature didn't match" (a status) separable from "body was garbage" (an error).
-  The follower decides how to surface that fault (it is neither a clean four-way verdict nor a
-  resolution failure).
-- Validity ordering is load-bearing and correctly implemented: `ValidAt(observedAt)` is evaluated
-  **only after** a good signature, so an out-of-window key whose signature also fails is `unverified`,
-  not `rotated`. The two `rotated` subcases use the *correct* sb0 signer key, so the signature genuinely
-  verifies before the window check — the path is real, not contrived.
-- No `notecheck` CI oracle job exists in this repo yet (no `cauldron/` compile path, no CI workflow),
-  and there is no `internal/proof/` package yet — both are expected pre-M1-store. The active trust-root
-  oracle at this stage is `derive_vkey.py`, which is green; nothing in this diff touches Merkle/
-  consistency/proof code.
-- M1 remains partially met: the four pure primitives (did:web chain, signed-note verify, validity
-  predicate, composed acceptance decision) are done and tested, but there is still no SQLite store, no
-  follower loop, no binary entrypoint, no consistency check, no coverage/metrics. Loop stays CONTINUE.
+- **Driver version pin (the go-directive footgun, as `next.md` predicted).** `modernc.org/sqlite@latest`
+  is `v1.52.0` and requires `go >= 1.25.0`, which rewrites the directive to `go 1.25.0` and would fail
+  the gate on the pinned 1.24 toolchain. The newest version that requires only `go 1.24.0` is
+  **`v1.46.1`** (`v1.46.2`..`v1.52.0` all require ≥1.25; `v1.46.1` and below require ≤1.24). Pinned
+  `v1.46.1`; `go.mod` directive stays `go 1.24.0` with no `toolchain` line, verified green on go1.24.13.
+  The simple reset-the-directive route was NOT viable because `v1.52.0` genuinely will not build on
+  1.24, so the `next.md` fallback ("pin an older version") was the correct path.
+- Reads serialize behind the single writer for now (`SetMaxOpenConns(1)`), which is intentional and
+  fine pre-serving (avoids `SQLITE_BUSY` flakes). A read-pool split is deferred to when serving lands,
+  per `next.md`.
+- No signature/consistency/proof code touched in this step, so no conformance-oracle obligations apply
+  here (still no `internal/proof/` package, no `cauldron/` CI compile path — expected pre-M1-store).
+- The restart-survival test reuses `s.db` (the package-internal handle) for its raw INSERT/SELECT
+  because the store exposes no public row API yet; it still proves on-disk persistence by closing the
+  first handle entirely and reopening the file path before reading back. No public-API assertion is
+  faked.
