@@ -1,102 +1,98 @@
 # Next Work Package
 
-## Step: `hub_keys` did:web key cache — store-leaf `RecordHubKey` upsert
+## Step: Wire the `hub_keys` did:web key cache write into `PollHub`
 
 ## Goal
-Add the persistence half of the did:web key cache (ADR-0009): a single typed store-leaf
-method that records a resolved hub key into the `hub_keys` table, deduped per
-`(hub_id, key_id)` and refreshed each poll. This is the prerequisite for the follower to
-cache resolved keys and the first concrete consumer of the empty `hub_keys` table.
+Make the follower actually populate the `hub_keys` did:web key cache: on a verified, non-violation
+observation, `PollHub` records the resolved hub signing key via the already-built `store.RecordHubKey`.
+This connects the dangling `RecordHubKey` seam (built last step, never called) and closes one of the two
+named M1 wiring gaps, advancing M1 toward complete.
 
 ## Scope
-- **Create**: (none — extend an existing file)
-- **Modify**:
-  - `internal/store/checkpoints.go` — add a `HubKey` struct + `RecordHubKey(ctx, HubKey) error`
-    (one new typed CRUD method, mirroring `RecordCheckpoint`/`RecordViolation`/`SetCoverage`).
-  - `internal/store/checkpoints_test.go` — add focused `TestRecordHubKey*` tests (test file,
-    does not count against the ≤3 non-test/doc budget).
+- **Create**: `internal/logclient/keyid.go` — a tiny pure helper
+  `KeyIDFromVerifier(vkey string) (uint32, error)` that parses the middle `+<keyid:08x>+` field out of a
+  `<name>+<keyid>+<base64>` verifier-key string (the string `ResolveVerifierKey` returns). Pure
+  (`{fmt,strings,strconv}` only), golden-testable.
+- **Modify**: `internal/follower/follower.go` — on the verified, non-violation path (alongside the
+  `SetCoverage`/`AdvanceFollowState` writes), call `logclient.ResolveVerifierKey(ctx, fetcher, baseURL)`
+  once to obtain `(vkey, didKey)`, derive `key_id` via `KeyIDFromVerifier(vkey)`, and call
+  `st.RecordHubKey(ctx, store.HubKey{...})`.
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/store/schema.sql` lines 30-40 — the `hub_keys` columns
-    (`hub_id, key_id, pubkey_raw, pubkey_z, revoked_at, resolved_at`; no PK/UNIQUE declared).
-  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — `RecordCheckpoint` (lines 95-123,
-    the `RowsAffected`/`LastInsertId` dedupe idiom), `RecordViolation` (line 211), `SetCoverage`
-    (line 251, the guarded-`UPDATE` set-once idiom), and `unixOrNil` (line 296, zero-time→NULL).
-  - `/workspace/iscc-monitor/internal/didweb/resolve.go` lines 54-60 — the `DIDKey` fields
-    (`Multibase`, `PublicKey`, `Revoked`) the follower will later map into `HubKey`.
-  - `/workspace/iscc-monitor/internal/didweb/vkey.go` lines 75-95 — how `key_id` is the
-    BE-uint32 `keyID(name, pub)` (private) and how the `<name>+<keyid:08x>+<base64>` verifier
-    string encodes it; documents what the follower will supply as `HubKey.KeyID` later.
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go` (line 71 `HubKey` struct; `RecordHubKey`
+    at line 324; `nullStringOrNil` at line 365) — the target struct/method and its field semantics.
+  - `/workspace/iscc-monitor/internal/logclient/didresolve.go` (`ResolveVerifierKey`, line 93) — returns
+    `(string vkey, didweb.DIDKey, error)`; the vkey is `<name>+<keyid:08x>+<base64>`.
+  - `/workspace/iscc-monitor/internal/didweb/vkey.go` (`VerifierKey`, line 93) — the exact
+    `"%s+%08x+%s"` format `KeyIDFromVerifier` must invert; the base64 tail is `base64.StdEncoding`,
+    whose alphabet INCLUDES `+` and `/`.
+  - `/workspace/iscc-monitor/internal/didweb/resolve.go` (lines 54–59 `DIDKey` fields:
+    `PublicKey`, `Multibase`, `Revoked`) — the source of the cache columns.
+  - `/workspace/iscc-monitor/internal/follower/follower.go` (lines 100–121) — the verified non-violation
+    branch where `SetCoverage`/`AdvanceFollowState` already live; the new write joins it.
+  - `/workspace/iscc-monitor/internal/follower/follower_test.go` (lines 1–145) — `compositeFetcher`,
+    `sb0VerifiedFetcher`, `sb0ObservedAt`, `countRows` are the offline harness to assert the new row.
 
 ## Not In Scope
-- **Follower wiring.** Do NOT call `RecordHubKey` from `PollHub`/`follower.go` this step. The
-  follower→store wiring (mapping `ResolveVerifierKey`'s `DIDKey` + key_id into a `HubKey`) is a
-  separate later slice; touching `follower.go` here would blow the seam open prematurely.
-- **Refreshing the stale `sb1.amlet.id_did.json` fixture / `derive_vkey.py` HUBS** to signer
-  `069d0f14`. That fixture drift is real but belongs with the follower-wiring step that actually
-  exercises a live resolution into the cache; it is not needed to test a store insert.
-- **The merkle-backed equivocation trigger.** Still the headline M1 gap, but it needs a new
-  `transparency-dev/merkle` dependency + tile fixtures + a conformance/oracle test package +
-  CI `notecheck` wiring — far more than 3 files and not one verifiable step. Deferred.
-- **Schema changes / migrations.** Do not add a PK or UNIQUE index to `hub_keys`; dedupe in the
-  method via check-then-insert/update so `schema.sql` stays byte-identical.
-- Reading a key back out (a `HubKey` lookup method) — only the write is needed now; add the read
-  when a consumer needs it.
+- **No key *reader*.** A `HubKey` lookup (e.g. `store.LookupHubKey`) is a separate later slice; this step
+  only writes the cache. Do not add a reader or make verification consult the cache.
+- **No stale-fixture refresh.** Do NOT touch `internal/logclient/testdata/sb1.amlet.id_did.json`,
+  `.claude/derive_vkey.py`, or any `22b08f3e`→`069d0f14` sb1 vector. Refreshing the trust-root fixture
+  re-arms the oracle gate and is its own step; sb0 is the verified-path fixture used here and stays valid.
+- **No merkle / equivocation trigger** and **no `transparency-dev/merkle` dependency** — that is the other
+  M1 slice, deferred.
+- **No refactor of `AcceptCheckpoint`'s signature** to surface the key it already resolves internally.
+  Calling `ResolveVerifierKey` a second time on the verified path is acceptable for v1 (same offline
+  `Fetcher` seam, YAGNI); a caching fetcher is a later optimization, not this step.
+- **No schema change, no `/metrics`, no structured logs, no alert transport.**
 
 ## Implementation Notes
-- Add a `HubKey` struct in `checkpoints.go` near the other record types:
-  `HubKey{ HubID int64; KeyID uint32; PubkeyRaw []byte; PubkeyZ string; Revoked time.Time;
-  ResolvedAt time.Time }`. Mirror the existing convention where strings/IDs ride on the struct so
-  **store stays a leaf** — `go list -deps ./internal/store` must keep zero internal iscc-monitor
-  deps (do NOT import `didweb`/`logclient`; the follower maps `DIDKey`→`HubKey` at the call site
-  later).
-- `key_id` is the signed-note BE-uint32 keyhash. Store it in the table's `INTEGER` via
-  `int64(k.KeyID)` (consistent with how `RecordCheckpoint` casts `uint64`→`int64`). Document in
-  the method docstring that the follower derives it from `ResolveVerifierKey`'s verifier string
-  middle field (`+<hex>+`) or `keyID(name, pub)` — but this method just persists what it is given.
-- **Dedupe per `(hub_id, key_id)`** (a hub's key is identified by its keyhash; the same key
-  re-resolved each poll must refresh, not accumulate). The table has no UNIQUE index, so use the
-  `SetCoverage`-style guarded pattern, NOT `ON CONFLICT`: run an `UPDATE hub_keys SET
-  pubkey_raw=?, pubkey_z=?, revoked_at=?, resolved_at=? WHERE hub_id=? AND key_id=?`, check
-  `RowsAffected()`; if zero rows matched, `INSERT` the full row. This refreshes `resolved_at`
-  (and `revoked_at` if the DID doc now revokes the key) on every poll while keeping exactly one
-  row per `(hub_id, key_id)`. A *different* key_id for the same hub (rotation) inserts a second
-  row — that is correct (both the old and new keys stay cached; revocation is recorded via
-  `revoked_at`, not by deleting the old row).
-- `pubkey_z` (the `z6Mk…` multibase) is a nullable `TEXT` — an empty `PubkeyZ` should write SQL
-  NULL, not `""`. Use a `sql.NullString` (Valid only when non-empty) or a tiny local helper
-  mirroring `unixOrNil`, so "no multibase" stays distinct from empty.
-- `revoked_at` and `resolved_at` are nullable `INTEGER` unix-seconds — use the existing
-  `unixOrNil(t)` so a zero `time.Time` writes NULL (an un-revoked key has a zero `Revoked` →
-  NULL `revoked_at`, distinct from epoch; an absent `ResolvedAt` likewise). This matches the
-  zero-time→NULL convention already proven in `RecordCheckpoint`/`SetCoverage`.
-- **Correctness rule (learnings — "did:web is the only key source", ADR-0009):** these rows are a
-  *cache* of the DID document, never an independent key source. The method must overwrite on
-  re-resolve (the DID doc is the source of truth) — so the `UPDATE`-then-`INSERT` refresh, NOT an
-  insert-once. Do not add any logic that would let a cached row outvote a fresh resolution.
-- Foreign key: `hub_id REFERENCES hubs(hub_id)` is enforced (`PRAGMA foreign_keys=ON` +
-  `SetMaxOpenConns(1)` — see learnings), so a test inserting a `HubKey` for an unknown `hub_id`
-  must get a FK error (SQLite 787). Seed a real hub via `UpsertHub` first in the happy-path tests.
+- **Recover `key_id` from the vkey string, do not re-derive it.** `didweb.keyID` is package-private and
+  `VerifierKey` formats the id as `%08x` between the two `+`. CRITICAL: the base64 tail is
+  `base64.StdEncoding` whose alphabet contains `+` and `/`, so a plain `strings.Split(vkey, "+")` over-
+  splits (verified: sb0's vkey is `sb0.iscc.id/log+40b74463+AaV+ivnly67...` — the tail itself has a `+`).
+  Use `strings.SplitN(vkey, "+", 3)`, require `len == 3`, then `strconv.ParseUint(parts[1], 16, 32)` and
+  return the `uint32`. Error (named, `%q` the input) on `len != 3` or a non-hex middle field. This mirrors
+  the learning that the vkey middle `+<hex>+` field IS the signed-note keyhash (`learnings.md`,
+  "Signed-note keyhash is independently checkable from the raw sig line").
+- **Map `DIDKey` → `store.HubKey` exactly per the handoff:** `PublicKey`→`PubkeyRaw`,
+  `Multibase`→`PubkeyZ`, `Revoked`→`Revoked`, derived id→`KeyID`, injected `observedAt`→`ResolvedAt`.
+  `RecordHubKey` already maps empty `PubkeyZ`→NULL and zero `Revoked`→NULL (`nullStringOrNil`/`unixOrNil`),
+  so pass the zero values through untouched.
+- **Placement is load-bearing (ADR-0001/0006 + learnings).** The `RecordHubKey` call goes ONLY on the
+  verified, non-violation path — the same branch as `SetCoverage`/`AdvanceFollowState`, never inside
+  `freeze` and never on a non-verified verdict. A contradictory or unverified observation must not write a
+  cache row (mirrors the coverage placement: "a contradictory observation never starts coverage").
+- **`store` stays a leaf; the follower owns the mapping.** Build the `store.HubKey` in `follower.go`; do
+  not let `store` import `logclient`/`didweb`. The follower already imports both `logclient` and `store`,
+  so the dependency direction is unchanged.
+- **Oracle gate is N/A this step** (`learnings.md`: plain `hub_keys` CRUD path, no
+  proof/verify/didweb-derivation/merkle/fsck math changes; `go.mod`/`go.sum`/`schema.sql` stay
+  byte-identical). `KeyIDFromVerifier` is a string parse, not a crypto derivation — but it MUST round-trip
+  the live vkeys (golden vectors below) so it cannot silently diverge from `VerifierKey`.
+- **Error handling:** a `ResolveVerifierKey` failure on a path that *already* reached `StatusVerified`
+  is unexpected (the key just resolved inside `AcceptCheckpoint`); return it as a wrapped fault
+  (`fmt.Errorf("follower.PollHub: hub %d: cache hub key: %w", hubID, err)`) consistent with the other
+  `PollHub` store-write error wraps, so the fault surfaces rather than being swallowed. Do not `t.Skip`,
+  swallow, or `//nolint` it.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass,
-  `gofmt -l .` empty).
-- `go test -run TestRecordHubKey ./internal/store` passes, covering at minimum:
-  - happy-path insert: after `RecordHubKey` for a hub seeded via `UpsertHub`, a raw
-    `SELECT count(*) FROM hub_keys WHERE hub_id=? AND key_id=?` returns exactly 1, and the
-    `pubkey_raw`/`pubkey_z`/`resolved_at` columns read back equal the input.
-  - refresh/dedupe: a second `RecordHubKey` with the **same** `(hub_id, key_id)` but a later
-    `ResolvedAt` (and/or a set `Revoked`) leaves `count(*) == 1` and updates `resolved_at`
-    (and `revoked_at`) in place — no duplicate row.
-  - rotation: a `RecordHubKey` with a **different** `key_id` for the same hub yields
-    `count(*) == 2` for that hub (both keys cached).
-  - nullability: a `HubKey` with empty `PubkeyZ` and zero `Revoked` writes `pubkey_z IS NULL`
-    and `revoked_at IS NULL` (assert via raw `SELECT … WHERE pubkey_z IS NULL`).
-  - FK guard: `RecordHubKey` for a `hub_id` with no `hubs` row returns a non-nil error.
-- `go list -deps ./internal/store | grep -E '^github.com/iscc/iscc-monitor'` is empty
-  (store stays a leaf — no `didweb`/`logclient` import leaked in).
-- `git diff -- internal/store/schema.sql` is empty (no schema/migration change).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
+- `go test -run TestKeyIDFromVerifier ./internal/logclient` passes with golden vectors:
+  `KeyIDFromVerifier("sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5") ==
+  0x40b74463` (note the `+` inside the base64 tail) and
+  `KeyIDFromVerifier("sb1.amlet.id/log+069d0f14+AW9UGZSxDvYFeewtbNU74zEMv12ChQPcuE4veN80nNtb") ==
+  0x069d0f14`; a malformed input (e.g. `"no-plus-fields"` or `"a+zzzz+b"`) returns a non-nil error.
+- `go test -run TestPollHub ./internal/follower` passes — add/extend a test asserting that after a
+  verified `PollHub` over `sb0VerifiedFetcher`, `countRows(t, dbPath, "hub_keys") == 1`, the row's
+  `key_id` equals sb0's `0x40b74463` (sb0's signed-note keyhash), and `pubkey_raw` reads back as 32 bytes.
+- `go test -run "TestPollHubFork|TestPollHubShrink|TestPollHubUnverifiedDoesNotAdvance"
+  ./internal/follower` still passes AND the freeze/unverified cases assert
+  `countRows(t, dbPath, "hub_keys") == 0` (no cache write on a contradictory or unverified observation).
+- `go list -deps ./internal/store | grep '^github.com/iscc/iscc-monitor'` shows only the self line
+  (store stays a leaf; no `logclient`/`didweb` leaked by the wiring).
+- `git diff --quiet HEAD -- internal/store/schema.sql go.mod go.sum` exits 0 (no schema/dependency change).
 
 ## Done When
-`RecordHubKey` upserts exactly one row per `(hub_id, key_id)` into `hub_keys` with correct null
-handling and FK enforcement, all Verification checks pass, and the store still has zero internal
-iscc-monitor dependencies.
+`PollHub` writes exactly one `hub_keys` row (with the correct `key_id` and 32-byte `pubkey_raw`) on a
+verified non-violation observation and zero rows on freeze/unverified paths, `KeyIDFromVerifier`
+round-trips both live vkeys, and all Verification checks pass with `mise run check` green.
