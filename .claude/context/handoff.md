@@ -1,55 +1,69 @@
 # Handoff
 
-## 2026-06-20 — Typed store persistence helpers for the checkpoint verdict (`hubs` / `checkpoints` / `follow_state`)
+## 2026-06-20 — Review of: Typed store persistence helpers for the checkpoint verdict (`hubs` / `checkpoints` / `follow_state`)
 
-**Done:** Added the four typed methods on `*Store` the follower will drive to persist one observed
-checkpoint verdict — `UpsertHub`, `RecordCheckpoint`, `FollowState`, `AdvanceFollowState` — plus the
-plain store-owned structs `CheckpointRecord` and `FollowState`, with driving tests against a
-`t.TempDir()` DB asserting on observable rows only. `internal/store` stays a leaf: no
-`internal/logclient` import (the follower maps the verdict to a plain status string at the call site).
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/store/checkpoints.go` (new): the four methods + the `CheckpointRecord`/`FollowState`
-  structs + a `unixOrNil` helper. `UpsertHub` is select-then-insert (idempotent on `domain`, no schema
-  change). `RecordCheckpoint` uses `INSERT … ON CONFLICT(hub_id,tree_size,root) DO NOTHING` then reads
-  the id back on conflict (`inserted=false`, nil err); leaves `consistent`/`root_rebuilt` NULL.
-  `FollowState` returns the zero value (nil err) for a hub with no row. `AdvanceFollowState` upserts
-  `last_size` and omits `frozen` from the `DO UPDATE SET` so a frozen hub stays frozen (ADR-0006).
-- `internal/store/checkpoints_test.go` (new): idempotency, dedupe (+ distinct root), zero-ObservedAt→
-  NULL, unknown-hub zero value, advance round-trip, no-auto-unfreeze, restart survival.
+**Summary:** `advance` added the four typed methods the follower will drive —
+`UpsertHub` / `RecordCheckpoint` / `FollowState` / `AdvanceFollowState` — plus the plain store-owned
+`CheckpointRecord` / `FollowState` structs and a `unixOrNil` helper, in one new source file with a
+dedicated driving test file. `internal/store` stays a leaf (no `internal/logclient` import). Scope is
+tight (1 non-test source file), SQL matches `schema.sql` verbatim, edge cases are covered, and every
+gate is green. Independent reviewer audit reconfirmed every claim.
 
-**Verification:** `mise run check` → green (build + vet + test all exit 0, go1.24).
-- [x] `gofmt -l internal/store` → empty.
+**Verification:**
+- [x] `mise run check` → green (exit 0; build + vet + test on go1.24).
+- [x] `gofmt -l .` → empty (no listed files).
 - [x] `go test -run TestStore ./internal/store` → PASS (existing 4 subtests stay green).
-- [x] New tests PASS: UpsertHub same-domain → same id, exactly 1 `hubs` row (distinct domain → 2nd
-  row/id); RecordCheckpoint re-observe → same id, `inserted=false`, exactly 1 `checkpoints` row;
-  FollowState unknown hub → zero `FollowState{}` + nil err; after raw `UPDATE … frozen=1`,
-  `AdvanceFollowState(N)` leaves `frozen==1` and `last_size==N`; restart survival round-trips rows.
-- [x] `go list -deps …/internal/store` shows no internal `iscc-monitor` deps → no `logclient` coupling.
-- [x] `go mod tidy` → zero diff (no dependency change; pure-stdlib + existing driver).
+- [x] `go test -run 'TestUpsertHub|TestRecordCheckpoint|TestFollowState|TestAdvanceFollowState'`
+  (+`TestCheckpointHelpers`) → PASS (7 new tests). Re-ran uncached (`-count=1`) → still PASS.
+- [x] `UpsertHub` same domain → same `hub_id`, exactly 1 `hubs` row; distinct domain → 2nd row/id;
+  first-insert `origin`/`base_url` preserved on re-register.
+- [x] `RecordCheckpoint` re-observe → same id, `inserted=false`, 1 row; distinct `(size,root)` → new
+  row; `observed_at` persisted as unix-seconds; `consistent`/`root_rebuilt` left NULL.
+- [x] Zero `ObservedAt` stored as NULL (not 0) — `TestRecordCheckpointZeroObservedAtNull`.
+- [x] `FollowState` unknown hub → zero `FollowState{}` + nil err.
+- [x] No-auto-unfreeze: raw `UPDATE frozen=1`, then `AdvanceFollowState(99)` leaves `frozen==1` and
+  `last_size==99` (asserted both via `FollowState` and a raw column read).
+- [x] Restart survival: write via methods, Close, reopen → rows still readable.
+- [x] Leaf purity: `go list -deps ./internal/store` shows no internal iscc-monitor deps; imports are
+  stdlib + `modernc.org/sqlite` only (no `logclient` coupling).
+- [x] `go mod tidy` → zero diff. No `schema.sql` / `sqlite.go` change (scope held).
 
-**Conformance/oracle gate:** N/A this step. The diff touches only `internal/store` typed CRUD —
-no signature verification, RFC-6962/Merkle, proof code, `internal/didweb`, or fork/shrink/equivocation
-logic. `internal/proof` still does not exist. No oracle obligation; purity gate has nothing to regress.
+**Conformance/oracle gate:** N/A this step. The diff touches only `internal/store` typed CRUD — no
+signature verification, RFC-6962/Merkle, proof code, `internal/didweb`, or split-view logic.
+`internal/proof` still does not exist (pre-M2). No oracle obligation; the purity gate has nothing to
+regress.
+
+**Quality-gate integrity:** Clean. Scanned all 3 unpushed commits (`@{upstream}..HEAD`) — no
+`//nolint`, no `t.Skip`/`SkipNow`, no build-tag exclusions, no deleted assertions/tests, no loosened
+gates. The grep hits for circumvention patterns are all markdown prose in the handoff/next describing
+the rules; the only `_ =` usages in Go are `Close()` cleanup in deferred/`t.Cleanup` contexts — the
+established error-preserving idiom in this package, not a swallowed error to dodge a check. Every
+method body checks and wraps its errors.
+
+**Issues found:** (none)
 
 **Next:** The follower poll loop — the real caller of these methods. It calls
-`logclient.AcceptCheckpoint` (check `err` before the status), maps `Status.String()` +
+`logclient.AcceptCheckpoint` (**check `err` before the status** — a verified-but-garbled body returns
+non-nil err alongside `StatusUnverified`'s zero), maps `Status.String()` +
 `CheckpointInfo{Origin,TreeSize,Root}` into a `CheckpointRecord` (Root `[32]byte` → `[]byte`,
-`ObservedAt` injected, never `time.Now()` in the pure layer), persists the verdict via
-`RecordCheckpoint`, and calls `AdvanceFollowState` **only** on `StatusVerified`. It also writes the
-`hub_keys` did:web cache and refreshes the stale sb1 `did.json` fixture + `derive_vkey.py` `HUBS` to
-the current key `069d0f14`. The goroutine-ownership single-writer wrapper is the follower's concern.
+`ObservedAt` injected, never `time.Now()` in the pure layer), persists via `RecordCheckpoint`, and
+calls `AdvanceFollowState` **only** on `StatusVerified`. It also writes the `hub_keys` did:web cache
+and refreshes the stale sb1 `did.json` fixture + `derive_vkey.py` `HUBS` to the current key
+`069d0f14`. The goroutine-ownership single-writer wrapper is the follower's concern. That step touches
+the trust root indirectly (consumes `AcceptCheckpoint`) and refreshes a golden fixture — the
+`derive_vkey.py` parity + `notecheck` oracle gates re-apply there.
 
 **Notes:**
-- Decision (flagged explicitly per `next.md`): a zero `ObservedAt` is written as **NULL** (via
-  `unixOrNil`), not `0`, so "never observed" stays distinct from the unix epoch; asserted in
-  `TestRecordCheckpointZeroObservedAtNull`. If the follower always sets `ObservedAt`, this never fires
-  in practice but the column semantics are now explicit.
-- `UpsertHub` on re-register returns the existing id **without rewriting** `origin`/`base_url` (per
-  `next.md` — acceptable this step). If a hub's `base_url` ever changes, the follower/registry step
-  will need an explicit update path; noted as future work, not a blocker.
-- No `schema.sql` change and no `sqlite.go` change — the methods attach to the existing `*Store`.
-  `hubs` still has no UNIQUE on `domain` (a schema change is a separate reviewable decision), which is
-  why `UpsertHub` is select-then-insert rather than `ON CONFLICT`.
-- Single-writer discipline holds at the pool level (`SetMaxOpenConns(1)` from the prior step); these
-  methods use `db.ExecContext`/`db.QueryRowContext` directly and open no new connections.
+- `RecordCheckpoint` intentionally does **not** persist `CheckpointRecord.Status` — `checkpoints` has
+  no status column; Status is carried for the follower's verified-only-advances decision at the call
+  site. Correct per `next.md`; don't add a status column without a separate schema decision.
+- `UpsertHub` re-register returns the existing id without rewriting `origin`/`base_url`. If a hub's
+  `base_url` ever changes, the follower/registry step needs an explicit update path — future work, not
+  a blocker (the realm-registry step is the natural home).
+- `hubs` still has no UNIQUE on `domain`; `UpsertHub` is select-then-insert, sound under the
+  single-writer pool (`SetMaxOpenConns(1)`). A UNIQUE-on-domain would let it become `ON CONFLICT`, but
+  that is a separate reviewable schema change — fine to defer.
+- Pushed to `origin/develop` on PASS (human merges develop→main via CI-gated PR; never push main).

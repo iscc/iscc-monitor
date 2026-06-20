@@ -135,3 +135,20 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   root)`, PKs on tiles/entry_bundles). No `network` column (ADR-0007, grep confirms comment-only). No
   `cosigs` table (M7-deferred). The `_ = db.Close()` on `Open`'s error paths is the correct idiom
   (preserve the original error; don't mask it with the close error).
+- **Typed CRUD seam for the follower is `UpsertHub`/`RecordCheckpoint`/`FollowState`/`AdvanceFollowState`
+  (`checkpoints.go`), and `store` stays a leaf** — `go list -deps ./internal/store` shows zero internal
+  iscc-monitor deps; the `Status` string is carried on `CheckpointRecord` (the `checkpoints` table has
+  **no** status column, so it is intentionally not persisted) rather than importing `logclient`. Keep
+  it that way so net/http never enters the store closure.
+- **`RecordCheckpoint` dedupe relies on `ON CONFLICT(...) DO NOTHING` + `RowsAffected()`:** real insert
+  → `n>0` → `LastInsertId`/`inserted=true`; conflict → `n==0` → SELECT the id back/`inserted=false`,
+  nil err. The modernc driver returns `RowsAffected==0` on `DO NOTHING`, so this branch is load-bearing
+  and is the correct way to tell "first sighting" from "re-observed" without an error.
+- **`AdvanceFollowState` upsert omits `frozen` from the `DO UPDATE SET`** (`ON CONFLICT(hub_id) DO
+  UPDATE SET last_size=excluded.last_size`), so a hub frozen via the freeze path stays frozen across an
+  advance (ADR-0006, no auto-unfreeze) — proven by raw `UPDATE frozen=1` then asserting `frozen` still 1
+  after advance. Nothing in this layer ever sets or clears `frozen`; only the (future) freeze path sets it.
+- **Zero `time.Time` → NULL convention (`unixOrNil`):** a zero `ObservedAt` writes SQL NULL, not `0`, so
+  "never observed" stays distinct from the unix epoch. `FollowState` reads `last_size`/`last_error`
+  through `sql.NullInt64`/`sql.NullString` so a partial/absent row degrades to the zero value, never an
+  error — an unknown `hubID` returns `FollowState{}` + nil err by design (follower treats it as "never polled").
