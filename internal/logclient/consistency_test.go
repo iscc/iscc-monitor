@@ -1,7 +1,8 @@
-// Tests for the pure shrink-trigger detection. They drive CheckShrink over a
-// table that pins every load-bearing boundary: a strict decrease is a shrink,
-// while equal size (re-observation), growth, and the fresh-store prev==0 zero are
-// not — so the fresh FollowState{}.LastSize zero is never misread as a violation.
+// Tests for the pure shrink- and fork-trigger detection. They drive CheckShrink
+// and CheckFork over tables that pin every load-bearing boundary: a strict
+// decrease is a shrink and a differing root at equal size is a fork, while equal
+// size (re-observation), growth, and the fresh-store prev==0 zero are neither —
+// so the fresh FollowState{}.LastSize zero is never misread as a violation.
 package logclient
 
 import "testing"
@@ -34,5 +35,45 @@ func TestCheckShrink(t *testing.T) {
 func TestViolationShrinkKind(t *testing.T) {
 	if string(ViolationShrink) != "shrink" {
 		t.Errorf("ViolationShrink = %q, want %q", ViolationShrink, "shrink")
+	}
+}
+
+func TestCheckFork(t *testing.T) {
+	var (
+		rootA    = [rootBytes]byte{0: 0x01, 1: 0x01, 31: 0x01}
+		rootB    = [rootBytes]byte{0: 0x02, 1: 0x02, 31: 0x02}
+		zeroRoot [rootBytes]byte
+	)
+	if rootA == rootB {
+		t.Fatal("test setup: rootA and rootB must differ")
+	}
+	cases := []struct {
+		name     string
+		prevSize uint64
+		prevRoot [rootBytes]byte
+		nextSize uint64
+		nextRoot [rootBytes]byte
+		want     bool
+	}{
+		{name: "same size different root", prevSize: 10183, prevRoot: rootA, nextSize: 10183, nextRoot: rootB, want: true},
+		{name: "same size identical root is re-observation", prevSize: 10183, prevRoot: rootA, nextSize: 10183, nextRoot: rootA, want: false},
+		{name: "shrink is shrinks concern not fork", prevSize: 10183, prevRoot: rootA, nextSize: 10182, nextRoot: rootB, want: false},
+		{name: "growth even with differing root", prevSize: 10183, prevRoot: rootA, nextSize: 10184, nextRoot: rootB, want: false},
+		{name: "fresh store no prior accepted size", prevSize: 0, prevRoot: zeroRoot, nextSize: 5, nextRoot: rootB, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CheckFork(tc.prevSize, tc.prevRoot, tc.nextSize, tc.nextRoot); got != tc.want {
+				t.Errorf("CheckFork(%d, %x, %d, %x) = %v, want %v", tc.prevSize, tc.prevRoot, tc.nextSize, tc.nextRoot, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestViolationForkKind pins the fork kind string to the exact value the
+// store.Violation.Kind field and the violations.kind column expect.
+func TestViolationForkKind(t *testing.T) {
+	if string(ViolationFork) != "fork" {
+		t.Errorf("ViolationFork = %q, want %q", ViolationFork, "fork")
 	}
 }
