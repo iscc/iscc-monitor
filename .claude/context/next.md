@@ -1,114 +1,108 @@
 # Next Work Package
 
-## Step: Typed store persistence helpers for the checkpoint verdict (`hubs` / `checkpoints` / `follow_state`)
+## Step: Networked checkpoint fetch over the Fetcher seam (`FetchCheckpoint`)
 
 ## Goal
-Give `internal/store` the typed insert/query methods the follower needs to persist one observed
-checkpoint verdict: register a hub, record an observed checkpoint, and read/advance the per-hub
-follow cursor. This is the persistence half the follower will drive next — landed now, with its own
-driving tests, so the follower step that follows is mostly wiring rather than wiring + schema
-discovery.
+Add the one missing networked-fetch primitive the follower needs before it can poll a hub:
+`FetchCheckpoint(ctx, fetcher, baseURL)` returns the raw signed-checkpoint bytes from the canonical
+`https://<domain>/log/checkpoint` URL via the existing 1-method `Fetcher`. It produces exactly the
+`raw []byte` that `AcceptCheckpoint` already takes — wiring the fetch closes the last gap between
+"verify bytes I'm handed" and "go get the bytes", without yet touching persistence or the poll loop.
 
 ## Goal-fit (state → target gap)
-`state.md` records the schema + `Open`/`Close` exist but "no typed insert/query methods yet (they
-land with their real caller, the follower)" and "nothing yet reads or writes store rows." The
-handoff's `**Next:**` bundles store CRUD + the follower loop + the `hub_keys` did:web cache + the sb1
-fixture refresh into a single item — that is far more than 3 files and several distinct verifiable
-behaviors. This step takes the store-CRUD slice only: the smallest coherent unit that compiles, runs,
-and is mechanically testable against a temp SQLite DB on observable row state. The follower loop, the
-`hub_keys` cache, and the sb1 fixture refresh are explicitly deferred to the next step.
+`state.md` lists the follower poll loop as the immediate M1 unit, but the handoff `**Next:**` bundles
+fetch + verdict→`CheckpointRecord` mapping + `RecordCheckpoint`/`AdvanceFollowState` persistence +
+the `hub_keys` did:web cache + the sb1 fixture refresh + the single-writer goroutine wrapper into one
+item — far more than 3 files and many distinct behaviors. The pure verification chain
+(`ResolveVerifierKey` → `VerifyCheckpoint` → `DIDKey.ValidAt` → `AcceptCheckpoint`) and the store CRUD
+both exist, but **nothing yet fetches a checkpoint over the wire** — `AcceptCheckpoint` is handed
+`raw` by its tests. This step takes the smallest coherent prerequisite slice: the transport-only
+checkpoint fetch, parallel to the existing `ResolveVerifierKey`, reusing the same `Fetcher` seam. It
+is fully testable offline and end-to-end against the captured `sb0` fixture. The verdict→store mapping
+and the poll loop are the very next step and consume this.
 
 ## Scope
 - **Create**:
-  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — typed methods on `*Store`:
-    - `UpsertHub(ctx, domain, origin, baseURL string) (hubID int64, err error)` — insert-or-get the
-      `hubs` row for a hub, returning its `hub_id`. Idempotent on re-register (same domain → same id).
-    - `RecordCheckpoint(ctx, c CheckpointRecord) (id int64, inserted bool, err error)` — insert one
-      observed checkpoint into `checkpoints`; dedupe on the `UNIQUE(hub_id, tree_size, root)` key
-      (a re-observed `(size, root)` returns the existing id with `inserted=false`, never an error).
-    - `FollowState(ctx, hubID int64) (FollowState, error)` — read the per-hub cursor + freeze flag;
-      a hub with no row yet returns the zero `FollowState{}` (last_size 0, frozen false), not an error.
-    - `AdvanceFollowState(ctx, hubID int64, lastSize uint64) error` — upsert `follow_state`, setting
-      `last_size` to the newly-accepted size. Must NOT clear `frozen` (no auto-unfreeze, ADR-0006).
-    - Plain store-owned structs `CheckpointRecord{HubID int64; Status string; TreeSize uint64;
-      Root []byte; Raw []byte; ObservedAt time.Time}` and `FollowState{LastSize uint64; Frozen bool;
-      LastError string}`. Do NOT import `internal/logclient` for these.
-  - `/workspace/iscc-monitor/internal/store/checkpoints_test.go` — table/scenario tests driving the
-    new methods against a `t.TempDir()` DB, asserting on observable rows only (test file, not counted).
-- **Modify**: (none required) — the methods attach to the existing `*Store` in the new file. Touch
-  `/workspace/iscc-monitor/internal/store/sqlite.go` only if a tiny shared helper is genuinely needed;
-  prefer not to.
+  - `/workspace/iscc-monitor/internal/logclient/checkpoint.go` — the `FetchCheckpoint` function +
+    file/function docstrings.
+  - `/workspace/iscc-monitor/internal/logclient/checkpoint_test.go` — offline fake-`Fetcher` tests +
+    one `httptest` round-trip (test file, not counted toward the 3-file budget).
+- **Modify**: (none — purely additive; no existing source file changes)
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/store/schema.sql` — exact columns/types for `hubs`,
-    `checkpoints`, `follow_state` (timestamps INTEGER unix-seconds; booleans 0/1; `root`/`raw` BLOB;
-    `checkpoints` UNIQUE is `(hub_id, tree_size, root)`; `follow_state` PK is `hub_id`).
-  - `/workspace/iscc-monitor/internal/store/sqlite.go` — the `*Store` type, the `_ = db.Close()`
-    error-preserving idiom, and the file-docstring / time-convention style to match.
-  - `/workspace/iscc-monitor/internal/store/sqlite_test.go` — the established test style
-    (`t.TempDir()` path, raw `s.db` reads for assertions, independently-pinned expectations).
-  - `/workspace/iscc-monitor/internal/logclient/accept.go` — the `Status.String()` values
-    (`"verified"`/`"unverified"`/`"unresolvable"`/`"rotated"`) and `CheckpointInfo` shape the follower
-    will later map into a `CheckpointRecord`. Read for the contract only; do not import the package.
+  - `/workspace/iscc-monitor/internal/logclient/origin.go` — reuse `origin(baseURL)` to derive
+    `<domain>/log`; do NOT add a second host/path parser.
+  - `/workspace/iscc-monitor/internal/logclient/didresolve.go` — the `Fetcher` interface,
+    `httpFetcher`, `NewHTTPFetcher`, and the `os.ErrNotExist`-on-404 contract this fetch relies on
+    (already implemented; reuse as-is — do not re-implement an HTTP client).
+  - `/workspace/iscc-monitor/internal/logclient/didresolve_test.go` — the
+    `fakeFetcher{data,err,gotURL}` pattern and the `httptest.NewTLSServer` + `srv.Client()` real-HTTP
+    pattern to copy.
+  - `/workspace/iscc-monitor/internal/logclient/verify_test.go` — the `readCheckpoint(t, name)` helper
+    (loads `../../testdata/live/<name>`); reuse it, do NOT re-declare it (same `logclient` package).
+  - `/workspace/iscc-monitor/internal/logclient/accept.go` — `AcceptCheckpoint` signature and
+    `CheckpointInfo.TreeSize`, for the end-to-end round-trip assertion.
+  - `/workspace/iscc-monitor/cauldron/tessera/client/fetcher.go` (`ReadCheckpoint` →
+    `layout.CheckpointPath`, returns raw bytes; parsing is the caller's job) and
+    `/workspace/iscc-monitor/cauldron/iscc-hub/specs/iscc-log.md` §9 (`GET /log/checkpoint`) — confirm
+    the canonical path is the `checkpoint` resource under the `/log` root, i.e.
+    `https://<domain>/log/checkpoint`.
 
 ## Not In Scope
-- The follower poll loop itself (calling `AcceptCheckpoint`, the `err`-before-status contract,
-  network polling, backoff) — that is the very next step and consumes these methods.
-- The `hub_keys` did:web key cache and the stale sb1 did.json / `derive_vkey.py` `HUBS` fixture
-  refresh to `069d0f14` — deferred with the follower step that actually writes `hub_keys`.
-- The three-trigger RFC-6962 consistency check, `violations` inserts, and the `frozen=1` write path
-  (this step only *reads* `frozen` and refuses to clear it; it never sets it).
-- Tiles / entry_bundles / iscc_index / ots CRUD (M2 and OTS milestones).
-- A `cmd/` binary entrypoint, config, realm registry, `/metrics`, structured logs.
-- Importing `internal/logclient` into `internal/store` (would couple the store to net/http-bearing
-  deps and risk a future cycle; pass the status as a plain string instead).
-- Any `schema.sql` change (e.g. adding a UNIQUE on `hubs.domain`) — a schema change is a separate,
-  reviewable decision.
+- The follower poll loop itself: mapping `CheckpointInfo`/`Status` into a `CheckpointRecord`, calling
+  `RecordCheckpoint` / `AdvanceFollowState`, the `err`-before-status handling, backoff, or any
+  `internal/store` interaction. That is the next step and consumes `FetchCheckpoint`.
+- The `hub_keys` did:web cache write and the stale-`sb1` `did.json` / `derive_vkey.py` `HUBS` fixture
+  refresh (`22b08f3e` → `069d0f14`). Defer to the follower-persistence step that populates `hub_keys`.
+- The three-trigger RFC-6962 consistency check, freeze/alert, coverage (`monitored_since`), structured
+  logs, `/metrics`, config/realm registry, and any `cmd/` binary.
+- Tile / entry-bundle fetching (`ReadTile`/`ReadEntryBundle` analogues) — that is M2.
+- Any change to `origin.go`, `didresolve.go`, `verify.go`, or `accept.go` — this step is additive only.
 
 ## Implementation Notes
-- **No import of `internal/logclient`.** Keep `store` a leaf depending only on `database/sql` +
-  stdlib (plus the already-wired driver). The follower (next step) maps `logclient.Status.String()`
-  and `CheckpointInfo` into the plain `CheckpointRecord` / status-string at the call site. This honors
-  the learnings' purity discipline and avoids dragging net/http into the store closure.
-- **Single-writer discipline already holds** at this layer (`SetMaxOpenConns(1)`), so these methods
-  use `db.ExecContext` / `db.QueryRowContext` directly; do not open new connections or pools. The
-  goroutine-ownership write wrapper remains the follower's concern.
-- **Timestamps:** store `ObservedAt` as `t.Unix()` INTEGER (the schema's convention). Decide how a
-  zero `time.Time` is written (NULL or 0) and assert that choice in a test so it is explicit.
-- **`UpsertHub` idempotency:** `hubs` has no UNIQUE on `domain`, so implement as "SELECT hub_id WHERE
-  domain=?; if none, INSERT and return LastInsertId". One method, no schema change. The follower will
-  also want `origin`/`base_url` set on first insert; on a re-register, returning the existing id
-  (without rewriting columns) is acceptable for this step.
-- **`RecordCheckpoint` dedupe:** rely on the existing `UNIQUE(hub_id, tree_size, root)`. Prefer
-  `INSERT ... ON CONFLICT(hub_id, tree_size, root) DO NOTHING` then read back the id, or detect the
-  constraint and SELECT the existing id; either way return `inserted=false` with a nil error on a
-  repeat. Leave `consistent` / `root_rebuilt` NULL — they are the consistency-check step's job. There
-  is no `status` column on `checkpoints`; carry `CheckpointRecord.Status` for the follower's later use
-  (and for the verified-only-advances assertion at the call site), but persist only the columns the
-  schema has this step.
-- **`AdvanceFollowState` must not auto-unfreeze (Correctness rule, ADR-0006).** Upsert with
-  `ON CONFLICT(hub_id) DO UPDATE SET last_size=excluded.last_size`, *omitting* `frozen` from the SET
-  list so a frozen hub stays frozen. A test must prove: set `frozen=1` via raw SQL, call
-  `AdvanceFollowState`, then read `frozen` is still 1 and `last_size` is the new value.
-- Match existing file conventions: leading package-purpose docstring continuation, evergreen
-  per-function docstrings, `_ = rows.Close()` / error-preserving idioms, no `t.Skip` / `//nolint`.
+- Signature: `func FetchCheckpoint(ctx context.Context, fetcher Fetcher, baseURL string) ([]byte, error)`.
+  Keep it a free function in package `logclient`, parallel to `ResolveVerifierKey`.
+- Derive the URL by reuse: `name, err := origin(baseURL)` (yields scheme-less `<domain>/log`), then the
+  checkpoint URL is `"https://" + name + "/checkpoint"` (e.g. `https://sb0.iscc.id/log/checkpoint`).
+  tlog/did:web are always HTTPS, and `origin()` already strips any caller scheme — build the URL by
+  concatenation/`fmt.Sprintf`, NOT a second `net/url` parse, and never from the bare domain.
+- On `origin()` error, wrap and return (`fmt.Errorf("fetch checkpoint: %w", err)`). Do NOT invent a new
+  sentinel and do NOT wrap in `ErrUnresolvable` — that sentinel is owned by did:web resolution; a
+  checkpoint-fetch failure is a plain transport error the follower will classify separately. Wrap the
+  `Fetcher`'s error with `%w` so a 404's `errors.Is(err, os.ErrNotExist)` still holds through the
+  wrapper (the follower needs to tell "no checkpoint served" from other transport faults).
+- Return the raw bytes verbatim — no trimming, no parsing, no `note.Open`. `VerifyCheckpoint` /
+  `AcceptCheckpoint` own the signed-note framing; this function is transport only (mirror tessera's
+  `ReadCheckpoint`, which returns raw bytes and leaves `ParseCheckpoint` to the caller).
+- Imports stay minimal: `context`, `fmt`, and the package-private `origin`/`Fetcher` only. Do NOT add
+  `net/http` (the concrete `httpFetcher` is injected by the caller), `database/sql`, or `os` (the
+  `os.ErrNotExist` contract is the injected Fetcher's, surfaced through the returned error).
+- Relevant Correctness rule (learnings.md, seeded): **Origin = `<domain>/log`, never the bare domain**
+  — the checkpoint resource hangs off `/log`, so reuse the single `origin()` helper. Constructing the
+  URL from the bare domain (dropping `/log`) is the exact highest-probability bug this rule guards
+  against; the golden URL assertion below catches it.
+- Match file conventions: leading file-purpose docstring, evergreen per-function docstring, no
+  `t.Skip` / `//nolint` / swallowed errors.
 
 ## Verification
-- `mise run check` is green (`go build ./... && go vet ./... && go test ./...` all exit 0).
-- `gofmt -l internal/store` prints nothing (no listed files).
-- `go test -run TestStore ./internal/store` passes (the existing 4 subtests stay green).
-- `go test -run 'TestUpsertHub|TestRecordCheckpoint|TestFollowState|TestAdvanceFollowState' ./internal/store`
-  passes, with these mechanical assertions:
-  - `UpsertHub` called twice with the same `domain` returns the **same** `hub_id` and leaves exactly
-    one `hubs` row (`SELECT count(*) FROM hubs == 1`).
-  - `RecordCheckpoint` of a `(hub_id, tree_size, root)` then a second identical call returns the same
-    id with `inserted == false` and leaves exactly one `checkpoints` row.
-  - `FollowState` on an unknown `hubID` returns the zero `FollowState{}` and a nil error.
-  - After raw `UPDATE follow_state SET frozen=1`, `AdvanceFollowState(hubID, N)` leaves
-    `SELECT frozen FROM follow_state == 1` and `SELECT last_size FROM follow_state == N`.
-  - Restart survival: write via the methods, `Close`, reopen the same path, and the rows are still
-    readable (mirrors `TestStoreRestartSurvival`).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` exit 0; `gofmt -l .`
+  empty).
+- `go test -run TestFetchCheckpoint ./internal/logclient` passes.
+- Offline URL golden (fake `Fetcher`): `FetchCheckpoint(ctx, &fakeFetcher{data: want},
+  "https://sb0.iscc.id")` records `gotURL == "https://sb0.iscc.id/log/checkpoint"` and returns the
+  canned bytes unchanged (`bytes.Equal(got, want)`).
+- Bare-host input still hits `/log/checkpoint`: `FetchCheckpoint(ctx, fake, "sb0.iscc.id")` (no scheme)
+  also yields `gotURL == "https://sb0.iscc.id/log/checkpoint"`.
+- 404 contract: a `fakeFetcher{err: os.ErrNotExist}` makes `FetchCheckpoint` return a non-nil error
+  with `errors.Is(err, os.ErrNotExist) == true`.
+- Empty base URL: `FetchCheckpoint(ctx, fake, "")` returns a non-nil error (propagated from `origin()`).
+- End-to-end over real HTTP (`httptest.NewTLSServer` serving `readCheckpoint(t,
+  "sb0.iscc.id_checkpoint")` at `/log/checkpoint` and the sb0 did.json at `/.well-known/did.json`):
+  bytes fetched by `FetchCheckpoint` fed straight into `AcceptCheckpoint(ctx, NewHTTPFetcher(srv.Client()),
+  srv.URL, raw, <fixed observedAt>)` yield `StatusVerified` with `info.TreeSize == 10183` (matching the
+  captured sb0 fixture), proving fetch → verify composes.
 
 ## Done When
-`advance` has added the typed `UpsertHub` / `RecordCheckpoint` / `FollowState` / `AdvanceFollowState`
-methods (with their plain store-owned structs) plus driving tests, every Verification criterion passes
-with `mise run check` green, and `internal/store` still imports no `internal/logclient`.
+`FetchCheckpoint` exists in `internal/logclient`, derives the canonical `https://<domain>/log/checkpoint`
+URL via the shared `origin()` helper, returns raw bytes verbatim (propagating `os.ErrNotExist` on 404),
+adds no `net/http`/`os`/`database/sql` import to the function, and every Verification criterion passes
+with `mise run check` green.
