@@ -33,3 +33,13 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
 - `CGO_ENABLED=0` everywhere → **do not use `go test -race`** (the race detector needs cgo) and do
   not pull cgo-dependent deps. `modernc.org/sqlite` is the pure-Go SQLite driver for this reason.
 - Port from `cauldron/` reference copies; never `import` them (they are gitignored, not a module dep).
+- **`cauldron/` breaks a fresh `go build ./...`**: its reference trees need external deps the root
+  module lacks. The local fix is gitignored stub `go.mod` files at `cauldron/iscc-hub/` +
+  `cauldron/tessera/` (separate modules → Go skips them). These are NOT committed, so any CI running
+  `go build ./...` on a fresh checkout that includes `cauldron/` will hit the same failure — CI must
+  either not check out `cauldron/`, add the same stubs, or use a `go.work` exclude. (Verified: entire
+  `cauldron/` is `.gitignore`d, so it never reaches CI from this repo's tree anyway.)
+- **Verifier-key golden test is the trust-root oracle gate.** `internal/didweb` derivation matches
+  `.claude/derive_vkey.py` byte-for-byte (keyid = BE-uint32 of `SHA-256(name||0x0A||0x01||pub)[:4]`,
+  base64 **Std** padded). Go added a defensive `len(raw) < 34` check before the multicodec assert —
+  the Python port would index-panic on a short key instead. Keep this guard when porting crypto.
