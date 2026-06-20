@@ -1,81 +1,70 @@
 # Handoff
 
-## 2026-06-20 — Pure RFC-6962 consistency-proof verifier (`CheckEquivocation`) + `transparency-dev/merkle` dep
+## 2026-06-20 — Review of: Pure RFC-6962 consistency-proof verifier (`CheckEquivocation`) + `transparency-dev/merkle` dep
 
-**Done:** Added the third freeze trigger's pure building block to `internal/logclient/consistency.go`:
-`ViolationEquivocation ViolationKind = "equivocation"` and `CheckEquivocation(prevSize, prevRoot,
-nextSize, nextRoot, consistencyProof) (violated bool, err error)`, which verifies an RFC-6962
-consistency proof via `github.com/transparency-dev/merkle` (`proof.VerifyConsistency` +
-`rfc6962.DefaultHasher`) and reports `violated=true` only when the proof FAILS on a strictly-growing
-pair. Golden-tested against a real RFC-6962 tree built in-test from `testonly.Tree`, with two mutation
-checks proving the golden is non-vacuous.
+**Verdict:** PASS_WITH_NOTES
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/logclient/consistency.go`: added the `merkle/proof` + `merkle/rfc6962` imports,
-  `ViolationEquivocation`, and `CheckEquivocation`; rewrote the package doc (the "equivocation deferred
-  to a merkle-backed slice" and "import-free of any new dep" lines are gone — all three triggers now
-  live here).
-- `internal/logclient/consistency_test.go`: added `TestCheckEquivocation` (table-driven golden over a
-  ground-truth tree: valid-proof→false, corrupted-root→true, corrupted-proof→true, plus the three
-  non-growing boundaries→false), `TestCheckEquivocationBoundariesSkipVerify` (boundaries return
-  `(false,nil)` even when fed garbage proof+roots, proving they short-circuit before
-  `VerifyConsistency`), `TestViolationEquivocationKind`, and a `rootArray` helper.
-- `go.mod` / `go.sum`: added `github.com/transparency-dev/merkle v0.0.2` (now a direct require);
-  `go mod tidy` pulled `github.com/google/go-cmp v0.6.0` as a transitive indirect (test dep of
-  `merkle/testonly`). Module directive stays `go 1.24.0`, no `toolchain` line.
+**Summary:** `advance` added the M1 third freeze trigger's pure building block —
+`CheckEquivocation` + `ViolationEquivocation` in `internal/logclient/consistency.go`, backed by a real
+`github.com/transparency-dev/merkle v0.0.2` consistency-proof verify — with a golden test built from a
+genuine RFC-6962 tree. Scope is tight (1 production file + 1 test + the authorized go.mod/go.sum dep),
+all gates are green, and the oracle/conformance gate (this IS RFC-6962 crypto) is satisfied: the golden
+is ground truth from `rfc6962.DefaultHasher`, and I independently re-ran two mutations that both fail
+the suite. PASS_WITH_NOTES (not plain PASS) only because I trimmed one over-promising doc line and want
+the `testonly`-vs-`compact` deviation on the record — both cosmetic, neither blocks.
 
-**Verification:** `mise run check` → green (build + vet + test, all 7 packages ok; re-run uncached).
+**Verification:**
+- [x] `mise run check` green — build + vet + test, all 7 packages ok (re-run uncached).
 - [x] `gofmt -l .` empty (whole tree).
-- [x] `go test -count=1 -run TestCheckEquivocation ./internal/logclient` PASS (6 subtests +
-  `TestCheckEquivocationBoundariesSkipVerify`'s 3 subtests).
+- [x] `go test -count=1 -run TestCheckEquivocation ./internal/logclient` PASS (6 subtests + the 3
+  `TestCheckEquivocationBoundariesSkipVerify` subtests).
 - [x] `go test -count=1 -run TestViolationEquivocationKind ./internal/logclient` PASS;
   `string(ViolationEquivocation) == "equivocation"`.
-- [x] Valid consistency proof for growing `(M=7, N=11)` → `(false, nil)`; same call with corrupted
-  `nextRoot` → `(true, nil)`; corrupted proof element → `(true, nil)`.
-- [x] `prevSize==0`, `nextSize==prevSize` (fork), and `nextSize<prevSize` (shrink) all return
-  `(false, nil)` AND skip `VerifyConsistency` (asserted by feeding garbage proof+roots and still
-  getting `false`).
+- [x] Valid proof for growing `(M=7, N=11)` → `(false, nil)`; corrupted `nextRoot` → `(true, nil)`;
+  corrupted proof element → `(true, nil)`.
+- [x] `prevSize==0`, `nextSize==prevSize`, `nextSize<prevSize` all return `(false, nil)` AND skip
+  `VerifyConsistency` (asserted by feeding garbage proof + roots and still getting false).
 - [x] `go list -m github.com/transparency-dev/merkle` → `v0.0.2`; `go.mod` directive still `go 1.24.0`,
-  no `toolchain` line; `go mod tidy` is a no-op diff (verified both `go.mod` and `go.sum`).
-- [x] `git diff --quiet HEAD -- internal/store/schema.sql internal/store/checkpoints.go
+  no `toolchain` line; `go mod tidy` no-op; `go mod verify` passes.
+- [x] `git diff --quiet HEAD~1..HEAD -- internal/store/schema.sql internal/store/checkpoints.go
   internal/follower/follower.go` exit 0 (no store/follower change).
+- [x] **Oracle/conformance gate (APPLIES — RFC-6962/merkle crypto):** golden is ground truth, not
+  author-asserted. `testonly.New(rfc6962.DefaultHasher)` builds a real append-only tree; the prover
+  (`ConsistencyProof`/`HashAt`) and verifier (`proof.VerifyConsistency`) are independent merkle code
+  paths, so the cross-check is not a tautology. I re-ran two mutations (then reverted): (1) force
+  `(false,nil)` always → corrupted-root + corrupted-proof cases FAIL; (2) drop the growing guard → all
+  three boundary-skip cases FAIL. A green-but-wrong verify cannot ship. `notecheck`/`derive_vkey.py`/
+  `fsck` correctly N/A (no signature/did:web/tile path). No CI configured yet, so the external
+  `notecheck` job is not a gate this iteration.
+- [x] Gate-integrity scan over the 3 unpushed commits: no `//nolint`, `t.Skip`, build-tag exclusions,
+  swallowed errors, or deleted tests/assertions.
 
-**Oracle/conformance gate (APPLIES — this is RFC-6962/merkle crypto):** The golden vector is ground
-truth from `rfc6962.DefaultHasher`, not author-asserted: `testonly.Tree` builds a real append-only tree
-over 11 leaves, `HashAt(M)`/`HashAt(N)` give the roots and `ConsistencyProof(M, N)` the valid proof
-(uses `proof.Consistency` + `Nodes.Rehash` internally — the merkle library's own ground truth). Two
-mutation checks were run and removed: (1) forcing `CheckEquivocation` to always return `(false,nil)`
-fails the two corrupted cases; (2) dropping the growing guard fails all three boundary-skip cases. So a
-green-but-wrong verify (accepting a malformed proof, or verifying on the wrong boundaries) cannot ship.
-`notecheck`/`derive_vkey.py`/`fsck` are still N/A here — no signature, did:web, or tile/fsck path is
-touched; this is consistency-proof Merkle math only.
+**Issues found:** (none blocking)
+- *Minor (fixed by reviewer):* the `CheckEquivocation` doc promised a `(false, non-nil err)` path for a
+  "wrong-length root" — but the `[rootBytes]byte` array params make a wrong-length root unrepresentable,
+  so that path can never fire. I trimmed the comment to state the actual contract (`err` always nil
+  today; return kept for signature symmetry / future slice-param loosening). Comment-only, no behavior
+  change; build/vet/test stay green.
+- *Note (not a defect):* the test uses `transparency-dev/merkle/testonly.Tree` rather than `next.md`'s
+  literal `compact.RangeFactory` suggestion. `next.md` permitted any in-test tree whose roots/proof are
+  "ground truth from the hasher, never a hard-coded magic root"; `testonly.Tree` runs over the same
+  `rfc6962.DefaultHasher` and is the library's own reference tree — strictly stronger (less bespoke
+  test code), not a shortcut. Accepted.
 
-**Next:** Wire `CheckEquivocation` into the follower (the NEXT slice, explicitly deferred here): add the
-third branch to `follower.checkConsistency` so a verified growing observation maps
-`FollowState.LastSize → prevSize`, the stored root at that size → `prevRoot`, `info.TreeSize → nextSize`,
-`info.Root → nextRoot`, plus a fetched consistency proof → `CheckEquivocation`, returning
-`ViolationEquivocation` on a true verdict (→ `RecordViolation` + `Freeze` + alert-once, evidence-only,
-no advance). That wiring needs the consistency-proof hashes, which requires the tile-fetch /
-`SQLiteFetcher` / `ProofBuilder` slice to obtain them from mirrored hash tiles — so the realistic order
-is tile-fetch first (to source proofs), then the follower branch.
+**Next:** Wire `CheckEquivocation` into the follower — add the third branch to
+`follower.checkConsistency` (map `FollowState.LastSize → prevSize`, the stored root at that size →
+`prevRoot`, `info.TreeSize → nextSize`, `info.Root → nextRoot`, plus a fetched consistency proof),
+returning `ViolationEquivocation` on a true verdict (→ `RecordViolation` + `RecordCheckpoint` evidence +
+`Freeze` + alert-once, no advance). That branch needs the consistency-proof hashes, which only the
+tile-fetch / `SQLiteFetcher` / `ProofBuilder` slice can source from mirrored hash tiles — so the
+realistic order is tile-fetch first (to obtain proofs), then the follower branch.
 
 **Notes:**
-- I used `merkle/testonly.Tree` (a test-only package, imported only in `_test.go`) instead of hand-wiring
-  `compact.RangeFactory` + `Nodes.Rehash`. `next.md` named `compact` as the preferred builder and a
-  hand-built tree as the acceptable minimum; `testonly.Tree` is the library's own ground-truth tree (it
-  composes `proof.Consistency` + `Nodes.Rehash` over `rfc6962.DefaultHasher` exactly as a hand-rolled
-  `compact` build would), so it satisfies the "ground truth from the hasher, never a hard-coded magic
-  root" rule while staying well within the file budget. Flagging the choice since it deviates from the
-  literal `compact.RangeFactory` suggestion — it is strictly stronger (same hasher, less bespoke test
-  code), not a shortcut.
-- Error-vs-violation discipline is implemented as documented: ANY `VerifyConsistency` failure on the
-  growing path becomes `(true, nil)` — a non-verifying proof is the evidence, never a poll error. The
-  returned `err` is currently always `nil` from this function (I did not add an explicit root-length
-  validation, since the `[rootBytes]byte` array params make a wrong-length root unrepresentable at the
-  type level — `prevRoot[:]`/`nextRoot[:]` are always 32 bytes). The `err` return and the `wantErr`
-  table column are kept for the documented contract and future input validation if the signature ever
-  loosens.
-- `CheckEquivocation`/`ViolationEquivocation` are an intentional unused-until-wired export seam (same as
-  shrink/fork before their wiring) — `go vet` is clean and they should not be flagged as dead code.
-- `go-cmp v0.6.0` entered `go.sum` as an indirect transitive of `merkle/testonly`; it is test-only and
-  CGO-free, no concern.
+- Working branch is `develop`, 3 commits ahead of `origin/develop` (incl. this review). Remote
+  configured; pushing `develop` on this PASS_WITH_NOTES verdict.
+- `go-cmp v0.6.0` is in `go.sum` only as a transitive test-dep of `merkle/testonly` (`go mod why` →
+  "main module does not need" it); not a direct require, CGO-free — no concern.
+- `internal/proof` does not exist yet, so its `net`/`os`/`sqlite` purity rule is not yet applicable.
+  `consistency.go` lives in `logclient`, which already pulls `net/http`/`os` via `didresolve.go`/
+  `checkpoint.go`, so adding `merkle` introduces no new WASM/import constraint.

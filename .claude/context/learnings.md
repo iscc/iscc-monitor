@@ -159,6 +159,32 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   do not flag the new exported symbols as dead. The shrink check is pure arithmetic, so the
   conformance/oracle gate (`notecheck`/`derive_vkey.py`/`fsck`) is correctly N/A here — it only trips
   once the merkle-backed equivocation slice lands.
+- **Equivocation is the merkle-backed third trigger and lands in the same file (`consistency.go`).**
+  `CheckEquivocation(prevSize, prevRoot, nextSize, nextRoot [rootBytes]byte, proof [][]byte) (violated,
+  err)` calls `proof.VerifyConsistency(rfc6962.DefaultHasher, …, prevRoot[:], nextRoot[:])` ONLY on the
+  strictly-growing path (`prevSize>0 && nextSize>prevSize`); ANY verify failure → `(true, nil)` (the
+  proof not verifying IS the evidence, never a poll error — ADR-0006). The `prevSize==0 || nextSize<=
+  prevSize` guard short-circuits BEFORE `VerifyConsistency` (proven by feeding garbage proof+roots and
+  still getting false). `ViolationEquivocation = "equivocation"` matches `violations.kind`. The golden
+  is real ground truth: `testonly.New(rfc6962.DefaultHasher)` builds an append-only tree, `HashAt(M/N)`
+  gives roots and `ConsistencyProof(M,N)` the valid proof — the prover (`ConsistencyProof`) and the
+  verifier (`VerifyConsistency`) are *independent* code paths in merkle, so the cross-check is not a
+  tautology. **Reviewer re-ran two mutations (and removed them):** (1) force `(false,nil)` always →
+  corrupted-root + corrupted-proof cases FAIL; (2) drop the growing guard → all three boundary-skip
+  cases FAIL. So a green-but-wrong verify cannot ship. Oracle gate APPLIES (this is RFC-6962 crypto)
+  and is satisfied by the in-test merkle ground truth; `notecheck`/`derive_vkey.py`/`fsck` are N/A (no
+  signature/did:web/tile path). `testonly.Tree` was used instead of `next.md`'s literal
+  `compact.RangeFactory` — strictly stronger (same hasher, less bespoke test code), not a shortcut.
+- **`merkle v0.0.2` is dep-clean on the 1.24 toolchain.** `go.mod` directive stays `go 1.24.0`, no
+  `toolchain` line, `go mod tidy` is a no-op, `go mod verify` passes. `go-cmp v0.6.0` enters `go.sum`
+  ONLY as a transitive test-dep of `merkle/testonly` (`go mod why` → "main module does not need" it);
+  it is NOT a direct require and is CGO-free.
+- **`CheckEquivocation`'s `err` return is unreachable-by-type.** The `[rootBytes]byte` array params make
+  a wrong-length root unrepresentable, so `err` is always `nil` from this pure layer. The doc was
+  trimmed to say so (it previously promised a `(false, non-nil err)` malformed-root path that cannot
+  fire); the `wantErr` test column + return are kept for signature symmetry / future slice-param
+  loosening. `CheckEquivocation`/`ViolationEquivocation` are an intentional unused-until-wired export
+  seam (same as shrink/fork) — `go vet` clean, not dead code.
 - **Fork is the second dep-free trigger and landed in the same file as shrink.** `CheckFork(prevSize,
   prevRoot [rootBytes]byte, nextSize, nextRoot [rootBytes]byte) bool == prevSize > 0 && nextSize ==
   prevSize && nextRoot != prevRoot`. Same-size + differing root only; growth/shrink/identical-root all

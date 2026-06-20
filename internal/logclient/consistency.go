@@ -107,12 +107,12 @@ func CheckFork(prevSize uint64, prevRoot [rootBytes]byte, nextSize uint64, nextR
 //   - nextSize < prevSize is shrink's concern (a strict decrease).
 //
 // Error vs. violation discipline (ADR-0006 "freeze, never crash"): a non-verifying
-// but well-formed proof is a *verdict* (violated=true, err=nil), never a Go error
-// that could abort the poll loop — the proof not verifying IS the evidence. A
-// successful verification means the log is consistent — (false, nil). The returned
-// err is reserved for obviously-malformed input: a prevRoot/nextRoot that is not
-// exactly rootBytes long is a caller bug, returned as (false, non-nil err) without
-// freezing on it.
+// proof is a *verdict* (violated=true, err=nil), never a Go error that could abort
+// the poll loop — the proof not verifying IS the evidence. A successful
+// verification means the log is consistent — (false, nil). The [rootBytes]byte
+// array params make a wrong-length root unrepresentable, so err is always nil
+// today; the returned err is kept for signature symmetry and for input validation
+// if the root parameters ever loosen to slices.
 //
 // The caller maps FollowState.LastSize and the stored root at that size to
 // prevSize/prevRoot, CheckpointInfo.TreeSize/Root to nextSize/nextRoot, and
