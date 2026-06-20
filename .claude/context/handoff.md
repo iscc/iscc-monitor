@@ -1,59 +1,81 @@
 # Handoff
 
-## 2026-06-20 — Review of: Wire the hub_keys cache-hit fast path into `cacheHubKey` (skip the 2nd did.json fetch)
+## 2026-06-20 — Pure RFC-6962 consistency-proof verifier (`CheckEquivocation`) + `transparency-dev/merkle` dep
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added the third freeze trigger's pure building block to `internal/logclient/consistency.go`:
+`ViolationEquivocation ViolationKind = "equivocation"` and `CheckEquivocation(prevSize, prevRoot,
+nextSize, nextRoot, consistencyProof) (violated bool, err error)`, which verifies an RFC-6962
+consistency proof via `github.com/transparency-dev/merkle` (`proof.VerifyConsistency` +
+`rfc6962.DefaultHasher`) and reports `violated=true` only when the proof FAILS on a strictly-growing
+pair. Golden-tested against a real RFC-6962 tree built in-test from `testonly.Tree`, with two mutation
+checks proving the golden is non-vacuous.
 
-**Summary:** `advance` split `cacheHubKey` into a fetch-free `cacheHubKeyFast` (recover `(name,keyID)`
-from raw via `KeyIDFromCheckpoint`, guard `name == Origin(baseURL)`, `LookupHubKey`, and on a hit
-`RecordHubKey`-refresh in place — no second `ResolveVerifierKey`) and the unchanged
-`cacheHubKeyResolve` miss-path fallback, threading `raw` in at the single call site. Exactly what
-`next.md` asked, scope tight (1 production file + 1 test file), all gates green, oracle gate correctly
-N/A. Clean PASS.
+**Files changed:**
+- `internal/logclient/consistency.go`: added the `merkle/proof` + `merkle/rfc6962` imports,
+  `ViolationEquivocation`, and `CheckEquivocation`; rewrote the package doc (the "equivocation deferred
+  to a merkle-backed slice" and "import-free of any new dep" lines are gone — all three triggers now
+  live here).
+- `internal/logclient/consistency_test.go`: added `TestCheckEquivocation` (table-driven golden over a
+  ground-truth tree: valid-proof→false, corrupted-root→true, corrupted-proof→true, plus the three
+  non-growing boundaries→false), `TestCheckEquivocationBoundariesSkipVerify` (boundaries return
+  `(false,nil)` even when fed garbage proof+roots, proving they short-circuit before
+  `VerifyConsistency`), `TestViolationEquivocationKind`, and a `rootArray` helper.
+- `go.mod` / `go.sum`: added `github.com/transparency-dev/merkle v0.0.2` (now a direct require);
+  `go mod tidy` pulled `github.com/google/go-cmp v0.6.0` as a transitive indirect (test dep of
+  `merkle/testonly`). Module directive stays `go 1.24.0`, no `toolchain` line.
 
-**Verification:**
-- [x] `mise run check` green — build + vet + test, all 7 packages ok (re-run uncached, not just cached).
-- [x] `gofmt -l .` empty (whole tree) and `gofmt -l internal/follower/follower.go follower_test.go` empty.
-- [x] `go test -count=1 -run TestPollHub ./internal/follower` PASS — 5 tests (fork, shrink,
-  verified-advances, unverified, **new** cache-hit-skips-fetch); the existing "refresh in place → still
-  1 row" assertion in `TestPollHubVerifiedAdvances` still passes unchanged.
-- [x] New test asserts cold poll = 2 did.json fetches, warm poll = +1 (only `AcceptCheckpoint`),
-  proving `cacheHubKey` skipped its own resolve on the cache hit. **Non-vacuous**: independently
-  confirmed the sb0 checkpoint's signed-note name is `sb0.iscc.id/log` (fixture line 1) ==
-  `Origin("https://sb0.iscc.id")`, so the name-guard genuinely matches and the fast path genuinely
-  fires; a broken guard/lookup would fall through to +2 and fail the test.
-- [x] `hub_keys` stays exactly 1 row after the warm poll, `key_id == 0x40b74463`, 32-byte `pubkey_raw`.
-- [x] `git diff --quiet HEAD~1..HEAD -- go.mod go.sum internal/store/schema.sql` exit 0 (no schema/dep change).
-- [x] Production import set unchanged `{context, fmt, logclient, store, time}`; store closure has no
-  `net/http` (leaf preserved). No gate-circumvention (`nolint`/`t.Skip`/swallowed-err/build-tag/deleted
-  assertions) in any unpushed Go diff.
-- [x] Oracle/conformance gate correctly N/A — diff touches only follower cache wiring + CRUD; no
-  signature-verification, RFC-6962/merkle, `internal/proof`, `verify*`, `didweb`, or
-  fork/shrink/equivocation logic. `KeyIDFromCheckpoint` reads an already-decoded keyhash, not crypto.
+**Verification:** `mise run check` → green (build + vet + test, all 7 packages ok; re-run uncached).
+- [x] `gofmt -l .` empty (whole tree).
+- [x] `go test -count=1 -run TestCheckEquivocation ./internal/logclient` PASS (6 subtests +
+  `TestCheckEquivocationBoundariesSkipVerify`'s 3 subtests).
+- [x] `go test -count=1 -run TestViolationEquivocationKind ./internal/logclient` PASS;
+  `string(ViolationEquivocation) == "equivocation"`.
+- [x] Valid consistency proof for growing `(M=7, N=11)` → `(false, nil)`; same call with corrupted
+  `nextRoot` → `(true, nil)`; corrupted proof element → `(true, nil)`.
+- [x] `prevSize==0`, `nextSize==prevSize` (fork), and `nextSize<prevSize` (shrink) all return
+  `(false, nil)` AND skip `VerifyConsistency` (asserted by feeding garbage proof+roots and still
+  getting `false`).
+- [x] `go list -m github.com/transparency-dev/merkle` → `v0.0.2`; `go.mod` directive still `go 1.24.0`,
+  no `toolchain` line; `go mod tidy` is a no-op diff (verified both `go.mod` and `go.sum`).
+- [x] `git diff --quiet HEAD -- internal/store/schema.sql internal/store/checkpoints.go
+  internal/follower/follower.go` exit 0 (no store/follower change).
 
-**Issues found:** (none)
+**Oracle/conformance gate (APPLIES — this is RFC-6962/merkle crypto):** The golden vector is ground
+truth from `rfc6962.DefaultHasher`, not author-asserted: `testonly.Tree` builds a real append-only tree
+over 11 leaves, `HashAt(M)`/`HashAt(N)` give the roots and `ConsistencyProof(M, N)` the valid proof
+(uses `proof.Consistency` + `Nodes.Rehash` internally — the merkle library's own ground truth). Two
+mutation checks were run and removed: (1) forcing `CheckEquivocation` to always return `(false,nil)`
+fails the two corrupted cases; (2) dropping the growing guard fails all three boundary-skip cases. So a
+green-but-wrong verify (accepting a malformed proof, or verifying on the wrong boundaries) cannot ship.
+`notecheck`/`derive_vkey.py`/`fsck` are still N/A here — no signature, did:web, or tile/fsck path is
+touched; this is consistency-proof Merkle math only.
 
-**Next:** Eliminate the *first* redundant resolve — thread `AcceptCheckpoint`'s already-resolved key out
-of its single resolve so the verified path resolves did.json exactly once per poll (larger: touches
-`AcceptCheckpoint`/`ResolveVerifierKey` signatures). Otherwise the open M1 work per `state.md` is the
-merkle-backed RFC-6962 **equivocation** trigger (third freeze trigger; needs `transparency-dev/merkle`
-+ tile fixtures and re-arms the conformance/oracle gate), then structured logs / `/metrics` / real
-alert transport, then the sb1 fixture refresh.
+**Next:** Wire `CheckEquivocation` into the follower (the NEXT slice, explicitly deferred here): add the
+third branch to `follower.checkConsistency` so a verified growing observation maps
+`FollowState.LastSize → prevSize`, the stored root at that size → `prevRoot`, `info.TreeSize → nextSize`,
+`info.Root → nextRoot`, plus a fetched consistency proof → `CheckEquivocation`, returning
+`ViolationEquivocation` on a true verdict (→ `RecordViolation` + `Freeze` + alert-once, evidence-only,
+no advance). That wiring needs the consistency-proof hashes, which requires the tile-fetch /
+`SQLiteFetcher` / `ProofBuilder` slice to obtain them from mirrored hash tiles — so the realistic order
+is tile-fetch first (to source proofs), then the follower branch.
 
 **Notes:**
-- The fast path deliberately reuses the *cached* `Revoked`/`PubkeyRaw` on a hit rather than re-resolving
-  (per `next.md` step 4). This is sound: a same-`key_id` pubkey edit is cryptographically near-impossible
-  (`key_id` is `SHA-256(name||…||pub)[:4]`, so a different pubkey ⇒ different key_id ⇒ cache miss ⇒ full
-  resolve), and a `revoked_at`/window edit is still caught by `AcceptCheckpoint`'s first resolve **every
-  poll** (which gates `StatusVerified` before `cacheHubKey` ever runs). The `hub_keys` row is an
-  identity/availability cache, never the verification authority. A fully cache-only window-honoring fast
-  path would first need a `valid_from`/`valid_until` schema column — explicitly Not In Scope here.
-- Fall-through is correct on every miss case: key-id-recovery miss, name/origin mismatch, and cache miss
-  all return `(false, nil)` (fall to resolve); genuine origin/query/`RecordHubKey` faults wrap a non-nil
-  error and are never swallowed. The fast path runs only on the verified, non-violation `PollHub` path
-  (after `AdvanceFollowState`), never inside `freeze` — fork/shrink/unverified tests still assert
-  `hub_keys == 0`.
-- No CI configured (no `.github/workflows/`); it becomes load-bearing the moment the merkle path or a
-  fixture refresh lands (it must shell out `notecheck` and avoid `go build ./...` over gitignored
-  `cauldron/`). Remote `origin` is configured; pushing `develop` on this PASS.
+- I used `merkle/testonly.Tree` (a test-only package, imported only in `_test.go`) instead of hand-wiring
+  `compact.RangeFactory` + `Nodes.Rehash`. `next.md` named `compact` as the preferred builder and a
+  hand-built tree as the acceptable minimum; `testonly.Tree` is the library's own ground-truth tree (it
+  composes `proof.Consistency` + `Nodes.Rehash` over `rfc6962.DefaultHasher` exactly as a hand-rolled
+  `compact` build would), so it satisfies the "ground truth from the hasher, never a hard-coded magic
+  root" rule while staying well within the file budget. Flagging the choice since it deviates from the
+  literal `compact.RangeFactory` suggestion — it is strictly stronger (same hasher, less bespoke test
+  code), not a shortcut.
+- Error-vs-violation discipline is implemented as documented: ANY `VerifyConsistency` failure on the
+  growing path becomes `(true, nil)` — a non-verifying proof is the evidence, never a poll error. The
+  returned `err` is currently always `nil` from this function (I did not add an explicit root-length
+  validation, since the `[rootBytes]byte` array params make a wrong-length root unrepresentable at the
+  type level — `prevRoot[:]`/`nextRoot[:]` are always 32 bytes). The `err` return and the `wantErr`
+  table column are kept for the documented contract and future input validation if the signature ever
+  loosens.
+- `CheckEquivocation`/`ViolationEquivocation` are an intentional unused-until-wired export seam (same as
+  shrink/fork before their wiring) — `go vet` is clean and they should not be flagged as dead code.
+- `go-cmp v0.6.0` entered `go.sum` as an indirect transitive of `merkle/testonly`; it is test-only and
+  CGO-free, no concern.
