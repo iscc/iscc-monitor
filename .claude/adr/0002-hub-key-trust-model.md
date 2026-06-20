@@ -2,10 +2,10 @@
 status: superseded in part by ADR-0009
 ---
 
-> **Superseded (2026-06-20):** the key *source* (central Hub-List) and the
-> `valid_from` rotation model are replaced by did:web (ADR-0009). The
-> report-don't-go-dark behavior, the freeze orthogonality, and the status-taxonomy
-> *idea* survive (the taxonomy itself is revised in ADR-0009). Kept for history.
+> **Superseded in part by ADR-0009:** the key *source* (central Hub-List) and the
+> `valid_from` rotation model are replaced by did:web. The report-don't-go-dark
+> behavior, the freeze orthogonality, and the status-taxonomy *idea* survive (the
+> taxonomy itself is revised in ADR-0009).
 
 # Hub key trust model: authoritative Hub-List key set, size-bounded rotation, report-don't-reject
 

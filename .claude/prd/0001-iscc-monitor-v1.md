@@ -280,9 +280,8 @@ ISCC-Log §2.2 amendment to source keys from did:web; (2) realm registry becomes
 independent origin (`monitor.iscc.codes`), is reproducibly built, and has its hash published independently. Same-origin
 SRI alone is insufficient.
 
-**Known live data point.** `sb1.amlet.id` currently signs with a key its did.json matches but the (now-superseded)
-central list did not — under the did:web model it verifies as `verified`. `sb0.iscc.id` verifies end-to-end. Both are
-golden vectors and offline fixtures (`testdata/live/`).
+**Known live data point.** `sb1.amlet.id` signs with a key its did.json matches, so it verifies as `verified` under the
+did:web model. `sb0.iscc.id` verifies end-to-end. Both are golden vectors and offline fixtures (`testdata/live/`).
 
 **Suggested milestone order (the headline-value path):** M1 read-only Monitor → M2 Aggregator (mirror + index +
 proofs) → M3 Trust API + dashboard + log browser → WASM verifier upgrade → OTS / Bitcoin anchoring → (M7 deferred:

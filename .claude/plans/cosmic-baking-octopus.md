@@ -1,11 +1,5 @@
 # iscc-monitor — Trust & Transparency service for the ISCC-Hub network
 
-> **Revised 2026-06-20** to agree with the grilling decision record in `.claude/adr/0001–0009`
-> and the glossary in `CONTEXT.md`. Where this plan and an ADR ever disagree, the ADR wins.
-> Key shifts from the first draft: **did:web trust root** (no central key list), **single
-> SQLite store** (no filesystem mirror), **no cosigning in v1** (OTS is the v1 attestation),
-> **per-network DB files**, **coverage/cold-start honesty**, **schema-agnostic verification**.
-
 ## Context
 
 Each ISCC-Hub publishes a **C2SP tlog-tiles** transparency log (`/log/checkpoint`, `/log/tile/<L>/<K>`,
@@ -143,7 +137,7 @@ sibling `iscc-hub`/`tessera` repos so these resolve without a specific checkout 
 `hubs(hub_id PK, domain, origin, base_url, active, status, monitored_since_size, monitored_since_time, first_seen, last_seen)` ·
 `hub_keys(hub_id, key_id, pubkey_raw, pubkey_z, revoked_at, resolved_at)` — did:web key cache (source of truth is the DID doc) ·
 `checkpoints(id PK, hub_id, tree_size, root, raw, observed_at, consistent, root_rebuilt; UNIQUE(hub_id,tree_size,root))` ·
-`violations(id PK, hub_id, kind, detected_at, raw_a, raw_b, proof_json)` — `kind ∈ {fork,shrink,equivocation}` (was `split_views`) ·
+`violations(id PK, hub_id, kind, detected_at, raw_a, raw_b, proof_json)` — `kind ∈ {fork,shrink,equivocation}` ·
 `tiles(hub_id, level, tile_index, width, data BLOB, is_full, sha256, updated_at, PK(hub_id,level,tile_index,width))` ·
 `entry_bundles(hub_id, bundle_index, width, data BLOB, is_full, sha256, updated_at, PK(hub_id,bundle_index,width))` ·
 `iscc_index(hub_id, seq PK, iscc_id BLOB, iscc_id_str, note_schema, record_sha256; INDEX(iscc_id))` —
@@ -216,4 +210,4 @@ One binary; `network` selects `testnet` / `mainnet` / `both`; **one SQLite file 
 `testnet.db`). Keys resolved from each hub's **did:web** document — no central key list. OTS calendars default set. **No
 cosigning key in v1** (the monitor needs only a TLS identity). Ships as the static binary plus a container image
 (mirroring the hub's release flow). License Apache-2.0. `derive_vkey.py` stays as the reference/golden-vector source for
-`internal/didweb/vkey.go` (now sourcing the did from did:web).
+`internal/didweb/vkey.go` (key resolution from did:web).

@@ -3,8 +3,8 @@ name: build
 description: Advance iscc-monitor by exactly one CID-loop iteration (update-state → define-next → advance → review). Use when explicitly asked to "run the build loop", "advance the project / one CID iteration", on /build, or when an automation (/goal, /loop, a scheduled task) drives autonomous building. NOT for one-off edits, questions, or reviewing unrelated work.
 ---
 
-Run **one CID-loop iteration** — Continuous Iterative Development. You are the **orchestrator**
-(replacing iscc-lib's `tools/cid.py`): you do no implementation yourself. You spawn four **roles**,
+Run **one CID-loop iteration** — Continuous Iterative Development. You are the **orchestrator**:
+you do no implementation yourself. You spawn four **roles**,
 each as an independent fresh-context subagent, in order, and route their results. The roles are
 defined in `.claude/agents/` and read their own context from `.claude/context/`; you only launch them
 and read the files they commit.

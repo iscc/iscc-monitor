@@ -26,7 +26,7 @@ against the monitor's mirrored tree.
   (detected autonomously, triggers freeze/alert) from "split view" (detectable
   only by client/peer comparison until M7).
 
-## Coverage and cold start (added 2026-06-20)
+## Coverage and cold start
 
 tlog-tiles serves only the *current* checkpoint; preserving the checkpoint history
 is the monitor's job. Two facts bound what that history can guarantee:

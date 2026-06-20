@@ -1,6 +1,6 @@
 # Hub-List schema proposal: graceful signing-key rotation
 
-> **SUPERSEDED (2026-06-20) by ADR-0009.** Key management moved to did:web: the
+> **SUPERSEDED by ADR-0009.** Key management moved to did:web: the
 > domain owner manages keys (and rotation/revocation via CID 1.0
 > `verificationMethod.revoked`) in `/.well-known/did.json`. The registry advertises
 > domains/membership only, no keys, so this `valid_from` schema is no longer

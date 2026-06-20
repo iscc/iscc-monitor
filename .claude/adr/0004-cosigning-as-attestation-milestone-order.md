@@ -2,14 +2,6 @@
 status: accepted
 ---
 
-> **Update (2026-06-20):** decision strengthened — cosigning is **dropped from v1
-> entirely**, not merely fused-and-deferred. The v1 independent attestation is
-> **OTS-anchoring observed roots alone** (trustless timestamp, no monitor key in
-> the trust path); cosigning returns at **M7** as the C2SP witness/gossip wire
-> format, where it has an actual consumer. This also removes the monitor's-own-key
-> / Monitor-List problem from v1 (the monitor needs a TLS identity but publishes
-> no signing key until M7). Rationale below stands; see the revised milestone list.
-
 # Cosigning is independent-attestation infrastructure; dropped from v1 (OTS is the v1 attestation)
 
 A self-published monitor cosignature has **no v1 consumer on its own**. The
@@ -21,14 +13,11 @@ monitor non-repudiation, a one-signature "an independent party vouched" artifact
 and the C2SP witness-cosignature format — whose real consumer is **M7 gossip**,
 which is out of v1.
 
-The one place a cosig earns real v1 value is **paired with OTS**: cosign +
-Bitcoin-anchor = "an independent party observed this exact root, with trustless
-proof it existed before block B" — a hard-to-repudiate, independently-timestamped
-witness record.
-
-**Decision.** Keep cosigning, but treat it as part of an **Independent Attestation**
-capability fused with OTS, and sequence it **after the audience-facing product is
-live**. Revised milestone order:
+**Decision.** Drop cosigning from v1 entirely. The v1 independent attestation is
+**OTS-anchoring observed roots alone** (trustless timestamp, no monitor signing key
+in the trust path). Cosigning returns at **M7** as the C2SP witness/gossip wire
+format, where it has an actual consumer. The monitor therefore needs a TLS identity
+but publishes **no signing key** in v1. Milestone order:
 
 1. **M1** — read-only Monitor (verify sig + consistency, persist, freeze, metrics)
 2. **M2** — mirror + iscc_index (serves inclusion/consistency from the local mirror)
@@ -40,7 +29,6 @@ live**. Revised milestone order:
    cosignatures) + witness endpoint. Cosigning lives here because gossip is its
    only real consumer.
 
-The original plan placed bare cosigning at M4, ahead of OTS and the dashboard —
-delivering a weak-trust artifact with no consumer yet. This reorders to deliver the
-headline value (a verifiable trust dashboard for business users) first, makes OTS
-the v1 attestation, and parks cosigning with the gossip protocol that consumes it.
+This sequencing delivers the headline value (a verifiable trust dashboard for
+business users) first, makes OTS the v1 attestation, and parks cosigning with the
+gossip protocol that consumes it.
