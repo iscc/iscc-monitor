@@ -313,3 +313,16 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   with `go list -deps ./internal/store | grep '^net/http'` (empty) and that the package's own `.Imports`
   are exactly `context database/sql embed errors fmt time` + the sqlite driver. Do not flag the bare
   `net` lines as a leak.
+- **Coverage set-once is a guarded `UPDATE … WHERE monitored_since_size IS NULL` keyed on the SIZE
+  column being NULL — and that guard is correct even for a size-0 start.** The first `SetCoverage`
+  writes `int64(size)` (so the column is NOT NULL afterward, even when size==0), making every re-call a
+  silent no-op regardless of size; the start is immutable at size 0 too (reviewer added a throwaway
+  `TestCoverageZeroSizeStillSet` — PASS — then removed it; the committed suite does not cover the
+  size-0 edge but the live `PollHub` only ever records `info.TreeSize` from a verified checkpoint).
+  `SetCoverage` intentionally ignores `RowsAffected` (zero-rows-after-set is the correct non-error
+  case), mirroring how `next.md` scoped it. `Coverage` reads both columns through `sql.NullInt64` and a
+  zero `monitored_since_time` (NULL via `unixOrNil`) degrades to a zero `time.Time` with `Set` still
+  true — so "coverage started, time unknown" is representable but unreachable from `PollHub` (which
+  always injects a real `observedAt`). Wiring lives ONLY on the verified, non-violation `PollHub` path
+  (between `RecordCheckpoint` and `AdvanceFollowState`), kept out of `freeze`, so a contradictory
+  observation never starts coverage (ADR-0001) — the fork/unverified tests assert `cov.Set == false`.
