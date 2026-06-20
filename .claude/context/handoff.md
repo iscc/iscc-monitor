@@ -1,58 +1,59 @@
 # Handoff
 
-## 2026-06-20 — Bootstrap the per-network SQLite store (`internal/store`): WAL + single-writer open + embedded schema
+## 2026-06-20 — Review of: Bootstrap the per-network SQLite store (`internal/store`): WAL + single-writer open + embedded schema
 
-**Done:** Stood up `internal/store` — `Open(path)`/`Close()` over the pure-Go `modernc.org/sqlite`
-driver (`CGO_ENABLED=0`), applying the single-writer discipline (WAL + `busy_timeout=5000` +
-`foreign_keys=ON` + `synchronous=NORMAL`, `SetMaxOpenConns(1)`) and an embedded `schema.sql` of the
-nine core M1 tables idempotently on every open. No insert/query/CRUD methods, no fetcher, no follower
-— schema + open/close only, as scoped.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/store/sqlite.go` (new): `Open`/`Close`, `//go:embed schema.sql`, ordered pragmas,
-  `SetMaxOpenConns(1)`, `database/sql` with driver name `"sqlite"`.
-- `internal/store/schema.sql` (new): `CREATE TABLE IF NOT EXISTS` DDL for `hubs`, `hub_keys`,
-  `checkpoints` (`UNIQUE(hub_id,tree_size,root)`), `violations`, `tiles` (`PK(hub_id,level,tile_index,
-  width)`), `entry_bundles` (`PK(hub_id,bundle_index,width)`), `iscc_index` (`seq` PK +
-  `INDEX(iscc_id)`), `follow_state` (`hub_id` PK), `ots` (`UNIQUE(hub_id,tree_size,root)`). No
-  `network` column (ADR-0007). Times = INTEGER unix-seconds (documented in the file docstring).
-- `internal/store/sqlite_test.go` (new): fresh-open table-set, WAL pragma, restart-survival,
-  idempotent-reopen — all assert on observable DB state via raw SQL, never on `Store` internals.
-- `go.mod` + `go.sum`: added `modernc.org/sqlite v1.46.1` (direct) + indirect deps.
+**Summary:** `advance` stood up `internal/store` — `Open(path)`/`Close()` over the pure-Go
+`modernc.org/sqlite` driver with the ADR-0005/0007 single-writer discipline (WAL + `busy_timeout=5000`
++ `foreign_keys=ON` + `synchronous=NORMAL`, `SetMaxOpenConns(1)`) applying an embedded `schema.sql` of
+the nine core M1 tables idempotently on every open. Schema + open/close only, no CRUD/fetcher/follower
+— exactly as scoped. Clean, well-documented, well-tested; all gates green. Independent reviewer audit
+reconfirmed every claim.
 
-**Verification:** `mise run check` → green (`go build`/`go vet`/`go test` exit 0). Per-criterion:
-- [x] `gofmt -l .` empty.
-- [x] `go test -run TestStore ./internal/store` → PASS (4 subtests: CreatesCoreTables, EnablesWAL,
+**Verification:**
+- [x] `mise run check` → green (exit 0; build + vet + test on go1.24.13).
+- [x] `gofmt -l .` → empty (clean).
+- [x] `go test -run TestStore ./internal/store` → PASS, all 4 subtests (CreatesCoreTables, EnablesWAL,
   RestartSurvival, ReopenIdempotent).
-- [x] `SELECT name FROM sqlite_master WHERE type='table'` contains all nine core tables (asserted).
-- [x] `PRAGMA journal_mode` returns `"wal"`.
-- [x] Sentinel `hubs` row inserted before `Close()` is readable after reopening the same path.
-- [x] `grep "network" internal/store/schema.sql` matches only comment lines (no column).
-- [x] `grep -E '^(go|toolchain)' go.mod` → `go 1.24.0`, no `toolchain` line. Gate ran on go1.24.13.
+- [x] Table set contains all nine core tables — **independently verified** via a throwaway reviewer
+  test: `checkpoints entry_bundles follow_state hub_keys hubs iscc_index ots tiles violations`.
+- [x] `PRAGMA journal_mode` returns `"wal"` — independently confirmed, plus `busy_timeout=5000`,
+  `foreign_keys=1`, `synchronous=1(NORMAL)`, `MaxOpenConnections=1` all applied in order.
+- [x] Restart survival — sentinel `hubs` row readable after close/reopen of the same path.
+- [x] `grep -R network internal/store/schema.sql` → comment lines only, no column (ADR-0007).
+- [x] `go.mod` directive is `go 1.24.0`, no `toolchain` line; `go mod verify` clean; `go mod tidy`
+  produces zero diff (tidy-clean dependency wiring). Driver pinned `modernc.org/sqlite v1.46.1`.
+- [x] Bonus: FK enforcement is genuinely live — orphan `hub_keys` insert rejected (SQLITE 787).
+  `SetMaxOpenConns(1)` makes the per-connection `foreign_keys` pragma stick.
 
-**Next:** Wire the stateful follower poll loop + the typed insert/query helpers whose shape the
-follower drives (per Not-In-Scope, row-access methods land with a real caller). The follower calls
+**Conformance/oracle gate:** N/A this step. The diff touches only `internal/store` + dependency
+wiring; it does not touch signature verification, RFC-6962/Merkle, proof code, `internal/didweb`, or
+fork/shrink/equivocation logic. `internal/proof` does not exist yet (expected pre-M1). No oracle
+obligation, and the purity gate has nothing to regress. CGO_ENABLED=0 build clean.
+
+**Quality-gate integrity:** Clean. Scanned all unpushed commits — no `//nolint`, no `t.Skip`, no
+swallowed errors (the `_ = db.Close()` on `Open`'s error paths is the correct error-preserving idiom),
+no build-tag exclusions, no deleted assertions. The lone "build" diff match is the word "builds" in a
+docstring.
+
+**Issues found:** (none)
+
+**Next:** Wire the stateful follower poll loop + the typed insert/query helpers the follower drives
+(row-access methods land with their real caller per Not-In-Scope/YAGNI). The follower calls
 `AcceptCheckpoint`, persists the verdict into `checkpoints`/`follow_state` (only `StatusVerified`
 advances accepted state; the other three are recorded findings while mirroring continues), and writes
 the `hub_keys` did:web cache — that step also refreshes the sb1 did.json fixture + `derive_vkey.py`
-`HUBS` to the current key (`069d0f14`). Carry the `AcceptCheckpoint` caller contract forward (check
-`err` before the status — a verified-but-garbled body is a non-nil error alongside
-`StatusUnverified`'s zero).
+`HUBS` to the current key (`069d0f14`). Carry the `AcceptCheckpoint` caller contract forward: a
+verified-but-garbled body returns a non-nil `err` alongside `StatusUnverified`'s zero, so callers must
+check `err` before the status.
 
 **Notes:**
-- **Driver version pin (the go-directive footgun, as `next.md` predicted).** `modernc.org/sqlite@latest`
-  is `v1.52.0` and requires `go >= 1.25.0`, which rewrites the directive to `go 1.25.0` and would fail
-  the gate on the pinned 1.24 toolchain. The newest version that requires only `go 1.24.0` is
-  **`v1.46.1`** (`v1.46.2`..`v1.52.0` all require ≥1.25; `v1.46.1` and below require ≤1.24). Pinned
-  `v1.46.1`; `go.mod` directive stays `go 1.24.0` with no `toolchain` line, verified green on go1.24.13.
-  The simple reset-the-directive route was NOT viable because `v1.52.0` genuinely will not build on
-  1.24, so the `next.md` fallback ("pin an older version") was the correct path.
-- Reads serialize behind the single writer for now (`SetMaxOpenConns(1)`), which is intentional and
-  fine pre-serving (avoids `SQLITE_BUSY` flakes). A read-pool split is deferred to when serving lands,
-  per `next.md`.
-- No signature/consistency/proof code touched in this step, so no conformance-oracle obligations apply
-  here (still no `internal/proof/` package, no `cauldron/` CI compile path — expected pre-M1-store).
-- The restart-survival test reuses `s.db` (the package-internal handle) for its raw INSERT/SELECT
-  because the store exposes no public row API yet; it still proves on-disk persistence by closing the
-  first handle entirely and reopening the file path before reading back. No public-API assertion is
-  faked.
+- Scope was tight and honest — 2 source files + 1 test file + dependency wiring, all within `next.md`.
+- The goroutine-ownership write wrapper is correctly deferred to the follower; this layer only caps the
+  pool so a second writer can't open. Reads serialize too for now (fine pre-serving).
+- Watch at serving (M2+): when the read-pool split lands, `foreign_keys` + WAL pragmas are
+  per-connection and must be re-asserted on the read connections — they will not carry across a larger
+  pool automatically.
+- Pushed to `origin/develop` on PASS (human merges develop→main via CI-gated PR; never push main).

@@ -117,3 +117,21 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
 - **`note.Open` returns `n.Text` as the clean trailing-`\n` body**, so `strings.Split(text, "\n")`
   yields a trailing empty element; `len >= 3` + reading `lines[0:3]` is correct and tolerates C2SP
   extension lines after the root. Verify `note.Open`'s framing — never re-parse the sig line by hand.
+
+## SQLite store (`internal/store`)
+
+- **`modernc.org/sqlite` pin is `v1.46.1` (last version requiring only `go 1.24.0`).** `v1.46.2`+ bump
+  the `go.mod` directive to `≥1.25.0` and would fail the gate on the pinned 1.24 toolchain. After
+  `go get`, the directive stayed `go 1.24.0` with no `toolchain` line; `go mod verify` + `go mod tidy`
+  are both clean (reviewer reconfirmed — tidy produces zero diff). The reset-the-directive route is NOT
+  viable for v1.52.0 (genuinely won't build on 1.24); the pin is the correct fix.
+- **`PRAGMA foreign_keys=ON` is per-connection — `SetMaxOpenConns(1)` makes it stick.** Reviewer
+  independently confirmed FK enforcement is live (orphan `hub_keys` insert rejected with SQLITE error
+  787) and `journal_mode=wal`, `busy_timeout=5000`, `synchronous=1(NORMAL)`, `MaxOpenConnections=1` are
+  all applied in order on `Open`. When the read-pool split lands at serving, FKs + WAL pragmas must be
+  re-asserted on the read connections too (per-connection state does not carry across a larger pool).
+- **Schema columns match the plan's "SQLite schema" block verbatim** (all 9 core tables, `iscc_id`
+  non-unique indexed for the one-to-many `iscc_id→seq`, UNIQUE on checkpoints/ots `(hub_id,tree_size,
+  root)`, PKs on tiles/entry_bundles). No `network` column (ADR-0007, grep confirms comment-only). No
+  `cosigs` table (M7-deferred). The `_ = db.Close()` on `Open`'s error paths is the correct idiom
+  (preserve the original error; don't mask it with the close error).
