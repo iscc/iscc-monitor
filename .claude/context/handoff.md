@@ -1,51 +1,57 @@
 # Handoff
 
-## 2026-06-20 — Store-side freeze + violations seam (RecordViolation, Freeze)
+## 2026-06-20 — Review of: Store-side freeze + violations seam (RecordViolation, Freeze)
 
-**Done:** Added the typed `internal/store` freeze-path persistence seam: a `Violation` struct, a
-plain-INSERT `RecordViolation(ctx, Violation) (int64, error)` (persists `kind` + both raw
-contradictory checkpoints + proof JSON, no dedupe — re-detection is itself evidence), and an
-upsert-based `Freeze(ctx, hubID int64) error` that sets/keeps `frozen=1` (no auto-unfreeze,
-ADR-0006). One source file changed, no callers wired (out of scope), all gates green.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/store/checkpoints.go`: added `Violation` struct + `RecordViolation` (plain INSERT into
-  `violations`, returns new id via `LastInsertId`, `DetectedAt` mapped through `unixOrNil`,
-  `ProofJSON` stored as a plain string) and `Freeze` (`INSERT INTO follow_state (hub_id, frozen)
-  VALUES (?, 1) ON CONFLICT(hub_id) DO UPDATE SET frozen = 1`). No new imports — store stays a leaf.
-- `internal/store/checkpoints_test.go`: added 7 tests — `TestRecordViolation` (round-trips
-  `kind`/`raw_a`/`raw_b`/`proof_json`/`detected_at`, id > 0), `TestRecordViolationNoDedupe`
-  (re-detection → distinct row, empty proof = empty string not NULL), `TestRecordViolationZeroDetectedAtNull`,
-  `TestFreezeNoPriorRow`, `TestFreezeNoAutoUnfreeze` (Freeze→Advance keeps frozen=1, last_size=99),
-  `TestFreezeOtherHubsUnaffected`, `TestFreezeRestartSurvival` (violation + freeze survive reopen).
+**Summary:** The advance added the leaf-only freeze-path persistence seam exactly as `next.md` asked:
+a `Violation` struct, a plain-INSERT `RecordViolation(ctx, Violation) (int64, error)`, and an
+upsert-based `Freeze(ctx, hubID int64) error`. One non-test/doc source file changed
+(`internal/store/checkpoints.go`), one test file, no callers wired, `go.mod` untouched. All gates
+green; the no-auto-unfreeze and other-hubs-unaffected properties are pinned with non-vacuous tests.
 
-**Verification:** `mise run check` → green (`go build ./... && go vet ./... && go test ./...` exit 0,
-go1.24); `gofmt -l .` empty.
-- `go test -count=1 -run 'TestRecordViolation|TestFreeze' ./internal/store` → PASS (all 7 subtests).
-- RecordViolation round-trip (kind + both raw blobs + proof JSON + id > 0) → pass.
-- Freeze no-prior-row (`FollowState.Frozen == true` after Freeze on a hub with no row) → pass.
-- No-auto-unfreeze (`Freeze` then `AdvanceFollowState(…,99)` → `Frozen == true` AND `LastSize == 99`) → pass.
-- Other-hubs-unaffected (freeze hub A → hub B `Frozen == false`) → pass.
-- `go list -deps ./internal/store` → only `github.com/iscc/iscc-monitor/internal/store` (zero internal
-  deps; store stays a leaf, no net/http in the closure).
+**Verification:**
+- [x] `mise run check` green — `go build ./... && go vet ./... && go test ./...` exit 0 (go1.24).
+- [x] `gofmt -l .` empty — no formatting failures.
+- [x] `go test -count=1 -run 'TestRecordViolation|TestFreeze' ./internal/store` — PASS (all 7 subtests:
+  RecordViolation, NoDedupe, ZeroDetectedAtNull, FreezeNoPriorRow, NoAutoUnfreeze, OtherHubsUnaffected,
+  RestartSurvival).
+- [x] RecordViolation round-trip — raw `SELECT kind, raw_a, raw_b, proof_json, detected_at` matches the
+  inserted `equivocation` kind, both raw blobs, proof JSON, and `id > 0`. Verified.
+- [x] Freeze no-prior-row — `FollowState.Frozen == true` after `Freeze` on a hub with no row. Verified.
+- [x] No-auto-unfreeze — `Freeze` then `AdvanceFollowState(…,99)` → `Frozen == true` AND `LastSize == 99`
+  (advance moved the cursor but did not clear the freeze). Non-vacuous; verified.
+- [x] Other-hubs-unaffected — freeze hub A → hub B `Frozen == false`. Verified.
+- [x] `go list -deps ./internal/store` — zero internal iscc-monitor deps (only the self-line); store
+  stays a leaf. `net/http` absent from the closure (the bare `net`/`net/url`/`net/netip` come from
+  `modernc.org/sqlite`, not iscc-monitor code).
+- [x] Quality-gate integrity — scanned all 3 unpushed commits: no `//nolint`, `t.Skip`, build tags,
+  swallowed errors, or deleted assertions in code. (grep hits are markdown prose noting their absence.)
+- [x] Scope discipline — diff touches only the two store files + handoff; nothing from `## Not In Scope`
+  (no merkle dep / `go get`, no caller wiring, no `Unfreeze`, no `hub_keys` write).
+- [n/a] Conformance/oracle gate — no signature / RFC-6962 / proof / didweb / fork-shrink-equivocation
+  code touched (pure persistence seam), so `notecheck` / `derive_vkey.py` / `fsck` parity is N/A.
 
-**Next:** The three-trigger RFC-6962 consistency check (fork/shrink/equivocation) is now the natural
-follow-on — it drives this seam. That step needs the `transparency-dev/merkle` dep (`go get`) plus
-tiles fixtures, so it is heavier; the alert ("exactly one alert") mechanism and wiring
-`RecordViolation`/`Freeze` into `follower.PollHub` are separate later slices. The independent
-`hub_keys` did:web cache write (which must also refresh the stale `sb1.amlet.id_did.json` fixture and
-`derive_vkey.py` HUBS to signer `069d0f14`) and the poll-loop / single-writer goroutine wrapper remain
-available as parallel ≤3-file steps.
+**Issues found:** (none)
+
+**Next:** The three-trigger RFC-6962 consistency check (fork/shrink/equivocation) is the natural
+follow-on — it now has a tested seam (`RecordViolation` + `Freeze`) to drive. That step is heavier: it
+needs the `transparency-dev/merkle` dep (`go get`, with the v1.24-compatible pin caveat) plus tiles
+fixtures, so consider scoping it as detection-only over fixtures first, then a separate slice for
+wiring into `follower.PollHub` and the "exactly one alert" mechanism. The independent `hub_keys`
+did:web cache write (also refreshing the stale `sb1.amlet.id_did.json` fixture + `derive_vkey.py` HUBS
+to signer `069d0f14`) and the poll-loop / single-writer goroutine wrapper remain available as parallel
+≤3-file steps.
 
 **Notes:**
-- `Freeze` is now the only writer of `frozen`; `AdvanceFollowState` still omits it from its conflict
-  update, so the two upserts compose correctly (advance-after-freeze keeps the freeze). Both target the
-  same `follow_state` row via `ON CONFLICT(hub_id)`.
-- `RecordViolation` is a plain INSERT by design — `violations` has no UNIQUE constraint, so repeated
-  detection records distinct rows (verified by `TestRecordViolationNoDedupe`). The future consistency
-  check is responsible for *deciding* when to record, not for dedupe here.
-- `proof_json` is a TEXT column; an empty `ProofJSON` is stored as the empty string (not coerced to
-  NULL), matching the work-package instruction and asserted in `TestRecordViolationNoDedupe`.
-- No signature/consistency/proof code touched (pure persistence seam) → conformance/oracle gate N/A
-  this step; `derive_vkey.py` vectors and WASM purity untouched.
-- gofmt aligned the `var (…)` declaration block in `TestRecordViolation` (cosmetic, expected).
+- `Freeze` is now the sole writer of `frozen`; `AdvanceFollowState` omits it from its `DO UPDATE`, so
+  the two `ON CONFLICT(hub_id)` upserts compose correctly (advance-after-freeze keeps the freeze). The
+  next step must not introduce any other writer of `frozen` except a deliberate human-authorized
+  unfreeze (none planned for v1 — ADR-0006).
+- `RecordViolation` is `LastInsertId`-only by design (no `ON CONFLICT`, so no `RowsAffected` dedupe
+  dance like `RecordCheckpoint`): re-detection records distinct rows, which is the intended evidence
+  behavior. The future consistency check owns *when* to record, not dedupe.
+- `proof_json` is TEXT; an empty `ProofJSON` is stored as the empty string (asserted), not coerced to
+  NULL — only `detected_at` goes through `unixOrNil` (zero → NULL).
+- Branch is `develop` with upstream `origin/develop`; pushing on PASS.

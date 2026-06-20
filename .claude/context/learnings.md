@@ -181,3 +181,16 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   "never observed" stays distinct from the unix epoch. `FollowState` reads `last_size`/`last_error`
   through `sql.NullInt64`/`sql.NullString` so a partial/absent row degrades to the zero value, never an
   error — an unknown `hubID` returns `FollowState{}` + nil err by design (follower treats it as "never polled").
+- **Freeze path seam is `RecordViolation` (plain INSERT) + `Freeze` (upsert `frozen=1`).** Verified the
+  two upserts compose: `Freeze` writes `INSERT … (hub_id, frozen) VALUES (?,1) ON CONFLICT(hub_id) DO
+  UPDATE SET frozen=1`, `AdvanceFollowState` omits `frozen` from its `DO UPDATE`, so advance-after-freeze
+  keeps `frozen=1` AND moves `last_size` (no auto-unfreeze, ADR-0006) — `TestFreezeNoAutoUnfreeze` is
+  non-vacuous (asserts both flags). `RecordViolation` is `LastInsertId`-only (no `RowsAffected` dance —
+  no `ON CONFLICT`), so re-detection yields distinct ids/rows (re-detection is itself evidence). The
+  `Kind` string rides on the `Violation` struct exactly as `Status` rides on `CheckpointRecord`, keeping
+  store import-free of `logclient`.
+- **The `net`/`net/netip`/`net/url` in `go list -deps ./internal/store` are from `modernc.org/sqlite`,
+  NOT iscc-monitor code.** The load-bearing invariant is "no `net/http` in the store closure" — verify
+  with `go list -deps ./internal/store | grep '^net/http'` (empty) and that the package's own `.Imports`
+  are exactly `context database/sql embed errors fmt time` + the sqlite driver. Do not flag the bare
+  `net` lines as a leak.
