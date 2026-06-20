@@ -1,93 +1,104 @@
 # Next Work Package
 
-## Step: did:web identifier → did.json URL mapping (pure) + export the didweb resolve surface
+## Step: did:web HTTP resolver at the outbound-fetch seam (base URL → verifier key, `unresolvable` on failure)
 
 ## Goal
-Add the pure `did:web:<domain>` → `https://<domain>/.well-known/did.json` URL derivation the
-follower's outbound-fetch seam needs, and promote the minimal `didweb` resolve surface
-(`ParseDIDDocument`/`VerifierKey`, plus the already-exported `DIDKey`) across the package boundary.
-This is the last pure, golden-testable unit before HTTP I/O; it unblocks the next step (the injected
-`Fetcher` + status mapping) without yet touching `net/http`.
+Turn the pure did:web chain (`DocumentURL` → `ParseDIDDocument` → `VerifierKey`) into a working
+resolver that, given a hub base URL, fetches the hub's `did.json` over an injected `Fetcher` and
+returns the hub's signed-note verifier key. This is the first networked unit of M1 and the gate that
+lets the follower (next steps) obtain the key it verifies checkpoints against; failures collapse to a
+single `unresolvable` sentinel the follower maps to hub status.
 
 ## Scope
 - **Create**:
-  - `/workspace/iscc-monitor/internal/didweb/url.go` — pure `DocumentURL(did string) (string, error)`
-    mapping a `did:web:<method-specific-id>` identifier to its `did.json` HTTPS URL. No
-    `net`/`net/http`/`os`/`sql` imports (only `fmt`, `strings`, and `net/url`'s `PathUnescape`).
-  - `/workspace/iscc-monitor/internal/didweb/url_test.go` — table-driven golden + error tests (test
-    file, not counted toward the 3-file limit).
-- **Modify** (≤3 non-test/doc files):
-  - `/workspace/iscc-monitor/internal/didweb/resolve.go` — rename `parseDIDDocument` →
-    `ParseDIDDocument` (export); update its docstring/wrapped-error strings that embed the old name.
-    `DIDKey` is already exported — leave it.
-  - `/workspace/iscc-monitor/internal/didweb/vkey.go` — rename `verifierKey` → `VerifierKey` (export)
-    so the follower can derive the signed-note key from a `DIDKey.PublicKey`. Keep `pubkeyFromDID`,
-    `keyID`, `b58decode` unexported (in-package helpers; the follower does not need them).
-- **Modify (test files — not counted toward the budget):**
-  - `/workspace/iscc-monitor/internal/didweb/resolve_test.go` and
-    `/workspace/iscc-monitor/internal/didweb/vkey_test.go` — update references after the renames.
+  - `/workspace/iscc-monitor/internal/logclient/didresolve.go` — the did:web resolver: a small
+    `Fetcher` interface (`Fetch(ctx, url) ([]byte, error)`), an `httpFetcher` adapter over
+    `*http.Client`, an exported `ErrUnresolvable` sentinel, and `ResolveVerifierKey(ctx, fetcher,
+    baseURL) (key string, didKey didweb.DIDKey, err error)` that wires
+    `origin` + `did:web:<host>` + `didweb.DocumentURL` → `fetcher.Fetch` → `didweb.ParseDIDDocument`
+    → `didweb.VerifierKey`. (1 non-test source file.)
+  - `/workspace/iscc-monitor/internal/logclient/didresolve_test.go` — table-driven tests driving the
+    resolver against the sb0/sb1 fixtures through an in-test fake `Fetcher` and through
+    `net/http/httptest` (test file, not counted toward the 3-file limit).
+- **Modify** (≤3 non-test/doc files): none — this step is purely additive.
 - **Reference** (read, do not import):
+  - `/workspace/iscc-monitor/cauldron/tessera/client/fetcher.go` — the `HTTPFetcher.fetch` shape to
+    mirror: `http.NewRequestWithContext`, map `404` → `os.ErrNotExist`, non-200 → error, `io.ReadAll`,
+    close body. Port the *shape*, do not import it.
+  - `/workspace/iscc-monitor/internal/didweb/url.go` (`DocumentURL`),
+    `/workspace/iscc-monitor/internal/didweb/resolve.go` (`ParseDIDDocument`, `DIDKey`),
+    `/workspace/iscc-monitor/internal/didweb/vkey.go` (`VerifierKey`) — the three exported entrypoints
+    to call in sequence.
+  - `/workspace/iscc-monitor/internal/logclient/origin.go` — `origin(baseURL)` is the signed-note
+    name passed to `VerifierKey`; reuse it (do not re-derive).
   - `/workspace/iscc-monitor/internal/didweb/testdata/sb0.iscc.id_did.json` and
-    `/workspace/iscc-monitor/internal/didweb/testdata/sb1.amlet.id_did.json` — their `"id"` fields are
-    `did:web:sb0.iscc.id` / `did:web:sb1.amlet.id`; these are the golden inputs for `DocumentURL`.
-  - `/workspace/iscc-monitor/internal/didweb/resolve.go` and
-    `/workspace/iscc-monitor/internal/didweb/vkey.go` — current unexported names to rename.
-  - `/workspace/iscc-monitor/.claude/derive_vkey.py` — the trust-root oracle; the rename must not
-    change derived bytes.
+    `/workspace/iscc-monitor/internal/didweb/testdata/sb1.amlet.id_did.json` — copy/symlink into a new
+    `internal/logclient/testdata/` (test fixtures, not source) so the resolver test stays offline.
+  - `/workspace/iscc-monitor/.claude/plans/cosmic-baking-octopus.md` §Architecture step 2 (did:web key
+    resolution; `unresolvable` on failure, keep mirroring) and ADR-0009.
 
 ## Not In Scope
-- **No `net/http`, no `Fetcher` interface, no `*http.Client` injection, no actual fetch.** This step
-  is the pure string→URL mapping only; the HTTP fetch + status mapping is the *next* step.
-- No hub-status assignment (`unresolvable`/`unverified`), no `hub_keys` table, no validity-window
-  enforcement, no follower, no SQLite, no `cmd/` entrypoint.
-- Do not change the derived verifier-key bytes or touch the fixtures — the renames are mechanical.
-- Do not widen the exported surface beyond `ParseDIDDocument` and `VerifierKey` (YAGNI); leave
-  `pubkeyFromDID`/`keyID`/`b58decode` package-private.
+- **No signature verification and no `unverified` status.** Verifying an Ed25519 signed-note against
+  the resolved key is the follower's job and needs an actual checkpoint — it is a *later* step. This
+  step stops at producing the verifier key + `DIDKey`.
+- No `hub_keys` SQLite cache, no validity-window (`ValidFrom`/`ValidUntil`/`Revoked`) enforcement, no
+  re-resolution cadence — those belong to the store/follower step.
+- No follower loop, no per-network SQLite, no `cmd/` entrypoint, no `/metrics`, no realm registry.
+- Do not move or alter `internal/didweb` (it must stay WASM-pure); do not change the derived
+  verifier-key bytes or the fixtures' contents.
+- Do not add `transparency-dev/*` or any external module dependency — stdlib `net/http` only.
 
 ## Implementation Notes
-- **W3C did:web resolution mapping** (port from the did:web method spec; there is no usable copy in
-  `cauldron/` — implement from the rule below):
-  1. Require the `did:web:` prefix; strip it to get the method-specific id (MSID). Return a wrapped
-     error on a missing prefix (e.g. a `did:key:` input) or an empty MSID.
-  2. The MSID is colon-separated: the first segment is the (possibly percent-encoded) `host[:port]`;
-     any later segments are path components. Percent-decode each segment with `url.PathUnescape`, so
-     `did:web:example.com%3A3000` → host `example.com:3000`.
-  3. Build `https://` + decoded-host, then: if there are **no** path segments, append
-     `/.well-known/did.json`; if there **are** path segments, append `/<seg1>/<seg2>/…/did.json`.
-     (`did:web:example.com:user:alice` → `https://example.com/user/alice/did.json`.)
-  4. Live hubs (no path, no port): `did:web:sb0.iscc.id` →
-     `https://sb0.iscc.id/.well-known/did.json`; `did:web:sb1.amlet.id` →
-     `https://sb1.amlet.id/.well-known/did.json`.
-- **Keep `DocumentURL` pure and WASM-shareable.** `fmt`, `strings`, and `net/url` (`PathUnescape`
-  only — not the networking half) are fine; **no `net`/`net/http`/`database/sql`**. Per learnings,
-  verify purity with `GOOS=js GOARCH=wasm go build ./internal/didweb`, NOT by grepping `os` out of
-  the dep list — `fmt` transitively pulls `os`, which is acceptable stdlib.
-- **Correctness rule (learnings, did:web / ADR-0009):** did:web is the only key source; resolution
-  must be deterministic. This URL derivation is the first link in that chain — wrong `.well-known`
-  placement silently points the fetcher at the wrong document.
-- **Export renames are mechanical:** `parseDIDDocument` → `ParseDIDDocument`, `verifierKey` →
-  `VerifierKey`. Update every call site (the two test files) and any wrapped-error string that embeds
-  the old name. Match the existing package error style (`fmt.Errorf("DocumentURL: …: %w", …)`).
-- Functional, short, pure functions with evergreen docstrings; package-level docstrings already
-  cover file purpose — add a one-line file-purpose comment to `url.go`.
+- **Placement (load-bearing): the resolver lives in `internal/logclient`, NOT `internal/didweb`.**
+  This file imports `net/http`/`net/url`, which would break the WASM build of `internal/didweb`
+  (learnings: `proof/verify` and `didweb` must stay import-clean; verify with
+  `GOOS=js GOARCH=wasm go build ./internal/didweb`). `logclient` is the non-WASM follower package per
+  the plan's layout (`internal/logclient/{origin.go,follower.go,verify.go}`).
+- **The did:web identifier comes from the host, not the base path.** Derive it as
+  `"did:web:" + <host>` where `<host>` is the host[:port] of `baseURL` (the same host `origin` uses,
+  minus the `/log` suffix). For the live hubs `https://sb0.iscc.id` → `did:web:sb0.iscc.id` →
+  `DocumentURL` → `https://sb0.iscc.id/.well-known/did.json`. Reuse `net/url` parsing already proven
+  in `origin.go` (default the scheme in for a bare host); keep one host-extraction helper, do not
+  duplicate `origin`'s logic by hand.
+- **`Fetcher` is a 1-method interface for the seam (PRD "Testing Decisions": test at the
+  outbound-fetch seam against fixtures).** `Fetch(ctx context.Context, url string) ([]byte, error)`.
+  Provide `httpFetcher{c *http.Client}` (nil client → `http.DefaultClient`) mirroring
+  `cauldron/tessera/client/fetcher.go`'s `fetch`: `http.NewRequestWithContext(ctx, GET, url, nil)`,
+  on `404` return `os.ErrNotExist` (wrapped), non-200 → error, `defer Body.Close()`, `io.ReadAll`.
+  Tests inject a fake `Fetcher` returning fixture bytes (and `httptest.NewServer` for one real-HTTP
+  path) — never hit the live network.
+- **Error mapping (ADR-0009 / learnings "did:web is the only key source"):** any failure to fetch OR
+  parse OR derive (bad URL, fetch error, non-200, invalid JSON, missing assertionMethod, bad key)
+  wraps `ErrUnresolvable` via `fmt.Errorf("...: %w", ErrUnresolvable)` so the follower maps it to
+  status `unresolvable` and keeps mirroring — without inspecting resolver internals. Keep
+  `ErrUnresolvable` exported; keep the `Fetcher` interface and `ResolveVerifierKey` exported; keep the
+  `httpFetcher` adapter unexported with an exported constructor if one is needed (`NewHTTPFetcher`),
+  YAGNI otherwise.
+- **Reuse, don't re-derive.** Call `origin(baseURL)` for the signed-note name and `didweb.VerifierKey`
+  for the key string — the byte-exact trust-root oracle path stays single-sourced (learnings: verifier
+  key is the trust-root gate). Do not re-implement key derivation in `logclient`.
+- **Context-first signature:** `ResolveVerifierKey(ctx, ...)` and `Fetch(ctx, ...)` take a
+  `context.Context` first arg (cancellation/timeout for the follower).
+- Short, pure-ish functions with evergreen docstrings; file starts with a one-line purpose docstring.
 - Do NOT use `t.Skip`, `//nolint`, build tags, or swallow errors to pass the gate (target quality
-  bar).
+  bar; learnings "Never weaken a gate").
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all exit 0).
 - `gofmt -l /workspace/iscc-monitor` prints nothing.
-- `go test -run TestDocumentURL ./internal/didweb` passes.
-- `DocumentURL("did:web:sb0.iscc.id") == "https://sb0.iscc.id/.well-known/did.json"`.
-- `DocumentURL("did:web:sb1.amlet.id") == "https://sb1.amlet.id/.well-known/did.json"`.
-- `DocumentURL("did:web:example.com%3A3000:user:alice") == "https://example.com:3000/user/alice/did.json"`.
-- `DocumentURL("")` and `DocumentURL("did:key:z6Mkabc")` (wrong method) each return a non-nil error.
-- `go test -run TestParseDIDDocument ./internal/didweb` and
-  `go test -run TestVerifierKey ./internal/didweb` still pass after the export renames — no regression
-  to the golden vectors `sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5` and
-  `sb1.amlet.id/log+22b08f3e+ATo2ruguSdJGh11PS76osrQf6OZKrufzzwH/HMwE3a8/`.
-- `GOOS=js GOARCH=wasm go build ./internal/didweb` succeeds (package stays WASM-shareable).
+- `go test -run TestResolveVerifierKey ./internal/logclient` passes.
+- Against the sb0 fixture, `ResolveVerifierKey` returns the golden verifier key
+  `sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5` for base URL
+  `https://sb0.iscc.id` (assert the full string in the test).
+- Against the sb1 fixture, it returns `sb1.amlet.id/log+22b08f3e+ATo2ruguSdJGh11PS76osrQf6OZKrufzzwH/HMwE3a8/`
+  for `https://sb1.amlet.id` (assert the full string).
+- A `Fetcher` that returns an error, a 404 (`os.ErrNotExist`), or malformed JSON each makes
+  `ResolveVerifierKey` return an error satisfying `errors.Is(err, ErrUnresolvable)` (assert with
+  `errors.Is`).
+- `GOOS=js GOARCH=wasm go build ./internal/didweb` still succeeds — `internal/didweb` is untouched and
+  the new `net/http` import lives only in `internal/logclient`.
 
 ## Done When
-`DocumentURL` returns the correct `.well-known/did.json` URL for both live hubs and the ported
-did:web path/port cases, the `ParseDIDDocument`/`VerifierKey` exports compile and the existing golden
-tests still pass, and `mise run check` is green.
+`ResolveVerifierKey` fetches each live-hub fixture through an injected `Fetcher` and returns the exact
+golden verifier-key string, every fetch/parse/derive failure surfaces as `errors.Is(err,
+ErrUnresolvable)`, `internal/didweb` still builds for WASM, and `mise run check` is green.
