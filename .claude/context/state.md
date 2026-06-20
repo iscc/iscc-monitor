@@ -1,60 +1,64 @@
-<!-- assessed-at: bd9030d498f9101faf0f03fe122785e853b5efc1 -->
+<!-- assessed-at: 8715370321c5a77f2c83bfe374aa4b4523543320 -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: M1 in progress — verification primitives complete (did:web chain + signed-note checkpoint verify + pure validity predicate), all golden-tested; no follower/store/binary yet
+## Phase: M1 in progress — all four pure verification primitives complete and golden-tested (did:web chain + signed-note verify + validity window + composed four-way `AcceptCheckpoint`); no store/follower/binary yet
 
 The Go module is live (`module github.com/iscc/iscc-monitor`, `go 1.24.0`; one dep:
-`golang.org/x/mod v0.33.0` for `sumdb/note`). M1's *pure verification primitives* are now complete and
-golden-tested: the did:web trust-root chain, the networked `ResolveVerifierKey`, the signed-note
-`VerifyCheckpoint`, and — new this iteration — `DIDKey.ValidAt(now)`, the CID 1.0 validity-window
-predicate. What remains of M1 is the entire *stateful* layer: the per-hub follower (three-trigger
-consistency check + freeze + alert), the per-network SQLite store, coverage, structured logs,
-`/metrics`, restart survival — and there is still no binary entrypoint. Last `review` verdict (HEAD
-`bd9030d`) is **PASS** with the gate recorded green; branch `develop` in sync with `origin/develop`;
-one open `normal` issue (`parseTime` fail-open, deferred to the `hub_keys` step).
+`golang.org/x/mod v0.33.0` for `sumdb/note`). M1's *pure verification primitives* are now complete:
+the did:web trust-root chain, the networked `ResolveVerifierKey`, the signed-note `VerifyCheckpoint`,
+`DIDKey.ValidAt`, and — new this iteration — `AcceptCheckpoint`, which composes all three into the
+ADR-0009 four-way hub-status verdict. What remains of M1 is the entire *stateful* layer: the per-hub
+follower poll loop, the per-network SQLite store, the three-trigger RFC-6962 consistency check, freeze
++ alert, coverage, structured logs, `/metrics`, restart survival — and there is still no binary
+entrypoint. Last `review` verdict (HEAD `8715370`) is **PASS** with the gate recorded green; branch
+`develop` in sync with `origin/develop` (0 ahead / 0 behind); `issues.md` is empty.
 
 ## M1 — Read-only Monitor
 **Status**: partially met
-- Verified present (incremental re-check; only `internal/didweb/validity.go` + its test and a doc-only
-  comment in `resolve.go` changed since the last assessment):
-  - `internal/didweb/validity.go` (NEW since last assessment) — pure
-    `func (k DIDKey) ValidAt(now time.Time) bool`: half-open `[ValidFrom, ValidUntil)`, revoked
-    at/after `Revoked`, each zero field = "no constraint" so a zero-value `DIDKey` is always valid.
-    Boundaries compare with `Before` only, guarded by `!IsZero()`; takes `now` as an argument
-    (deterministic, never reads the clock); imports only `time` (WASM-pure). Tested by `TestValidAt`
-    (12-case boundary table) + `TestValidAtZeroKeyNow`. **Pure predicate only — nothing consumes it
-    yet**; the follower must call it and map out-of-window → not-`verified` (distinct from
-    `ErrUnverified`/`ErrUnresolvable`).
-  - `internal/logclient/verify.go` — pure `VerifyCheckpoint(vkey, raw) -> (origin, treeSize, root,
-    err)`: `note.NewVerifier` + `note.Open`, the oracle's exact `len(Sigs)==0 || len(UnverifiedSigs)!=0`
-    reject, then `parseCheckpointBody` (private) parsing the verified 3-line body and asserting
-    signer-name == origin. Exported sentinel `ErrUnverified`. Imports only `sumdb/note` + stdlib.
-    Tested by `TestVerifyCheckpoint` (sb0/sb1 real fixtures), `TestVerifyCheckpointUnverified`,
+- Verified present (incremental re-check; since `bd9030d` only `internal/logclient/accept.go` +
+  `accept_test.go` were added and `internal/didweb/resolve.go` + `resolve_test.go` changed for the
+  `parseTime` fail-closed fix — all other sections carried forward unchanged):
+  - `internal/logclient/accept.go` (NEW since last assessment) — pure `Status` enum
+    (`StatusVerified/Unverified/Unresolvable/Rotated` + `String()`) and
+    `AcceptCheckpoint(ctx, fetcher, baseURL, raw, observedAt)`. Composes the three primitives in
+    load-bearing order: `ResolveVerifierKey` (`ErrUnresolvable → StatusUnresolvable`) → `VerifyCheckpoint`
+    (`ErrUnverified → StatusUnverified`; a verified-but-garbled body is returned as a **non-nil error**,
+    not folded into a status — callers must check `err` first) → `DIDKey.ValidAt(observedAt)`
+    (out-of-window valid signature → `StatusRotated`, in-window → `StatusVerified` with `CheckpointInfo`).
+    `CheckpointInfo{Origin, TreeSize, Root}` is the zero value on every non-verified outcome. Pure,
+    dependency-injected through the `Fetcher` seam, never reads the clock. Tested by
+    `TestAcceptCheckpoint` (6 subcases: verified, unverified, unresolvable×2 [not-found + malformed-revoked],
+    rotated×2 [validUntil + revoked in the past]).
+  - `internal/didweb/resolve.go` — `parseTime` now **fails closed**: a non-empty-but-unparseable RFC-3339
+    validity timestamp returns a wrapped error so `ParseDIDDocument` → `ErrUnresolvable` (never silently
+    treated as absent → never a false `verified`). Empty string = "no constraint" (zero time, no error).
+    Closes the previously-open `normal` fail-open issue; covered by `TestParseDIDDocument` malformed
+    subcases.
+  - `internal/didweb/validity.go` — pure `func (k DIDKey) ValidAt(now time.Time) bool`: half-open
+    `[ValidFrom, ValidUntil)`, revoked at/after `Revoked`, zero field = "no constraint". Takes `now` as an
+    argument (deterministic); imports only `time` (WASM-pure). Tested by `TestValidAt` + `TestValidAtZeroKeyNow`.
+  - `internal/logclient/verify.go` — pure `VerifyCheckpoint(vkey, raw) -> (origin, treeSize, root, err)`:
+    `note.NewVerifier` + `note.Open` + the oracle's exact reject, then `parseCheckpointBody`. Exported
+    `ErrUnverified`. Tested by `TestVerifyCheckpoint` (sb0/sb1 real fixtures), `…Unverified`,
     `TestParseCheckpointBody`. Carried forward unchanged.
-  - `testdata/live/sb0.iscc.id_checkpoint` + `sb1.amlet.id_checkpoint` — real hub-signed C2SP
-    checkpoints (sb0 size 10183, sb1 size 61; sb1 sig keyhash is the CURRENT rotated key `069d0f14`).
-    Carried forward unchanged.
   - `internal/logclient/didresolve.go` — networked did:web resolver: `Fetcher` 1-method seam,
-    `NewHTTPFetcher`, `ErrUnresolvable`, `ResolveVerifierKey(ctx, Fetcher, baseURL)`. Tested by
-    `TestResolveVerifierKey`, `…Unresolvable`, `…OverHTTP` (httptest TLS), `TestHTTPFetcherNotFound`.
-    Carried forward unchanged.
+    `NewHTTPFetcher`, `ErrUnresolvable`, `ResolveVerifierKey`. Tested by `TestResolveVerifierKey`,
+    `…Unresolvable`, `…OverHTTP`, `TestHTTPFetcherNotFound`. Carried forward unchanged.
   - `internal/logclient/origin.go` — `origin(baseURL)` → `<domain>/log`; `TestOrigin` + `TestOriginErrors`.
-    Carried forward unchanged.
-  - `internal/didweb/{url,resolve,vkey}.go` — pure `DocumentURL`, `ParseDIDDocument` (polymorphic
-    `assertionMethod`; parses CID 1.0 `ValidFrom`/`ValidUntil`/`Revoked`), `VerifierKey`/`DIDKey`
-    (byte-exact port of `derive_vkey.py`). Golden-tested. Carried forward unchanged.
-  - Test totals: 9 `func Test` in `internal/didweb`, 9 in `internal/logclient` (18 total).
-  - Gate-dodge scan clean (no `//nolint` / `t.Skip` / swallowed err / build-tag exclusion in `internal`).
-- Missing (the stateful majority of M1 — nothing consumes the verified key/checkpoint/validity yet):
-  - **Per-hub follower**: wire `ResolveVerifierKey → VerifyCheckpoint → DIDKey.ValidAt` into a
-    checkpoint-acceptance path mapping `ErrUnresolvable → unresolvable`, `ErrUnverified → unverified`,
-    and out-of-window key → not-`verified`; run the three-trigger RFC-6962 consistency check
-    (fork/shrink/equivocation via `transparency-dev/merkle`), persist both raw checkpoints + proof,
-    set `frozen=1`, alert once, poll evidence-only at a backed-off cadence, no auto-unfreeze, other
-    hubs unaffected.
+  - `internal/didweb/{url,resolve,vkey}.go` — pure `DocumentURL`, `ParseDIDDocument`, `VerifierKey`/`DIDKey`
+    (byte-exact port of `derive_vkey.py`). Golden-tested.
+  - `testdata/live/sb0.iscc.id_checkpoint` + `sb1.amlet.id_checkpoint` — real hub-signed C2SP checkpoints.
+  - Test totals: 9 `func Test` in `internal/didweb`, 10 in `internal/logclient` (19 total).
+  - Gate-dodge scan clean (no `//nolint` / `t.Skip` / `//go:build ignore` in `internal`).
+- Missing (the stateful majority of M1 — nothing consumes `AcceptCheckpoint`'s verdict yet):
+  - **Per-hub follower poll loop**: call `AcceptCheckpoint` and persist the verdict (only
+    `StatusVerified` advances accepted state; the other three are recorded findings while mirroring
+    continues); run the three-trigger RFC-6962 consistency check (fork/shrink/equivocation via
+    `transparency-dev/merkle`), persist both raw checkpoints + proof, set `frozen=1`, alert once,
+    no auto-unfreeze, other hubs unaffected.
   - **Per-network SQLite store** (`modernc.org/sqlite`): `hub_keys` cache, `violations`, coverage
     (`monitored_since`), restart survival.
   - config + realm registry (domains only), structured logs, `/metrics`.
@@ -63,13 +67,14 @@ one open `normal` issue (`parseTime` fail-open, deferred to the `hub_keys` step)
   holds the two checkpoints. Still **no tiles or entry bundles** in `testdata/live/` (needed for the
   consistency check + M2 aggregator). Known stale-fixture drift (not yet acted on): `derive_vkey.py`
   `HUBS` + both `sb1.amlet.id_did.json` did:web fixtures still carry sb1's PRE-rotation key
-  (`22b08f3e`); refresh to `069d0f14` lands with the `hub_keys`/validity-enforcement step.
+  (`22b08f3e`); refresh to `069d0f14` lands with the follower/`hub_keys` step.
 - Reuse imports wired: `golang.org/x/mod/sumdb/note` (in `verify.go`). Not yet wired:
   `transparency-dev/*` (merkle/tessera/formats), `nbd-wtf/opentimestamps`, `modernc.org/sqlite`.
 - Verify criteria status: `origin("https://sb0.iscc.id") == "sb0.iscc.id/log"` and `VerifierKey`
-  byte-match for both hubs — **met** (exercised end-to-end: real checkpoints verify under the resolved
-  key). The synthetic fork/shrink/equivocation → `violations.kind` + `frozen=1` + exactly-one-alert +
-  other-hubs-unaffected + restart-survival half of M1 is **not started** (no follower or store).
+  byte-match for both hubs — **met** (real checkpoints verify end-to-end under the resolved key, and
+  `AcceptCheckpoint` returns `StatusVerified` with `TreeSize == 10183` for sb0). The synthetic
+  fork/shrink/equivocation → `violations.kind` + `frozen=1` + exactly-one-alert + other-hubs-unaffected
+  + restart-survival half of M1 is **not started** (no follower or store).
 
 ## M2 — Aggregator
 **Status**: not started.
@@ -84,23 +89,20 @@ one open `normal` issue (`parseTime` fail-open, deferred to the `hub_keys` step)
 **Status**: green (as recorded by `review`; not re-run here)
 - `go.mod` present (`go 1.24.0`, requires `x/mod v0.33.0`); `mise run check` runnable
   (`go build ./... && go vet ./... && go test ./...`). Latest `review` handoff records the gate green
-  at HEAD `bd9030d` (build/vet/test exit 0 on a cleared cache, `gofmt -l .` empty,
-  `GOOS=js GOARCH=wasm go build ./internal/didweb` succeeds — `validity.go` is `time`-only WASM-pure).
-  Trust-root oracle re-confirmed: `derive_vkey.py` byte-exact AND the live checkpoint fixtures verify
-  under `note.Open`.
+  at HEAD `8715370` (build/vet/test exit 0, `gofmt -l .` empty,
+  `GOOS=js GOARCH=wasm go build ./internal/didweb` succeeds; trust-root oracle `derive_vkey.py`
+  byte-exact and live checkpoint fixtures verify under `note.Open`).
 - Remote `origin` configured (github.com/iscc/iscc-monitor); branch `develop` in sync with
-  `origin/develop`. **No `.github/workflows/` and `gh run list` returns empty — no CI configured.**
-  When CI is wired it must avoid `go build ./...` over the gitignored `cauldron/` reference trees
-  (module-less, break a fresh build) and shell out the future `notecheck` oracle rather than `go run`
-  from `cauldron/` — see learnings.
+  `origin/develop` (0/0). **No `.github/workflows/` and `gh run list` returns empty — no CI configured.**
+  When CI is wired it must avoid `go build ./...` over the gitignored `cauldron/` reference trees and
+  shell out the future `notecheck` oracle rather than `go run` from `cauldron/` — see learnings.
 
 ## Next Milestone
-Continue M1. Immediate next unit (per the PASS handoff): the **SQLite `hub_keys` cache + follower
-checkpoint-acceptance path** — wire `ResolveVerifierKey → VerifyCheckpoint`, calling
-`DIDKey.ValidAt(observedAt)`; map `ErrUnresolvable → unresolvable`, `ErrUnverified → unverified`, and
-out-of-window matching key → not-`verified` (rotation/revocation, a distinct outcome). Refresh the
-stale sb1 fixture + `derive_vkey.py` `HUBS` to `069d0f14` here, and resolve the open `normal`
-`parseTime` fail-open issue at this step (malformed validity timestamp must not yield `verified`). The
-three-trigger RFC-6962 consistency check (needs tiles in `testdata/live/`) is the step after; then
-freeze/alert + per-network store + coverage + restart-survival complete M1's Verify criteria. No CI is
-configured — flag for whoever sets up the GitHub workflow.
+Continue M1. Immediate next unit (per the PASS handoff): the **SQLite `hub_keys` cache + the stateful
+follower poll loop** that calls `AcceptCheckpoint` and persists the verdict — only `StatusVerified`
+advances accepted state; the other three are recorded findings while mirroring continues. The follower
+must check `AcceptCheckpoint`'s returned `err` before the status (a verified-but-garbled body is a fault,
+not a four-way verdict). Refresh the stale sb1 did.json fixture + `derive_vkey.py` `HUBS` to `069d0f14`
+at this step. The three-trigger RFC-6962 consistency check (needs tiles in `testdata/live/` +
+`transparency-dev/merkle`) is the step after; then freeze/alert + coverage + restart-survival complete
+M1's Verify criteria. No CI is configured — flag for whoever sets up the GitHub workflow.
