@@ -1,75 +1,77 @@
 # Handoff
 
-## 2026-06-20 — Review of: SQLiteFetcher — read mirrored tiles/bundles/checkpoint back as a `fsck.Fetcher`
+## 2026-06-20 — Pure `ConsistencyProofFromTiles` builder over the tile-fetch seam (`internal/logclient`)
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Added `ConsistencyProofFromTiles(ctx, fetch TileFetcher, smaller, larger uint64) ([][]byte,
+error)` — a pure RFC-6962 consistency-proof builder ported from tessera's
+`client.ProofBuilder.ConsistencyProof` / `fetchNodes` / `nodeCache.GetNode` (otel spans and the
+net/http fetcher dropped). It sources every proof node from mirrored hash tiles via an injected
+`TileFetcher` closure whose shape matches `store.SQLiteFetcher.ReadTile` exactly, so the follower can
+later pass it straight in. The result is shaped to feed `CheckEquivocation`'s `consistencyProof`
+argument directly. No follower wiring (deliberately the next step).
 
-**Summary:** `internal/store/tiles.go` adds the partial-tile-discipline write/read CRUD
-(`RecordTile`/`RecordEntryBundle`/`ReadTileBlob`/`ReadEntryBundleBlob`/`LatestCheckpointRaw`) and
-`fetcher.go` adds `SQLiteFetcher` satisfying tessera's three-method Fetcher shape with the load-bearing
-p↔width mapping and an inline `PartialOrFullResource` partial→full fallback honoring the `os.ErrNotExist`
-contract. Correct, well-tested at the public seam (17 new tests, all uncached-green), scope-disciplined
-(exactly 2 production files, both new + in scope), and store stays a leaf with go.mod/go.sum
-byte-identical. The single note is a documented, justified test-conformance technique (see Notes).
+**Files changed:**
+- `internal/logclient/proofbuilder.go` (new): `TileFetcher` type, `ConsistencyProofFromTiles`,
+  and the `getNode` helper (node→tile mapping via `layout.NodeCoordsToTileAddress` +
+  `PartialTileSize`, tile parse via `api.HashTile.UnmarshalText`, node recompute via
+  `compact.RangeFactory`). Per-call `map[tileKey]api.HashTile` cache (KISS; no full `nodeCache` port).
+- `internal/logclient/proofbuilder_test.go` (new): golden test against a real ~300-leaf
+  `testonly.Tree`. An in-test `TileFetcher` serializes the tree's level-0 hash tiles via
+  `api.HashTile.MarshalText`; asserts the built proof byte-equals `tree.ConsistencyProof(s1,s2)` AND
+  verifies via `proof.VerifyConsistency` for 5 growing pairs (incl. boundary-crossing `(5,300)` /
+  `(260,300)` into the partial tile index 1), plus the empty-proof boundaries (`s1==0`, `s1==s2`,
+  never touches the fetcher) and a missing-tile fault that preserves `os.ErrNotExist`.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green, all 8 packages ok.
-- [x] `gofmt -l .` — empty (no formatting failures).
-- [x] `go test -count=1 ./internal/store` — PASS uncached; all 17 new tests pass verbosely.
-- [x] Tile round-trip: `RecordTile(0,0,256,…)` → `ReadTile(p=0)` returns identical bytes; `width=44`
-      partial → `ReadTile(p=44)` returns its bytes. sha256 column = `sha256.Sum256(data)`. (verified)
-- [x] `is_full`: raw `SELECT is_full` = 1 for width 256, 0 for width 44 (tiles **and** entry_bundles).
-- [x] Partial overwrite: second `RecordTile` at same `(hub,level,index,width=100)` overwrites in place
-      → `tiles` row count stays 1 (composite-PK upsert).
-- [x] Not-exist: `ReadTile`/`ReadEntryBundle`/`ReadCheckpoint` on un-written keys satisfy
-      `errors.Is(err, os.ErrNotExist)`.
-- [x] Partial→full fallback: only-full stored + `ReadTile(p=200)` returns the full bytes; both-missing
-      `ReadTile(p=100)` still wrapped `os.ErrNotExist`.
-- [x] `ReadCheckpoint` / `LatestCheckpointRaw` return the highest-`tree_size` raw bytes (two sizes
-      stored, asserts the higher).
-- [x] `go list -deps ./internal/store | grep '^net/http$'` empty; `database/sql` present (store is a
-      leaf). `.Imports` = `context crypto/sha256 database/sql embed errors fmt internal/tiles
-      modernc.org/sqlite os time`.
-- [x] Reference files untouched (`git diff --quiet HEAD~1..HEAD -- checkpoints.go schema.sql
-      internal/tiles` → clean); `go.mod`/`go.sum` byte-identical; `go mod tidy` is a verified no-op.
-- [x] Conformance assertion compiles: local `fsckFetcher` interface is byte-for-byte identical to the
-      real `fsck.Fetcher@v1.0.2` (reviewer diffed against `fsck/fsck.go`), pinned by `var _ fsckFetcher
-      = SQLiteFetcher{}`.
-- [x] Gate-integrity scan over the 3 unpushed commits: no `//nolint`, `t.Skip`, build-tag exclusions,
-      swallowed errors, deleted assertions, or loosened gates (the only `[x]` match was prior handoff
-      prose, not code).
-- [x] Oracle/conformance gate correctly **N/A** (no signature/RFC-6962/Merkle/did:web/`fsck`-rebuild
-      path; plain CRUD + synthetic BLOB round-trip).
+**Verification:** `mise run check` → green, all 8 packages ok. Per-criterion:
+- [x] `gofmt -l .` empty.
+- [x] `go test -count=1 -run TestConsistencyProofFromTiles ./internal/logclient` passes (3 tests).
+- [x] Golden holds: byte-equality vs `tree.ConsistencyProof` on all 5 pairs incl. boundary-crossing
+  `(5,300)`; `VerifyConsistency` accepts the built proof for all 5 (≥3 required). Proof lengths are
+  non-trivial (9/7/10/6/8 hashes), so the byte-match is not comparing empties.
+- [x] `GOOS=js GOARCH=wasm go build ./internal/logclient` succeeds (purity preserved).
+- [x] `git diff --quiet HEAD -- go.mod go.sum` exits 0 (go.mod AND go.sum byte-identical to HEAD).
+- [x] Non-vacuousness proven: a throwaway mutation corrupting the first folded leaf in `getNode` made
+  the golden FAIL (then reverted) — a green-but-wrong builder cannot ship.
 
-**Issues found:** (none) — no open issues; nothing filed this iteration.
-
-**Next:** Either of the two seams this slice unblocks:
-1. Wire `CheckEquivocation` into `follower.checkConsistency` — source the RFC-6962 consistency-proof
-   hashes from `SQLiteFetcher`. Touches `internal/follower/`; needs tile fixtures for an end-to-end test.
-2. The dedicated `fsck` root-rebuild conformance slice — real tile fixtures + `fsck.New(...).Check(...)`
-   over `SQLiteFetcher` + the inclusion cross-check vs the hub's `IsccLogInclusionProof`. This is the
-   first slice where the trust-root **oracle gate re-arms** for the mirror path; it lives in `cmd/` or a
-   future conformance package that *can* take the `fsck` dep (with its otel/klog closure).
-   Recommend (1) first — it advances M1 to completion (the last unwired self-consistency trigger).
+**Next:** Wire `CheckEquivocation` into `follower.checkConsistency` as the third trigger. The two
+seams now meet: source the proof via `ConsistencyProofFromTiles(ctx, SQLiteFetcher.ReadTile, prevSize,
+nextSize)` (the `TileFetcher` signature was made identical to `SQLiteFetcher.ReadTile` for exactly
+this), feed its `[][]byte` to `CheckEquivocation`, on `true` → `RecordViolation`("equivocation") +
+`Freeze` + alert-once (mirroring the shrink/fork branches). That step needs real on-disk tile fixtures
+under `testdata/live/` (deferred from here) so the end-to-end follower test can mirror tiles and prove
+a real-tree equivocation freezes. Order against fork/shrink in `checkConsistency` and the
+"compare against the prior accepted root, not the contradicting evidence" caveat (learnings) apply.
 
 **Notes:**
-- **NOTE (accepted, not a blocker): `var _ fsck.Fetcher` assertion uses a local interface copy, not the
-  real `fsck` import.** `next.md` asked for `var _ fsck.Fetcher = SQLiteFetcher{}` AND byte-identical
-  go.mod with "no new dep needed" — these are mutually exclusive. Reviewer confirmed from source: `go
-  list -deps github.com/transparency-dev/tessera/fsck` pulls `net/http`, `otel`, and `klog`, so
-  importing `fsck` even in a `_test.go` breaks store leaf purity and forces `go mod tidy` to add
-  indirect requires. The author's resolution (a local `fsckFetcher` interface byte-for-byte identical to
-  the real one, asserted with `var _ fsckFetcher = SQLiteFetcher{}`) gives the **equivalent**
-  drift-detection guarantee without the dep leak, keeps go.mod/go.sum byte-identical, and keeps store a
-  leaf — all explicitly load-bearing constraints. Sound engineering judgment, transparently flagged.
-  Not HUMAN-REVIEW material: it is test-internal, fully reversible, and the production `SQLiteFetcher`
-  is unaffected. Recorded in learnings.
-- The actual `fsck.New(...).Check(...)` root-rebuild is correctly out of scope (no fixtures) and
-  unaffected; this slice only proves the read/write round-trip + not-exist contract with synthetic BLOBs.
-- `boolToInt` is a small new private helper in `tiles.go` beside the existing `unixOrNil`/
-  `nullStringOrNil` helpers — same package, same style. No dead code; `go vet` clean.
-- CI/`notecheck`: still no `.github/workflows/` in the repo — the external signature-parity oracle
-  remains unwired. Pre-existing (flagged in earlier handoffs), not a regression of this slice, and N/A
-  to the CRUD path here. Worth wiring before the `fsck`-rebuild conformance slice so the trust-root
-  oracle has CI coverage when the mirror path first faces it.
+- **`next.md` check "`go list -deps ./internal/logclient | grep net/http` is empty" does NOT hold —
+  but it is PRE-EXISTING, not introduced here.** `net/http` is in the package closure via
+  `didresolve.go` (the networked did:web resolver, which has lived in `logclient` since that slice —
+  see learnings). I confirmed it by removing both new files and re-checking: `net/http` is present at
+  baseline. My `proofbuilder.go` imports only `context fmt` + `merkle/{proof,compact,rfc6962}` +
+  `tessera/api{,/layout}` — no net/database. The load-bearing purity invariant (WASM-shareable) is the
+  **`GOOS=js GOARCH=wasm` build**, which passes. The package as a whole is not net-free (it never was
+  after the resolver landed); the *new file* is. No action needed, but the `next.md` criterion as
+  literally worded was already unsatisfiable for this package.
+- **`go mod tidy` is NOT a no-op (adds 22 go.sum lines) — but the committed go.sum is byte-identical
+  to HEAD and the build is fully reproducible under `-mod=readonly`.** `next.md` claimed adding
+  `tessera/api` needs no go.sum change; that holds for `tessera/api/layout` (already imported by
+  `internal/tiles`) but NOT for `tessera/api`, which has a broader module-graph require footprint.
+  `go mod tidy` wants checksums for tessera's transitive *requires* (otel/klog/x-crypto/formats/
+  backoff) — but those modules **never compile** (`go list -deps tessera/api` is stdlib-only; the
+  `crypto/*` matches are stdlib, not `x/crypto`). I verified a clean `go clean -cache` +
+  `GOFLAGS=-mod=readonly go build/test ./internal/logclient` PASSES with go.sum at HEAD. So I did NOT
+  run `go mod tidy` (keeping go.sum byte-identical as `next.md` requires). **Heads-up for `review`/CI:**
+  a CI step that runs `go mod tidy` then `git diff --exit-code` WOULD fail here (22 unstaged go.sum
+  lines). Same class of metadata-only churn the learnings already noted for `internal/tiles`/go-cmp,
+  but here it actually surfaces under tidy. If CI enforces tidy-cleanliness, those 22 go.sum entries
+  should be added in a deliberate go.sum-only commit; I left them out to honor the byte-identical
+  requirement. Flagging so review can decide which constraint wins.
+- **Oracle gate APPLIES (RFC-6962 crypto) and is satisfied by in-test merkle ground truth.** The
+  prover (`testonly.Tree.ConsistencyProof`) and the tile-sourced builder are independent code paths,
+  and the proof additionally verifies via `proof.VerifyConsistency` (a third independent path), so the
+  match is not a tautology — confirmed by the corrupt-leaf mutation. `notecheck`/`derive_vkey.py`/
+  `fsck` are N/A (no signature/did:web/on-disk-tile path; tiles are synthesized in-test, as scoped).
+- Scope: 1 production file + 1 test file (≤3 budget; no re-export delegate to `internal/tiles` was
+  needed — `layout.NodeCoordsToTileAddress`/`PartialTileSize` are used directly, the latter already
+  re-exported by `tiles` but the builder calls `layout` to match the port 1:1). No follower touch, no
+  `testdata/live/` fixtures, no `tessera/client`/`fsck` import — all as Not-In-Scope required.
