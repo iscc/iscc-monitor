@@ -85,6 +85,16 @@ func TestParseDIDDocumentErrors(t *testing.T) {
 			name: "bad publicKeyMultibase",
 			data: `{"id": "did:web:sb0.iscc.id", "verificationMethod": [{"id": "did:web:sb0.iscc.id#k", "publicKeyMultibase": "not-a-key"}], "assertionMethod": ["did:web:sb0.iscc.id#k"]}`,
 		},
+		{
+			// A non-empty but unparseable revoked timestamp must fail closed (a
+			// garbled validity window is an error, not silently unconstrained).
+			name: "malformed revoked timestamp",
+			data: `{"id": "did:web:sb0.iscc.id", "verificationMethod": [{"id": "did:web:sb0.iscc.id#k", "publicKeyMultibase": "z6MkqbHELZopsq6eKrn6qxiAgRoVvwp2Vp7mPfKsvrbYmGwJ", "revoked": "not-a-date"}], "assertionMethod": ["did:web:sb0.iscc.id#k"]}`,
+		},
+		{
+			name: "malformed validUntil timestamp",
+			data: `{"id": "did:web:sb0.iscc.id", "verificationMethod": [{"id": "did:web:sb0.iscc.id#k", "publicKeyMultibase": "z6MkqbHELZopsq6eKrn6qxiAgRoVvwp2Vp7mPfKsvrbYmGwJ", "validUntil": "2020-13-99"}], "assertionMethod": ["did:web:sb0.iscc.id#k"]}`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

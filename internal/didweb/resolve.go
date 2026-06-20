@@ -66,7 +66,10 @@ type DIDKey struct {
 // extracts publicKeyMultibase through the oracle-verified pubkeyFromDID, and
 // surfaces any CID 1.0 validity timestamps. It returns a wrapped error on invalid
 // JSON, a missing or unresolvable assertion method, a missing publicKeyMultibase,
-// or a pubkeyFromDID failure. It performs no I/O and no now-vs-window enforcement.
+// a pubkeyFromDID failure, or a non-empty-but-unparseable
+// validFrom/validUntil/revoked timestamp (fail-closed: ResolveVerifierKey maps the
+// error to ErrUnresolvable rather than treating a garbled window as unconstrained).
+// It performs no I/O and no now-vs-window enforcement.
 func ParseDIDDocument(data []byte) (DIDKey, error) {
 	var doc didDocument
 	if err := json.Unmarshal(data, &doc); err != nil {
@@ -83,12 +86,24 @@ func ParseDIDDocument(data []byte) (DIDKey, error) {
 	if err != nil {
 		return DIDKey{}, fmt.Errorf("ParseDIDDocument: %w", err)
 	}
+	validFrom, err := parseTime(vm.ValidFrom)
+	if err != nil {
+		return DIDKey{}, fmt.Errorf("ParseDIDDocument: validFrom: %w", err)
+	}
+	validUntil, err := parseTime(vm.ValidUntil)
+	if err != nil {
+		return DIDKey{}, fmt.Errorf("ParseDIDDocument: validUntil: %w", err)
+	}
+	revoked, err := parseTime(vm.Revoked)
+	if err != nil {
+		return DIDKey{}, fmt.Errorf("ParseDIDDocument: revoked: %w", err)
+	}
 	return DIDKey{
 		Multibase:  vm.PublicKeyMultibase,
 		PublicKey:  pub,
-		ValidFrom:  parseTime(vm.ValidFrom),
-		ValidUntil: parseTime(vm.ValidUntil),
-		Revoked:    parseTime(vm.Revoked),
+		ValidFrom:  validFrom,
+		ValidUntil: validUntil,
+		Revoked:    revoked,
 	}, nil
 }
 
@@ -125,18 +140,20 @@ func assertionKey(doc didDocument) (verificationMethod, error) {
 	return inline, nil
 }
 
-// parseTime parses an RFC 3339 timestamp, returning the zero time on empty or
-// unparseable input.
+// parseTime parses an RFC 3339 CID 1.0 validity timestamp.
 //
-// Absence of a CID 1.0 validity field means "no constraint" here; the follower,
-// not this pure parser, decides what an unparseable value implies.
-func parseTime(s string) time.Time {
+// An empty string means "no constraint" and returns the zero time with no error
+// (DIDKey.ValidAt reads zero as unconstrained). A non-empty string that does not
+// parse returns a wrapped error so ParseDIDDocument fails closed: a hub serving a
+// garbled validity window resolves to ErrUnresolvable, never `verified`, rather
+// than silently treating the field as absent.
+func parseTime(s string) (time.Time, error) {
 	if s == "" {
-		return time.Time{}
+		return time.Time{}, nil
 	}
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {
-		return time.Time{}
+		return time.Time{}, fmt.Errorf("parse timestamp %q: %w", s, err)
 	}
-	return t
+	return t, nil
 }
