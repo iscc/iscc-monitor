@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/fonts.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/colors.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/typography.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/spacing.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/base.css">
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#e9e4da;font-family:var(--font-sans);color:#1d2733}
+  .pg{max-width:880px;margin:0 auto}
+  h2.sec{font-size:1.5rem;font-weight:700;letter-spacing:-.01em;color:#1d2733;margin:0}
+  .mono{font-family:var(--font-mono)}
+  .kx{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:#8a8576}
+  .lead{font-size:.95rem;font-weight:300;line-height:1.6;color:#3f454d}
+  .chk{flex:none;width:18px;height:18px}
+  table{border-collapse:collapse;width:100%}
+  @page{margin:16mm}
+  @media print{
+    html,body{background:#fff}
+    .card{box-shadow:none!important;border:1px solid #ddd8cc!important;break-inside:avoid}
+    .brk{break-before:page}
+    .noprint{display:none!important}
+  }
+</style>
+</helmet>
+
+<div style="padding:40px 28px 80px">
+
+  <!-- ===== COVER ===== -->
+  <div class="pg card" style="background:#fff;border:1px solid #ddd8cc;border-radius:4px;box-shadow:0 2px 14px rgba(0,0,0,.07);padding:50px 56px;margin-bottom:30px">
+    <div style="display:flex;align-items:center;gap:13px;margin-bottom:30px">
+      <img src="assets/iscc-logo-black.png" alt="ISCC" style="height:22px;width:auto;display:block">
+      <span style="width:1px;height:26px;background:#ddd8cc"></span>
+      <span class="kx" style="color:#1d2733">Developer handoff</span>
+    </div>
+    <h1 style="font-size:2.6rem;font-weight:700;letter-spacing:-.02em;line-height:1.08;margin:0 0 14px;max-width:20ch">ISCC Monitor v1 — Evidence Ledger</h1>
+    <p class="lead" style="font-size:1.1rem;max-width:64ch;margin:0 0 26px">Implementation spec for the trust &amp; transparency monitor's web surfaces: a server-rendered dashboard and log browser per instance, plus an independent in-browser verifier. This package is the source of truth for build; where it disagrees with an ADR/PRD, the ADR/PRD wins — flag it.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#ece8de;border:1px solid #ece8de;border-radius:8px;overflow:hidden">
+      <div style="background:#fbf9f4;padding:13px 16px"><div class="kx">Design reference</div><div class="mono" style="font-size:12.5px;color:#1d2733;margin-top:4px">Evidence Ledger — 6 standalone page files (§4)</div></div>
+      <div style="background:#fbf9f4;padding:13px 16px"><div class="kx">Source of truth</div><div class="mono" style="font-size:12.5px;color:#1d2733;margin-top:4px">prd/0001 · design/0001-ux-brief · CONTEXT.md · adr/0001–0009</div></div>
+      <div style="background:#fbf9f4;padding:13px 16px"><div class="kx">Surfaces</div><div class="mono" style="font-size:12.5px;color:#1d2733;margin-top:4px">dashboard · log browser · verifier app</div></div>
+      <div style="background:#fbf9f4;padding:13px 16px"><div class="kx">Status</div><div class="mono" style="font-size:12.5px;color:#1d2733;margin-top:4px">v1 · read-only · public · no auth</div></div>
+    </div>
+  </div>
+
+  <!-- ===== §1 SCOPE ===== -->
+  <div class="pg" style="margin-bottom:34px">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:14px"><span class="mono" style="font-size:13px;color:#b6b0a1;font-weight:300">01</span><h2 class="sec">Scope &amp; architecture</h2></div>
+    <p class="lead" style="margin:0 0 18px;max-width:70ch">Three product surfaces. Two live on each monitor instance and <strong style="font-weight:600">must render as plain server HTML/CSS with no JavaScript</strong>; in-browser re-verification is a progressive enhancement layered on top. The third is a separate static site on a domain no monitor controls.</p>
+
+    <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.05);margin-bottom:20px">
+      <div style="display:grid;grid-template-columns:30px 1.4fr 2fr 1fr;gap:14px;padding:11px 18px;background:#fbf9f4;border-bottom:1.5px solid #1d2733" class="kx"><span>#</span><span>Surface</span><span>Job</span><span>Rendering</span></div>
+      <div style="display:grid;grid-template-columns:30px 1.4fr 2fr 1fr;gap:14px;padding:15px 18px;border-bottom:1px solid #ece8de;align-items:center"><span class="mono" style="color:#0054b2;font-weight:700">A</span><div><div style="font-weight:600">Trust dashboard</div><div class="mono" style="font-size:11px;color:#8a8576">monitor.iscc.id</div></div><div class="lead" style="font-size:.85rem">Realm index + per-hub dossier. Network health, honest status, coverage.</div><div><span style="display:inline-block;font-size:11px;font-weight:600;color:#3f5e10;background:rgba(166,219,80,.18);border-radius:5px;padding:3px 9px">SSR · no-JS</span></div></div>
+      <div style="display:grid;grid-template-columns:30px 1.4fr 2fr 1fr;gap:14px;padding:15px 18px;border-bottom:1px solid #ece8de;align-items:center"><span class="mono" style="color:#0054b2;font-weight:700">B</span><div><div style="font-weight:600">Log browser</div><div class="mono" style="font-size:11px;color:#8a8576">monitor.iscc.id</div></div><div class="lead" style="font-size:.85rem">Browse a hub's records by sequence; inspect a single record.</div><div><span style="display:inline-block;font-size:11px;font-weight:600;color:#3f5e10;background:rgba(166,219,80,.18);border-radius:5px;padding:3px 9px">SSR · no-JS</span></div></div>
+      <div style="display:grid;grid-template-columns:30px 1.4fr 2fr 1fr;gap:14px;padding:15px 18px;align-items:center"><span class="mono" style="color:#0054b2;font-weight:700">C</span><div><div style="font-weight:600">Verifier app</div><div class="mono" style="font-size:11px;color:#8a8576">monitor.iscc.codes</div></div><div class="lead" style="font-size:.85rem">Re-verifies any instance's data locally. One audited checker for the whole federation.</div><div><span style="display:inline-block;font-size:11px;font-weight:600;color:#0054b2;background:rgba(0,84,178,.08);border-radius:5px;padding:3px 9px">Static · Go→WASM</span></div></div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-left:3px solid #0054b2;border-radius:8px;padding:16px 18px">
+        <div class="kx" style="color:#0054b2;margin-bottom:7px">Hard rule</div>
+        <p class="lead" style="font-size:.85rem;margin:0">A &amp; B must be useful and readable with no JS at all. Do not hard-require an SPA framework for them. The verifier app (C) may be fully client-side.</p>
+      </div>
+      <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-left:3px solid #b3434a;border-radius:8px;padding:16px 18px">
+        <div class="kx" style="color:#b3434a;margin-bottom:7px">Out of scope — do not build</div>
+        <p class="lead" style="font-size:.83rem;margin:0">Cosigning / cross-monitor compare · projection views (current owner / gateway URL) · auth / login / settings / write / config · operator deployment screens · authoritative Bitcoin verify in-page (download <span class="mono">.ots</span>, user runs <span class="mono">ots verify</span>).</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== §2 MODEL ===== -->
+  <div class="pg brk" style="margin-bottom:34px">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:14px"><span class="mono" style="font-size:13px;color:#b6b0a1;font-weight:300">02</span><h2 class="sec">The model everything hangs on</h2></div>
+    <p class="lead" style="margin:0 0 18px;max-width:70ch">The monitor is a <strong style="font-weight:600;color:#0054b2">verifiable cache, not a trusted oracle</strong>. Reading a badge it rendered is not the same as the claim being true. Every screen keeps two trust tiers visually distinct — and tier 2 is always one action away.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div class="card" style="border:1px solid #ddd8cc;background:#fff;border-radius:10px;padding:20px">
+        <div class="kx">Tier 1 · convenient</div>
+        <div style="font-size:1.1rem;font-weight:600;margin:7px 0 6px">The monitor reports…</div>
+        <p class="lead" style="font-size:.84rem;margin:0 0 10px">Server-rendered state. The default content. Visually <strong style="font-weight:600">muted / neutral</strong>.</p>
+        <div class="mono" style="font-size:11px;color:#8a8576">build · plain SSR HTML</div>
+      </div>
+      <div class="card" style="border:1.5px solid #0054b2;background:linear-gradient(180deg,#fff,#f3f8ff);border-radius:10px;padding:20px">
+        <div class="kx" style="color:#0054b2">Tier 2 · authoritative</div>
+        <div style="font-size:1.1rem;font-weight:700;color:#0054b2;margin:7px 0 6px">Your browser verified…</div>
+        <p class="lead" style="font-size:.84rem;margin:0 0 10px">The WASM verifier re-ran the math locally. Visually <strong style="font-weight:600">elevated</strong> (ISCC-Blue border/fill). The killer feature.</p>
+        <div class="mono" style="font-size:11px;color:#0054b2">build · WASM result, progressive enhancement</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:11px;background:#fff5f5;border:1px solid #f3b9bd;border-radius:8px;padding:14px 16px;margin-top:14px">
+      <svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#b3434a" stroke-width="2" style="margin-top:1px"><path d="M12 3.4 21 19H3z"></path><path d="M12 9.4v4.2"></path></svg>
+      <p class="lead" style="font-size:.85rem;margin:0;color:#7a2b30"><strong style="font-weight:600">Failure mode to avoid:</strong> never let the monitor's green checkmark look like the final word. Tier 1 and Tier 2 must never collapse into one badge.</p>
+    </div>
+  </div>
+
+  <!-- ===== §3 INVARIANTS ===== -->
+  <div class="pg brk" style="margin-bottom:34px">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:6px"><span class="mono" style="font-size:13px;color:#b6b0a1;font-weight:300">03</span><h2 class="sec">Invariants — conformance &amp; must-keep</h2></div>
+    <p class="lead" style="margin:0 0 18px;max-width:70ch">Hard constraints from the spec and ADRs. Each is satisfied in the Evidence Ledger design; keep it satisfied through implementation.</p>
+    <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.05)">
+      <div style="display:grid;grid-template-columns:36px 1fr;gap:14px;padding:15px 18px;border-bottom:1px solid #ece8de"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#5f8f1f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-top:1px"><circle cx="12" cy="12" r="9"></circle><path d="M8.4 12.3l2.5 2.5 4.7-5.2"></path></svg><div><div style="font-weight:600;font-size:.92rem">1 · Two trust tiers stay distinct</div><p class="lead" style="font-size:.83rem;margin:5px 0 0">Tier 1 = muted server content; Tier 2 = ISCC-Blue–elevated WASM result. Present on the Certificate and the Independent-verification screen. <strong style="font-weight:600">Must-keep:</strong> never collapse into one badge; Tier 2 always one action away.</p></div></div>
+      <div style="display:grid;grid-template-columns:36px 1fr;gap:14px;padding:15px 18px;border-bottom:1px solid #ece8de"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#5f8f1f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-top:1px"><circle cx="12" cy="12" r="9"></circle><path d="M8.4 12.3l2.5 2.5 4.7-5.2"></path></svg><div><div style="font-weight:600;font-size:.92rem">2 · Honest coverage, always</div><p class="lead" style="font-size:.83rem;margin:5px 0 0">Every hub shows its <span class="mono">monitored_since</span> (size + time); the dossier states guarantees hold only from coverage start. <strong style="font-weight:600">Must-keep:</strong> never imply pre-coverage guarantees; a claim timestamped before coverage must say so.</p></div></div>
+      <div style="display:grid;grid-template-columns:36px 1fr;gap:14px;padding:15px 18px;border-bottom:1px solid #ece8de"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#5f8f1f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-top:1px"><circle cx="12" cy="12" r="9"></circle><path d="M8.4 12.3l2.5 2.5 4.7-5.2"></path></svg><div><div style="font-weight:600;font-size:.92rem">3 · Five statuses distinct; frozen unmistakable &amp; non-dismissable</div><p class="lead" style="font-size:.83rem;margin:5px 0 0"><span class="mono">frozen</span> renders as a solid-red Exhibit (violation report), categorically different from the soft-tint caution of <span class="mono">unresolvable</span>/<span class="mono">unverified</span>. <strong style="font-weight:600">Must-keep:</strong> frozen clears only by manual operator review — never auto-heal or look transient.</p></div></div>
+      <div style="display:grid;grid-template-columns:36px 1fr;gap:14px;padding:15px 18px;border-bottom:1px solid #ece8de"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#5f8f1f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-top:1px"><circle cx="12" cy="12" r="9"></circle><path d="M8.4 12.3l2.5 2.5 4.7-5.2"></path></svg><div><div style="font-weight:600;font-size:.92rem">4 · Color is never the only signal</div><p class="lead" style="font-size:.83rem;margin:5px 0 0">Status = icon + label + distinct silhouette (check-circle / cloud-? / triangle / octagon / pause). Legible in grayscale and colorblind-safe — built for legal/audit screenshots. See the status reference (§5).</p></div></div>
+      <div style="display:grid;grid-template-columns:36px 1fr;gap:14px;padding:15px 18px;border-bottom:1px solid #ece8de"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#5f8f1f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-top:1px"><circle cx="12" cy="12" r="9"></circle><path d="M8.4 12.3l2.5 2.5 4.7-5.2"></path></svg><div><div style="font-weight:600;font-size:.92rem">5 · The verifier app's independence is felt</div><p class="lead" style="font-size:.83rem;margin:5px 0 0">Chrome links out to <span class="mono">monitor.iscc.codes</span>; the verification screen names <em style="font-style:normal;font-weight:600">which</em> instance it audits (<span class="mono">?monitor=</span>) and states the checker is controlled by no monitor. <strong style="font-weight:600">Must-keep:</strong> the <span class="mono">.codes ↔ .id</span> distinction stays visible.</p></div></div>
+      <div style="display:grid;grid-template-columns:36px 1fr;gap:14px;padding:15px 18px;border-bottom:1px solid #ece8de"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#5f8f1f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-top:1px"><circle cx="12" cy="12" r="9"></circle><path d="M8.4 12.3l2.5 2.5 4.7-5.2"></path></svg><div><div style="font-weight:600;font-size:.92rem">6 · The two anchors are never conflated</div><p class="lead" style="font-size:.83rem;margin:5px 0 0"><strong style="font-weight:600">Bitcoin anchor</strong> (OpenTimestamps, <span class="mono">pending → confirmed</span> + block height) and <strong style="font-weight:600">comparison anchor</strong> (split-view reference for your own size,root) are separate, distinctly-labelled panels. "Anchoring" means Bitcoin only.</p></div></div>
+      <div style="display:grid;grid-template-columns:36px 1fr;gap:14px;padding:15px 18px;border-bottom:1px solid #ece8de"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#5f8f1f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-top:1px"><circle cx="12" cy="12" r="9"></circle><path d="M8.4 12.3l2.5 2.5 4.7-5.2"></path></svg><div><div style="font-weight:600;font-size:.92rem">7 · Vocabulary discipline</div><p class="lead" style="font-size:.83rem;margin:5px 0 0">Uses <span class="mono">split view</span>, <span class="mono">self-consistency violation</span>, <span class="mono">coverage</span>, deletion-as-new-record; "witness", "fork", "takedown" never appear. Full do/avoid list in §7.</p></div></div>
+      <div style="display:grid;grid-template-columns:36px 1fr;gap:14px;padding:15px 18px;border-bottom:1px solid #ece8de"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#5f8f1f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-top:1px"><circle cx="12" cy="12" r="9"></circle><path d="M8.4 12.3l2.5 2.5 4.7-5.2"></path></svg><div><div style="font-weight:600;font-size:.92rem">8 · Server-rendered baseline</div><p class="lead" style="font-size:.83rem;margin:5px 0 0">Dashboard and log browser work as plain SSR HTML/CSS; WASM re-verification is additive. No heavy SPA required for A &amp; B.</p></div></div>
+      <div style="display:grid;grid-template-columns:36px 1fr;gap:14px;padding:15px 18px;border-bottom:1px solid #ece8de"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#5f8f1f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-top:1px"><circle cx="12" cy="12" r="9"></circle><path d="M8.4 12.3l2.5 2.5 4.7-5.2"></path></svg><div><div style="font-weight:600;font-size:.92rem">9 · Operator / instance identity legible, no central authority</div><p class="lead" style="font-size:.83rem;margin:5px 0 0">Chrome shows instance domain + operator + realm. <strong style="font-weight:600">Must-keep:</strong> nothing implies the data is more authoritative because of who hosts it — anyone can run an instance.</p></div></div>
+      <div style="display:grid;grid-template-columns:36px 1fr;gap:14px;padding:15px 18px"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#5f8f1f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-top:1px"><circle cx="12" cy="12" r="9"></circle><path d="M8.4 12.3l2.5 2.5 4.7-5.2"></path></svg><div><div style="font-weight:600;font-size:.92rem">10 · Truthful empties &amp; pending</div><p class="lead" style="font-size:.83rem;margin:5px 0 0">"Anchor pending", "coverage just started — thin window", "hub offline · serving mirror" render as informative states, never as scary errors. See §6.</p></div></div>
+    </div>
+  </div>
+
+  <!-- ===== §4 SCREENS ===== -->
+  <div class="pg brk" style="margin-bottom:30px">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:6px"><span class="mono" style="font-size:13px;color:#b6b0a1;font-weight:300">04</span><h2 class="sec">Screen specifications</h2></div>
+    <p class="lead" style="margin:0 0 20px;max-width:70ch">Six screens, each delivered as its own standalone page file (named per card below). Routes are illustrative — match your router. Every screen carries the operator/instance chrome (logo · instance domain · operator · realm · verifier-app link) and the coverage discipline.</p>
+  </div>
+
+  <!-- screen card: realm index -->
+  <div class="pg card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.05);padding:24px 28px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px"><span style="font-size:11px;font-weight:700;color:#0054b2;background:rgba(0,84,178,.08);border-radius:5px;padding:3px 9px">Surface A</span><span style="font-size:1.15rem;font-weight:700;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Realm index <span style="font-weight:400;color:#8a8576;font-size:.9rem">— dashboard / front door</span></span><span class="mono" style="margin-left:auto;font-size:11.5px;color:#8a8576">GET /</span></div>
+    <p class="lead" style="font-size:.86rem;margin:0 0 12px">Claim-lookup foregrounded ("Prove a specific claim is in the log") above a register of every hub in the realm — status, coverage, checkpoint, anchor, last activity. Glanceable and honest.</p>
+    <div style="display:flex;align-items:center;gap:8px;margin:0 0 14px;flex-wrap:wrap"><span class="mono" style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#0054b2;font-weight:600">Page file</span><span class="mono" style="font-size:12px;color:#1d2733;background:#fbf9f4;border:1px solid #e6e0d2;border-radius:5px;padding:3px 9px">ISCC Monitor - Realm Index.dc.html</span></div>
+    <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:18px">
+      <div><div class="kx" style="margin-bottom:7px">Data per hub</div><p class="lead" style="font-size:.8rem;margin:0">name · domain · status (1 of 5) · <span class="mono">monitored_since</span> (size) · latest checkpoint size · Bitcoin-anchor state · last-seen · → dossier. Plus realm: network, instance, operator.</p></div>
+      <div><div class="kx" style="margin-bottom:7px">States</div><p class="lead" style="font-size:.8rem;margin:0"><strong style="font-weight:600">degraded</strong> banner if any hub frozen · <strong style="font-weight:600">empty</strong> when monitoring just started · per-row <span class="mono">thin coverage</span> / <span class="mono">offline·serving mirror</span> flags.</p></div>
+    </div>
+  </div>
+
+  <!-- screen card: hub dossier -->
+  <div class="pg card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.05);padding:24px 28px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px"><span style="font-size:11px;font-weight:700;color:#0054b2;background:rgba(0,84,178,.08);border-radius:5px;padding:3px 9px">Surface A</span><span style="font-size:1.15rem;font-weight:700;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Hub dossier <span style="font-weight:400;color:#8a8576;font-size:.9rem">— incl. frozen Exhibit</span></span><span class="mono" style="margin-left:auto;font-size:11.5px;color:#8a8576">GET /hub/{domain}</span></div>
+    <p class="lead" style="font-size:.86rem;margin:0 0 12px">One hub's full trust picture as a numbered document. §1 Identity (did:web) · §2 Coverage · §3 Latest checkpoint · §4 Bitcoin anchor · §5 Observation log. The Bitcoin anchor and the comparison anchor appear as distinct panels.</p>
+    <div style="display:flex;align-items:center;gap:8px;margin:0 0 14px;flex-wrap:wrap"><span class="mono" style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#0054b2;font-weight:600">Page file</span><span class="mono" style="font-size:12px;color:#1d2733;background:#fbf9f4;border:1px solid #e6e0d2;border-radius:5px;padding:3px 9px">ISCC Monitor - Hub Dossier.dc.html</span></div>
+    <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:18px">
+      <div><div class="kx" style="margin-bottom:7px">Frozen → Exhibit block</div><p class="lead" style="font-size:.8rem;margin:0">violation kind (<span class="mono">split view / shrink / rewrite</span>) · detected-at · tree size before → presented · evidence ref · disposition (frozen · manual review). Finding stated in plain language.</p></div>
+      <div><div class="kx" style="margin-bottom:7px">States</div><p class="lead" style="font-size:.8rem;margin:0"><span class="mono">verified</span> (no banner) · <span class="mono">unresolvable</span>/<span class="mono">unverified</span> caution note · <span class="mono">frozen</span> Exhibit · thin coverage · offline serving mirror.</p></div>
+    </div>
+  </div>
+
+  <!-- screen card: log browser -->
+  <div class="pg card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.05);padding:24px 28px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px"><span style="font-size:11px;font-weight:700;color:#0054b2;background:rgba(0,84,178,.08);border-radius:5px;padding:3px 9px">Surface B</span><span style="font-size:1.15rem;font-weight:700;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Log browser <span style="font-weight:400;color:#8a8576;font-size:.9rem">— record list</span></span><span class="mono" style="margin-left:auto;font-size:11.5px;color:#8a8576">GET /hub/{domain}/log?from={seq}&amp;n=12</span></div>
+    <p class="lead" style="font-size:.86rem;margin:0 0 12px">Browse a hub's records by sequence id, newest-first, with Newer/Older pagination and jump-to-sequence. Each row links to the single record. Pagination is link-based so it works with no JS.</p>
+    <div style="display:flex;align-items:center;gap:8px;margin:0 0 14px;flex-wrap:wrap"><span class="mono" style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#0054b2;font-weight:600">Page file</span><span class="mono" style="font-size:12px;color:#1d2733;background:#fbf9f4;border:1px solid #e6e0d2;border-radius:5px;padding:3px 9px">ISCC Monitor - Log Browser.dc.html</span></div>
+    <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:18px">
+      <div><div class="kx" style="margin-bottom:7px">Data per row</div><p class="lead" style="font-size:.8rem;margin:0"><span class="mono">seq</span> · type (declaration / deletion / unknown) · <span class="mono">iscc_id</span> · logged time. Header: hub name, domain, total records, page range.</p></div>
+      <div><div class="kx" style="margin-bottom:7px">States</div><p class="lead" style="font-size:.8rem;margin:0">pagers disable at newest / oldest · <strong style="font-weight:600">empty</strong> when a hub has no records yet (coverage just started).</p></div>
+    </div>
+  </div>
+
+  <!-- screen card: single record -->
+  <div class="pg card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.05);padding:24px 28px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px"><span style="font-size:11px;font-weight:700;color:#0054b2;background:rgba(0,84,178,.08);border-radius:5px;padding:3px 9px">Surface B</span><span style="font-size:1.15rem;font-weight:700;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Single record</span><span class="mono" style="margin-left:auto;font-size:11.5px;color:#8a8576">GET /hub/{domain}/log/{seq}</span></div>
+    <p class="lead" style="font-size:.86rem;margin:0 0 12px">One record's full detail, with Older/Newer stepping by ±1 seq and a link to prove inclusion. Must degrade gracefully for record types the monitor doesn't recognize.</p>
+    <div style="display:flex;align-items:center;gap:8px;margin:0 0 14px;flex-wrap:wrap"><span class="mono" style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#0054b2;font-weight:600">Page file</span><span class="mono" style="font-size:12px;color:#1d2733;background:#fbf9f4;border:1px solid #e6e0d2;border-radius:5px;padding:3px 9px">ISCC Monitor - Single Record.dc.html</span></div>
+    <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:18px">
+      <div><div class="kx" style="margin-bottom:7px">Data</div><p class="lead" style="font-size:.8rem;margin:0"><span class="mono">iscc_id</span> · type + <span class="mono">note.$schema</span> · hub · position (seq) · logged time · raw bytes · → prove inclusion.</p></div>
+      <div><div class="kx" style="margin-bottom:7px">Type states</div><p class="lead" style="font-size:.8rem;margin:0"><strong style="font-weight:600">declaration</strong> · <strong style="font-weight:600">deletion</strong> (a new record — original preserved) · <strong style="font-weight:600">unknown</strong> (still indexed &amp; provable; do not error).</p></div>
+    </div>
+  </div>
+
+  <!-- screen card: certificate -->
+  <div class="pg card brk" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.05);padding:24px 28px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px"><span style="font-size:11px;font-weight:700;color:#0054b2;background:rgba(0,84,178,.08);border-radius:5px;padding:3px 9px">Surface A</span><span style="font-size:1.15rem;font-weight:700;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Certificate of inclusion <span style="font-weight:400;color:#8a8576;font-size:.9rem">— proof result</span></span><span class="mono" style="margin-left:auto;font-size:11.5px;color:#8a8576">GET /inclusion/{iscc_id}</span></div>
+    <p class="lead" style="font-size:.86rem;margin:0 0 12px">A self-contained evidence document for a single claim, citation-friendly and screenshot-ready. The proof-bundle download and "verify independently" actions are primary.</p>
+    <div style="display:flex;align-items:center;gap:8px;margin:0 0 14px;flex-wrap:wrap"><span class="mono" style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#0054b2;font-weight:600">Page file</span><span class="mono" style="font-size:12px;color:#1d2733;background:#fbf9f4;border:1px solid #e6e0d2;border-radius:5px;padding:3px 9px">ISCC Monitor - Certificate.dc.html</span></div>
+    <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:18px;margin-bottom:14px">
+      <div><div class="kx" style="margin-bottom:7px">Data (numbered clauses)</div><p class="lead" style="font-size:.8rem;margin:0">§1 subject <span class="mono">iscc_id</span> + position · §2 hub-signed checkpoint (size, root) · §3 inclusion proof (Merkle path) · §4 signing key (did:web + algo) · §5 Bitcoin anchor (block, time) · §6 all records for the id (full history incl. deletion).</p></div>
+      <div><div class="kx" style="margin-bottom:7px">States</div><p class="lead" style="font-size:.8rem;margin:0"><strong style="font-weight:600">found</strong> / <strong style="font-weight:600">not found</strong> (id not in log) · deletion present · anchor <span class="mono">pending</span>.</p></div>
+    </div>
+    <div style="background:#fbf9f4;border:1px solid #e6e0d2;border-radius:8px;padding:13px 16px"><div class="kx" style="margin-bottom:5px">Proof bundle payload</div><p class="lead mono" style="font-size:.78rem;margin:0;color:#1d2733">{ hub-signed checkpoint, inclusion/consistency proof, record bytes, hub key, ots? }</p></div>
+  </div>
+
+  <!-- screen card: independent verification -->
+  <div class="pg card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.05);padding:24px 28px;margin-bottom:30px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px"><span style="font-size:11px;font-weight:700;color:#0054b2;background:rgba(0,84,178,.08);border-radius:5px;padding:3px 9px">Surface C</span><span style="font-size:1.15rem;font-weight:700;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Independent verification <span style="font-weight:400;color:#8a8576;font-size:.9rem">— verifier app</span></span><span class="mono" style="margin-left:auto;font-size:11.5px;color:#8a8576">monitor.iscc.codes/?monitor={url}&amp;id={id}</span></div>
+    <p class="lead" style="font-size:.86rem;margin:0 0 12px">The trust-critical moment: the WASM verifier recomputes the proof <strong style="font-weight:600">in the user's browser</strong>. Names which instance it audits; the result is framed "computed here". Includes the skeptical-client (size, root) split-view input.</p>
+    <div style="display:flex;align-items:center;gap:8px;margin:0 0 14px;flex-wrap:wrap"><span class="mono" style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#0054b2;font-weight:600">Page file</span><span class="mono" style="font-size:12px;color:#1d2733;background:#fbf9f4;border:1px solid #e6e0d2;border-radius:5px;padding:3px 9px">ISCC Monitor - Independent Verification.dc.html</span></div>
+    <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:18px">
+      <div><div class="kx" style="margin-bottom:7px">Data / inputs</div><p class="lead" style="font-size:.8rem;margin:0">target instance (<span class="mono">?monitor=</span>) · input: an id / a pasted-or-dropped proof bundle / a user-supplied (size, root) · live state · verdict.</p></div>
+      <div><div class="kx" style="margin-bottom:7px">States</div><p class="lead" style="font-size:.8rem;margin:0"><span class="mono">idle → verifying</span> (per-step) <span class="mono">→ verified | mismatch</span> · with / without a <span class="mono">?monitor</span> target. Mismatch is a <strong style="font-weight:600">guided split-view alert</strong>, not a dead red error.</p></div>
+    </div>
+  </div>
+
+  <!-- ===== §5 STATUS REFERENCE ===== -->
+  <div class="pg brk" style="margin-bottom:34px">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:6px"><span class="mono" style="font-size:13px;color:#b6b0a1;font-weight:300">05</span><h2 class="sec">Hub status reference</h2></div>
+    <p class="lead" style="margin:0 0 16px;max-width:70ch">Five statuses, conveyed by icon + label + distinct silhouette. All hubs are mirrored and served regardless of status — the monitor reports problems, it never goes dark on a hub. Reuse the <span class="mono">HubStatusBadge</span> component (see §8).</p>
+    <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.05)">
+      <div style="display:grid;grid-template-columns:150px 1.6fr 92px 1.4fr;gap:14px;padding:11px 18px;background:#fbf9f4;border-bottom:1.5px solid #1d2733" class="kx"><span>Status</span><span>Plain meaning</span><span>Tone</span><span>Trigger / dev note</span></div>
+      <div style="display:grid;grid-template-columns:150px 1.6fr 92px 1.4fr;gap:14px;padding:14px 18px;border-bottom:1px solid #ece8de;align-items:center"><span><dc-import name="HubStatusBadge" status="verified" size="sm" hint-size="110px,24px"></dc-import></span><span class="lead" style="font-size:.82rem">Signature valid, history consistent, root rebuilt.</span><span style="font-size:11.5px;font-weight:600;color:#3f5e10">calm</span><span class="lead" style="font-size:.78rem">Only verified checkpoints advance accepted state.</span></div>
+      <div style="display:grid;grid-template-columns:150px 1.6fr 92px 1.4fr;gap:14px;padding:14px 18px;border-bottom:1px solid #ece8de;align-items:center"><span><dc-import name="HubStatusBadge" status="unresolvable" size="sm" hint-size="120px,24px"></dc-import></span><span class="lead" style="font-size:.82rem">Can't fetch / parse the hub's <span class="mono">did.json</span>.</span><span style="font-size:11.5px;font-weight:600;color:#7a5c00">caution</span><span class="lead" style="font-size:.78rem">Config / availability issue. Still mirrored.</span></div>
+      <div style="display:grid;grid-template-columns:150px 1.6fr 92px 1.4fr;gap:14px;padding:14px 18px;border-bottom:1px solid #ece8de;align-items:center"><span><dc-import name="HubStatusBadge" status="unverified" size="sm" hint-size="110px,24px"></dc-import></span><span class="lead" style="font-size:.82rem">Signing with a key its own <span class="mono">did.json</span> doesn't list.</span><span style="font-size:11.5px;font-weight:600;color:#9a4410">caution</span><span class="lead" style="font-size:.78rem">Internally-broken hub. Distinct hue from frozen.</span></div>
+      <div style="display:grid;grid-template-columns:150px 1.6fr 92px 1.4fr;gap:14px;padding:14px 18px;border-bottom:1px solid #ece8de;align-items:center"><span><dc-import name="HubStatusBadge" status="frozen" size="sm" hint-size="100px,24px"></dc-import></span><span class="lead" style="font-size:.82rem">Caught rewriting its own history — a self-consistency violation.</span><span style="font-size:11.5px;font-weight:700;color:#b3434a">alarm</span><span class="lead" style="font-size:.78rem">Headline event. Non-dismissable; manual review to clear.</span></div>
+      <div style="display:grid;grid-template-columns:150px 1.6fr 92px 1.4fr;gap:14px;padding:14px 18px;align-items:center"><span><dc-import name="HubStatusBadge" status="inactive" size="sm" hint-size="100px,24px"></dc-import></span><span class="lead" style="font-size:.82rem">Removed / paused in the realm registry.</span><span style="font-size:11.5px;font-weight:600;color:#5c6470">neutral</span><span class="lead" style="font-size:.78rem">Not a fault. Muted.</span></div>
+    </div>
+  </div>
+
+  <!-- ===== §6 STATES ===== -->
+  <div class="pg" style="margin-bottom:34px">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:6px"><span class="mono" style="font-size:13px;color:#b6b0a1;font-weight:300">06</span><h2 class="sec">Empty · loading · pending · degraded</h2></div>
+    <p class="lead" style="margin:0 0 16px;max-width:70ch">These are normal, expected states — render them as informative, never as failures or scary errors (invariant 10).</p>
+    <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.05)">
+      <div style="display:grid;grid-template-columns:1.1fr 1fr 1.3fr;gap:14px;padding:11px 18px;background:#fbf9f4;border-bottom:1.5px solid #1d2733" class="kx"><span>Condition</span><span>Treatment</span><span>Microcopy</span></div>
+      <div style="display:grid;grid-template-columns:1.1fr 1fr 1.3fr;gap:14px;padding:13px 18px;border-bottom:1px solid #ece8de;align-items:center"><span style="font-weight:600;font-size:.85rem">Hub offline</span><span class="lead" style="font-size:.8rem">Keep serving the mirror; flag inline.</span><span class="lead mono" style="font-size:.76rem;color:#7a5c00">Hub offline · serving mirror</span></div>
+      <div style="display:grid;grid-template-columns:1.1fr 1fr 1.3fr;gap:14px;padding:13px 18px;border-bottom:1px solid #ece8de;align-items:center"><span style="font-weight:600;font-size:.85rem">did.json unreachable</span><span class="lead" style="font-size:.8rem"><span class="mono">unresolvable</span> status (caution).</span><span class="lead mono" style="font-size:.76rem;color:#7a5c00">did.json returns 502 since … · mirror served</span></div>
+      <div style="display:grid;grid-template-columns:1.1fr 1fr 1.3fr;gap:14px;padding:13px 18px;border-bottom:1px solid #ece8de;align-items:center"><span style="font-weight:600;font-size:.85rem">OTS not yet anchored</span><span class="lead" style="font-size:.8rem">Pending dot, normal early state.</span><span class="lead mono" style="font-size:.76rem;color:#7a5c00">Pending — submitted to calendar</span></div>
+      <div style="display:grid;grid-template-columns:1.1fr 1fr 1.3fr;gap:14px;padding:13px 18px;border-bottom:1px solid #ece8de;align-items:center"><span style="font-weight:600;font-size:.85rem">Monitoring just started</span><span class="lead" style="font-size:.8rem">Thin-coverage flag; no pre-coverage claims.</span><span class="lead mono" style="font-size:.76rem;color:#7a5c00">Coverage just started — thin window</span></div>
+      <div style="display:grid;grid-template-columns:1.1fr 1fr 1.3fr;gap:14px;padding:13px 18px;border-bottom:1px solid #ece8de;align-items:center"><span style="font-weight:600;font-size:.85rem">Empty log</span><span class="lead" style="font-size:.8rem">Informative empty, not an error.</span><span class="lead mono" style="font-size:.76rem;color:#8a8576">No records in coverage yet</span></div>
+      <div style="display:grid;grid-template-columns:1.1fr 1fr 1.3fr;gap:14px;padding:13px 18px;border-bottom:1px solid #ece8de;align-items:center"><span style="font-weight:600;font-size:.85rem">Hub frozen</span><span class="lead" style="font-size:.8rem">Alarm Exhibit; non-dismissable.</span><span class="lead mono" style="font-size:.76rem;color:#b3434a">Self-consistency violation — do not trust new state</span></div>
+      <div style="display:grid;grid-template-columns:1.1fr 1fr 1.3fr;gap:14px;padding:13px 18px;align-items:center"><span style="font-weight:600;font-size:.85rem">Verify mismatch</span><span class="lead" style="font-size:.8rem">Guided alert; keep evidence; report.</span><span class="lead mono" style="font-size:.76rem;color:#b3434a">Mismatch — possible split view</span></div>
+    </div>
+  </div>
+
+  <!-- ===== §7 VOCABULARY ===== -->
+  <div class="pg brk" style="margin-bottom:34px">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:6px"><span class="mono" style="font-size:13px;color:#b6b0a1;font-weight:300">07</span><h2 class="sec">Vocabulary — binding</h2></div>
+    <p class="lead" style="margin:0 0 16px;max-width:70ch">Use the canonical terms from <span class="mono">CONTEXT.md</span>. Where a precise term is unavoidable (checkpoint, inclusion proof), pair it with a plain-language gloss. The "avoid" column is binding.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-left:3px solid #5f8f1f;border-radius:8px;padding:18px 20px">
+        <div class="kx" style="color:#3f5e10;margin-bottom:10px">Use</div>
+        <div class="mono" style="font-size:12px;line-height:2;color:#1d2733">hub · monitor instance · verifier app · coverage / monitored_since · self-consistency violation · split view · verifiable cache · proof bundle · Bitcoin anchoring · comparison anchor · mirror · declaration · deletion · checkpoint · inclusion proof</div>
+      </div>
+      <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-left:3px solid #b3434a;border-radius:8px;padding:18px 20px">
+        <div class="kx" style="color:#b3434a;margin-bottom:10px">Avoid</div>
+        <div class="mono" style="font-size:12px;line-height:2;color:#8a8576"><s>fork</s> · <s>equivocation</s> · <s>inconsistency</s> (bare) · <s>witness</s> · <s>trusted oracle</s> · <s>receipt</s> (for bundle) · <s>removal / takedown</s> (for deletion) · <s>anchor</s> for the comparison role</div>
+        <p class="lead" style="font-size:.78rem;margin:10px 0 0">A deletion is a new record, never a removal. "Anchoring" is Bitcoin-only.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== §8 VISUAL SYSTEM ===== -->
+  <div class="pg" style="margin-bottom:34px">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:6px"><span class="mono" style="font-size:13px;color:#b6b0a1;font-weight:300">08</span><h2 class="sec">Visual system</h2></div>
+    <p class="lead" style="margin:0 0 16px;max-width:70ch">ISCC Design System tokens (link the bundle's <span class="mono">tokens/*.css</span>). Document aesthetic: warm paper canvas, white pages, navy/ink type, JetBrains Mono for everything technical. Sober, screenshot-ready as evidence.</p>
+
+    <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;padding:20px 22px;margin-bottom:14px">
+      <div class="kx" style="margin-bottom:12px">Palette</div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px">
+        <div style="text-align:center"><div style="width:64px;height:42px;border-radius:7px;background:#0054b2"></div><div class="mono" style="font-size:9.5px;color:#8a8576;margin-top:4px">#0054b2</div><div style="font-size:9.5px;color:#8a8576">blue</div></div>
+        <div style="text-align:center"><div style="width:64px;height:42px;border-radius:7px;background:#123663"></div><div class="mono" style="font-size:9.5px;color:#8a8576;margin-top:4px">#123663</div><div style="font-size:9.5px;color:#8a8576">navy</div></div>
+        <div style="text-align:center"><div style="width:64px;height:42px;border-radius:7px;background:#ffc300"></div><div class="mono" style="font-size:9.5px;color:#8a8576;margin-top:4px">#ffc300</div><div style="font-size:9.5px;color:#8a8576">accent</div></div>
+        <div style="text-align:center"><div style="width:64px;height:42px;border-radius:7px;background:#5f8f1f"></div><div class="mono" style="font-size:9.5px;color:#8a8576;margin-top:4px">#5f8f1f</div><div style="font-size:9.5px;color:#8a8576">verified</div></div>
+        <div style="text-align:center"><div style="width:64px;height:42px;border-radius:7px;background:#b07f00"></div><div class="mono" style="font-size:9.5px;color:#8a8576;margin-top:4px">#b07f00</div><div style="font-size:9.5px;color:#8a8576">unresolv.</div></div>
+        <div style="text-align:center"><div style="width:64px;height:42px;border-radius:7px;background:#d2691e"></div><div class="mono" style="font-size:9.5px;color:#8a8576;margin-top:4px">#d2691e</div><div style="font-size:9.5px;color:#8a8576">unverif.</div></div>
+        <div style="text-align:center"><div style="width:64px;height:42px;border-radius:7px;background:#e0353f"></div><div class="mono" style="font-size:9.5px;color:#8a8576;margin-top:4px">#e0353f</div><div style="font-size:9.5px;color:#8a8576">frozen</div></div>
+        <div style="text-align:center"><div style="width:64px;height:42px;border-radius:7px;background:#9aa1ab"></div><div class="mono" style="font-size:9.5px;color:#8a8576;margin-top:4px">#9aa1ab</div><div style="font-size:9.5px;color:#8a8576">inactive</div></div>
+        <div style="text-align:center"><div style="width:64px;height:42px;border-radius:7px;background:#fbf9f4;border:1px solid #ddd8cc"></div><div class="mono" style="font-size:9.5px;color:#8a8576;margin-top:4px">#f4f1ea</div><div style="font-size:9.5px;color:#8a8576">paper</div></div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;padding:18px 20px">
+        <div class="kx" style="margin-bottom:10px">Type</div>
+        <div style="font-family:var(--font-sans);font-weight:700;font-size:1.3rem;color:#1d2733">Readex Pro</div>
+        <p class="lead" style="font-size:.8rem;margin:4px 0 10px">300 body / lead · 600–700 headings. Sentence case.</p>
+        <div class="mono" style="font-size:13px;color:#1d2733">JetBrains Mono</div>
+        <p class="lead" style="font-size:.8rem;margin:4px 0 0">All ISCC-IDs, seq, hashes, status readouts &amp; technical labels.</p>
+      </div>
+      <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;padding:18px 20px">
+        <div class="kx" style="margin-bottom:10px">Status badge · component</div>
+        <p class="lead" style="font-size:.8rem;margin:0 0 8px"><span class="mono">HubStatusBadge.dc.html</span> — props <span class="mono">status · size(sm/md/lg) · variant(chip/plain) · withLabel</span>.</p>
+        <p class="lead" style="font-size:.8rem;margin:0">Icon silhouettes (grayscale-safe): check-circle · cloud-? · triangle · octagon-x · pause-circle. Frozen = solid fill; others = soft tint.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== §9 BUILD NOTES ===== -->
+  <div class="pg brk" style="margin-bottom:30px">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:6px"><span class="mono" style="font-size:13px;color:#b6b0a1;font-weight:300">09</span><h2 class="sec">Build notes &amp; definition of done</h2></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
+      <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;padding:18px 20px"><div class="kx" style="margin-bottom:8px">Rendering</div><p class="lead" style="font-size:.83rem;margin:0">Dashboard + log browser: server-rendered, fully functional with JS disabled. Pagination via links (<span class="mono">?from=</span>). WASM verify enhances, never gates.</p></div>
+      <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;padding:18px 20px"><div class="kx" style="margin-bottom:8px">Verifier origin</div><p class="lead" style="font-size:.83rem;margin:0">Verifier app is a static site on <span class="mono">monitor.iscc.codes</span> — a different origin from any instance. Takes <span class="mono">?monitor={url}</span>; one audited artifact for the federation.</p></div>
+      <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;padding:18px 20px"><div class="kx" style="margin-bottom:8px">Accessibility</div><p class="lead" style="font-size:.83rem;margin:0">Status legible in grayscale &amp; colorblind-safe; AA contrast. Tap targets ≥ 44px on the inclusion result &amp; verifier (mobile). Real timestamps visible.</p></div>
+      <div class="card" style="background:#fff;border:1px solid #ddd8cc;border-radius:10px;padding:18px 20px"><div class="kx" style="margin-bottom:8px">Responsive</div><p class="lead" style="font-size:.83rem;margin:0">Desktop-first for dashboard &amp; log browser; the Certificate of inclusion and the verifier must be usable on a phone (a declarer may check from mobile).</p></div>
+    </div>
+    <div class="card" style="background:var(--iscc-deep-navy,#123663);border-radius:12px;padding:22px 26px;color:#fff">
+      <div class="kx" style="color:#9db4d4;margin-bottom:12px">Definition of done</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 24px">
+        <div style="display:flex;gap:9px;align-items:flex-start"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#a6db50" stroke-width="2.3" style="margin-top:1px"><path d="M5 12.5l4 4 10-10.5"></path></svg><span class="lead" style="font-size:.83rem;color:#e6eef8">Two trust tiers visually distinct on every claim</span></div>
+        <div style="display:flex;gap:9px;align-items:flex-start"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#a6db50" stroke-width="2.3" style="margin-top:1px"><path d="M5 12.5l4 4 10-10.5"></path></svg><span class="lead" style="font-size:.83rem;color:#e6eef8">Coverage window shown for every hub</span></div>
+        <div style="display:flex;gap:9px;align-items:flex-start"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#a6db50" stroke-width="2.3" style="margin-top:1px"><path d="M5 12.5l4 4 10-10.5"></path></svg><span class="lead" style="font-size:.83rem;color:#e6eef8">Frozen unmistakable &amp; non-dismissable</span></div>
+        <div style="display:flex;gap:9px;align-items:flex-start"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#a6db50" stroke-width="2.3" style="margin-top:1px"><path d="M5 12.5l4 4 10-10.5"></path></svg><span class="lead" style="font-size:.83rem;color:#e6eef8">Status legible in grayscale (icon+label+shape)</span></div>
+        <div style="display:flex;gap:9px;align-items:flex-start"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#a6db50" stroke-width="2.3" style="margin-top:1px"><path d="M5 12.5l4 4 10-10.5"></path></svg><span class="lead" style="font-size:.83rem;color:#e6eef8">Bitcoin anchor ≠ comparison anchor</span></div>
+        <div style="display:flex;gap:9px;align-items:flex-start"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#a6db50" stroke-width="2.3" style="margin-top:1px"><path d="M5 12.5l4 4 10-10.5"></path></svg><span class="lead" style="font-size:.83rem;color:#e6eef8">Dashboard + log browser work with no JS</span></div>
+        <div style="display:flex;gap:9px;align-items:flex-start"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#a6db50" stroke-width="2.3" style="margin-top:1px"><path d="M5 12.5l4 4 10-10.5"></path></svg><span class="lead" style="font-size:.83rem;color:#e6eef8">Deletion + unknown record types degrade gracefully</span></div>
+        <div style="display:flex;gap:9px;align-items:flex-start"><svg class="chk" viewBox="0 0 24 24" fill="none" stroke="#a6db50" stroke-width="2.3" style="margin-top:1px"><path d="M5 12.5l4 4 10-10.5"></path></svg><span class="lead" style="font-size:.83rem;color:#e6eef8">Verifier independence &amp; target instance visible</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="pg" style="text-align:center;padding-top:20px">
+    <span class="mono" style="font-size:11px;color:#a39d8e">ISCC Monitor v1 · Evidence Ledger · developer handoff · end of document</span>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

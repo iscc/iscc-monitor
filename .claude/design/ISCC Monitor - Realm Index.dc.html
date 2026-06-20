@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/fonts.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/colors.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/typography.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/spacing.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/base.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/styles.css">
+<script src="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/_ds_bundle.js"></script>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#f4f1ea;font-family:var(--font-sans)}
+  ::selection{background:rgba(0,84,178,.16)}
+  a{text-decoration:none;color:inherit}
+  .mon-row:hover{background:#fbf9f4 !important}
+</style>
+</helmet>
+
+<div style="background:#f4f1ea;min-height:100vh">
+
+  <!-- document chrome -->
+  <header style="background:#fbf9f4;border-bottom:1px solid #ddd8cc;padding:16px 30px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:13px">
+      <img src="assets/iscc-logo-black.png" alt="ISCC" style="height:19px;width:auto;display:block">
+      <span style="width:1px;height:24px;background:#ddd8cc"></span>
+      <div style="line-height:1.2"><div style="font-family:var(--font-mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#1d2733;font-weight:600">Trust &amp; Transparency Monitor</div><div style="font-size:11px;color:#8a8576;font-weight:300">Evidence of record · ISCC-Hub network</div></div>
+    </div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:22px;flex-wrap:wrap">
+      <div style="line-height:1.3;text-align:right"><div style="font-family:var(--font-mono);font-size:12.5px;color:#1d2733">monitor.iscc.id</div><div style="font-size:11px;color:#8a8576;font-weight:300">instance operated by ISCC Foundation · ISCC mainnet</div></div>
+      <a href="ISCC Monitor - Independent Verification.dc.html" style="font-family:var(--font-mono);font-size:11px;color:#0054b2;border:1px solid #cfd8e6;border-radius:7px;padding:7px 11px">verify ↗ monitor.iscc.codes</a>
+    </div>
+  </header>
+
+  <div style="max-width:1000px;margin:0 auto;padding:36px 30px 90px">
+
+    <!-- claim lookup hero -->
+    <div style="background:#fff;border:1px solid #ddd8cc;border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:30px 32px;margin-bottom:30px">
+      <div style="font-family:var(--font-mono);font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:#8a8576;margin-bottom:8px">ISCC - ISO 24138:2024 - TRANSPARENCY LOG MONITOR</div>
+      <h1 style="font-size:1.85rem;font-weight:700;letter-spacing:-.01em;color:#1d2733;margin:0 0 6px">Prove a specific ISCC declaration is in the log.</h1>
+      <p style="font-size:.95rem;font-weight:300;line-height:1.55;color:#4a4f57;margin:0 0 18px;max-width:68ch">Enter an ISCC-ID to retrieve a self-contained evidence record — the hub-signed checkpoint, the inclusion proof, the record bytes and the Bitcoin timestamp — that stands without trusting the hub or this monitor.</p>
+      <div style="display:flex;gap:0;align-items:stretch;flex-wrap:wrap">
+        <div class="iscc-grain" style="flex:1;min-width:240px;background:var(--iscc-coral-red);border-radius:6px 0 0 6px;padding:14px 18px;font-family:var(--font-mono);font-size:15px;font-weight:300;letter-spacing:-.01em;color:#fff;display:flex;align-items:center">ISCC:MEAJU5BQXK7QKMC3</div>
+        <a href="ISCC Monitor - Certificate.dc.html" style="background:#1d2733;color:#fff;border-radius:0 6px 6px 0;padding:0 24px;font-size:14px;font-weight:600;white-space:nowrap;display:flex;align-items:center">Find evidence →</a>
+      </div>
+      <div style="display:flex;gap:20px;margin-top:16px;flex-wrap:wrap;align-items:center">
+        <span style="font-size:12px;color:#8a8576;font-weight:300">Recent declarers checked:</span>
+        <a href="ISCC Monitor - Certificate.dc.html" style="font-family:var(--font-mono);font-size:12px;color:#0054b2">ISCC:MEAJU5BQXK7QKMC3</a>
+      </div>
+    </div>
+
+    <!-- realm ledger -->
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px">
+      <h2 style="font-family:var(--font-mono);font-size:12px;letter-spacing:.13em;text-transform:uppercase;color:#1d2733;font-weight:700;margin:0">Realm register · ISCC mainnet</h2>
+      <span style="font-size:12px;color:#8a8576;font-weight:300">7 hubs followed &amp; mirrored</span>
+    </div>
+    <div style="background:#fff;border:1px solid #ddd8cc;border-radius:4px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.05)">
+      <div style="display:grid;grid-template-columns:34px 1.8fr 1.2fr 1fr 1.1fr 150px;gap:14px;padding:11px 18px;border-bottom:1.5px solid #1d2733;font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#8a8576">
+        <span>#</span><span>Hub · domain</span><span>Coverage since</span><span>Checkpoint</span><span>Anchor</span><span>Status</span>
+      </div>
+      <sc-for list="{{ hubs }}" as="h" hint-placeholder-count="7">
+        <a href="ISCC Monitor - Hub Dossier.dc.html" class="mon-row" style="display:grid;grid-template-columns:34px 1.8fr 1.2fr 1fr 1.1fr 150px;gap:14px;padding:13px 18px;border-bottom:1px solid #ece8de;background:{{ h.ledgerBg }};align-items:center;transition:.12s">
+          <span style="font-family:var(--font-mono);font-size:12px;color:#b6b0a1">{{ h.rowNo }}</span>
+          <div style="min-width:0"><div style="font-weight:600;font-size:.9rem;color:#1d2733;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ h.name }}</div><div style="font-family:var(--font-mono);font-size:11px;color:#8a8576;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ h.domain }}</div></div>
+          <div style="font-family:var(--font-mono);font-size:11.5px;color:#4a4f57">{{ h.coverageSince }}<div style="font-size:10.5px;color:#b6b0a1">@ {{ h.coverageSinceSize }}</div></div>
+          <div style="font-family:var(--font-mono);font-size:11.5px;color:#4a4f57">{{ h.checkpointSize }}</div>
+          <div style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:#4a4f57"><span style="width:7px;height:7px;border-radius:50%;background:{{ h.anchorDot }};flex:none"></span><span style="font-family:var(--font-mono)">{{ h.anchorShort }}</span></div>
+          <div><dc-import name="HubStatusBadge" status="{{ h.status }}" size="sm" variant="plain" hint-size="110px,22px"></dc-import></div>
+        </a>
+      </sc-for>
+    </div>
+    <p style="font-size:.78rem;font-weight:300;color:#a39d8e;margin:14px 2px 0;line-height:1.5">Coverage windows recorded for every hub. Guarantees hold only from coverage start — entries committed before the monitor began watching are mirrored but not vouched for. Every hub is mirrored and served regardless of status.</p>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  hubs() {
+    return [
+      { name:"ISCC Foundation Hub", domain:"hub.iscc.id", status:"verified", coverageSince:"2025-09-01", coverageSinceSize:"1,284", checkpointSize:"48,902", anchorState:"confirmed" },
+      { name:"Creative Passport", domain:"register.creativepassport.net", status:"verified", coverageSince:"2025-11-15", coverageSinceSize:"402", checkpointSize:"12,740", anchorState:"confirmed" },
+      { name:"Content Authenticity Registry", domain:"log.contentauth.org", status:"verified", coverageSince:"2026-06-19", coverageSinceSize:"21,039", checkpointSize:"21,130", anchorState:"pending" },
+      { name:"Newsroom Ledger", domain:"hub.example-news.com", status:"unresolvable", coverageSince:"2025-10-02", coverageSinceSize:"640", checkpointSize:"8,420", anchorState:"confirmed" },
+      { name:"MediaVault", domain:"tlog.mediavault.io", status:"unverified", coverageSince:"2026-01-20", coverageSinceSize:"118", checkpointSize:"3,301", anchorState:"confirmed" },
+      { name:"Archive Collective", domain:"hub.archive-collective.org", status:"frozen", coverageSince:"2025-12-05", coverageSinceSize:"880", checkpointSize:"9,004", anchorState:"confirmed" },
+      { name:"Sandbox Hub", domain:"testhub.iscc.id", status:"inactive", coverageSince:"2026-03-01", coverageSinceSize:"0", checkpointSize:"512", anchorState:"confirmed" },
+    ];
+  }
+  renderVals() {
+    const hubs = this.hubs().map((h, i) => ({
+      ...h,
+      rowNo: String(i + 1).padStart(2, "0"),
+      ledgerBg: h.status === "frozen" ? "#fff6f6" : "#ffffff",
+      anchorDot: h.anchorState === "pending" ? "#ffc300" : "#7aa832",
+      anchorShort: h.anchorState === "pending" ? "pending" : "confirmed",
+    }));
+    return { hubs };
+  }
+}
+</script>
+</body>
+</html>

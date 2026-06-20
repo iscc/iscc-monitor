@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/fonts.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/colors.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/typography.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/spacing.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/base.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/styles.css">
+<script src="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/_ds_bundle.js"></script>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#f4f1ea;font-family:var(--font-sans)}
+  ::selection{background:rgba(0,84,178,.16)}
+  a{text-decoration:none;color:inherit}
+  .mon-row:hover{background:#fbf9f4 !important}
+</style>
+</helmet>
+
+<div style="background:#f4f1ea;min-height:100vh">
+
+  <!-- document chrome -->
+  <header style="background:#fbf9f4;border-bottom:1px solid #ddd8cc;padding:16px 30px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:13px">
+      <img src="assets/iscc-logo-black.png" alt="ISCC" style="height:19px;width:auto;display:block">
+      <span style="width:1px;height:24px;background:#ddd8cc"></span>
+      <div style="line-height:1.2"><div style="font-family:var(--font-mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#1d2733;font-weight:600">Trust &amp; Transparency Monitor</div><div style="font-size:11px;color:#8a8576;font-weight:300">Evidence of record · ISCC-Hub network</div></div>
+    </div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:22px;flex-wrap:wrap">
+      <div style="line-height:1.3;text-align:right"><div style="font-family:var(--font-mono);font-size:12.5px;color:#1d2733">monitor.iscc.id</div><div style="font-size:11px;color:#8a8576;font-weight:300">instance operated by ISCC Foundation · ISCC mainnet</div></div>
+      <a href="ISCC Monitor - Independent Verification.dc.html" style="font-family:var(--font-mono);font-size:11px;color:#0054b2;border:1px solid #cfd8e6;border-radius:7px;padding:7px 11px">verify ↗ monitor.iscc.codes</a>
+    </div>
+  </header>
+
+  <div style="max-width:1000px;margin:0 auto;padding:30px 30px 90px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+      <a href="ISCC Monitor - Hub Dossier.dc.html" style="color:#0054b2;font-size:13px;font-weight:600">← {{ hub.name }} dossier</a>
+    </div>
+
+    <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap">
+      <div>
+        <div style="font-family:var(--font-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#8a8576;margin-bottom:5px">Log browser</div>
+        <h1 style="font-size:1.7rem;font-weight:700;letter-spacing:-.01em;color:#1d2733;margin:0 0 2px">{{ hub.name }}</h1>
+        <div style="font-family:var(--font-mono);font-size:12.5px;color:#4a4f57">{{ hub.domain }} · {{ hub.records }} records mirrored</div>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:8px">
+        <div><label style="display:block;font-size:10.5px;color:#8a8576;font-family:var(--font-mono);letter-spacing:.06em;text-transform:uppercase;margin-bottom:5px">Jump to sequence</label><input type="text" placeholder="e.g. 24815" onKeyDown="{{ onJump }}" style="width:150px;font-family:var(--font-mono);font-size:13px;padding:9px 12px;border:1px solid #c8c2b4;border-radius:8px;background:#fff"></div>
+      </div>
+    </div>
+
+    <!-- pager top -->
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;background:#fbf9f4;border:1px solid #ddd8cc;border-bottom:none;border-radius:8px 8px 0 0;padding:11px 16px">
+      <button type="button" onClick="{{ logNewer }}" style="display:inline-flex;align-items:center;gap:7px;background:{{ logNewerStyle.bg }};color:{{ logNewerStyle.fg }};border:1px solid {{ logNewerStyle.bd }};opacity:{{ logNewerStyle.op }};border-radius:7px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:{{ logNewerStyle.cur }}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"></path></svg>Newer</button>
+      <span style="font-family:var(--font-mono);font-size:12px;color:#8a8576">seq {{ logRangeLabel }}</span>
+      <button type="button" onClick="{{ logOlder }}" style="display:inline-flex;align-items:center;gap:7px;background:{{ logOlderStyle.bg }};color:{{ logOlderStyle.fg }};border:1px solid {{ logOlderStyle.bd }};opacity:{{ logOlderStyle.op }};border-radius:7px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:{{ logOlderStyle.cur }}">Older<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg></button>
+    </div>
+
+    <!-- record list -->
+    <div style="background:#fff;border:1px solid #ddd8cc;border-radius:0 0 8px 8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.05)">
+      <div style="display:grid;grid-template-columns:90px 130px 1fr 150px;gap:14px;padding:10px 18px;border-bottom:1.5px solid #1d2733;font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#8a8576">
+        <span>Seq</span><span>Type</span><span>ISCC-ID</span><span>Logged</span>
+      </div>
+      <sc-for list="{{ logRecords }}" as="r" hint-placeholder-count="12">
+        <a href="ISCC Monitor - Single Record.dc.html" class="mon-row" style="display:grid;grid-template-columns:90px 130px 1fr 150px;gap:14px;padding:12px 18px;border-bottom:1px solid #ece8de;align-items:center;transition:.12s">
+          <span style="font-family:var(--font-mono);font-size:13px;color:#1d2733;font-weight:500">{{ r.seqLabel }}</span>
+          <span><span style="display:inline-block;font-family:var(--font-mono);font-size:11px;font-weight:700;color:{{ r.tone }};background:{{ r.toneBg }};padding:3px 9px;border-radius:5px">{{ r.label }}</span></span>
+          <span style="font-family:var(--font-mono);font-size:12.5px;color:#4a4f57;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.id }}</span>
+          <span style="font-family:var(--font-mono);font-size:11.5px;color:#8a8576">{{ r.at }}</span>
+        </a>
+      </sc-for>
+    </div>
+
+    <!-- pager bottom -->
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px">
+      <button type="button" onClick="{{ logNewer }}" style="display:inline-flex;align-items:center;gap:7px;background:{{ logNewerStyle.bg }};color:{{ logNewerStyle.fg }};border:1px solid {{ logNewerStyle.bd }};opacity:{{ logNewerStyle.op }};border-radius:8px;padding:10px 16px;font-size:13px;font-weight:600;cursor:{{ logNewerStyle.cur }}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"></path></svg>Newer entries</button>
+      <span style="font-size:12px;color:#a39d8e;font-weight:300">Records are append-only — a deletion is itself a new entry, never a removal.</span>
+      <button type="button" onClick="{{ logOlder }}" style="display:inline-flex;align-items:center;gap:7px;background:{{ logOlderStyle.bg }};color:{{ logOlderStyle.fg }};border:1px solid {{ logOlderStyle.bd }};opacity:{{ logOlderStyle.op }};border-radius:8px;padding:10px 16px;font-size:13px;font-weight:600;cursor:{{ logOlderStyle.cur }}">Older entries<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg></button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { logStart: 0 };
+  hub() {
+    return { name:"ISCC Foundation Hub", domain:"hub.iscc.id", records:"48,902" };
+  }
+  hubMax() { return parseInt(String(this.hub().records).replace(/[^0-9]/g, ""), 10) || 1; }
+  genRecord(seq) {
+    const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let n = (seq >>> 0), body = "";
+    for (let i = 0; i < 11; i++) { n = (n * 2654435761 + 0x9E3779B9 + i * 0x6D + 1) >>> 0; body += A[(n >>> 13) & 31]; }
+    const id = "ISCC:M" + body;
+    const isDel = seq % 17 === 0, isUnknown = seq % 53 === 0 && !isDel;
+    const type = isDel ? "deletion" : (isUnknown ? "unknown" : "declaration");
+    const META = {
+      declaration: { label:"Declaration", tone:"#0054b2", toneBg:"rgba(0,84,178,0.07)" },
+      deletion:    { label:"Deletion", tone:"#d2691e", toneBg:"rgba(210,105,30,0.10)" },
+      unknown:     { label:"Unknown type", tone:"#6c757d", toneBg:"rgba(108,117,125,0.10)" },
+    };
+    const m = META[type];
+    const max = this.hubMax();
+    const d = new Date(Date.UTC(2026, 5, 20, 9, 14) - (max - seq) * 7 * 60000);
+    const p = (x) => String(x).padStart(2, "0");
+    const at = `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())} UTC`;
+    return { seqLabel: seq.toLocaleString("en-US"), id, label: m.label, tone: m.tone, toneBg: m.toneBg, at };
+  }
+  logShift(delta) {
+    const max = this.hubMax(), size = 12;
+    let start = (this.state.logStart || max) + delta;
+    if (start > max) start = max;
+    if (start < size) start = size;
+    this.setState({ logStart: start });
+  }
+  jumpSeq(e) {
+    if (e.key && e.key !== "Enter") return;
+    const max = this.hubMax();
+    let v = parseInt(String(e.target.value).replace(/[^0-9]/g, ""), 10);
+    if (!v) return; if (v < 1) v = 1; if (v > max) v = max;
+    this.setState({ logStart: v });
+  }
+  renderVals() {
+    const hub = this.hub(), hubMax = this.hubMax(), logSize = 12;
+    const logTop = Math.min(this.state.logStart || hubMax, hubMax);
+    const logBottom = Math.max(logTop - logSize + 1, 1);
+    const logRecords = []; for (let s = logTop; s >= logBottom; s--) logRecords.push(this.genRecord(s));
+    const logRangeLabel = `${logTop.toLocaleString("en-US")} – ${logBottom.toLocaleString("en-US")} of ${hubMax.toLocaleString("en-US")}`;
+    const on = { bg:"#fff", fg:"#1d2733", bd:"#c8c2b4", cur:"pointer", op:1 };
+    const off = { bg:"#f4f1ea", fg:"#b6b0a1", bd:"#e6e0d2", cur:"default", op:.6 };
+    return {
+      hub, logRecords, logRangeLabel,
+      logNewer: () => this.logShift(12), logOlder: () => this.logShift(-12),
+      logNewerStyle: logTop >= hubMax ? off : on, logOlderStyle: logBottom <= 1 ? off : on,
+      onJump: (e) => this.jumpSeq(e),
+    };
+  }
+}
+</script>
+</body>
+</html>

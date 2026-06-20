@@ -1,0 +1,47 @@
+/* ISCC Typography Tokens
+   Headings & body: Readex Pro (Arial fallback)
+   Code & ISCC-IDs: JetBrains Mono (Consolas fallback) */
+
+:root {
+  /* ---------- Font families ---------- */
+  --font-sans: "Readex Pro", Arial, "Helvetica Neue", sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, "SF Mono", ui-monospace, monospace;
+
+  /* ---------- Weights ----------
+     Readex Pro reads light by default in the brand — 300 is the body weight,
+     600/700 carry headings. */
+  --weight-light: 300;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* ---------- Type scale (rem) ---------- */
+  --text-2xs: 0.62rem;   /* unit codes, micro-labels */
+  --text-xs: 0.72rem;    /* mono facts, captions */
+  --text-sm: 0.82rem;    /* secondary UI text, tab labels */
+  --text-base: 0.94rem;  /* body */
+  --text-md: 1.05rem;    /* lead / product label */
+  --text-lg: 1.3rem;     /* section titles */
+  --text-xl: 1.75rem;    /* page subheads */
+  --text-2xl: 2.1rem;    /* hero (small) */
+  --text-3xl: 2.5rem;    /* hero (large) */
+
+  /* ---------- Line heights ---------- */
+  --leading-tight: 1.12;
+  --leading-snug: 1.3;
+  --leading-normal: 1.6;
+
+  /* ---------- Letter spacing ---------- */
+  --tracking-tighter: -0.015em; /* hero headlines */
+  --tracking-tight: -0.01em;    /* mono code rows */
+  --tracking-normal: 0;
+  --tracking-wide: 0.06em;      /* status pills */
+  --tracking-wider: 0.1em;      /* product wordmark */
+  --tracking-widest: 0.16em;    /* readout section labels */
+
+  /* ---------- Semantic type aliases ---------- */
+  --font-display: var(--font-sans);
+  --font-body: var(--font-sans);
+  --font-code: var(--font-mono);
+}

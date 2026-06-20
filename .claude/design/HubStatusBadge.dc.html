@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<span style="display:inline-flex;align-items:center;gap:6px;border-radius:9999px;font-family:var(--font-sans);line-height:1.1;white-space:nowrap;padding:{{ padY }}px {{ padX }}px;background:{{ chipBg }};border:1px solid {{ chipBd }};color:{{ textColor }};font-size:{{ fontPx }}px;font-weight:700;letter-spacing:0.01em">
+
+  <sc-if value="{{ isVerified }}" hint-placeholder-val="{{ true }}">
+    <svg width="{{ iconPx }}" height="{{ iconPx }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="color:{{ iconColor }};flex:none"><circle cx="12" cy="12" r="9"></circle><path d="M8.4 12.3l2.5 2.5 4.7-5.2"></path></svg>
+  </sc-if>
+  <sc-if value="{{ isUnresolvable }}">
+    <svg width="{{ iconPx }}" height="{{ iconPx }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="color:{{ iconColor }};flex:none"><circle cx="12" cy="12" r="9"></circle><path d="M9.2 9.3a3 3 0 0 1 5.6 1.2c0 1.9-2.7 2.4-2.7 2.4"></path><circle cx="12" cy="16.8" r="0.9" fill="currentColor" stroke="none"></circle></svg>
+  </sc-if>
+  <sc-if value="{{ isUnverified }}">
+    <svg width="{{ iconPx }}" height="{{ iconPx }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="color:{{ iconColor }};flex:none"><path d="M12 3.4 21 19H3z"></path><line x1="12" y1="9.4" x2="12" y2="13.6"></line><circle cx="12" cy="16.3" r="0.9" fill="currentColor" stroke="none"></circle></svg>
+  </sc-if>
+  <sc-if value="{{ isFrozen }}">
+    <svg width="{{ iconPx }}" height="{{ iconPx }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="color:{{ iconColor }};flex:none"><path d="M8.2 3.3h7.6L20.7 8.2v7.6L15.8 20.7H8.2L3.3 15.8V8.2z"></path><line x1="9.6" y1="9.6" x2="14.4" y2="14.4"></line><line x1="14.4" y1="9.6" x2="9.6" y2="14.4"></line></svg>
+  </sc-if>
+  <sc-if value="{{ isInactive }}">
+    <svg width="{{ iconPx }}" height="{{ iconPx }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="color:{{ iconColor }};flex:none"><circle cx="12" cy="12" r="9"></circle><line x1="9.7" y1="9" x2="9.7" y2="15"></line><line x1="14.3" y1="9" x2="14.3" y2="15"></line></svg>
+  </sc-if>
+
+  <sc-if value="{{ withLabel }}" hint-placeholder-val="{{ true }}"><span>{{ label }}</span></sc-if>
+</span>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:200,&quot;height&quot;:60},&quot;status&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;verified&quot;,&quot;unresolvable&quot;,&quot;unverified&quot;,&quot;frozen&quot;,&quot;inactive&quot;],&quot;default&quot;:&quot;verified&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;size&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;sm&quot;,&quot;md&quot;,&quot;lg&quot;],&quot;default&quot;:&quot;md&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;variant&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;chip&quot;,&quot;plain&quot;],&quot;default&quot;:&quot;chip&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;withLabel&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const status = this.props.status || "verified";
+    const size = this.props.size || "md";
+    const variant = this.props.variant || "chip";
+    const withLabel = this.props.withLabel === undefined ? true : this.props.withLabel;
+
+    const META = {
+      verified:     { label: "Verified",     text: "#3f5e10", icon: "#5f8f1f", soft: "rgba(166,219,80,0.20)", bd: "rgba(122,168,50,0.55)" },
+      unresolvable: { label: "Unresolvable", text: "#7a5c00", icon: "#b07f00", soft: "rgba(255,195,0,0.18)",  bd: "rgba(196,150,0,0.55)" },
+      unverified:   { label: "Unverified",   text: "#9a4410", icon: "#d2691e", soft: "rgba(210,105,30,0.13)", bd: "rgba(210,105,30,0.50)" },
+      frozen:       { label: "Frozen",       text: "#ffffff", icon: "#ffffff", soft: "#e0353f",               bd: "#c01f29", solid: true },
+      inactive:     { label: "Inactive",     text: "#5c6470", icon: "#9aa1ab", soft: "#f0efec",               bd: "#dcdbd6" },
+    };
+    const m = META[status] || META.verified;
+
+    const SIZE = {
+      sm: { iconPx: 13, fontPx: 11,   padX: 8,  padY: 3 },
+      md: { iconPx: 15, fontPx: 12.5, padX: 11, padY: 5 },
+      lg: { iconPx: 19, fontPx: 15,   padX: 15, padY: 8 },
+    };
+    const s = SIZE[size] || SIZE.md;
+
+    const plain = variant === "plain";
+
+    return {
+      label: m.label,
+      textColor: plain ? (m.solid ? "#c01f29" : m.text) : m.text,
+      iconColor: plain && m.solid ? "#e0353f" : m.icon,
+      chipBg: plain ? "transparent" : m.soft,
+      chipBd: plain ? "transparent" : m.bd,
+      padX: plain ? 0 : s.padX,
+      padY: plain ? 0 : s.padY,
+      iconPx: s.iconPx,
+      fontPx: s.fontPx,
+      withLabel,
+      isVerified: status === "verified",
+      isUnresolvable: status === "unresolvable",
+      isUnverified: status === "unverified",
+      isFrozen: status === "frozen",
+      isInactive: status === "inactive",
+    };
+  }
+}
+</script>
+</body>
+</html>

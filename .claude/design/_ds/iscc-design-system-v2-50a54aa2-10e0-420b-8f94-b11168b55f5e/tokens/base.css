@@ -1,0 +1,74 @@
+/* ISCC base layer — element defaults + brand utilities.
+   Loaded after tokens so it can reference the custom properties. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-weight: var(--weight-light);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--text-body);
+  background-color: var(--surface-page);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  color: var(--text-heading);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-snug);
+}
+
+code, kbd, pre, samp {
+  font-family: var(--font-mono);
+}
+
+a {
+  color: var(--text-link);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Grain texture overlay — the signature ISCC surface treatment.
+   Apply to a colored element; the PNG blends via overlay so the
+   underlying brand color shows through with a fine paper tooth. */
+.iscc-grain {
+  background-image: url("../assets/grain.png");
+  background-size: 256px 256px;
+  background-blend-mode: overlay;
+}
+
+/* Brand keyframes — used by status dots, the decode readout and scan-line. */
+@keyframes iscc-pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+@keyframes iscc-bit-flick {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.15; }
+}
+@keyframes iscc-scan-sweep {
+  0% { top: 0; }
+  100% { top: calc(100% - 2px); }
+}
+
+/* Honor reduced-motion across every brand surface. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

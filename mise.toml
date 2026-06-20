@@ -1,0 +1,37 @@
+# mise.toml — task runner and tool versions for iscc-monitor
+#
+# Usage: mise run <task>
+#
+# mise provides the QUALITY GATES only. The CID build loop itself is driven from
+# Claude Code (the `build` skill, looped via /goal or /loop) — not from mise.
+# See `.claude/skills/build/AUTOMATION.md`.
+#
+# Gates are red until the Go module is bootstrapped (`go mod init` in the first
+# `advance` step) — `go build` needs a `go.mod`.
+#
+# Formatting is gated by the `review` agent (it runs `gofmt -l .` and treats any
+# listed file as a failure). `gofmt -l` exits 0 even when it lists files, so it
+# cannot gate via exit code in a portable one-liner; the agent judges the output.
+
+[tools]
+go = "1.24"
+
+[tasks.build]
+description = "Compile every package"
+run = "go build ./..."
+
+[tasks.vet]
+description = "Run go vet (static checks)"
+run = "go vet ./..."
+
+[tasks.test]
+description = "Run all tests (CGO_ENABLED=0 → no -race; the race detector needs cgo)"
+run = "go test ./..."
+
+[tasks.fmt]
+description = "Format all Go source in place"
+run = "gofmt -w ."
+
+[tasks.check]
+description = "Full gate: build + vet + test (must stay green; '&&' is portable across sh and cmd)"
+run = "go build ./... && go vet ./... && go test ./..."

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/fonts.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/colors.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/typography.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/spacing.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/tokens/base.css">
+<link rel="stylesheet" href="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/styles.css">
+<script src="_ds/iscc-design-system-v2-50a54aa2-10e0-420b-8f94-b11168b55f5e/_ds_bundle.js"></script>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#f4f1ea;font-family:var(--font-sans)}
+  ::selection{background:rgba(0,84,178,.16)}
+  a{text-decoration:none;color:inherit}
+</style>
+</helmet>
+
+<div style="background:#f4f1ea;min-height:100vh">
+
+  <!-- document chrome -->
+  <header style="background:#fbf9f4;border-bottom:1px solid #ddd8cc;padding:16px 30px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:13px">
+      <img src="assets/iscc-logo-black.png" alt="ISCC" style="height:19px;width:auto;display:block">
+      <span style="width:1px;height:24px;background:#ddd8cc"></span>
+      <div style="line-height:1.2"><div style="font-family:var(--font-mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#1d2733;font-weight:600">Trust &amp; Transparency Monitor</div><div style="font-size:11px;color:#8a8576;font-weight:300">Evidence of record · ISCC-Hub network</div></div>
+    </div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:22px;flex-wrap:wrap">
+      <div style="line-height:1.3;text-align:right"><div style="font-family:var(--font-mono);font-size:12.5px;color:#1d2733">monitor.iscc.id</div><div style="font-size:11px;color:#8a8576;font-weight:300">instance operated by ISCC Foundation · ISCC mainnet</div></div>
+      <a href="ISCC Monitor - Independent Verification.dc.html" style="font-family:var(--font-mono);font-size:11px;color:#0054b2;border:1px solid #cfd8e6;border-radius:7px;padding:7px 11px">verify ↗ monitor.iscc.codes</a>
+    </div>
+  </header>
+
+  <div style="max-width:840px;margin:0 auto;padding:30px 30px 90px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+      <a href="ISCC Monitor - Realm Index.dc.html" style="color:#0054b2;font-size:13px;font-weight:600">← Realm index</a>
+    </div>
+
+    <!-- document -->
+    <div style="background:#fff;border:1px solid #ddd8cc;border-radius:4px;box-shadow:0 2px 10px rgba(0,0,0,.06);padding:44px 50px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:20px;border-bottom:2px solid #1d2733;padding-bottom:18px;margin-bottom:8px">
+        <div>
+          <div style="font-family:var(--font-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#8a8576;margin-bottom:6px">Hub dossier</div>
+          <h1 style="font-size:1.9rem;font-weight:700;letter-spacing:-.01em;color:#1d2733;margin:0 0 3px">{{ hub.name }}</h1>
+          <div style="font-family:var(--font-mono);font-size:13px;color:#4a4f57">{{ hub.domain }}</div>
+        </div>
+        <dc-import name="HubStatusBadge" status="{{ hub.status }}" size="md" hint-size="140px,32px"></dc-import>
+      </div>
+      <div style="font-family:var(--font-mono);font-size:11px;color:#a39d8e;margin-bottom:26px">Compiled by monitor.iscc.id · {{ hub.checkpointTime }}</div>
+
+      <!-- frozen violation report -->
+      <sc-if value="{{ hubIsFrozen }}" hint-placeholder-val="{{ true }}">
+        <div style="border:1.5px solid #e0353f;border-radius:4px;overflow:hidden;margin-bottom:28px">
+          <div style="background:#e0353f;color:#fff;padding:10px 18px;font-family:var(--font-mono);font-size:11px;letter-spacing:.13em;text-transform:uppercase;font-weight:700;display:flex;align-items:center;gap:9px">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2"><path d="M8.2 3.3h7.6L20.7 8.2v7.6L15.8 20.7H8.2L3.3 15.8V8.2z"></path><line x1="9.6" y1="9.6" x2="14.4" y2="14.4"></line><line x1="14.4" y1="9.6" x2="9.6" y2="14.4"></line></svg>
+            Exhibit · self-consistency violation
+          </div>
+          <div style="padding:18px 20px;background:#fff6f6">
+            <p style="font-size:.95rem;font-weight:400;line-height:1.55;color:#7a2b30;margin:0 0 14px"><strong style="font-weight:700">Finding:</strong> {{ hubViolation.note }}</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 28px;font-family:var(--font-mono);font-size:12.5px">
+              <div style="display:flex;justify-content:space-between;border-bottom:1px dotted #e3b9bc;padding-bottom:5px"><span style="color:#a86b6e">Violation kind</span><span style="color:#1d2733;text-transform:capitalize">{{ hubViolation.kind }}</span></div>
+              <div style="display:flex;justify-content:space-between;border-bottom:1px dotted #e3b9bc;padding-bottom:5px"><span style="color:#a86b6e">Detected</span><span style="color:#1d2733">{{ hubViolation.detectedAt }}</span></div>
+              <div style="display:flex;justify-content:space-between;border-bottom:1px dotted #e3b9bc;padding-bottom:5px"><span style="color:#a86b6e">Tree size before</span><span style="color:#1d2733">{{ hubViolation.prevSize }}</span></div>
+              <div style="display:flex;justify-content:space-between;border-bottom:1px dotted #e3b9bc;padding-bottom:5px"><span style="color:#a86b6e">Then presented</span><span style="color:#1d2733">{{ hubViolation.observedSize }}</span></div>
+              <div style="display:flex;justify-content:space-between;border-bottom:1px dotted #e3b9bc;padding-bottom:5px"><span style="color:#a86b6e">Evidence ref</span><span style="color:#1d2733">{{ hubViolation.evidenceId }}</span></div>
+              <div style="display:flex;justify-content:space-between;border-bottom:1px dotted #e3b9bc;padding-bottom:5px"><span style="color:#a86b6e">Disposition</span><span style="color:#1d2733">Frozen · manual review</span></div>
+            </div>
+            <p style="font-size:.8rem;font-weight:300;color:#8a6b6d;margin:14px 0 0">Evidence is preserved permanently and cannot be regenerated. The hub keeps being polled in evidence-only mode and remains mirrored. New state must not be trusted.</p>
+          </div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ hubShowCaution }}">
+        <div style="border:1px solid {{ hub.accent }};border-left:3px solid {{ hub.accent }};border-radius:4px;padding:14px 18px;margin-bottom:28px;background:#fffdf8">
+          <div style="font-family:var(--font-mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:{{ hub.accent }};margin-bottom:5px;font-weight:600">Note · {{ hub.status }}</div>
+          <p style="font-size:.88rem;font-weight:300;line-height:1.5;color:#4a4f57;margin:0">{{ hub.note }}</p>
+        </div>
+      </sc-if>
+
+      <!-- numbered sections -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 36px">
+        <div style="border-top:1px solid #ece8de;padding:16px 0"><div style="font-family:var(--font-mono);font-size:10.5px;color:#a39d8e;letter-spacing:.06em">§1 · IDENTITY</div><div style="font-size:.88rem;color:#1d2733;margin-top:6px">Key resolved from <span style="font-family:var(--font-mono)">did:web:{{ hub.domain }}</span></div><div style="font-size:12px;color:#8a8576;margin-top:3px;font-weight:300">Domain ownership is identity. Keys managed in the hub's own did.json.</div></div>
+        <div style="border-top:1px solid #ece8de;padding:16px 0"><div style="font-family:var(--font-mono);font-size:10.5px;color:#a39d8e;letter-spacing:.06em">§2 · COVERAGE</div><div style="font-size:.88rem;color:#1d2733;margin-top:6px;font-family:var(--font-mono)">since {{ hub.coverageSince }} @ size {{ hub.coverageSinceSize }}</div><div style="font-size:12px;color:#8a8576;margin-top:3px;font-weight:300">{{ hub.coverageDays }} observed. Guarantees from coverage start only.</div></div>
+        <div style="border-top:1px solid #ece8de;padding:16px 0"><div style="font-family:var(--font-mono);font-size:10.5px;color:#a39d8e;letter-spacing:.06em">§3 · LATEST CHECKPOINT</div><div style="font-size:.88rem;color:#1d2733;margin-top:6px;font-family:var(--font-mono)">{{ hub.checkpointSize }} entries</div><div style="font-size:12px;color:#8a8576;margin-top:3px;font-weight:300">observed {{ hub.checkpointTime }}</div></div>
+        <div style="border-top:1px solid #ece8de;padding:16px 0"><div style="font-family:var(--font-mono);font-size:10.5px;color:#a39d8e;letter-spacing:.06em">§4 · BITCOIN ANCHOR</div><div style="font-size:.88rem;color:#1d2733;margin-top:6px;display:flex;align-items:center;gap:7px"><span style="width:8px;height:8px;border-radius:50%;background:{{ hub.anchorDot }}"></span>{{ hub.anchorLabel }}</div><div style="font-size:12px;color:#8a8576;margin-top:3px;font-weight:300">OpenTimestamps. Authoritative check: run <span style="font-family:var(--font-mono)">ots verify</span>.</div></div>
+      </div>
+
+      <div style="border-top:1px solid #ece8de;padding:18px 0 0;margin-top:6px">
+        <div style="font-family:var(--font-mono);font-size:10.5px;color:#a39d8e;letter-spacing:.06em;margin-bottom:10px">§5 · OBSERVATION LOG</div>
+        <sc-for list="{{ hub.observations }}" as="o" hint-placeholder-count="3">
+          <div style="font-family:var(--font-mono);font-size:12px;color:{{ o.tone }};padding:4px 0">{{ o.line }}</div>
+        </sc-for>
+      </div>
+
+      <div style="display:flex;gap:12px;margin-top:24px;flex-wrap:wrap">
+        <a href="ISCC Monitor - Certificate.dc.html" style="background:#1d2733;color:#fff;border-radius:7px;padding:11px 18px;font-size:13.5px;font-weight:600">Prove an ISCC-ID in this hub →</a>
+        <a href="ISCC Monitor - Log Browser.dc.html" style="background:#fff;color:#1d2733;border:1px solid #c8c2b4;border-radius:7px;padding:11px 18px;font-size:13.5px;font-weight:600">Browse the log →</a>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  hub() {
+    return { name:"Archive Collective", domain:"hub.archive-collective.org", status:"frozen",
+        coverageSince:"2025-12-05", coverageSinceSize:"880", coverageDays:"197 days",
+        checkpointSize:"9,004", checkpointTime:"2026-06-12 14:22 UTC (frozen)",
+        anchorState:"confirmed", anchorLabel:"Confirmed · block 869,440 (last good root)",
+        violation:{ kind:"shrink", detectedAt:"2026-06-12 14:22 UTC", prevSize:"9,120", observedSize:"9,004",
+          evidenceId:"sv-9b3f1a7c", note:"The hub presented a checkpoint smaller than one it had already signed — RFC-6962 consistency failed. History was rewritten against this monitor." },
+        observations:[
+          { line:"2026-06-12 14:22 — size 9,120 → 9,004 · consistency FAILED · froze hub", tone:"#b3434a" },
+          { line:"2026-06-12 02:10 — size 9,120 · consistent · anchored block 869,440", tone:"#4a4f57" },
+          { line:"2026-06-11 02:08 — size 8,902 · consistent", tone:"#4a4f57" },
+        ] };
+  }
+  renderVals() {
+    const ACCENT = { verified:"#5f8f1f", unresolvable:"#b07f00", unverified:"#d2691e", frozen:"#e0353f", inactive:"#9aa1ab" };
+    const raw = this.hub();
+    const hub = { ...raw, accent: ACCENT[raw.status],
+      anchorDot: raw.anchorState === "pending" ? "#ffc300" : "#7aa832" };
+    return {
+      hub,
+      hubIsFrozen: hub.status === "frozen",
+      hubViolation: hub.violation || {},
+      hubShowCaution: !!hub.note && hub.status !== "frozen",
+    };
+  }
+}
+</script>
+</body>
+</html>

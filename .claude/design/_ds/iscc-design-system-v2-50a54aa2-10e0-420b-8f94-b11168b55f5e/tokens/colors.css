@@ -1,0 +1,75 @@
+/* ISCC Color Tokens
+   Source of truth: iscc-brand-guidelines SKILL.md + iscc-web main.scss / lib/iscc.ts */
+
+:root {
+  /* ---------- Primary palette ---------- */
+  --iscc-blue: #0054b2;        /* Primary brand — headers, links, CTAs */
+  --iscc-blue-hover: #004695;  /* Pressed / hover for blue surfaces */
+  --iscc-deep-navy: #123663;   /* Secondary — dark backgrounds, readout strips */
+  --iscc-bright-yellow: #ffc300; /* Accent — highlights, the brand divider */
+  --iscc-coral-red: #f56169;   /* Errors, the live ISCC code bar */
+  --iscc-lime-green: #a6db50;  /* Success, the Instance layer */
+
+  /* ---------- Extended blues ---------- */
+  --iscc-sky-blue: #4596f5;    /* Light variant — secondary actions, info */
+  --iscc-light-cyan: #7ac2f7;  /* Tertiary blue — subtle accents, scan-line */
+
+  /* ---------- Neutrals ---------- */
+  --iscc-white: #ffffff;       /* Primary background */
+  --iscc-canvas: #fbf7f2;      /* App canvas — warm off-white (iscc-web body) */
+  --iscc-off-white: #f8f9fa;   /* Secondary surface — insets, fields */
+  --iscc-surface-2: #fcfcfd;   /* Card footers / subtle zebra */
+  --iscc-light-gray: #e9ecef;  /* Borders and dividers */
+  --iscc-border: #dee2e6;      /* Stronger control border */
+  --iscc-border-strong: #ced4da; /* Inputs / dashed drop-zones */
+  --iscc-medium-gray: #6c757d; /* Secondary text */
+  --iscc-text-muted: #adb5bd;  /* Tertiary / placeholder text */
+  --iscc-dark-gray: #343a40;   /* Primary body text */
+  --iscc-near-black: #212529;  /* Headers and emphasis */
+
+  /* ---------- ISCC-UNIT layer palette ----------
+     The five components of an ISCC, ordered abstract → concrete.
+     Mirrors UNIT_STYLE in iscc-web/lib/iscc.ts. */
+  --iscc-unit-meta: #7ac2f7;       /* Meta — metadata similarity */
+  --iscc-unit-semantic: #4596f5;   /* Semantic — semantic similarity (experimental) */
+  --iscc-unit-content: #0054b2;    /* Content — syntactic similarity */
+  --iscc-unit-data: #123663;       /* Data — data similarity */
+  --iscc-unit-instance: #a6db50;   /* Instance — exact match / checksum */
+
+  /* unit accent (darker, for text-on-light) */
+  --iscc-unit-meta-accent: #1f86c9;
+  --iscc-unit-semantic-accent: #2e7ad6;
+  --iscc-unit-content-accent: #0054b2;
+  --iscc-unit-data-accent: #123663;
+  --iscc-unit-instance-accent: #6d9c2a;
+
+  /* ---------- Semantic status aliases ---------- */
+  --status-success: var(--iscc-lime-green);
+  --status-success-text: #4d6e14;
+  --status-warning: var(--iscc-bright-yellow);
+  --status-warning-text: #7a5c00;
+  --status-error: var(--iscc-coral-red);
+  --status-error-text: #b3434a;
+  --status-info: var(--iscc-sky-blue);
+
+  /* ---------- Semantic surface / text aliases ---------- */
+  --surface-page: var(--iscc-canvas);
+  --surface-card: var(--iscc-white);
+  --surface-inset: var(--iscc-off-white);
+  --surface-dark: var(--iscc-deep-navy);
+  --surface-brand: var(--iscc-blue);
+
+  --text-heading: var(--iscc-near-black);
+  --text-body: var(--iscc-dark-gray);
+  --text-muted: var(--iscc-medium-gray);
+  --text-faint: var(--iscc-text-muted);
+  --text-on-dark: var(--iscc-white);
+  --text-link: var(--iscc-blue);
+
+  --border-subtle: var(--iscc-light-gray);
+  --border-default: var(--iscc-border);
+  --border-control: var(--iscc-border-strong);
+
+  --focus-ring: rgba(0, 84, 178, 0.14);
+  --accent: var(--iscc-bright-yellow);
+}

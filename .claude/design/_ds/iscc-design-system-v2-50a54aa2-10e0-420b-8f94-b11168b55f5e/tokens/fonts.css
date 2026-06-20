@@ -1,0 +1,63 @@
+/* ISCC webfonts — Readex Pro (sans) + JetBrains Mono (mono).
+   Served from the Fontsource jsDelivr CDN (stable, versioned woff2). */
+
+/* ---------- Readex Pro ---------- */
+@font-face {
+  font-family: "Readex Pro";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("https://cdn.jsdelivr.net/fontsource/fonts/readex-pro@latest/arabic-300-normal.woff2") format("woff2"),
+       url("https://cdn.jsdelivr.net/fontsource/fonts/readex-pro@latest/latin-300-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Readex Pro";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("https://cdn.jsdelivr.net/fontsource/fonts/readex-pro@latest/latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Readex Pro";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("https://cdn.jsdelivr.net/fontsource/fonts/readex-pro@latest/latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Readex Pro";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("https://cdn.jsdelivr.net/fontsource/fonts/readex-pro@latest/latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Readex Pro";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("https://cdn.jsdelivr.net/fontsource/fonts/readex-pro@latest/latin-700-normal.woff2") format("woff2");
+}
+
+/* ---------- JetBrains Mono ---------- */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("https://cdn.jsdelivr.net/fontsource/fonts/jetbrains-mono@latest/latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("https://cdn.jsdelivr.net/fontsource/fonts/jetbrains-mono@latest/latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("https://cdn.jsdelivr.net/fontsource/fonts/jetbrains-mono@latest/latin-700-normal.woff2") format("woff2");
+}
