@@ -83,11 +83,20 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   fixtures). Boundaries compare with `Before` only (never `==`/`After`), guarded by `!IsZero()`. The
   follower must call this and treat out-of-window as **not-`verified`** (rotation/revocation) — a
   *distinct* outcome from `ErrUnverified` (signature matches no key) and `ErrUnresolvable`.
-- **Fail-open on a *malformed* validity timestamp is a live gap (deferred to the parser step).**
-  `parseTime` maps both absent AND non-empty-but-unparseable `validFrom/validUntil/revoked` to the zero
-  `time.Time`, which `ValidAt` reads as "no constraint" → a garbled `revoked`/`validUntil` silently
-  fails open (key stays valid). Acceptable for the pure-predicate step (changing it alters parsing
-  semantics + the golden test); see issues.md — fix at the `hub_keys`/fixture step, not in `ValidAt`.
+- **Malformed-validity-timestamp fail-open is CLOSED (verified).** `parseTime` now returns
+  `(time.Time, error)`: empty → `(zero, nil)` (unconstrained, golden-test untouched); non-empty +
+  unparseable → wrapped error, which `ParseDIDDocument` propagates and `ResolveVerifierKey` maps to
+  `ErrUnresolvable`. So a hub serving `"revoked":"not-a-date"` collapses to `StatusUnresolvable`, never
+  `verified`. The fix lives in the parser, NOT `ValidAt` — the 12-case `ValidAt` boundary golden and
+  the `derive_vkey.py` vectors are unchanged (reconfirmed `40b74463`/`22b08f3e`).
+- **`AcceptCheckpoint` is the pure 4-way verdict seam the follower consumes** (`logclient/accept.go`):
+  composes `ResolveVerifierKey → VerifyCheckpoint → DIDKey.ValidAt(observedAt)` into
+  `StatusVerified/Unverified/Unresolvable/Rotated`. `observedAt` is injected (never `time.Now()`),
+  validity is checked **only after a good signature** (out-of-window-AND-bad-sig is `unverified`, not
+  `rotated`), and `CheckpointInfo{Origin,TreeSize,Root}` is the **zero value on every non-verified
+  verdict**. Contract gotcha for the follower: a non-`ErrUnverified` `VerifyCheckpoint` error (a
+  verified-but-garbled body) is returned as a non-nil `error` alongside `StatusUnverified`'s zero —
+  **callers must check `err` before the status**, mirroring `VerifyCheckpoint`.
 
 ## Checkpoint signed-note verification (`logclient/verify.go`)
 
