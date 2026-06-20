@@ -257,11 +257,22 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   value is confirmed from the fixture, not the author. Oracle gate correctly N/A (string parse, not a
   derivation; `go.mod`/`go.sum`/`schema.sql` byte-identical), but the golden still pins it to
   `VerifierKey`'s `"%s+%08x+%s"` output so it cannot silently diverge.
-- **The verified path now fetches the did.json TWICE per poll** (once in `AcceptCheckpoint`, once in
-  `cacheHubKey`'s `ResolveVerifierKey`). `next.md` explicitly allowed this (YAGNI, refactoring
-  `AcceptCheckpoint` to surface its already-resolved key was Not In Scope). A caching fetcher or a
-  signature change to thread the key out is a later optimization — not a defect, but the obvious next
-  efficiency win once a key *reader* lands.
+- **The cache-hit fast path now skips the SECOND did.json fetch (`cacheHubKeyFast`).** On a warm cache
+  `cacheHubKey` recovers `(name, keyID)` from raw (`KeyIDFromCheckpoint`), asserts `name ==
+  Origin(baseURL)` (`sb0.iscc.id/log`, verified against fixture line 1), hits `LookupHubKey`, and
+  `RecordHubKey`-refreshes in place — no `ResolveVerifierKey`. The first verified poll still resolves
+  twice (cold cache → miss → `cacheHubKeyResolve` fallback). The `+1` fetch-count assertion is
+  non-vacuous: a broken name-guard/lookup would fall through to +2 and fail the test. Fall-through
+  cases (key-id miss, name mismatch, cache miss) return `(false, nil)`; genuine faults
+  (origin/query/RecordHubKey) wrap a non-nil error and are never swallowed. The remaining FIRST resolve
+  (inside `AcceptCheckpoint`, drives the `ValidAt` window check) is the next, larger efficiency slice.
+- **The fast path reuses the *cached* `Revoked`/`PubkeyRaw` on a hit, NOT a re-resolve — and that is
+  safe.** A same-`key_id` pubkey edit is cryptographically near-impossible (`key_id =
+  SHA-256(name||0x0A||0x01||pub)[:4]` → different pubkey ⇒ different key_id ⇒ cache miss ⇒ full
+  resolve), and a `revoked_at`/window edit is still caught by `AcceptCheckpoint`'s first resolve every
+  poll (which gates `StatusVerified` before `cacheHubKey` ever runs). The `hub_keys` row is an
+  identity/availability cache, never the verification authority. A fully cache-only window-honoring
+  path would first need a `valid_from`/`valid_until` schema column (explicitly Not In Scope here).
 - **`LookupHubKey(ctx, hubID, keyID)` is the read side of the cache and is now landed** — the exact
   column-by-column inverse of `RecordHubKey` (`pubkey_raw`→`[]byte`, `pubkey_z`/`revoked_at`/
   `resolved_at` via `sql.NullString`/`sql.NullInt64`→`""`/zero-time), `HubID`/`KeyID` reconstructed
