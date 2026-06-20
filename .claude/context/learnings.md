@@ -130,6 +130,18 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
 - **`note.Open` returns `n.Text` as the clean trailing-`\n` body**, so `strings.Split(text, "\n")`
   yields a trailing empty element; `len >= 3` + reading `lines[0:3]` is correct and tolerates C2SP
   extension lines after the root. Verify `note.Open`'s framing — never re-parse the sig line by hand.
+- **`KeyIDFromCheckpoint(raw)` recovers `(name, keyID)` from the raw checkpoint via `note.Open(raw,
+  note.VerifierList())` + `errors.As(err, &*note.UnverifiedNoteError)`, reading `ue.Note.
+  UnverifiedSigs[0].{Name,Hash}`.** This is library-exact: with an empty verifier list every well-formed
+  sig line hits `*UnknownVerifierError` and is appended to `UnverifiedSigs` (note.go:569) with `Hash =
+  BE-uint32(sig[0:4])` already decoded (note.go:554); `len(n.Sigs)==0` then returns `*UnverifiedNoteError`
+  (note.go:597). A malformed note returns `errMalformedNote` (a plain `errors.New`, NOT a pointer type),
+  so `errors.As` is correctly false and the garbled path wraps cleanly — no `[0]` index, no panic.
+  Reviewer re-decoded the sb0 fixture sig line independently in Python (`base64 → struct ">I" → [:4]`):
+  `name='sb0.iscc.id/log'`, `keyhash=0x40b74463`, 64-byte ed25519 sig — confirming the golden from
+  ground truth, not the author. Oracle gate correctly N/A (reads an already-decoded keyhash; no
+  verify/proof/merkle/didweb path; go.mod/go.sum/schema byte-identical). Still the pure prerequisite —
+  wiring it into `PollHub` to consult `LookupHubKey` and skip the 2nd did.json fetch is the next slice.
 
 ## Consistency triggers (`internal/logclient/consistency.go`)
 
