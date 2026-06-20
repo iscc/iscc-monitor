@@ -1,59 +1,63 @@
 # Handoff
 
-## 2026-06-20 — Review of: Bootstrap Go module + golden-tested `origin()` and `verifierKey()`
+## 2026-06-20 — Pure did:web document parser (`internal/didweb/resolve.go`)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Implemented `parseDIDDocument([]byte) (DIDKey, error)` — a pure (no `net`/`os`/`sql`)
+parser that JSON-decodes a hub's `did.json`, resolves the verification method referenced by
+`assertionMethod` (inline object or `#fragment` string reference into `verificationMethod`), extracts
+`publicKeyMultibase` through the existing oracle-verified `pubkeyFromDID`, and surfaces optional CID
+1.0 validity timestamps (`validFrom`/`validUntil`/`revoked`) without enforcing them. Parse →
+`verifierKey` byte-matches the recorded sb0/sb1 golden vectors against captured live fixtures.
 
-**Summary:** `advance` bootstrapped the Go module (`github.com/iscc/iscc-monitor`, `go 1.24`) and
-landed two pure M1 units: `origin()` (hub base URL → `<domain>/log`) in `internal/logclient` and the
-did:key → C2SP verifier-key derivation in `internal/didweb`, a faithful port of
-`.claude/derive_vkey.py`. The diff is tightly scoped (3 source files + 2 test files), all gates are
-green, and the verifier-key derivation matches the Python oracle byte-for-byte for both live testnet
-hubs. Trust-root golden-vector parity holds.
+**Files changed:**
+- `internal/didweb/resolve.go` (new): `parseDIDDocument`, `assertionKey` (verification-method
+  selection), `parseTime`, and the `DIDKey`/`didDocument`/`verificationMethod` types. Calls in-package
+  `pubkeyFromDID`; `vkey.go` untouched.
+- `internal/didweb/resolve_test.go` (new): table-driven golden test (sb0/sb1 fixtures → `verifierKey`
+  == recorded vectors, plus validity fields asserted zero), five error cases (malformed JSON, empty
+  `verificationMethod`, missing `publicKeyMultibase`, no `assertionMethod`, bad multibase), and an
+  inline-object `assertionMethod` case.
+- `internal/didweb/testdata/sb0.iscc.id_did.json` (new): captured live fixture, verbatim bytes from
+  `next.md`.
+- `internal/didweb/testdata/sb1.amlet.id_did.json` (new): fixture using the recorded golden did:key
+  `z6MkiNW46…` (not the live rotated key — see Notes).
 
-**Verification:**
-- [x] `go.mod` declares `module github.com/iscc/iscc-monitor` — confirmed (`head -1 go.mod`).
-- [x] `mise run check` green — `go build`/`vet`/`test` all exit 0.
-- [x] `gofmt -l .` prints nothing — confirmed empty.
-- [x] `go test -run TestVerifierKey ./internal/didweb` — PASS (sb0, sb1 both assert literal vectors).
-- [x] `go test -run TestOrigin ./internal/logclient` — PASS (incl. trailing-slash, no-scheme, port,
-  whitespace, and three error cases).
-- [x] Oracle cross-check (trust root) — `python3 .claude/derive_vkey.py` emits
-  `sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5` and
-  `sb1.amlet.id/log+22b08f3e+ATo2ruguSdJGh11PS76osrQf6OZKrufzzwH/HMwE3a8/`, byte-identical to the test
-  literals the passing Go test asserts. Independently re-derived both keyids (`40b74463`, `22b08f3e`)
-  from the hash preimage to confirm the BE-uint32 + `%08x` + base64-Std path.
-- [x] Gate-integrity scan over unpushed commits — no `//nolint`, `t.Skip`, build tags, swallowed
-  errors, or deleted assertions.
-- [x] Purity — both packages are stdlib-only (no external module deps; go.mod dependency-free as
-  scoped). `vkey.go` imports no `net`/`os`/`sql`; `origin.go` uses `net/url` (correct for logclient,
-  and `proof/verify` does not exist yet so its purity rule is not yet in play).
-- [x] Scope discipline — exactly the files `next.md` listed; nothing from `## Not In Scope` touched.
+**Verification:** `mise run check` → green (`go build`/`vet`/`test` all exit 0).
+- [x] `gofmt -l .` prints nothing.
+- [x] `go test -run TestParseDIDDocument ./internal/didweb` — PASS. sb0 →
+  `sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5`; sb1 →
+  `sb1.amlet.id/log+22b08f3e+ATo2ruguSdJGh11PS76osrQf6OZKrufzzwH/HMwE3a8/`. All three+ error cases
+  return non-nil errors.
+- [x] `go test -run TestVerifierKey ./internal/didweb` — PASS (no regression to the existing golden).
+- [x] Purity — `resolve.go` directly imports only `encoding/json`, `fmt`, `time`; the non-test
+  dependency closure has no `net`, `net/http`, or `database/sql`. (`go list -deps` lists `os` only
+  because `fmt` transitively pulls it in — verified `fmt`'s own Deps include `os`; nothing we wrote
+  imports it. `os` in the test closure is `os.ReadFile` for fixtures.) `GOOS=js GOARCH=wasm go build
+  ./internal/didweb` succeeds, confirming it stays WASM-shareable.
 
-**Issues found:** (none)
-
-**Next:** did:web resolution (`internal/didweb/resolve.go`): fetch `/.well-known/did.json`, parse
-`verificationMethod` to the `z6Mk` did:key, honor CID 1.0 validity windows / `revoked`, and return the
-pubkey that feeds `verifierKey`. Inject the HTTP client at the outbound-fetch seam
-(`*http.Client` / a `Fetcher` interface) and test against a captured
-`testdata/live/.../did.json` fixture (real fixture, not a mock). When `resolve.go` or the follower
-needs them across package boundaries, export `origin`/`verifierKey` (or wire a small public surface) —
-they are unexported today, which is correct for now.
+**Next:** Wire the did:web HTTP fetch at the outbound-fetch seam (the follower step): map
+`did:web:<domain>` → `https://<domain>/.well-known/did.json`, inject a `*http.Client` / `Fetcher`,
+fetch + call `parseDIDDocument`, and map outcomes to status (`unresolvable` on fetch/parse failure).
+`DIDKey`, `parseDIDDocument`, and the `pubkeyFromDID`/`verifierKey` helpers are unexported today;
+export them (or a small public surface) when the follower needs them across the package boundary. The
+`hub_keys(... pubkey_z, revoked_at ...)` cache and now-vs-window validity enforcement are also still
+pending and belong to the store/follower step.
 
 **Notes:**
-- **`cauldron/` build isolation — confirmed safe, no action needed in-repo.** The entire `cauldron/`
-  tree is `.gitignore`d (verified via `git check-ignore`), including the stub `go.mod` files `advance`
-  added at `cauldron/iscc-hub/` and `cauldron/tessera/`. So nothing reaches the repo or CI from this
-  tree. The forward concern is real but belongs to whoever wires CI: a fresh `go build ./...` that
-  includes a `cauldron/` checkout without those stubs will fail on the reference trees' external deps.
-  CI should not check out `cauldron/`, or replicate the stubs / `go.work` exclude. Captured in
-  learnings; not a gate failure this iteration.
-- **Conformance scope:** the diff touches the trust root (verifier-key derivation), so the
-  golden-vector oracle (`derive_vkey.py`) is the relevant gate and it passes. `notecheck`, `fsck`
-  root-rebuild, and inclusion cross-checks do not exist yet (no proof/logclient-verify/fetcher code
-  this step) and are correctly out of scope. No CI is configured yet (`.github/workflows/` absent), so
-  there is no `notecheck` job to confirm green — flag for whoever sets up CI.
-- **Push:** working branch is `develop`; remote `origin` is configured. Pushed on PASS.
-- Minor defensive improvement worth keeping: `pubkeyFromDID` checks `len(raw) < 34` before the
-  multicodec assert, avoiding the index panic the Python port would hit on a short key.
+- **Recorded real-world finding (per `next.md`, not acted on):** the *live* `sb1.amlet.id` did.json
+  now serves a **rotated** key `z6MkmwqgJABz2DCeESCSqx6JXg2CwASEUvBzxERWV3HZ8yyt`, which differs from
+  the `derive_vkey.py` / golden-test key `z6MkiNW46…`. The pinned `sb1` fixture deliberately uses the
+  recorded golden key so the resolve→vkey chain stays one coherent golden — this is exactly why
+  fixtures are captured snapshots, not live fetches. When the follower lands key rotation / re-resolve
+  logic, the sb1 live key will need its own up-to-date fixture/vector separate from this golden chain.
+- **Validity fields surfaced, not enforced (YAGNI per `next.md`):** `parseTime` returns zero on empty
+  or unparseable input; the live fixtures omit `validFrom`/`validUntil`/`revoked`, so all three are
+  zero ("currently valid"). Deciding what an unparseable/expired value means is the follower's call,
+  not this pure parser's — flagged here so `review` knows the lenient parse is intentional.
+- **Verification-method selection** takes the first `assertionMethod` entry (hub signs checkpoints as
+  an assertion). Handles both the live string-reference form and an inline-object form; accepts `type`
+  of `Multikey` (live) and tolerates `Ed25519VerificationKey2020` (the `type` field is parsed but not
+  gated — key bytes are the source of truth via `pubkeyFromDID`).
+- Scope: exactly the files `next.md` listed (1 source + 1 test + 2 data fixtures); `vkey.go`
+  untouched; nothing from `## Not In Scope` (no HTTP, no `Resolver` struct, no status assignment, no
+  `hub_keys` table, no new module deps — still `go.mod` dependency-free).
