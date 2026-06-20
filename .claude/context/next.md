@@ -1,123 +1,114 @@
 # Next Work Package
 
-## Step: Poll-loop wrapper over PollHub (single-writer cadence + frozen back-off)
+## Step: Pure realm-registry parser (domains-only membership document)
 
 ## Goal
-Turn the follower from "one observation per explicit call" into a per-network driver that polls every
-registered hub on a cadence from a single goroutine (the single writer per DB, ADR-0005/0007), with a
-frozen hub re-polled on a backed-off evidence-only cadence (ADR-0006). This closes the named M1
-"per-hub follower" loop and the "keep polling evidence-only at a backed-off cadence" correctness rule
-without touching any crypto/merkle/oracle path.
+Add `internal/registry` — a pure, dependency-free parser that turns a domains-only realm
+membership document into a list of hub entries with their derived base URLs. This is the missing
+prerequisite tissue between the per-network poll loop and a real `cmd/` binary: the `Loop` today
+takes a hand-written `[]HubTarget`, and the registry is the spec'd source of those targets
+(domains only, no keys — ADR-0009). Doing the pure parse first (before any fetch or `main` wiring)
+keeps a testable unit ahead of infrastructure.
 
 ## Goal-fit (state → target gap)
 M1's first Verify half (`origin`/`verifierKey`/single-poll) and two of three triggers (shrink+fork
-freeze) are met end-to-end. The remaining M1 majority is connective tissue: a poll loop, the did:web
-key cache, the equivocation trigger, coverage, structured logs, `/metrics`, and a `cmd/` binary. The
-equivocation trigger is the highest *value* but the highest *risk* — it needs `transparency-dev/merkle`
-(NOT vendored under `cauldron/`, so a brand-new dependency) plus tile fixtures that do not exist yet,
-making it a multi-concern step that also trips the oracle gate. The `hub_keys` cache write couples to a
-stale-fixture + `derive_vkey.py` refresh that re-triggers the crypto parity oracle. The **poll loop**
-is the cleanest unblocked slice the review handoff names: pure-Go orchestration over the already-tested
-`PollHub`, no new deps, no fixtures, no crypto path, fully deterministic with an injected clock. It
-builds directly on what exists and unblocks the eventual `cmd/` binary.
+freeze) are met end-to-end, and the poll loop now drives `PollHub` on a cadence. The named M1 list
+still opens with "config + realm registry (domains only)" — and the registry is currently absent
+(`internal/registry/` does not exist). Both review and state name the `cmd/iscc-monitor` binary as
+the lowest-risk unblocked slice, but that binary needs *somewhere to get its hubs from*: the `Loop`
+takes a fixed `[]HubTarget`, and the realm registry is the spec'd source. The registry's **parse**
+half is a pure, golden-testable leaf with no I/O and no new dependency — exactly the "pure functions
+before infrastructure, runnable+testable before wiring" ordering the loop prefers. It unblocks the
+`cmd/` binary without coupling to it, and defers the riskier merkle-equivocation + `hub_keys`/
+`derive_vkey.py` refresh (both trip the oracle gate) to their own later steps.
 
 ## Scope
-- **Create**: `/workspace/iscc-monitor/internal/follower/loop.go` — the cadence wrapper: a
-  `HubTarget{HubID int64, BaseURL string}` value; a pure `due(...)` predicate deciding whether a hub is
-  due this tick (normal vs. frozen back-off interval); a `Tick(ctx, ...)` that makes one pass over the
-  targets, polling each *due* hub through the existing `PollHub`; and a thin `Run(ctx, ...)` that calls
-  `Tick` on a `time.Ticker` until `ctx.Done()`.
-- **Create**: `/workspace/iscc-monitor/internal/follower/loop_test.go` — seam tests (no wall-clock
-  sleeps; drive `Tick`/`due` directly with an injected `now`, reusing the existing offline helpers).
-- **Modify**: (none expected). `PollHub`, `store.FollowState`, and the `logclient.Fetcher` seam are
-  already sufficient. Do **not** edit `follower.go` unless a tiny exported-helper extraction is
-  genuinely unavoidable; if so, keep it to that ONE production file and within the ≤3-file cap.
+- **Create**: `/workspace/iscc-monitor/internal/registry/registry.go` — the pure parser + entry type.
+- **Create**: `/workspace/iscc-monitor/internal/registry/registry_test.go` — table-driven golden tests.
+- **Create**: `/workspace/iscc-monitor/internal/registry/testdata/realm.txt` — a small golden
+  membership fixture (the two live golden hubs + a comment + a blank line).
+- **Modify**: (none — this is a new leaf package; touch nothing else)
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/follower/follower.go` — `PollHub` signature
-    `(ctx, *store.Store, logclient.Fetcher, hubID int64, baseURL string, observedAt time.Time,
-    alert AlertFunc) (logclient.Status, error)`, the `AlertFunc` seam, and the freeze-on-frozen-hub
-    re-detection behavior the loop relies on (a frozen hub re-polled records evidence + never re-alerts).
-  - `/workspace/iscc-monitor/internal/follower/follower_test.go` — the established offline test pattern
-    to reuse verbatim: `compositeFetcher`, `openTemp`, `countRows`, `assertViolation`, `sb0ObservedAt`,
-    `noopAlert`, `sb0VerifiedFetcher`, and the shrink/fork seed pattern (`RecordCheckpoint` +
-    `AdvanceFollowState`).
-  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — `FollowState{LastSize, Frozen, LastError}`
-    (the `Frozen` flag the back-off decision reads) and `AdvanceFollowState` (the cursor `PollHub`
-    advances).
-  - `/workspace/iscc-monitor/.claude/context/learnings.md` — "freeze, never crash" / "no auto-unfreeze"
-    / "re-detection is itself evidence" / "single writer per DB (ADR-0005/0007)".
+  - `/workspace/iscc-monitor/.claude/plans/cosmic-baking-octopus.md` lines 96–118 (package layout:
+    `internal/registry/` = "fetch+parse realm membership (domains only); reconcile add/remove/inactive")
+    and the `hubs(... domain, origin, base_url, active, status ...)` schema block (lines 135–147).
+  - `/workspace/iscc-monitor/.claude/adr/0009-didweb-trust-root.md` (realm registry advertises
+    **domains/membership only — no keys**; domain ownership *is* identity).
+  - `/workspace/iscc-monitor/.claude/prd/0001-iscc-monitor-v1.md` line 138 ("For pilot deployments
+    the Hub-List is a static document").
+  - `/workspace/iscc-monitor/internal/follower/loop.go` lines 26–34 (`HubTarget{HubID, BaseURL}` —
+    the shape the registry feeds, indirectly, once wiring lands; the registry produces `BaseURL`).
+  - `/workspace/iscc-monitor/internal/logclient/origin.go` (origin derivation — note it is
+    package-private; the registry must NOT reach for it, see Implementation Notes).
 
 ## Not In Scope
-- The merkle-backed **equivocation** trigger — needs `transparency-dev/merkle` (a new dep, not in
-  `cauldron/`) plus tile fixtures that do not exist; its own later step, and it trips the oracle gate.
-- The `hub_keys` did:web cache write and the stale `sb1.amlet.id_did.json` / `derive_vkey.py` HUBS
-  refresh (couples to the crypto parity oracle — separate step).
-- A `cmd/` binary entrypoint, config loading, and the realm registry — the loop stays a pure library
-  function with injected `targets`, `now`, `fetcher`, and `alert`; wiring it to a binary is later.
-- `/metrics`, structured logging, and a real alert transport.
-- Coverage tracking — do **not** write `hubs.monitored_since_*` here.
-- Any schema change — do **not** add a `last_poll` column; track last-poll times in-memory in the loop
-  state for v1.
-- Adding any dependency — `go.mod`/`go.sum` must stay byte-identical.
-- Spawning a goroutine per hub — the loop is single-goroutine to preserve the single-writer discipline.
-- Calling `time.Now()` inside `Tick`/`due` — inject `now time.Time` so tests stay deterministic and
-  never sleep; `time.Now()` may appear only inside `Run`'s ticker plumbing.
+- **No network fetch.** Do not add an HTTP fetch of a remote realm document, a `Fetcher` call, or
+  any `net/http` import. This step parses bytes already in hand; the fetch seam is a later step.
+- **No `cmd/iscc-monitor` binary and no `internal/config`.** Wiring DI / `Loop.Run` / flags / env /
+  reading the file from disk is the *next* step and depends on this one — do not start it here.
+- **No change to `internal/follower` or `HubTarget`.** Do not rewire `Loop` to consume registry
+  output yet (that needs `HubID`s, which come from `store.UpsertHub` at wiring time).
+- **No `origin()` derivation in this package.** The registry produces `BaseURL` only; the follower
+  already derives origin + verifier key from `BaseURL` inside `PollHub`. Do not duplicate or export
+  `logclient.origin`.
+- **No YAML/JSON dependency.** Use the line-based format below; do not add `gopkg.in/yaml.v3` or any
+  parser dep for a pilot static document (YAGNI; keep `go.mod`/`go.sum` byte-identical).
+- **No `active`/`inactive`/`status` reconciliation, sorting, or dedupe.** The plan mentions reconcile
+  add/remove/inactive, but that is store-coupled and belongs with the wiring step. Parse membership
+  only, preserving input order.
 
 ## Implementation Notes
-- **Keep `PollHub` the single source of poll behavior.** `Tick` must call the existing
-  `PollHub(ctx, st, fetcher, hubID, baseURL, now, alert)` for each due hub and must not duplicate the
-  fetch/verify/freeze logic. A frozen hub re-polled through `PollHub` already re-records the violation
-  as evidence and never re-alerts (`wasFrozen` gates the alert), which is exactly the evidence-only
-  re-poll behavior. The loop's only added responsibility is *when* (cadence), never *what*.
-- **`due` is a pure predicate** — the one easily golden-testable unit. Suggested signature:
-  `due(frozen bool, lastPoll, now time.Time, normal, frozenInterval time.Duration) bool` returning
-  `now.Sub(lastPoll) >= interval`, where `interval = frozenInterval` when `frozen` else `normal`. A
-  zero `lastPoll` (never polled) is always due. `frozenInterval >= normal` encodes the back-off. Read
-  `frozen` from `store.FollowState(ctx, hubID).Frozen` inside `Tick` (it is not carried on the target).
-- **Single goroutine, single writer (ADR-0005/0007).** `Run` owns one `time.Ticker`; each tick calls
-  `Tick`, which iterates the targets sequentially in the same goroutine so all writes serialize. Use
-  `select { case <-ctx.Done(): return ctx.Err(); case <-ticker.C: ... }` with `defer ticker.Stop()`.
-  `Run` returns `ctx.Err()` on cancellation and never panics. The loop should hold its own
-  `map[int64]time.Time` of last-poll times (keyed by hubID), updated after a successful `PollHub`.
-- **Errors don't kill the loop.** A per-hub `PollHub` error (transport / garbled body / store fault)
-  must not abort the pass over the other hubs — a flaky single hub never stalls the network's loop.
-  Pick ONE explicit policy and document it: e.g. `Tick` attempts every hub, then returns the first
-  error encountered (or `nil`); `Run` logs/ignores a `Tick` error and continues to the next tick. Do
-  not swallow the error silently inside `Tick` without surfacing it to the caller.
-- **Correctness rule (learnings / ADR-0006):** "A self-consistency violation freezes, never crashes …
-  keep polling evidence-only at a backed-off cadence, no auto-unfreeze, survive restart, other hubs
-  unaffected." The loop must (a) re-poll a frozen hub only at the longer `frozenInterval`, (b) never
-  clear `frozen` (it already cannot — `PollHub`/`AdvanceFollowState` never unfreeze), and (c) keep
-  advancing the other unfrozen hubs in the same pass.
-- **Style:** short single-purpose functions, evergreen docstrings, file-level docstring explaining the
-  loop's purpose. No `t.Skip` / `//nolint` / swallowed errors / build tags. Keep the package import set
-  free of any `net/http` beyond what `PollHub` already pulls through the `logclient.Fetcher` seam, and
-  reuse the test helpers rather than re-declaring fetchers.
-- **Conformance/oracle gate:** N/A for this slice — it is pure orchestration over `PollHub` + store
-  reads, touching no signature, RFC-6962 proof, didweb, or merkle code. That gate trips only when the
-  merkle-backed equivocation slice lands.
+- **Format (KISS, pilot static document):** one hub domain per line; ignore blank lines and lines
+  whose first non-whitespace character is `#` (comments); trim surrounding whitespace on each kept
+  line. This is the simplest thing that satisfies "static document, domains only" without a new dep.
+  Document the format in the package + function docstrings (evergreen wording, no "new"/"improved").
+- **Entry type:** export a small struct, e.g. `type Entry struct { Domain string; BaseURL string }`.
+  Derive `BaseURL` as `"https://" + Domain` (hubs are HTTPS; the spec origin example `sb0.iscc.id/log`
+  is served over TLS). Keep `Domain` as the bare host (e.g. `sb0.iscc.id`) so a later step can pass it
+  to `store.UpsertHub(domain, …)`.
+- **Parse signature:** a pure func over bytes, e.g. `func Parse(data []byte) ([]Entry, error)`.
+  Prefer `bufio.NewScanner` over a `bytes.NewReader` (stdlib only). Reject a domain containing a
+  scheme (`://`), whitespace, or a path/slash (`/`) with a wrapped error naming the offending line —
+  fail closed, do not silently coerce a URL into a domain. A `host:port` form is acceptable to allow
+  (live hubs have none, but the colon path is already handled downstream by `didweb`); do not
+  over-validate beyond "no scheme, no slash, non-empty after trim".
+- **Determinism:** preserve input order in the returned slice (the poll loop iterates targets in
+  order; stable order keeps tests + logs deterministic). Do not sort or dedupe in this step — dedupe
+  is reconciliation, which is Not In Scope.
+- **Purity:** this is a leaf, so keep it import-clean: `bufio`, `bytes`, `fmt`, `strings` only. No
+  `net`, no `net/http`, no `os` (the *caller* reads the file and passes bytes — embedding/reading is
+  the wiring step's job). Verify the package's own `.Imports` are exactly those stdlib packages.
+- **Golden fixture (`testdata/realm.txt`):** the two live golden hubs plus at least one comment line
+  and one blank line, e.g.:
+  ```
+  # iscc testnet realm — pilot membership (domains only, ADR-0009)
+  sb0.iscc.id
+
+  sb1.amlet.id
+  ```
+  In the test, read the fixture with `os.ReadFile` (the *test* may use `os`; the package must not) and
+  assert `Parse(...)` yields exactly `[{sb0.iscc.id, https://sb0.iscc.id}, {sb1.amlet.id,
+  https://sb1.amlet.id}]` (comment + blank dropped, order preserved). Add table-driven error cases (a
+  line with `https://...`, a line with `sb0.iscc.id/log`) and an all-comment/all-blank document case
+  (→ empty slice, nil err).
+- **Relevant Correctness rule (learnings):** "did:web is the only key source (ADR-0009) — the realm
+  registry advertises domains only." This parser must therefore carry **no key field** and reject
+  anything URL-shaped. It is purely a domain list.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass; `gofmt -l .`
-  empty).
-- `go test -count=1 -run TestDue ./internal/follower` passes — the pure `due` table covers: a zero
-  `lastPoll` (never polled) is always due; an unfrozen hub polled `< normal` ago is NOT due; a frozen
-  hub polled past `normal` but `< frozenInterval` ago is NOT due (proves back-off); each is due at/past
-  its relevant interval.
-- `go test -count=1 -run TestTick ./internal/follower` passes — driving `Tick` with an injected `now`
-  and `sb0VerifiedFetcher` over two registered clean hubs advances each due hub's
-  `FollowState.LastSize` to `10183` (asserted via `store.FollowState`); a second `Tick` at the *same*
-  `now` does not re-poll (cursor unchanged and `countRows(path, "checkpoints")` unchanged).
-- `go test -count=1 -run TestTickFrozenUnaffected ./internal/follower` passes — with one hub seeded to
-  freeze on the next poll (a shrink/fork seed like `TestPollHubShrink`) and one clean hub, a `Tick`
-  re-polls the frozen hub only at `frozenInterval`, never clears its `Frozen` flag, records the
-  violation again as evidence (`countRows(path, "violations")` increments on the back-off re-poll),
-  fires no new alert, and still advances the clean hub to `10183` in the same pass.
-- `go test -count=1 ./internal/follower` passes — the existing `TestPollHub*` tests stay green
-  (`PollHub` unchanged).
-- `git status --short go.mod go.sum` is empty (no dependency added; `go.mod`/`go.sum` byte-identical).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass).
+- `gofmt -l internal/registry` prints nothing.
+- `go test -count=1 ./internal/registry` passes.
+- `go test -count=1 -run TestParse ./internal/registry` passes; the golden case asserts
+  `Parse(testdata/realm.txt)` returns exactly two entries in input order:
+  `{Domain:"sb0.iscc.id", BaseURL:"https://sb0.iscc.id"}` then
+  `{Domain:"sb1.amlet.id", BaseURL:"https://sb1.amlet.id"}`.
+- A line containing `https://sb0.iscc.id` or `sb0.iscc.id/log` returns a non-nil error naming the
+  bad line; an all-comment / all-blank document returns `(len 0, nil)`.
+- `git status --short go.mod go.sum` is empty (no dependency added).
+- `go list -deps ./internal/registry | grep -E '^(net|net/http)$'` prints nothing (leaf, no net stack).
 
 ## Done When
-`internal/follower/loop.go` drives `PollHub` over multiple hubs from one goroutine on a cadence with a
-frozen-hub back-off, every listed `go test -run` check passes, and `mise run check` is green with no
-new dependency added.
+`internal/registry` exists as a pure leaf package whose `Parse` turns the golden domains-only
+`realm.txt` into the two ordered `Entry{Domain, BaseURL}` values, rejects URL-shaped lines, and all
+Verification criteria pass with `mise run check` green and no new dependency.
