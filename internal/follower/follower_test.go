@@ -43,6 +43,22 @@ func (f compositeFetcher) Fetch(_ context.Context, url string) ([]byte, error) {
 	return f.checkpoint, nil
 }
 
+// countingFetcher wraps a Fetcher and tallies how many times a did.json URL is
+// fetched, so a test can prove the cache-hit fast path skips the second did.json
+// resolution. It counts only did.json (the did:web resolution) — checkpoint
+// fetches are not the thing under test.
+type countingFetcher struct {
+	inner    logclient.Fetcher
+	didFetch int
+}
+
+func (f *countingFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
+	if strings.HasSuffix(url, "did.json") {
+		f.didFetch++
+	}
+	return f.inner.Fetch(ctx, url)
+}
+
 // sb1Multibase is sb1's prior did:web key — a real Ed25519 key that does NOT sign
 // the sb0 checkpoint, used to drive the non-advancing StatusUnverified path.
 const sb1Multibase = "z6MkiNW46AUjNmKTV2YNyFi9ANG9wbfYQQoUQgADGwScd9jk"
@@ -520,5 +536,61 @@ func TestPollHubUnverifiedDoesNotAdvance(t *testing.T) {
 	// verified, non-violation path only).
 	if n := countRows(t, path, "hub_keys"); n != 0 {
 		t.Errorf("hub_keys rows after an unverified poll = %d, want 0", n)
+	}
+}
+
+// TestPollHubCacheHitSkipsDidFetch proves the warm-cache fast path: across two
+// verified polls of the same hub, the first (cold cache) resolves did.json twice
+// (once in AcceptCheckpoint, once in cacheHubKey's miss-path resolve), and the
+// second (warm cache) resolves it only once (AcceptCheckpoint), because cacheHubKey
+// recovers the key id from the raw checkpoint, hits store.LookupHubKey, and
+// refreshes the cached row in place WITHOUT a second ResolveVerifierKey. The
+// standing invariants — exactly one hub_keys row, key_id 0x40b74463, 32-byte pubkey
+// — are re-asserted to confirm the fast path refreshes rather than duplicates or
+// drops the key.
+func TestPollHubCacheHitSkipsDidFetch(t *testing.T) {
+	ctx := context.Background()
+	s, path := openTemp(t)
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	fetcher := &countingFetcher{inner: sb0VerifiedFetcher(t)}
+	observedAt := sb0ObservedAt()
+
+	// First poll (cold cache): AcceptCheckpoint resolves did.json once and the
+	// cache miss path resolves it again -> two did.json fetches total.
+	if status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert); err != nil {
+		t.Fatalf("first PollHub: %v", err)
+	} else if status != logclient.StatusVerified {
+		t.Fatalf("first poll status = %s, want verified", status)
+	}
+	coldFetches := fetcher.didFetch
+	if coldFetches != 2 {
+		t.Errorf("did.json fetches after cold poll = %d, want 2 (AcceptCheckpoint + cache miss resolve)", coldFetches)
+	}
+
+	// Second poll (warm cache): AcceptCheckpoint resolves did.json once, but the
+	// cache hit in cacheHubKey must NOT resolve again -> exactly +1 fetch, not +2.
+	if status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert); err != nil {
+		t.Fatalf("second PollHub: %v", err)
+	} else if status != logclient.StatusVerified {
+		t.Fatalf("second poll status = %s, want verified", status)
+	}
+	if got := fetcher.didFetch - coldFetches; got != 1 {
+		t.Errorf("did.json fetches during warm poll = %d, want 1 (only AcceptCheckpoint; cacheHubKey hit the cache)", got)
+	}
+
+	// The fast path refreshes in place: still exactly one row, same key id and pubkey.
+	if n := countRows(t, path, "hub_keys"); n != 1 {
+		t.Errorf("hub_keys rows after warm poll = %d, want 1 (fast path refreshes, never duplicates)", n)
+	}
+	keyID, pubkey := readHubKey(t, path, hubID)
+	if keyID != 0x40b74463 {
+		t.Errorf("hub_keys key_id = %08x, want 40b74463 (sb0 signed-note keyhash)", keyID)
+	}
+	if len(pubkey) != 32 {
+		t.Errorf("hub_keys pubkey_raw = %d bytes, want 32 (Ed25519 key)", len(pubkey))
 	}
 }

@@ -1,51 +1,56 @@
 # Handoff
 
-## 2026-06-20 — Review of: Add pure `logclient.KeyIDFromCheckpoint` — recover the signed-note keyhash from raw checkpoint bytes
+## 2026-06-20 — Wire the hub_keys cache-hit fast path into `cacheHubKey` (skip the 2nd did.json fetch)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** `cacheHubKey` now takes the already-fetched `raw` checkpoint bytes and tries a fetch-free fast
+path first: recover `(name, keyID)` via `logclient.KeyIDFromCheckpoint(raw)`, assert
+`name == logclient.Origin(baseURL)`, consult `store.LookupHubKey(hubID, keyID)`, and on a cache hit
+refresh the cached row in place via `RecordHubKey` (bumping `ResolvedAt`) WITHOUT a second
+`ResolveVerifierKey`. A key-id-recovery miss, a name/origin mismatch, or a cache miss all fall through
+to the unchanged resolve path. The verified `PollHub` path now resolves did.json once on warm-cache
+polls instead of twice.
 
-**Summary:** Added the pure `KeyIDFromCheckpoint(raw []byte) (name string, keyID uint32, err error)`
-helper to `internal/logclient`. It recovers the C2SP signed-note `(name, keyhash)` from a raw
-checkpoint via `note.Open(raw, note.VerifierList())` + `errors.As` on `*note.UnverifiedNoteError`,
-reading the already-decoded `UnverifiedSigs[0].{Name,Hash}`. Clean, library-exact, scope-tight (one
-production file + one test file + context docs); all gates green.
+**Files changed:**
+- `internal/follower/follower.go`: threaded `raw []byte` into `cacheHubKey` at the single call site
+  (line ~124); split `cacheHubKey` into `cacheHubKeyFast` (the fetch-free hit path) and
+  `cacheHubKeyResolve` (the unchanged miss-path fallback). No new imports
+  (`{context, fmt, logclient, store, time}` unchanged).
+- `internal/follower/follower_test.go`: added `countingFetcher` (wraps a `Fetcher`, tallies did.json
+  fetches) and `TestPollHubCacheHitSkipsDidFetch` (cold poll = 2 did.json fetches, warm poll = +1 only,
+  hub_keys stays 1 row / `key_id == 0x40b74463` / 32-byte pubkey).
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green, all 7 packages ok.
-- [x] `gofmt -l internal/logclient/checkpointkey.go internal/logclient/checkpointkey_test.go` — empty.
-- [x] `gofmt -l .` (whole tree) — empty.
-- [x] `go test -run TestKeyIDFromCheckpoint ./internal/logclient` — PASS (3 tests, incl. 3 garbled
-  subcases). Golden asserts `name == "sb0.iscc.id/log"`, `keyID == 0x40b74463` on the real sb0 fixture.
-- [x] Cross-check `KeyIDFromCheckpoint(raw).keyID == KeyIDFromVerifier(sb0VKey)` — PASS (both paths agree).
-- [x] Garbled input (`"not a note"`, empty, nil) returns non-nil error and does not panic — PASS.
-- [x] Import block is exactly `{errors, fmt, golang.org/x/mod/sumdb/note}`; no `net`/`os`/`sqlite` in
-  the file (the only "net/os/sqlite" string is the docstring noting their absence).
-- [x] `go.mod`/`go.sum`/`internal/store/schema.sql` byte-identical since HEAD~1 (`git diff --quiet` exit 0).
-- [x] Quality-gate integrity — scanned unpushed commits (`@{upstream}..HEAD`): no `//nolint`, `t.Skip`,
-  `SkipNow`, build-tag exclusion, swallowed error, or deleted assertion in code. The only scan hits are
-  prose inside `handoff.md`/`state.md`.
-- [x] Oracle/conformance gate correctly N/A — no signature *verification*, RFC-6962/consistency, or
-  proof/merkle/didweb/fsck code touched; this reads a keyhash `note.Open` already decoded. Trust-root
-  value `0x40b74463` independently re-decoded from the fixture sig line in Python (`base64 → ">I"
-  struct → sig[:4]`): `name='sb0.iscc.id/log'`, 64-byte ed25519 sig — confirmed from ground truth.
+**Verification:** `mise run check` (build + vet + test) → green, all 7 packages ok.
+- `gofmt -l internal/follower/follower.go internal/follower/follower_test.go` → empty (exit 0).
+- `go test -run TestPollHub ./internal/follower` → PASS (5 tests: fork, shrink, verified-advances,
+  unverified, cache-hit-skips-fetch). The existing "refresh in place → still 1 row" assertion in
+  `TestPollHubVerifiedAdvances` still passes unchanged.
+- New-test per-criterion: cold poll did.json count == 2; warm poll grew by exactly 1 (not 2) → proves
+  `cacheHubKey` skipped its own resolve on the cache hit; hub_keys count == 1; key_id == 0x40b74463;
+  pubkey_raw == 32 bytes — all pass.
+- `git diff --quiet HEAD -- go.mod go.sum internal/store/schema.sql` → exit 0 (no schema/dep change).
+- `store` stays a leaf (no internal iscc-monitor deps, no `net/http` in its closure); production
+  follower imports unchanged.
 
-**Issues found:** (none)
-
-**Next:** Wire `KeyIDFromCheckpoint` into the verified `PollHub` path so `cacheHubKey` consults
-`store.LookupHubKey(hubID, keyID)` on a cache hit and skips the second did.json fetch. Intended shape
-(from the prior handoff): `KeyIDFromCheckpoint(raw) → (name, keyID)`, assert `name == origin`, then
-`LookupHubKey(hubID, keyID)`; on a hit, reuse the cached key instead of calling `ResolveVerifierKey`
-again. Watch the schema gap: the cached `HubKey` row carries only `revoked_at` (no
-`valid_from`/`valid_until`), so a full CID-1.0 validity-window re-check from the cache alone is not yet
-possible — a `hub_keys` schema step may need to precede a fully window-honoring fast path.
+**Next:** The first verified poll still fetches did.json twice (AcceptCheckpoint's resolve drives the
+`ValidAt` window check the cache cannot reconstruct, then the cold-cache miss resolve). Eliminating the
+*first* redundant resolve — threading `AcceptCheckpoint`'s already-resolved key out of its single
+resolve so the verified path resolves did.json exactly once per poll — is the obvious next efficiency
+slice (larger: touches `AcceptCheckpoint`/`ResolveVerifierKey` signatures). Separately, the
+merkle-backed RFC-6962 equivocation trigger (the third freeze trigger) and reader→follower wiring
+remain the open M1 work per `state.md`.
 
 **Notes:**
-- The garbled-input safety is library-exact, not just defensive: `errMalformedNote` is a plain
-  `errors.New` (not a pointer type), so `errors.As(err, &*UnverifiedNoteError)` is correctly false and
-  the wrap path fires — the `[0]` index is never reached on a bad note. The `len(UnverifiedSigs) < 1`
-  and nil-error guards are genuine belt-and-suspenders against a future library change.
-- This is the pure prerequisite only; `follower.go`, `AcceptCheckpoint`, schema, and go.mod are all
-  untouched as scoped. M1 is not yet DONE — reader→follower wiring + the equivocation (RFC-6962
-  consistency) trigger remain open (per `state.md`), so the loop continues.
-- Pushed to `origin/develop`.
+- The fast path deliberately reuses the *cached* `PubkeyRaw`/`PubkeyZ`/`Revoked` (from `LookupHubKey`)
+  on a hit rather than re-deriving them — by design this means a did.json key-content change (same
+  key_id, edited pubkey/revoked) is NOT picked up until the cache row's key_id changes or the row is
+  re-resolved. This is acceptable for v1: a same-key_id pubkey edit is cryptographically near-impossible
+  (key_id = `SHA-256(name||0x0A||0x01||pub)[:4]`, so a different pubkey almost always yields a different
+  key_id → cache miss → full resolve), and a `revoked_at`/window edit is still caught by
+  `AcceptCheckpoint`'s first resolve every poll (which gates `StatusVerified`). The cache row is an
+  identity/availability cache, not the verification authority. Flagging for review awareness; not a
+  defect against this step's scope (the validity-window re-check from the cache alone was explicitly
+  Not In Scope, and `AcceptCheckpoint` still does it every poll).
+- No `store`/schema/dep change (as scoped); `LookupHubKey` + `RecordHubKey` sufficed.
+- Oracle/conformance gate correctly N/A: no signature *verification*, RFC-6962/consistency, or
+  proof/merkle/didweb/fsck logic changed — this reads an already-decoded keyhash (`KeyIDFromCheckpoint`)
+  and does cache CRUD. go.mod/go.sum/schema.sql byte-identical.

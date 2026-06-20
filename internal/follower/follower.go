@@ -121,23 +121,90 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	// Cache the resolved did:web signing key (ADR-0009). Only a verified,
 	// non-violation observation writes a cache row, mirroring coverage: a
 	// contradictory or unverified observation must never populate the key cache.
-	if err := cacheHubKey(ctx, st, fetcher, hubID, baseURL, observedAt); err != nil {
+	if err := cacheHubKey(ctx, st, fetcher, hubID, baseURL, raw, observedAt); err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: cache hub key: %w", hubID, err)
 	}
 	return status, nil
 }
 
-// cacheHubKey resolves the hub's did:web signing key and upserts it into the
-// hub_keys cache (ADR-0009: the DID document is the source of truth, this is a
-// refreshed cache). It re-runs ResolveVerifierKey on the verified path — the key
-// just resolved inside AcceptCheckpoint, so a failure here is an unexpected fault
-// and is returned to the caller rather than swallowed. The key id is recovered
-// from the vkey string's middle "+<hex>+" field (KeyIDFromVerifier) rather than
-// re-derived, and the DIDKey maps field-for-field into store.HubKey
-// (PublicKey->PubkeyRaw, Multibase->PubkeyZ, Revoked->Revoked); the injected
-// observedAt is the resolution time. The follower owns this mapping so store stays
-// a leaf (it never imports logclient/didweb).
-func cacheHubKey(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string, observedAt time.Time) error {
+// cacheHubKey refreshes the hub's did:web signing key in the hub_keys cache
+// (ADR-0009: the DID document is the source of truth, this is a refreshed cache).
+//
+// It first tries a fetch-free fast path: recover the signed-note key id directly
+// from the raw checkpoint (KeyIDFromCheckpoint) and consult store.LookupHubKey. On
+// a cache hit it refreshes the cached row in place (bumping ResolvedAt) WITHOUT
+// re-resolving did.json — the second did.json fetch this path used to make. The
+// recovered signer name is asserted equal to the hub's origin (<domain>/log, never
+// the bare domain) before the lookup, so the cached key id is keyed on the hub's
+// own identity; a name mismatch, a key-id-recovery miss, or a cache miss all fall
+// through to the resolve path below.
+//
+// The fallback resolves the key via ResolveVerifierKey, recovers the key id from
+// the vkey string's middle "+<hex>+" field (KeyIDFromVerifier), and maps the DIDKey
+// field-for-field into store.HubKey (PublicKey->PubkeyRaw, Multibase->PubkeyZ,
+// Revoked->Revoked); the injected observedAt is the resolution time. The first
+// verified poll always takes this fallback (the cache is cold), populating the row
+// so subsequent polls hit the fast path. The follower owns this mapping so store
+// stays a leaf (it never imports logclient/didweb).
+func cacheHubKey(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string, raw []byte, observedAt time.Time) error {
+	if hit, err := cacheHubKeyFast(ctx, st, hubID, baseURL, raw, observedAt); err != nil {
+		return err
+	} else if hit {
+		return nil
+	}
+	return cacheHubKeyResolve(ctx, st, fetcher, hubID, baseURL, observedAt)
+}
+
+// cacheHubKeyFast attempts the fetch-free cache refresh. It recovers the key id
+// from raw, guards the recovered signer name against the hub's origin, looks up the
+// cached row, and on a hit refreshes it in place via RecordHubKey (bumping
+// ResolvedAt). It returns hit=true only when the row was found and refreshed; a
+// key-id-recovery miss or a name/origin mismatch returns hit=false (fall through to
+// resolve) with a nil error, while a genuine origin-derivation, query, or
+// RecordHubKey fault returns a non-nil error so it is never swallowed.
+func cacheHubKeyFast(ctx context.Context, st *store.Store, hubID int64, baseURL string, raw []byte, observedAt time.Time) (bool, error) {
+	name, keyID, err := logclient.KeyIDFromCheckpoint(raw)
+	if err != nil {
+		// A garbled note on a just-verified checkpoint is unexpected; the resolve
+		// path is the safe superset, so fall through rather than fail the poll.
+		return false, nil
+	}
+	expectedOrigin, err := logclient.Origin(baseURL)
+	if err != nil {
+		return false, fmt.Errorf("origin: %w", err)
+	}
+	if name != expectedOrigin {
+		// The signed-note name must equal the hub's origin (<domain>/log) or the
+		// cached key id would key on the wrong identity: treat it as a cache miss.
+		return false, nil
+	}
+	cached, found, err := st.LookupHubKey(ctx, hubID, keyID)
+	if err != nil {
+		return false, fmt.Errorf("lookup hub key: %w", err)
+	}
+	if !found {
+		return false, nil
+	}
+	// Cache hit: refresh the existing row in place, reusing the cached key bytes and
+	// bumping the resolution time. RecordHubKey's guarded UPDATE keeps the count at 1.
+	if err := st.RecordHubKey(ctx, store.HubKey{
+		HubID:      hubID,
+		KeyID:      keyID,
+		PubkeyRaw:  cached.PubkeyRaw,
+		PubkeyZ:    cached.PubkeyZ,
+		Revoked:    cached.Revoked,
+		ResolvedAt: observedAt,
+	}); err != nil {
+		return false, fmt.Errorf("refresh cached hub key: %w", err)
+	}
+	return true, nil
+}
+
+// cacheHubKeyResolve is the cache-miss fallback: it resolves the hub's did:web key
+// and upserts it. It re-runs ResolveVerifierKey (the second did.json fetch this poll
+// when no cache row exists yet), so a failure here is an unexpected fault on the
+// just-verified path and is returned to the caller rather than swallowed.
+func cacheHubKeyResolve(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string, observedAt time.Time) error {
 	vkey, didKey, err := logclient.ResolveVerifierKey(ctx, fetcher, baseURL)
 	if err != nil {
 		return fmt.Errorf("resolve verifier key: %w", err)
