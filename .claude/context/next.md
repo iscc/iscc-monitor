@@ -1,103 +1,90 @@
 # Next Work Package
 
-## Step: `cmd/iscc-monitor` binary — wire config → registry → store → poll loop
+## Step: Coverage tracking — persist `monitored_since` (size + time), set-once, on first verified observation
 
 ## Goal
-Stand up the `cmd/iscc-monitor` entrypoint that turns the four landed leaves
-(`config.Load`, `registry.Parse`, `store.Open`/`UpsertHub`, `follower.Loop`) into a running monitor
-process. This is config's only consumer and the slice that makes M1 a runnable program rather than a
-library of disconnected pieces.
+Record per-hub coverage start (`monitored_since_size` + `monitored_since_time`) the first time a
+hub yields a verified checkpoint, and never overwrite it thereafter. This is the ADR-0001 "coverage
+honesty" rule and an unmet M1 deliverable: the `hubs.monitored_since_*` columns already exist in the
+schema but nothing reads or writes them.
 
 ## Scope
-- **Create**:
-  - `cmd/iscc-monitor/main.go` — the binary entrypoint plus a testable `registerHubs` helper.
-  - `cmd/iscc-monitor/main_test.go` — table/golden test for `registerHubs` (test file, not counted
-    against the 3-file budget).
+- **Create**: (none)
 - **Modify**:
-  - `internal/logclient/origin.go` — add an exported `Origin(baseURL string) (string, error)` that
-    **delegates to the existing private `origin`** (a one-line wrapper). Do NOT rename `origin` or
-    touch its body; the two internal callers (`checkpoint.go`, `didresolve.go`) keep calling the
-    private `origin` unchanged. This resolves the open origin-export decision without a second deriver.
-- **Reference** (read for context; never import the `cauldron/` trees):
-  - `/workspace/iscc-monitor/internal/config/config.go` — `Load(get) (Config, error)`; fields
-    `DBPath/RealmPath/Normal/Frozen`; key constants.
-  - `/workspace/iscc-monitor/internal/registry/registry.go` — `Parse([]byte) ([]Entry, error)`,
-    `Entry{Domain, BaseURL}`.
-  - `/workspace/iscc-monitor/internal/store/checkpoints.go` lines 56–77 — `UpsertHub(ctx, domain,
-    origin, baseURL) (int64, error)`.
-  - `/workspace/iscc-monitor/internal/store/sqlite.go` lines 59–80 — `Open(path) (*Store, error)`,
-    `Close()`.
-  - `/workspace/iscc-monitor/internal/follower/loop.go` lines 31–53,121–135 — `Loop{Store, Fetcher,
-    Targets, Normal, Frozen, Alert}`, `HubTarget{HubID, BaseURL}`, `Run(ctx) error`.
-  - `/workspace/iscc-monitor/internal/logclient/didresolve.go` lines 48–56 — `NewHTTPFetcher(c
-    *http.Client) Fetcher` (the production Fetcher for `Loop.Fetcher`).
-  - `/workspace/iscc-monitor/internal/follower/follower.go` lines 41–46 — `AlertFunc` signature for the
-    placeholder `Alert`.
+  - `internal/store/checkpoints.go` — add `SetCoverage(ctx, hubID, size, observedAt)` (set-once
+    upsert of `monitored_since_size`/`monitored_since_time`) and `Coverage(ctx, hubID)` reader.
+  - `internal/follower/follower.go` — in `PollHub`'s verified, non-violation path, call
+    `SetCoverage` once before `AdvanceFollowState`, and update the package/function doc comment to
+    drop "coverage" from the deferred "later steps" list.
+- **Tests/docs (not counted against the 3 non-test/doc file limit)**:
+  - `internal/store/checkpoints_test.go` — coverage CRUD + set-once tests.
+  - `internal/follower/follower_test.go` — extend the verified-advance assertions to confirm coverage
+    is set once and not moved by a second poll.
+- **Reference**:
+  - `/workspace/iscc-monitor/.claude/adr/0001-v1-trust-guarantee.md` — "Coverage and cold start"
+    section: `monitored_since` is `(size + time)`, immutable, guarantees hold "from coverage start
+    onward".
+  - `/workspace/iscc-monitor/internal/store/schema.sql` — `hubs` table lines 24-25
+    (`monitored_since_size`, `monitored_since_time`) and the unix-seconds / NULL time convention.
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — mirror the existing method idioms
+    (`ExecContext`, `unixOrNil`, `sql.NullInt64`, "absent row is not an error" reads, `int64(size)`
+    column writes).
+  - `/workspace/iscc-monitor/internal/follower/follower.go` lines 80-114 — the verified,
+    non-violation path where `RecordCheckpoint`/`AdvanceFollowState` already live.
 
 ## Not In Scope
-- The merkle-backed **equivocation** trigger, `transparency-dev/merkle`, and tile fixtures — that is the
-  separate heavy slice that trips the oracle gate; do not add the dep or fixtures here.
-- The `hub_keys` did:web cache write and the stale sb1 fixture refresh (`22b08f3e`→`069d0f14`).
-- Coverage (`monitored_since`), structured logging, `/metrics`, and real alert transport — the `Alert`
-  here is a minimal stderr/log one-liner placeholder, not a delivery system.
-- **Do not test `Loop.Run`** (a blocking `select` over a ticker — untestable without sleeping; the
-  reviewer already ratified `Run` as correctly untested). Keep all branching/wiring in `registerHubs`.
-- Do not rename the private `logclient.origin` or change its body; do not give `Origin` its own copy of
-  the derivation math (it must delegate to `origin`). Do not carry origin on `registry.Entry`.
+- The merkle-backed **equivocation** trigger, `transparency-dev/merkle`, tile fixtures, `fsck`, the
+  `SQLiteFetcher`, or anything that trips the oracle/conformance gate — that is its own later step.
+- `hub_keys` did:web cache write and the stale sb1 fixture refresh (`22b08f3e`→`069d0f14`).
+- Structured logging, `/metrics`, real alert transport — separate later M1 steps.
+- Backfill / cold-start tile recovery and any dashboard "coverage window" rendering (M2/M3).
+- Surfacing coverage through the binary (`cmd/iscc-monitor`) or any REST/projection path.
+- Recording coverage for non-verified or violating verdicts — only a clean `StatusVerified`,
+  non-violation observation starts coverage.
 
 ## Implementation Notes
-- **Origin export (the open decision):** add `func Origin(baseURL string) (string, error) { return
-  origin(baseURL) }` to `origin.go` with a one-line docstring. Rationale per learnings ("One `origin()`
-  helper, golden-tested against both live hubs"): there stays exactly **one** derivation; `Origin` only
-  exposes it so the binary can pass `<domain>/log` to `store.UpsertHub`'s `origin` argument. Carrying
-  origin on `registry.Entry` would create a second derivation path and is rejected.
-- **`main.go` structure** — keep `main` thin, push logic into the helper:
-  - `get := os.LookupEnv` — `os.LookupEnv` already has the `func(string) (string, bool)` shape
-    `config.Load` wants; pass it directly.
-  - `cfg, err := config.Load(get)`; on error print to `os.Stderr` and `os.Exit(1)` (the `main` shell
-    owns process exit — keep `os.Exit` out of the testable helper).
-  - `data, err := os.ReadFile(cfg.RealmPath)` then `entries, err := registry.Parse(data)`. Config
-    learning: a whitespace-only path passes `config.Load` and fails here at `os.ReadFile` — wrap that
-    error with the path so the startup failure is clear.
-  - `st, err := store.Open(cfg.DBPath)`; defer close with `defer func() { _ = st.Close() }()`
-    (`Close` returns an error).
-  - **Extract** `func registerHubs(ctx context.Context, st *store.Store, entries []registry.Entry)
-    ([]follower.HubTarget, error)`: for each `Entry`, derive `org, err := logclient.Origin(e.BaseURL)`
-    (wrap + name the bad domain on error), call `id, err := st.UpsertHub(ctx, e.Domain, org,
-    e.BaseURL)`, append `follower.HubTarget{HubID: id, BaseURL: e.BaseURL}`. Return the slice (first
-    error short-circuits). This is the unit `main_test.go` drives.
-  - Build `loop := &follower.Loop{Store: st, Fetcher: logclient.NewHTTPFetcher(nil), Targets: targets,
-    Normal: cfg.Normal, Frozen: cfg.Frozen, Alert: <log-to-stderr one-liner>}` and call `loop.Run(ctx)`
-    where `ctx` comes from `signal.NotifyContext(context.Background(), os.Interrupt)` so SIGINT cleanly
-    cancels and `Run` returns `ctx.Err()`.
-  - File starts with a docstring (project convention) explaining it is the monitor entrypoint.
-- **`main_test.go`** drives `registerHubs` only: `store.Open(filepath.Join(t.TempDir(), "test.db"))`,
-  build the two real testnet `Entry`s (`sb0.iscc.id`, `sb1.amlet.id`) inline or via
-  `registry.Parse` of the fixture at `internal/registry/testdata/realm.txt`, call `registerHubs`, and
-  assert: (a) two targets returned; (b) each `HubTarget.BaseURL == "https://"+domain` and `HubID > 0`;
-  (c) **idempotency** — a second `registerHubs` call returns identical `HubID`s (`UpsertHub` is
-  idempotent on domain). Keep it a `func Test`, no test class. The test must not start `Run`.
-- Correctness rule in play: **Origin = `<domain>/log`, never the bare domain** (learnings, highest-prob
-  bug) — feed `Origin(BaseURL)` to `UpsertHub`'s `origin` arg, never `e.Domain`.
-- Oracle/conformance gate is correctly **N/A** here: nothing touches a proof/verify/merkle/signature/
-  fsck path. `Origin` only re-exports the already-golden-tested `origin`; `go.mod`/`go.sum` stay
-  byte-identical (no new dependency — `net/http` is already in the logclient closure via `didresolve.go`).
+- **Set-once is the load-bearing semantic (ADR-0001): coverage start is immutable.** Implement
+  `SetCoverage` as a conditional write so a later, larger observation never moves the start. On the
+  single capped connection, prefer the explicit guarded UPDATE — it is the most obvious "write only
+  if unset" and matches this file's style:
+  `UPDATE hubs SET monitored_since_size = ?, monitored_since_time = ? WHERE hub_id = ? AND
+  monitored_since_size IS NULL`. The `IS NULL` guard makes a re-call after the start is set a silent
+  no-op. A re-call must return a nil error and must **not** depend on `RowsAffected` to signal
+  success (zero rows affected after the start is set is the correct, non-error case).
+- `monitored_since_time` is unix-seconds via the existing `unixOrNil(observedAt)` helper, mirroring
+  `RecordCheckpoint`; write `int64(size)` like the other size columns. In practice `PollHub` always
+  injects a real `observedAt`, so size and time are set together on the first verified poll.
+- `Coverage(ctx, hubID)` reads `monitored_since_size`/`monitored_since_time` back through
+  `sql.NullInt64` and returns `(size uint64, since time.Time, set bool, err error)` (or a tiny
+  struct — match whatever reads cleanest). An unset/absent hub returns `set=false` + nil error,
+  mirroring `FollowState`'s "absent row is not an error" convention. This reader lets the tests
+  assert on observable state without poking raw SQL (a raw `QueryRow` in the test is also acceptable
+  — match the existing store tests).
+- **Wiring in `PollHub`** (`follower.go`): the call belongs on the verified, *non-violation* path
+  only — after the `if violated { … }` branch returns, alongside `RecordCheckpoint` /
+  `AdvanceFollowState` (lines 100-114). Place it before `AdvanceFollowState`; wrap its error like the
+  siblings: `fmt.Errorf("follower.PollHub: hub %d: set coverage: %w", hubID, err)`. A frozen/violating
+  hub must **not** start coverage from the contradictory observation — keep `SetCoverage` out of the
+  `freeze` helper. `store` stays a leaf (no new imports; `logclient` must not enter its closure).
+- Relevant Correctness rules / learnings: **"Coverage honesty (ADR-0001) — record `monitored_since`,
+  state guarantees from coverage start"**; the store **"zero `time.Time` → NULL (`unixOrNil`)"** and
+  **"absent row is not an error"** conventions; and the **`AdvanceFollowState` upsert omits `frozen`**
+  discipline — apply that same "never clobber an immutable field" rule to `monitored_since_*`.
+- Update the `follower.go` doc comment (line 12) that currently lists "coverage" among the deferred
+  "later steps" so the prose stays evergreen and accurate once coverage lands.
 
 ## Verification
-- `mise run check` is green (`go build ./...` now also compiles `cmd/iscc-monitor`; `go vet ./...`;
-  `go test ./...` all pass) and `gofmt -l .` prints nothing.
-- `go build -o /tmp/iscc-monitor ./cmd/iscc-monitor` exits 0 (binary compiles).
-- `go test -run TestOrigin ./internal/logclient` passes — the exported `Origin` path stays golden:
-  `Origin("https://sb0.iscc.id") == "sb0.iscc.id/log"` and
-  `Origin("https://sb1.amlet.id") == "sb1.amlet.id/log"`.
-- `go test -run TestRegisterHubs ./cmd/iscc-monitor` passes: two targets, each `HubID > 0`, each
-  `BaseURL == "https://"+domain`, and a second `registerHubs` call returns identical `HubID`s
-  (idempotent).
-- `git diff -- go.mod go.sum` is empty (no dependency added).
-- Missing-env failure surfaces cleanly: `env -u ISCC_MONITOR_DB -u ISCC_MONITOR_REALM
-  /tmp/iscc-monitor` exits non-zero and prints a `config: required key` message to stderr (no panic).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass, `gofmt -l .`
+  empty).
+- `go test -run TestCoverage ./internal/store` passes: after `SetCoverage(hubID, 100, t0)` then
+  `SetCoverage(hubID, 500, t1)`, `Coverage(hubID)` reports `size==100` and `since==t0` (set-once; the
+  larger/later values are ignored), and an unset hub reports `set==false`.
+- `go test -run TestPollHub ./internal/follower` passes: after a verified `PollHub`, the hub's
+  coverage is set to the fixture size (`10183`) and the observed time; a second verified poll does
+  not move it.
+- `git diff HEAD -- go.mod go.sum` is empty (no new dependency).
+- `go list -deps ./internal/store | grep '^net/http$'` is empty (store stays a leaf; no `net/http`).
 
 ## Done When
-`cmd/iscc-monitor` builds and runs as the wired config→registry→store→loop entrypoint, `registerHubs`
-is golden-tested for both real testnet hubs (idempotent, origin-correct), and every Verification check
-passes with `mise run check` green and `go.mod`/`go.sum` byte-identical.
+`SetCoverage`/`Coverage` exist with set-once semantics, `PollHub` records coverage once on the first
+verified observation (not on violation/non-verified verdicts), and all Verification criteria pass.
