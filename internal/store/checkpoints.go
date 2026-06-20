@@ -59,6 +59,24 @@ type CoverageInfo struct {
 	Set   bool
 }
 
+// HubKey is one did:web-resolved hub signing key to cache into hub_keys
+// (ADR-0009). The DID document is the source of truth; this row is a refreshed
+// cache, never an independent key source. KeyID is the BE-uint32 signed-note
+// keyhash that identifies the key (the follower derives it from
+// ResolveVerifierKey's verifier-string middle field "+<hex>+" or keyID(name,
+// pub); this method just persists what it is given). PubkeyRaw is the 32-byte
+// Ed25519 key, PubkeyZ its z6Mk… multibase form (empty → SQL NULL). Revoked
+// carries the DID doc's revocation instant (zero → not revoked, NULL) and
+// ResolvedAt the time of resolution (zero → NULL).
+type HubKey struct {
+	HubID      int64
+	KeyID      uint32
+	PubkeyRaw  []byte
+	PubkeyZ    string
+	Revoked    time.Time
+	ResolvedAt time.Time
+}
+
 // UpsertHub inserts-or-gets the hubs row for a hub and returns its hub_id. It is
 // idempotent on the domain: a re-register with the same domain returns the
 // existing id without rewriting columns. hubs carries no UNIQUE on domain, so
@@ -291,6 +309,48 @@ func (s *Store) Coverage(ctx context.Context, hubID int64) (CoverageInfo, error)
 	return info, nil
 }
 
+// RecordHubKey caches a did:web-resolved hub key into hub_keys, deduped per
+// (hub_id, key_id) and refreshed on every poll (ADR-0009: the DID document is the
+// source of truth, so a re-resolve overwrites the cached row rather than
+// accumulating). hub_keys carries no UNIQUE constraint, so this is a guarded
+// UPDATE keyed on (hub_id, key_id) — mirroring SetCoverage — followed by an INSERT
+// only when no row matched: the same key re-resolved refreshes pubkey/revoked/
+// resolved_at in place (count stays 1), while a rotation to a different key_id
+// inserts a second row so both the old and new keys stay cached (revocation is
+// recorded via revoked_at, never by deleting the old row). An empty PubkeyZ writes
+// NULL (distinct from ""), and a zero Revoked / ResolvedAt writes NULL via
+// unixOrNil. The hub_id REFERENCES hubs(hub_id) FK is enforced, so a key for an
+// unknown hub returns a non-nil error.
+func (s *Store) RecordHubKey(ctx context.Context, k HubKey) error {
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE hub_keys SET pubkey_raw = ?, pubkey_z = ?, revoked_at = ?, resolved_at = ? "+
+			"WHERE hub_id = ? AND key_id = ?",
+		k.PubkeyRaw, nullStringOrNil(k.PubkeyZ), unixOrNil(k.Revoked), unixOrNil(k.ResolvedAt),
+		k.HubID, int64(k.KeyID),
+	)
+	if err != nil {
+		return fmt.Errorf("store.RecordHubKey: update hub %d key %08x: %w", k.HubID, k.KeyID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store.RecordHubKey: rows affected: %w", err)
+	}
+	if n > 0 {
+		return nil
+	}
+	// No existing row for (hub_id, key_id): insert the full row.
+	_, err = s.db.ExecContext(ctx,
+		"INSERT INTO hub_keys (hub_id, key_id, pubkey_raw, pubkey_z, revoked_at, resolved_at) "+
+			"VALUES (?, ?, ?, ?, ?, ?)",
+		k.HubID, int64(k.KeyID), k.PubkeyRaw, nullStringOrNil(k.PubkeyZ),
+		unixOrNil(k.Revoked), unixOrNil(k.ResolvedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("store.RecordHubKey: insert hub %d key %08x: %w", k.HubID, k.KeyID, err)
+	}
+	return nil
+}
+
 // unixOrNil maps a time.Time to the schema's INTEGER unix-seconds, writing a zero
 // time as NULL so "never observed" stays distinct from the unix epoch.
 func unixOrNil(t time.Time) any {
@@ -298,4 +358,13 @@ func unixOrNil(t time.Time) any {
 		return nil
 	}
 	return t.Unix()
+}
+
+// nullStringOrNil maps a string to a nullable TEXT column, writing an empty string
+// as NULL so "no value" (e.g. no multibase) stays distinct from the empty string.
+func nullStringOrNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }

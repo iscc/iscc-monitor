@@ -713,6 +713,230 @@ func TestFreezeRestartSurvival(t *testing.T) {
 	}
 }
 
+// TestRecordHubKeyInsert confirms a first RecordHubKey for a seeded hub inserts
+// exactly one row whose pubkey_raw / pubkey_z / resolved_at columns read back
+// equal to the input.
+func TestRecordHubKeyInsert(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	pubRaw := []byte("0123456789abcdef0123456789abcdef") // 32 bytes
+	resolved := time.Unix(1_700_000_000, 0)
+	k := HubKey{
+		HubID:      hubID,
+		KeyID:      0x40b74463,
+		PubkeyRaw:  pubRaw,
+		PubkeyZ:    "z6MkExampleMultibaseValue",
+		ResolvedAt: resolved,
+		// Revoked left zero (un-revoked key).
+	}
+	if err := s.RecordHubKey(ctx, k); err != nil {
+		t.Fatalf("RecordHubKey: %v", err)
+	}
+
+	var n int
+	if err := s.db.QueryRow(
+		"SELECT count(*) FROM hub_keys WHERE hub_id = ? AND key_id = ?", hubID, int64(k.KeyID),
+	).Scan(&n); err != nil {
+		t.Fatalf("count hub_keys: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("hub_keys count for (hub, key) = %d, want 1", n)
+	}
+
+	var (
+		gotRaw      []byte
+		gotZ        string
+		gotResolved int64
+	)
+	err = s.db.QueryRow(
+		"SELECT pubkey_raw, pubkey_z, resolved_at FROM hub_keys WHERE hub_id = ? AND key_id = ?",
+		hubID, int64(k.KeyID),
+	).Scan(&gotRaw, &gotZ, &gotResolved)
+	if err != nil {
+		t.Fatalf("read hub_keys columns: %v", err)
+	}
+	if string(gotRaw) != string(pubRaw) {
+		t.Errorf("pubkey_raw = %q, want %q", gotRaw, pubRaw)
+	}
+	if gotZ != k.PubkeyZ {
+		t.Errorf("pubkey_z = %q, want %q", gotZ, k.PubkeyZ)
+	}
+	if gotResolved != resolved.Unix() {
+		t.Errorf("resolved_at = %d, want %d", gotResolved, resolved.Unix())
+	}
+}
+
+// TestRecordHubKeyRefresh proves a second RecordHubKey with the same
+// (hub_id, key_id) but a later ResolvedAt and a set Revoked refreshes the row in
+// place (count stays 1; resolved_at and revoked_at are updated) — the DID
+// document is the source of truth, so a re-resolve overwrites, never accumulates.
+func TestRecordHubKeyRefresh(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	const keyID = uint32(0x069d0f14)
+	first := HubKey{
+		HubID:      hubID,
+		KeyID:      keyID,
+		PubkeyRaw:  []byte("first-resolution-pubkey-padding3"),
+		ResolvedAt: time.Unix(1_700_000_000, 0),
+	}
+	if err := s.RecordHubKey(ctx, first); err != nil {
+		t.Fatalf("first RecordHubKey: %v", err)
+	}
+
+	// Re-resolve the same key later, now revoked in the DID doc.
+	laterResolved := time.Unix(1_700_009_999, 0)
+	revoked := time.Unix(1_700_005_000, 0)
+	second := HubKey{
+		HubID:      hubID,
+		KeyID:      keyID,
+		PubkeyRaw:  []byte("second-resolution-pubkey-paddin3"),
+		Revoked:    revoked,
+		ResolvedAt: laterResolved,
+	}
+	if err := s.RecordHubKey(ctx, second); err != nil {
+		t.Fatalf("second RecordHubKey: %v", err)
+	}
+
+	var n int
+	if err := s.db.QueryRow(
+		"SELECT count(*) FROM hub_keys WHERE hub_id = ? AND key_id = ?", hubID, int64(keyID),
+	).Scan(&n); err != nil {
+		t.Fatalf("count hub_keys: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("hub_keys count after refresh = %d, want 1 (in-place update)", n)
+	}
+
+	var (
+		gotRaw      []byte
+		gotResolved int64
+		gotRevoked  int64
+	)
+	err = s.db.QueryRow(
+		"SELECT pubkey_raw, resolved_at, revoked_at FROM hub_keys WHERE hub_id = ? AND key_id = ?",
+		hubID, int64(keyID),
+	).Scan(&gotRaw, &gotResolved, &gotRevoked)
+	if err != nil {
+		t.Fatalf("read refreshed hub_keys columns: %v", err)
+	}
+	if string(gotRaw) != string(second.PubkeyRaw) {
+		t.Errorf("pubkey_raw = %q, want %q (refreshed)", gotRaw, second.PubkeyRaw)
+	}
+	if gotResolved != laterResolved.Unix() {
+		t.Errorf("resolved_at = %d, want %d (refreshed)", gotResolved, laterResolved.Unix())
+	}
+	if gotRevoked != revoked.Unix() {
+		t.Errorf("revoked_at = %d, want %d (now revoked)", gotRevoked, revoked.Unix())
+	}
+}
+
+// TestRecordHubKeyRotation proves a RecordHubKey with a different key_id for the
+// same hub inserts a second row (count == 2): a key rotation caches both the old
+// and new keys; the old key is not deleted (its revocation, if any, is recorded
+// via revoked_at).
+func TestRecordHubKeyRotation(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	// Old key (sb1's prior signer 22b08f3e) then the rotated key (069d0f14).
+	if err := s.RecordHubKey(ctx, HubKey{
+		HubID:      hubID,
+		KeyID:      0x22b08f3e,
+		PubkeyRaw:  []byte("old-rotated-out-pubkey-padding-3"),
+		ResolvedAt: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("RecordHubKey old key: %v", err)
+	}
+	if err := s.RecordHubKey(ctx, HubKey{
+		HubID:      hubID,
+		KeyID:      0x069d0f14,
+		PubkeyRaw:  []byte("new-rotated-in-pubkey-padding-32"),
+		ResolvedAt: time.Unix(1_700_009_999, 0),
+	}); err != nil {
+		t.Fatalf("RecordHubKey new key: %v", err)
+	}
+
+	var n int
+	if err := s.db.QueryRow(
+		"SELECT count(*) FROM hub_keys WHERE hub_id = ?", hubID,
+	).Scan(&n); err != nil {
+		t.Fatalf("count hub_keys: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("hub_keys count after rotation = %d, want 2 (both keys cached)", n)
+	}
+}
+
+// TestRecordHubKeyNullable confirms a HubKey with an empty PubkeyZ and a zero
+// Revoked writes pubkey_z IS NULL and revoked_at IS NULL — keeping "no multibase"
+// and "not revoked" distinct from the empty string and the unix epoch.
+func TestRecordHubKeyNullable(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	const keyID = uint32(0x40b74463)
+	if err := s.RecordHubKey(ctx, HubKey{
+		HubID:      hubID,
+		KeyID:      keyID,
+		PubkeyRaw:  []byte("nullable-test-pubkey-padding-32b"),
+		ResolvedAt: time.Unix(1_700_000_000, 0),
+		// PubkeyZ empty, Revoked zero.
+	}); err != nil {
+		t.Fatalf("RecordHubKey: %v", err)
+	}
+
+	// The row is selectable via the IS NULL predicates (proves NULL, not "").
+	var n int
+	if err := s.db.QueryRow(
+		"SELECT count(*) FROM hub_keys WHERE hub_id = ? AND key_id = ? "+
+			"AND pubkey_z IS NULL AND revoked_at IS NULL", hubID, int64(keyID),
+	).Scan(&n); err != nil {
+		t.Fatalf("count hub_keys with NULL columns: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("rows with pubkey_z IS NULL AND revoked_at IS NULL = %d, want 1", n)
+	}
+}
+
+// TestRecordHubKeyForeignKey confirms RecordHubKey for a hub_id with no hubs row
+// returns a non-nil error (the hub_id REFERENCES hubs(hub_id) FK is enforced).
+func TestRecordHubKeyForeignKey(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	err := s.RecordHubKey(ctx, HubKey{
+		HubID:      999, // no hubs row
+		KeyID:      0x40b74463,
+		PubkeyRaw:  []byte("orphan-key-pubkey-padding-32byte"),
+		ResolvedAt: time.Unix(1_700_000_000, 0),
+	})
+	if err == nil {
+		t.Fatalf("RecordHubKey for an unknown hub_id returned nil, want a FK error")
+	}
+}
+
 // TestCheckpointHelpersRestartSurvival writes via the typed methods, closes the
 // store, reopens the same path, and confirms the rows are still readable —
 // mirroring TestStoreRestartSurvival but exercising the new helpers.

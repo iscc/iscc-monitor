@@ -1,60 +1,67 @@
 # Handoff
 
-## 2026-06-20 — Review of: Coverage tracking — persist `monitored_since` (size + time), set-once, on first verified observation
+## 2026-06-20 — `hub_keys` did:web key cache — store-leaf `RecordHubKey` upsert
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added the persistence half of the did:web key cache (ADR-0009): a `HubKey` struct and a
+`RecordHubKey(ctx, HubKey) error` method on `*Store` that caches a resolved hub key into `hub_keys`,
+deduped per `(hub_id, key_id)` and refreshed each poll. It is a guarded `UPDATE … WHERE hub_id=? AND
+key_id=?` (mirroring `SetCoverage`) followed by an `INSERT` only when no row matched — no `ON CONFLICT`
+(the table has no UNIQUE index). The follower→store wiring is deliberately NOT touched (separate later
+slice).
 
-**Summary:** `SetCoverage`/`Coverage` were added to the store as a guarded set-once
-`UPDATE … WHERE monitored_since_size IS NULL` plus a `sql.NullInt64` reader, and wired into `PollHub`
-on the verified, non-violation path (between `RecordCheckpoint` and `AdvanceFollowState`, kept out of
-`freeze`). The implementation matches `next.md` exactly: immutable coverage start (ADR-0001), no new
-dependency, store stays a leaf, and the freeze/non-verified paths never start coverage. Scope is tight
-(2 production files + 2 test files), tests are thorough and non-vacuous, all gates green.
+**Files changed:**
+- `internal/store/checkpoints.go`: added the `HubKey` struct (near `CoverageInfo`), the
+  `RecordHubKey` method (after `Coverage`), and a small `nullStringOrNil` helper next to `unixOrNil`
+  (empty string → SQL NULL for the nullable `pubkey_z` TEXT column).
+- `internal/store/checkpoints_test.go`: added `TestRecordHubKeyInsert` / `Refresh` / `Rotation` /
+  `Nullable` / `ForeignKey` — one per Verification criterion.
 
-**Verification:**
-- [x] `mise run check` — green: `go build` / `go vet` / `go test ./...` all `ok` (7 packages).
-- [x] `gofmt -l .` — empty (clean).
-- [x] `go test -run TestCoverage ./internal/store` — PASS: `TestCoverageSetOnce` (100/t0 not moved by
-  500/t1, raw columns re-checked), `TestCoverageUnset` (un-started + absent hub → zero value, nil err),
-  `TestCoverageZeroObservedAtNull` (zero time → NULL, Set true, zero Since).
-- [x] `go test -run TestPollHub ./internal/follower` — PASS: a verified poll sets coverage to fixture
-  size `10183` + the injected `observedAt`; a second poll 24h later does not move it; fork-freeze and
-  unverified verdicts both leave coverage unset.
-- [x] `git diff HEAD~1..HEAD -- go.mod go.sum` — empty (no new dependency).
-- [x] `go list -deps ./internal/store | grep '^net/http$'` — empty; store has zero internal
-  iscc-monitor deps (still a leaf).
-- [x] Scope discipline — only `internal/store/checkpoints.go` + `internal/follower/follower.go`
-  (2 production files, ≤3 limit) + their two `_test.go` files; nothing from `## Not In Scope` touched.
-- [x] Quality-gate integrity — no `//nolint`/`t.Skip`/build-tag/swallowed-error added across the three
-  unpushed commits; no deleted tests or assertions; all changes additive.
-- [x] Oracle/conformance gate — correctly **N/A**: no proof/verify/didweb/merkle/consistency/fsck/
-  notecheck/signature path touched (plain `hubs`-column CRUD + a set-once write on the already-verified
-  path); go.mod/go.sum byte-identical.
+**Verification:** `mise run check` → green (`go build` / `go vet` / `go test ./...` all `ok`, 7
+packages). Per-criterion:
+- [x] `go test -run TestRecordHubKey ./internal/store` → PASS (all 5).
+- [x] happy-path insert (`TestRecordHubKeyInsert`): after one `RecordHubKey` for an `UpsertHub`-seeded
+  hub, `count(*) WHERE hub_id=? AND key_id=?` == 1; `pubkey_raw`/`pubkey_z`/`resolved_at` read back
+  equal to input.
+- [x] refresh/dedupe (`TestRecordHubKeyRefresh`): a second call, same `(hub_id, key_id)`, later
+  `ResolvedAt` + set `Revoked` → `count` stays 1, `pubkey_raw`/`resolved_at`/`revoked_at` updated in
+  place.
+- [x] rotation (`TestRecordHubKeyRotation`): a different `key_id` for the same hub → `count(*) WHERE
+  hub_id=?` == 2 (both keys cached).
+- [x] nullability (`TestRecordHubKeyNullable`): empty `PubkeyZ` + zero `Revoked` → row selectable via
+  `WHERE pubkey_z IS NULL AND revoked_at IS NULL` (proves NULL, not `""`/epoch).
+- [x] FK guard (`TestRecordHubKeyForeignKey`): a key for an unknown `hub_id` returns a non-nil error
+  (independently probed: genuine SQLite `FOREIGN KEY constraint failed (787)` wrapped through the
+  insert path — non-vacuous).
+- [x] `go list -deps ./internal/store | grep '^github.com/iscc/iscc-monitor'` → only the self line
+  (store stays a leaf; no `didweb`/`logclient` import leaked).
+- [x] `go list -deps ./internal/store | grep '^net/http$'` → empty.
+- [x] `git diff -- internal/store/schema.sql` → empty (no schema/migration change).
+- [x] `git diff -- go.mod go.sum` → empty (no new dependency).
+- [x] `gofmt -l .` → empty.
 
-**Issues found:** (none)
-
-**Next:** The merkle-backed **equivocation** trigger — the remaining unmet M1 Verify criterion (third
-self-consistency trigger) and the first slice to trip the oracle/conformance gate. It adds a third
-branch in `checkConsistency` returning `ViolationEquivocation` + real `ProofJSON`, needs
-`transparency-dev/merkle` (new dep) + tile fixtures, and must preserve "compare against the prior
-*accepted* root, not the contradicting evidence" (the `CheckpointAt` `LIMIT 1` rowid-order learning).
-Lighter alternatives still open if the merkle slice is deferred: the `hub_keys` did:web cache write
-(which must also refresh the stale `sb1.amlet.id_did.json` + `derive_vkey.py` HUBS to signer
-`069d0f14`), structured logging (replacing the two stderr placeholders), `/metrics`, and surfacing the
-coverage window through the dashboard/REST (M2/M3).
+**Next:** The follower→store wiring slice — call `RecordHubKey` from `PollHub` after a successful
+`ResolveVerifierKey`, mapping its `DIDKey` (`PublicKey`→`PubkeyRaw`, `Multibase`→`PubkeyZ`,
+`Revoked`→`Revoked`) plus the derived key_id (the verifier-string middle `+<hex>+` field) and the
+injected `observedAt`→`ResolvedAt` into a `HubKey`. That step is where the stale `sb1.amlet.id_did.json`
+fixture + `derive_vkey.py` HUBS must finally be refreshed to signer `069d0f14`, because it is the first
+to exercise a live resolution into the cache. The heavier merkle-backed equivocation trigger remains the
+headline M1 gap (needs `transparency-dev/merkle` + tile fixtures + a conformance/oracle package + CI
+`notecheck` — more than one verifiable slice).
 
 **Notes:**
-- Independently verified the set-once guard is robust at the size-0 edge: the first `SetCoverage`
-  writes `int64(size)` so the column is NOT NULL even when size==0, making every re-call a silent
-  no-op (the start is immutable at size 0 too). Confirmed with a throwaway `TestCoverageZeroSizeStillSet`
-  (PASS), then removed it — the committed suite does not cover size 0, but `PollHub` only ever records
-  `info.TreeSize` from a verified checkpoint, so it is not a live concern.
-- `SetCoverage` deliberately ignores `RowsAffected` (zero-rows-after-set is the correct non-error
-  case), exactly as `next.md` scoped. The fork/unverified "coverage stays unset" assertions are
-  non-vacuous because those seeds use `RecordCheckpoint`/`AdvanceFollowState`, never `SetCoverage`.
-- The zero-`observedAt`→NULL store path is covered by a unit test for completeness but is unreachable
-  from the live `PollHub` call (it always injects a real `observedAt`).
-- No CI is configured (`.github/workflows/` absent) — `notecheck` parity job not yet present; flag for
-  whoever wires CI, and it becomes load-bearing the moment the merkle equivocation slice lands.
-- Working tree clean; commits are on `develop`; remote `origin` configured.
+- The reader (a `HubKey` lookup) was intentionally NOT added — only the write is needed now, per
+  `next.md`. The follower-wiring step (or whoever first needs to read a cached key for verification)
+  should add the read.
+- `key_id` is stored via `int64(k.KeyID)` (uint32→int64), matching how `RecordCheckpoint` casts
+  `uint64`→`int64` for SQLite's signed INTEGER. The two reference signer keyhashes (`40b74463`,
+  `069d0f14`, plus sb1's prior `22b08f3e`) appear in the tests as realistic key_ids — they are not
+  load-bearing fixtures, just plausible values, so no oracle/`derive_vkey.py` parity is asserted here
+  (this method only persists what it is given).
+- Oracle/conformance gate is correctly **N/A** for this slice: it is plain `hub_keys`-column CRUD with
+  null handling and FK enforcement — no proof/verify/didweb/merkle/consistency/fsck/notecheck/signature
+  path touched; go.mod/go.sum byte-identical.
+- Scope: 1 production file (`checkpoints.go`) + its `_test.go`, within the ≤3 budget; nothing from
+  `## Not In Scope` (follower wiring, fixture refresh, merkle trigger, schema/migration) was touched.
+- The `(hub_id, key_id)` dedupe is a check-then-write under the store's single-writer connection
+  (`SetMaxOpenConns(1)`), so the UPDATE-then-INSERT is not subject to a concurrent-writer race in this
+  layer.
