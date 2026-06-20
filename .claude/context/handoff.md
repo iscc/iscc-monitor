@@ -1,70 +1,59 @@
 # Handoff
 
-## 2026-06-20 — Review of: Pure RFC-6962 consistency-proof verifier (`CheckEquivocation`) + `transparency-dev/merkle` dep
+## 2026-06-20 — Add the canonical tlog-tiles layout layer (`internal/tiles`) over `tessera/api/layout`
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Added `internal/tiles`, a thin, golden-tested re-export of tessera's tlog-tiles layout
+primitives (`TilePath`, `EntriesPath`, `PartialTileSize`, `TileWidth=256`, `TileHeight=8`) plus the one
+project-specific ADR-0005 predicate `IsFull(width int) bool` (column convention: `width == 256` → full).
+`github.com/transparency-dev/tessera v1.0.2` is now a clean direct dep that keeps the `go 1.24.0`
+directive, and the package's dep closure is `net/http`/`database/sql`-free (WASM build green).
 
-**Summary:** `advance` added the M1 third freeze trigger's pure building block —
-`CheckEquivocation` + `ViolationEquivocation` in `internal/logclient/consistency.go`, backed by a real
-`github.com/transparency-dev/merkle v0.0.2` consistency-proof verify — with a golden test built from a
-genuine RFC-6962 tree. Scope is tight (1 production file + 1 test + the authorized go.mod/go.sum dep),
-all gates are green, and the oracle/conformance gate (this IS RFC-6962 crypto) is satisfied: the golden
-is ground truth from `rfc6962.DefaultHasher`, and I independently re-ran two mutations that both fail
-the suite. PASS_WITH_NOTES (not plain PASS) only because I trimmed one over-promising doc line and want
-the `testonly`-vs-`compact` deviation on the record — both cosmetic, neither blocks.
+**Files changed:**
+- `internal/tiles/layout.go` (created): thin wrappers delegating to `layout.TilePath`/`EntriesPath`/
+  `PartialTileSize`, the two spec constants, and `IsFull`. The docstring documents that this package
+  owns the path-API "0 == full" vs column "256 == full" translation; `IsFull` takes `int` because the
+  full sentinel 256 cannot fit in `uint8`.
+- `internal/tiles/layout_test.go` (created): table-driven golden tests pinning the canonical path
+  strings (ground truth from tessera's `api/layout/paths_test.go`), `PartialTileSize`, `IsFull`, and the
+  constants.
+- `go.mod`, `go.sum`: added `tessera v1.0.2` as a direct require via `go get` + `go mod tidy`.
 
-**Verification:**
-- [x] `mise run check` green — build + vet + test, all 7 packages ok (re-run uncached).
-- [x] `gofmt -l .` empty (whole tree).
-- [x] `go test -count=1 -run TestCheckEquivocation ./internal/logclient` PASS (6 subtests + the 3
-  `TestCheckEquivocationBoundariesSkipVerify` subtests).
-- [x] `go test -count=1 -run TestViolationEquivocationKind ./internal/logclient` PASS;
-  `string(ViolationEquivocation) == "equivocation"`.
-- [x] Valid proof for growing `(M=7, N=11)` → `(false, nil)`; corrupted `nextRoot` → `(true, nil)`;
-  corrupted proof element → `(true, nil)`.
-- [x] `prevSize==0`, `nextSize==prevSize`, `nextSize<prevSize` all return `(false, nil)` AND skip
-  `VerifyConsistency` (asserted by feeding garbage proof + roots and still getting false).
-- [x] `go list -m github.com/transparency-dev/merkle` → `v0.0.2`; `go.mod` directive still `go 1.24.0`,
-  no `toolchain` line; `go mod tidy` no-op; `go mod verify` passes.
-- [x] `git diff --quiet HEAD~1..HEAD -- internal/store/schema.sql internal/store/checkpoints.go
-  internal/follower/follower.go` exit 0 (no store/follower change).
-- [x] **Oracle/conformance gate (APPLIES — RFC-6962/merkle crypto):** golden is ground truth, not
-  author-asserted. `testonly.New(rfc6962.DefaultHasher)` builds a real append-only tree; the prover
-  (`ConsistencyProof`/`HashAt`) and verifier (`proof.VerifyConsistency`) are independent merkle code
-  paths, so the cross-check is not a tautology. I re-ran two mutations (then reverted): (1) force
-  `(false,nil)` always → corrupted-root + corrupted-proof cases FAIL; (2) drop the growing guard → all
-  three boundary-skip cases FAIL. A green-but-wrong verify cannot ship. `notecheck`/`derive_vkey.py`/
-  `fsck` correctly N/A (no signature/did:web/tile path). No CI configured yet, so the external
-  `notecheck` job is not a gate this iteration.
-- [x] Gate-integrity scan over the 3 unpushed commits: no `//nolint`, `t.Skip`, build-tag exclusions,
-  swallowed errors, or deleted tests/assertions.
+**Verification:** `mise run check` → green (build + vet + test, all 8 packages ok; `gofmt -l .` empty).
+Per-criterion:
+- [x] `go test -count=1 ./internal/tiles` PASS.
+- [x] `go list -m …/tessera` → `v1.0.2`; `go.mod` directive still `go 1.24.0`, no `toolchain` line;
+  `go mod tidy` is a no-op; `go mod verify` → all modules verified.
+- [x] `go list -deps ./internal/tiles | grep -E '^net/http$|^database/sql$'` empty (leaf purity);
+  `GOOS=js GOARCH=wasm go build ./internal/tiles` green; the only `.Imports` entry is `api/layout`.
+- [x] Golden path strings all hold: `TilePath(0,0,255)=="tile/0/000.p/255"`, `TilePath(1,0,0)=="tile/1/000"`,
+  `TilePath(15,455667,0)=="tile/15/x455/667"`, `EntriesPath(0,8)=="tile/entries/000.p/8"`,
+  `EntriesPath(255,0)=="tile/entries/255"`, `PartialTileSize(0,0,256)==0`, `IsFull(256)==true`,
+  `IsFull(255)==false`.
+- **Oracle/conformance gate: N/A** (no signature/RFC-6962/Merkle/did:web/fsck path — pure path strings).
+  It re-arms at the SQLiteFetcher + `fsck` slice. No `go run` of `cauldron/` was needed or done.
 
-**Issues found:** (none blocking)
-- *Minor (fixed by reviewer):* the `CheckEquivocation` doc promised a `(false, non-nil err)` path for a
-  "wrong-length root" — but the `[rootBytes]byte` array params make a wrong-length root unrepresentable,
-  so that path can never fire. I trimmed the comment to state the actual contract (`err` always nil
-  today; return kept for signature symmetry / future slice-param loosening). Comment-only, no behavior
-  change; build/vet/test stay green.
-- *Note (not a defect):* the test uses `transparency-dev/merkle/testonly.Tree` rather than `next.md`'s
-  literal `compact.RangeFactory` suggestion. `next.md` permitted any in-test tree whose roots/proof are
-  "ground truth from the hasher, never a hard-coded magic root"; `testonly.Tree` runs over the same
-  `rfc6962.DefaultHasher` and is the library's own reference tree — strictly stronger (less bespoke
-  test code), not a shortcut. Accepted.
-
-**Next:** Wire `CheckEquivocation` into the follower — add the third branch to
-`follower.checkConsistency` (map `FollowState.LastSize → prevSize`, the stored root at that size →
-`prevRoot`, `info.TreeSize → nextSize`, `info.Root → nextRoot`, plus a fetched consistency proof),
-returning `ViolationEquivocation` on a true verdict (→ `RecordViolation` + `RecordCheckpoint` evidence +
-`Freeze` + alert-once, no advance). That branch needs the consistency-proof hashes, which only the
-tile-fetch / `SQLiteFetcher` / `ProofBuilder` slice can source from mirrored hash tiles — so the
-realistic order is tile-fetch first (to obtain proofs), then the follower branch.
+**Next:** Build the `SQLiteFetcher` — implement the tessera `client.Fetcher` seam
+(`{ReadCheckpoint, ReadTile, ReadEntryBundle}`, see `cauldron/tessera/client/fetcher.go`) over the
+`tiles`/`entry_bundles` store tables, keyed by `tiles.TilePath`/`EntriesPath` and gated by `IsFull`.
+That slice sources the consistency-proof hashes the follower's deferred equivocation branch needs, and
+is the prerequisite for both the M1 equivocation trigger wiring and the M3 canonical-path mirror.
 
 **Notes:**
-- Working branch is `develop`, 3 commits ahead of `origin/develop` (incl. this review). Remote
-  configured; pushing `develop` on this PASS_WITH_NOTES verdict.
-- `go-cmp v0.6.0` is in `go.sum` only as a transitive test-dep of `merkle/testonly` (`go mod why` →
-  "main module does not need" it); not a direct require, CGO-free — no concern.
-- `internal/proof` does not exist yet, so its `net`/`os`/`sqlite` purity rule is not yet applicable.
-  `consistency.go` lives in `logclient`, which already pulls `net/http`/`os` via `didresolve.go`/
-  `checkpoint.go`, so adding `merkle` introduces no new WASM/import constraint.
+- **One `next.md` golden vector was factually wrong and I corrected it to genuine tessera ground truth.**
+  `next.md` asserted `PartialTileSize(0, 0, 300) == 44` ("the first tile of a 300-leaf tree is
+  partial-44"). That is incorrect: per tessera's `tile.go`, `sizeAtLevel=300`, `fullTiles=300/256=1`,
+  and `index 0 < fullTiles` → returns **0** (the first 256-leaf tile is *full*); the leftover 44 spill
+  into the *second* tile, so the partial-44 is at **index 1**. I verified this directly against
+  `layout.PartialTileSize` (`(0,0,300)=0`, `(0,1,300)=44`, `(0,0,44)=44`) and pinned the corrected
+  vectors. `PartialTileSize(0,0,256)==0` (from `next.md`) was correct and is kept. This is a documented
+  deviation from `next.md`'s literal Verification text, but it makes the test match the reference's real
+  behavior — pinning the wrong coordinate would have been a false golden. Flagging for `review`'s
+  awareness; not a `**HUMAN REVIEW REQUESTED:**` item (no public-API or ADR change, just a test vector
+  fix). This also matters downstream: the SQLiteFetcher slice must use index-1 (not index-0) for the
+  44-leaf partial of a 300-leaf tree.
+- tessera v1.0.2's heavy deps (otel, klog, `formats`, `x/crypto`, `cenkalti/backoff`) land in `go.sum`
+  as module-graph requirements only — they are never compiled, so they do **not** appear in `go.mod`'s
+  indirect block and do not enter the `internal/tiles` closure (verified). `golang.org/x/sys` and
+  `x/sync` got minor version bumps from the tessera require graph (`sys 0.37→0.41`); benign, still pure-Go.
+- `IsFull` is an intentional unused-until-wired export seam (like the consistency triggers) — `go vet`
+  clean, not dead code. The SQLiteFetcher/store-key slice is its first caller.
