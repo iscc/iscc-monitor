@@ -1,117 +1,114 @@
 # Next Work Package
 
-## Step: Bootstrap the per-network SQLite store (`internal/store`): WAL + single-writer open + embedded schema
+## Step: Typed store persistence helpers for the checkpoint verdict (`hubs` / `checkpoints` / `follow_state`)
 
 ## Goal
-Stand up the stateful foundation every later M1 unit needs: open a per-network SQLite database with
-the ADR-0005/0007 single-writer discipline (WAL + `busy_timeout`), apply the core M1 schema idempotently
-from an embedded `schema.sql`, and prove the DB + schema survive a close/reopen (restart). Nothing
-consumes `AcceptCheckpoint` yet without somewhere to persist; this is that somewhere. It also wires the
-pure-Go `modernc.org/sqlite` driver (`CGO_ENABLED=0`) for the first time.
+Give `internal/store` the typed insert/query methods the follower needs to persist one observed
+checkpoint verdict: register a hub, record an observed checkpoint, and read/advance the per-hub
+follow cursor. This is the persistence half the follower will drive next — landed now, with its own
+driving tests, so the follower step that follows is mostly wiring rather than wiring + schema
+discovery.
+
+## Goal-fit (state → target gap)
+`state.md` records the schema + `Open`/`Close` exist but "no typed insert/query methods yet (they
+land with their real caller, the follower)" and "nothing yet reads or writes store rows." The
+handoff's `**Next:**` bundles store CRUD + the follower loop + the `hub_keys` did:web cache + the sb1
+fixture refresh into a single item — that is far more than 3 files and several distinct verifiable
+behaviors. This step takes the store-CRUD slice only: the smallest coherent unit that compiles, runs,
+and is mechanically testable against a temp SQLite DB on observable row state. The follower loop, the
+`hub_keys` cache, and the sb1 fixture refresh are explicitly deferred to the next step.
 
 ## Scope
 - **Create**:
-  - `/workspace/iscc-monitor/internal/store/sqlite.go` — `Open(path string) (*Store, error)`, `Close()`,
-    embedded-schema application, single-writer pragmas. (1 of ≤3 non-test/doc files.)
-  - `/workspace/iscc-monitor/internal/store/schema.sql` — `//go:embed`-ed DDL for the core M1 tables
-    (`CREATE TABLE IF NOT EXISTS …`). (Counts as a non-test/doc file: 2 of ≤3.)
-  - `/workspace/iscc-monitor/internal/store/sqlite_test.go` — table/scenario tests (test file, not counted).
-- **Modify**:
-  - `/workspace/iscc-monitor/go.mod` + `/workspace/iscc-monitor/go.sum` — add `modernc.org/sqlite`
-    (and its indirect deps). **Counts as the 3rd file slot conceptually but is dependency wiring, not logic.**
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — typed methods on `*Store`:
+    - `UpsertHub(ctx, domain, origin, baseURL string) (hubID int64, err error)` — insert-or-get the
+      `hubs` row for a hub, returning its `hub_id`. Idempotent on re-register (same domain → same id).
+    - `RecordCheckpoint(ctx, c CheckpointRecord) (id int64, inserted bool, err error)` — insert one
+      observed checkpoint into `checkpoints`; dedupe on the `UNIQUE(hub_id, tree_size, root)` key
+      (a re-observed `(size, root)` returns the existing id with `inserted=false`, never an error).
+    - `FollowState(ctx, hubID int64) (FollowState, error)` — read the per-hub cursor + freeze flag;
+      a hub with no row yet returns the zero `FollowState{}` (last_size 0, frozen false), not an error.
+    - `AdvanceFollowState(ctx, hubID int64, lastSize uint64) error` — upsert `follow_state`, setting
+      `last_size` to the newly-accepted size. Must NOT clear `frozen` (no auto-unfreeze, ADR-0006).
+    - Plain store-owned structs `CheckpointRecord{HubID int64; Status string; TreeSize uint64;
+      Root []byte; Raw []byte; ObservedAt time.Time}` and `FollowState{LastSize uint64; Frozen bool;
+      LastError string}`. Do NOT import `internal/logclient` for these.
+  - `/workspace/iscc-monitor/internal/store/checkpoints_test.go` — table/scenario tests driving the
+    new methods against a `t.TempDir()` DB, asserting on observable rows only (test file, not counted).
+- **Modify**: (none required) — the methods attach to the existing `*Store` in the new file. Touch
+  `/workspace/iscc-monitor/internal/store/sqlite.go` only if a tiny shared helper is genuinely needed;
+  prefer not to.
 - **Reference**:
-  - `/workspace/iscc-monitor/.claude/plans/cosmic-baking-octopus.md` — the "SQLite schema (core tables…)"
-    block (lines ~135-147) is the authoritative column list; correctness rule 6 (single writer per DB).
-  - `/workspace/iscc-monitor/.claude/adr/0005-single-sqlite-store.md` — WAL, single writer, one file,
-    fetch-outside-the-write-transaction (the last point constrains *later* steps, not this one).
-  - `/workspace/iscc-monitor/.claude/adr/0007-per-network-db-and-evidence-retention.md` — one file per
-    network (`mainnet.db` / `testnet.db`); **no `network` column** in any table.
-  - `/workspace/iscc-monitor/cauldron/tessera/client/fetcher.go` — the `Fetcher` 3-method interface
-    (`ReadCheckpoint`, `ReadTile`, `ReadEntryBundle`) that a future `SQLiteFetcher` will implement over
-    the `tiles`/`entry_bundles`/`checkpoints` BLOBs — informs the BLOB column shape, but **do not build
-    the fetcher here**.
-  - `/workspace/iscc-monitor/internal/didweb/resolve.go` — existing `//go:embed`-free package style /
-    file-docstring convention to match.
+  - `/workspace/iscc-monitor/internal/store/schema.sql` — exact columns/types for `hubs`,
+    `checkpoints`, `follow_state` (timestamps INTEGER unix-seconds; booleans 0/1; `root`/`raw` BLOB;
+    `checkpoints` UNIQUE is `(hub_id, tree_size, root)`; `follow_state` PK is `hub_id`).
+  - `/workspace/iscc-monitor/internal/store/sqlite.go` — the `*Store` type, the `_ = db.Close()`
+    error-preserving idiom, and the file-docstring / time-convention style to match.
+  - `/workspace/iscc-monitor/internal/store/sqlite_test.go` — the established test style
+    (`t.TempDir()` path, raw `s.db` reads for assertions, independently-pinned expectations).
+  - `/workspace/iscc-monitor/internal/logclient/accept.go` — the `Status.String()` values
+    (`"verified"`/`"unverified"`/`"unresolvable"`/`"rotated"`) and `CheckpointInfo` shape the follower
+    will later map into a `CheckpointRecord`. Read for the contract only; do not import the package.
 
 ## Not In Scope
-- **No follower loop, no polling, no goroutine supervisor, no `cmd/` binary.** This step only opens the
-  store and applies the schema; the follower that calls `AcceptCheckpoint` and writes rows is the *next*
-  step.
-- **No typed insert/query/CRUD methods** (no `InsertCheckpoint`, no `hub_keys` upsert, no `follow_state`
-  read/write helpers). Schema + open/close only. Row-access methods land with the follower so their
-  shape is driven by a real caller (avoid speculative APIs — YAGNI).
-- **No `SQLiteFetcher`** implementing `client.Fetcher` — that is M2 (Aggregator), and needs tiles in the
-  store first.
-- **No RFC-6962 consistency check, freeze/alert, OTS, metrics, or `iscc_index` logic.**
-- **No sb1 fixture / `derive_vkey.py` `HUBS` refresh to `069d0f14`.** That belongs with the `hub_keys`
-  write path (the follower step), not the empty-schema bootstrap.
-- **Do NOT let `go get` bump the `go` directive to `1.25.0`** (see Implementation Notes) — the mise
-  toolchain is pinned to `go 1.24`; a `go 1.25.0` minimum would fail the gate on a 1.24 toolchain.
+- The follower poll loop itself (calling `AcceptCheckpoint`, the `err`-before-status contract,
+  network polling, backoff) — that is the very next step and consumes these methods.
+- The `hub_keys` did:web key cache and the stale sb1 did.json / `derive_vkey.py` `HUBS` fixture
+  refresh to `069d0f14` — deferred with the follower step that actually writes `hub_keys`.
+- The three-trigger RFC-6962 consistency check, `violations` inserts, and the `frozen=1` write path
+  (this step only *reads* `frozen` and refuses to clear it; it never sets it).
+- Tiles / entry_bundles / iscc_index / ots CRUD (M2 and OTS milestones).
+- A `cmd/` binary entrypoint, config, realm registry, `/metrics`, structured logs.
+- Importing `internal/logclient` into `internal/store` (would couple the store to net/http-bearing
+  deps and risk a future cycle; pass the status as a plain string instead).
+- Any `schema.sql` change (e.g. adding a UNIQUE on `hubs.domain`) — a schema change is a separate,
+  reviewable decision.
 
 ## Implementation Notes
-- **Driver + go-directive footgun (verified).** `go get modernc.org/sqlite@latest` currently pulls
-  `v1.52.0` **and rewrites `go 1.24.0 → go 1.25.0`** plus a `toolchain go1.25.x` line. The mise gate runs
-  `go = "1.24"`, so this *will* break `mise run check`. After adding the dep, **reset the directive back
-  to `go 1.24.0`** and **delete any `toolchain` line** from `go.mod` (same discipline learnings already
-  record for `x/mod`). Verify `mise run check` is green on the 1.24 toolchain afterward; if `v1.52.0`
-  genuinely requires ≥1.25 to *build*, pin an older `modernc.org/sqlite` that builds on 1.24 rather than
-  bumping the directive — and record which version in the commit body. The driver registers itself as
-  the `"sqlite"` database/sql driver name (`import _ "modernc.org/sqlite"`), pure-Go, no cgo.
-- **Open shape.** `func Open(path string) (*Store, error)` returning a small `type Store struct { db *sql.DB }`
-  with a `func (s *Store) Close() error`. Use `database/sql` with driver name `"sqlite"`. This is the
-  pure-Go driver chosen precisely because `CGO_ENABLED=0` forbids cgo SQLite (learnings).
-- **Single-writer pragmas (ADR-0005/0007, correctness rule 6).** Set on open, in order:
-  `PRAGMA journal_mode=WAL;`, `PRAGMA busy_timeout=5000;` (ms), `PRAGMA foreign_keys=ON;`,
-  `PRAGMA synchronous=NORMAL;` (safe + fast under WAL). Enforce the single-writer invariant at the
-  connection-pool level with `db.SetMaxOpenConns(1)` so all writes serialize through one connection —
-  the goroutine-ownership wrapper comes with the follower; this step just guarantees the pool can't
-  open a second writer. (Reads will also serialize for now; that is fine pre-serving and avoids
-  `SQLITE_BUSY` flakes in tests. A read pool split can come when serving lands.)
-- **Embedded schema.** Put the DDL in `schema.sql`, embed it with
-  `import _ "embed"` + `//go:embed schema.sql` into a `var schemaSQL string`, and apply it on open via
-  one `db.Exec(schemaSQL)`. Every statement is `CREATE TABLE IF NOT EXISTS …` (and `CREATE INDEX IF NOT
-  EXISTS …`) so `Open` on an existing DB is a no-op — that is what makes restart-survival trivially true.
-- **Schema = the plan's core tables verbatim, minus the dropped `network` column (ADR-0007).** Create
-  exactly these, with the columns from the plan's "SQLite schema" block:
-  `hubs`, `hub_keys`, `checkpoints` (`UNIQUE(hub_id,tree_size,root)`), `violations`, `tiles`
-  (`PK(hub_id,level,tile_index,width)`), `entry_bundles` (`PK(hub_id,bundle_index,width)`), `iscc_index`
-  (`seq` PK, `INDEX(iscc_id)`), `follow_state` (`hub_id` PK), `ots` (`UNIQUE(hub_id,tree_size,root)`).
-  Use `BLOB` for `root`/`data`/`iscc_id`/`raw_*`/`ots_bytes`, `INTEGER` for sizes/booleans/timestamps
-  (store times as unix-seconds or RFC-3339 TEXT — pick one and document it in the file docstring; unix
-  INTEGER is simplest and matches `observed_at`-style comparisons). No `cosigs` table (deferred to M7).
-  Keep the DDL readable and commented per table; this file is load-bearing documentation of the data
-  model.
-- **Correctness rules in play (learnings.md / plan):** rule 6 "SQLite single writer per DB — WAL +
-  busy_timeout; one goroutine owns all writes" (enforced here by `SetMaxOpenConns(1)` + WAL; the
-  goroutine wrapper is the follower's job); ADR-0007 "no `network` column"; `CGO_ENABLED=0` →
-  `modernc.org/sqlite`, never a cgo driver, and **no `go test -race`**.
-- **Tests** (offline, deterministic): use `t.TempDir()` for the DB path.
-  1. `Open` on a fresh path succeeds and the expected tables exist — assert via
-     `SELECT name FROM sqlite_master WHERE type='table'` and check the set contains every table above.
-  2. `PRAGMA journal_mode` returns `wal` after open.
-  3. **Restart survival**: `Open` → write a sentinel row into one table (e.g. an INSERT into `hubs`) →
-     `Close()` → `Open()` the same path again → the row and all tables are still present. (A direct
-     `db.Exec` INSERT in the test is fine even though the store exposes no insert method yet — the test
-     drives raw SQL to prove persistence, not a public API.)
-  4. `Open` twice on the same path (sequentially, after Close) is idempotent (schema re-apply is a
-     no-op, no error).
-  Assert on observable DB state (rows, pragma values), never on `Store` internals.
+- **No import of `internal/logclient`.** Keep `store` a leaf depending only on `database/sql` +
+  stdlib (plus the already-wired driver). The follower (next step) maps `logclient.Status.String()`
+  and `CheckpointInfo` into the plain `CheckpointRecord` / status-string at the call site. This honors
+  the learnings' purity discipline and avoids dragging net/http into the store closure.
+- **Single-writer discipline already holds** at this layer (`SetMaxOpenConns(1)`), so these methods
+  use `db.ExecContext` / `db.QueryRowContext` directly; do not open new connections or pools. The
+  goroutine-ownership write wrapper remains the follower's concern.
+- **Timestamps:** store `ObservedAt` as `t.Unix()` INTEGER (the schema's convention). Decide how a
+  zero `time.Time` is written (NULL or 0) and assert that choice in a test so it is explicit.
+- **`UpsertHub` idempotency:** `hubs` has no UNIQUE on `domain`, so implement as "SELECT hub_id WHERE
+  domain=?; if none, INSERT and return LastInsertId". One method, no schema change. The follower will
+  also want `origin`/`base_url` set on first insert; on a re-register, returning the existing id
+  (without rewriting columns) is acceptable for this step.
+- **`RecordCheckpoint` dedupe:** rely on the existing `UNIQUE(hub_id, tree_size, root)`. Prefer
+  `INSERT ... ON CONFLICT(hub_id, tree_size, root) DO NOTHING` then read back the id, or detect the
+  constraint and SELECT the existing id; either way return `inserted=false` with a nil error on a
+  repeat. Leave `consistent` / `root_rebuilt` NULL — they are the consistency-check step's job. There
+  is no `status` column on `checkpoints`; carry `CheckpointRecord.Status` for the follower's later use
+  (and for the verified-only-advances assertion at the call site), but persist only the columns the
+  schema has this step.
+- **`AdvanceFollowState` must not auto-unfreeze (Correctness rule, ADR-0006).** Upsert with
+  `ON CONFLICT(hub_id) DO UPDATE SET last_size=excluded.last_size`, *omitting* `frozen` from the SET
+  list so a frozen hub stays frozen. A test must prove: set `frozen=1` via raw SQL, call
+  `AdvanceFollowState`, then read `frozen` is still 1 and `last_size` is the new value.
+- Match existing file conventions: leading package-purpose docstring continuation, evergreen
+  per-function docstrings, `_ = rows.Close()` / error-preserving idioms, no `t.Skip` / `//nolint`.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` exit 0; `gofmt -l .` empty)
-  **on the pinned `go 1.24` toolchain** — i.e. `go.mod` still reads `go 1.24.0` with no `toolchain` line.
-- `go test -run TestStore ./internal/store` passes (fresh-open, pragma, restart-survival, idempotent-reopen).
-- Assertion: after `Open(filepath.Join(t.TempDir(), "testnet.db"))`, a
-  `SELECT name FROM sqlite_master WHERE type='table'` result set contains all of:
-  `hubs hub_keys checkpoints violations tiles entry_bundles iscc_index follow_state ots`.
-- Assertion: `PRAGMA journal_mode` query returns `"wal"`.
-- Assertion: a row inserted before `Close()` is still readable after reopening the same file path
-  (restart survival).
-- Assertion: `grep -R "network" internal/store/schema.sql` finds no `network` *column* (ADR-0007 — the
-  word may appear only in a comment; the column is gone).
-- `go.mod` `go` directive is `1.24.0` and contains no `toolchain` directive (run `grep -E '^(go|toolchain)' go.mod`).
+- `mise run check` is green (`go build ./... && go vet ./... && go test ./...` all exit 0).
+- `gofmt -l internal/store` prints nothing (no listed files).
+- `go test -run TestStore ./internal/store` passes (the existing 4 subtests stay green).
+- `go test -run 'TestUpsertHub|TestRecordCheckpoint|TestFollowState|TestAdvanceFollowState' ./internal/store`
+  passes, with these mechanical assertions:
+  - `UpsertHub` called twice with the same `domain` returns the **same** `hub_id` and leaves exactly
+    one `hubs` row (`SELECT count(*) FROM hubs == 1`).
+  - `RecordCheckpoint` of a `(hub_id, tree_size, root)` then a second identical call returns the same
+    id with `inserted == false` and leaves exactly one `checkpoints` row.
+  - `FollowState` on an unknown `hubID` returns the zero `FollowState{}` and a nil error.
+  - After raw `UPDATE follow_state SET frozen=1`, `AdvanceFollowState(hubID, N)` leaves
+    `SELECT frozen FROM follow_state == 1` and `SELECT last_size FROM follow_state == N`.
+  - Restart survival: write via the methods, `Close`, reopen the same path, and the rows are still
+    readable (mirrors `TestStoreRestartSurvival`).
 
 ## Done When
-`internal/store.Open` opens a WAL, single-writer SQLite DB with all nine core M1 tables applied
-idempotently from the embedded `schema.sql`, the data survives a close/reopen, and every Verification
-criterion passes with `mise run check` green on the `go 1.24` toolchain.
+`advance` has added the typed `UpsertHub` / `RecordCheckpoint` / `FollowState` / `AdvanceFollowState`
+methods (with their plain store-owned structs) plus driving tests, every Verification criterion passes
+with `mise run check` green, and `internal/store` still imports no `internal/logclient`.
