@@ -1,96 +1,93 @@
 # Next Work Package
 
-## Step: Pure did:web document parser (`internal/didweb/resolve.go`)
+## Step: did:web identifier → did.json URL mapping (pure) + export the didweb resolve surface
 
 ## Goal
-Parse a hub's `/.well-known/did.json` bytes into its Ed25519 verifier key — the next M1 unit per the
-PASS handoff. Doing the **pure parse** (bytes → key + validity, no HTTP yet) first keeps the unit
-golden-testable against a captured live fixture and chains it into the already-verified
-`pubkeyFromDID` / `verifierKey`, so the follower step can later wire the HTTP fetch at the
-outbound-fetch seam without re-deriving the trust root.
+Add the pure `did:web:<domain>` → `https://<domain>/.well-known/did.json` URL derivation the
+follower's outbound-fetch seam needs, and promote the minimal `didweb` resolve surface
+(`ParseDIDDocument`/`VerifierKey`, plus the already-exported `DIDKey`) across the package boundary.
+This is the last pure, golden-testable unit before HTTP I/O; it unblocks the next step (the injected
+`Fetcher` + status mapping) without yet touching `net/http`.
 
 ## Scope
 - **Create**:
-  - `/workspace/iscc-monitor/internal/didweb/resolve.go` — pure `parseDIDDocument([]byte) (...)`:
-    JSON-decode a did.json, select the assertion-method verification method, extract its
-    `publicKeyMultibase` (z6Mk… did:key) and any CID 1.0 validity fields, return the 32-byte pubkey
-    (via the existing `pubkeyFromDID`) plus the parsed key metadata. No `net`/`os`/`sql` imports.
-  - `/workspace/iscc-monitor/internal/didweb/resolve_test.go` — table-driven golden + error test
-    (test file, not counted toward the 3-file limit).
-  - `/workspace/iscc-monitor/internal/didweb/testdata/sb0.iscc.id_did.json` — captured live fixture
-    (data file, not counted). Real bytes captured below; do not hand-edit them.
-  - `/workspace/iscc-monitor/internal/didweb/testdata/sb1.amlet.id_did.json` — captured fixture whose
-    `publicKeyMultibase` is the **recorded** sb1 did:key `z6MkiNW46AUjNmKTV2YNyFi9ANG9wbfYQQoUQgADGwScd9jk`
-    (the one the existing `verifierKey` golden vector asserts), so the resolve→vkey chain stays a single
-    coherent golden. See Implementation Notes re: the live sb1 key rotation.
-- **Modify**: none. Do **not** edit `vkey.go` (its `pubkeyFromDID`/`verifierKey` already do the math and
-  are oracle-verified); `resolve.go` calls them in-package.
+  - `/workspace/iscc-monitor/internal/didweb/url.go` — pure `DocumentURL(did string) (string, error)`
+    mapping a `did:web:<method-specific-id>` identifier to its `did.json` HTTPS URL. No
+    `net`/`net/http`/`os`/`sql` imports (only `fmt`, `strings`, and `net/url`'s `PathUnescape`).
+  - `/workspace/iscc-monitor/internal/didweb/url_test.go` — table-driven golden + error tests (test
+    file, not counted toward the 3-file limit).
+- **Modify** (≤3 non-test/doc files):
+  - `/workspace/iscc-monitor/internal/didweb/resolve.go` — rename `parseDIDDocument` →
+    `ParseDIDDocument` (export); update its docstring/wrapped-error strings that embed the old name.
+    `DIDKey` is already exported — leave it.
+  - `/workspace/iscc-monitor/internal/didweb/vkey.go` — rename `verifierKey` → `VerifierKey` (export)
+    so the follower can derive the signed-note key from a `DIDKey.PublicKey`. Keep `pubkeyFromDID`,
+    `keyID`, `b58decode` unexported (in-package helpers; the follower does not need them).
+- **Modify (test files — not counted toward the budget):**
+  - `/workspace/iscc-monitor/internal/didweb/resolve_test.go` and
+    `/workspace/iscc-monitor/internal/didweb/vkey_test.go` — update references after the renames.
 - **Reference** (read, do not import):
-  - `/workspace/iscc-monitor/internal/didweb/vkey.go` — call `pubkeyFromDID` / `verifierKey` from here.
-  - `/workspace/iscc-monitor/.claude/adr/0009-didweb-trust-root.md` — key source + status taxonomy.
-  - `/workspace/iscc-monitor/.claude/plans/cosmic-baking-octopus.md` lines 56-60, 105, 137-138, 168-170
-    (resolver shape; `hub_keys(... pubkey_z, revoked_at ...)`; `unresolvable`/`unverified` semantics).
-  - `/workspace/iscc-monitor/cauldron/iscc-hub/iscc_hub/schema.py` lines ~124-182 (DID/verificationMethod
-    field shapes — gitignored Python reference, do not import).
+  - `/workspace/iscc-monitor/internal/didweb/testdata/sb0.iscc.id_did.json` and
+    `/workspace/iscc-monitor/internal/didweb/testdata/sb1.amlet.id_did.json` — their `"id"` fields are
+    `did:web:sb0.iscc.id` / `did:web:sb1.amlet.id`; these are the golden inputs for `DocumentURL`.
+  - `/workspace/iscc-monitor/internal/didweb/resolve.go` and
+    `/workspace/iscc-monitor/internal/didweb/vkey.go` — current unexported names to rename.
+  - `/workspace/iscc-monitor/.claude/derive_vkey.py` — the trust-root oracle; the rename must not
+    change derived bytes.
 
 ## Not In Scope
-- **No HTTP / no I/O.** Do not add `net/http`, a `Resolver` struct that fetches, the `did:web:<domain>`
-  → `https://<domain>/.well-known/did.json` URL mapping, retries, or caching. That is the follower-step
-  seam and lands next. This step is bytes-in → key-out only.
-- No `unresolvable`/`unverified` **status assignment**, no `hub_keys` SQLite table, no signature
-  verification against the key. Parsing returns data + errors; status mapping is a later store/follower
-  concern.
-- No new external module dependency — JSON via `encoding/json` (stdlib); keep `go.mod` dependency-free.
-- Do not touch `logclient`, `config`, `registry`, or `cmd/`.
+- **No `net/http`, no `Fetcher` interface, no `*http.Client` injection, no actual fetch.** This step
+  is the pure string→URL mapping only; the HTTP fetch + status mapping is the *next* step.
+- No hub-status assignment (`unresolvable`/`unverified`), no `hub_keys` table, no validity-window
+  enforcement, no follower, no SQLite, no `cmd/` entrypoint.
+- Do not change the derived verifier-key bytes or touch the fixtures — the renames are mechanical.
+- Do not widen the exported surface beyond `ParseDIDDocument` and `VerifierKey` (YAGNI); leave
+  `pubkeyFromDID`/`keyID`/`b58decode` package-private.
 
 ## Implementation Notes
-- **The fixtures are the oracle.** Capture them exactly as served (already fetched 2026-06-20):
-  - `sb0.iscc.id_did.json` (write these bytes verbatim):
-    `{"id": "did:web:sb0.iscc.id", "verificationMethod": [{"id": "did:web:sb0.iscc.id#z6MkqbHELZopsq6eKrn6qxiAgRoVvwp2Vp7mPfKsvrbYmGwJ", "type": "Multikey", "controller": "did:web:sb0.iscc.id", "publicKeyMultibase": "z6MkqbHELZopsq6eKrn6qxiAgRoVvwp2Vp7mPfKsvrbYmGwJ"}], "authentication": ["did:web:sb0.iscc.id#z6MkqbHELZopsq6eKrn6qxiAgRoVvwp2Vp7mPfKsvrbYmGwJ"], "assertionMethod": ["did:web:sb0.iscc.id#z6MkqbHELZopsq6eKrn6qxiAgRoVvwp2Vp7mPfKsvrbYmGwJ"], "capabilityDelegation": ["did:web:sb0.iscc.id#z6MkqbHELZopsq6eKrn6qxiAgRoVvwp2Vp7mPfKsvrbYmGwJ"], "capabilityInvocation": ["did:web:sb0.iscc.id#z6MkqbHELZopsq6eKrn6qxiAgRoVvwp2Vp7mPfKsvrbYmGwJ"]}`
-  - For `sb1.amlet.id_did.json`, reuse the **same document shape** but set every `z6Mk…` occurrence to
-    the recorded did:key `z6MkiNW46AUjNmKTV2YNyFi9ANG9wbfYQQoUQgADGwScd9jk` and `id`/`controller` to
-    `did:web:sb1.amlet.id`. This keeps the parse→`verifierKey` result equal to the existing golden
-    `sb1.amlet.id/log+22b08f3e+ATo2ruguSdJGh11PS76osrQf6OZKrufzzwH/HMwE3a8/`.
-- **Real-world finding to record (for `review`/learnings), NOT to act on this step:** the *live*
-  sb1 did.json now serves a **rotated** key `z6MkmwqgJABz2DCeESCSqx6JXg2CwASEUvBzxERWV3HZ8yyt`, which
-  differs from the `derive_vkey.py` / golden-test key `z6MkiNW46…`. The pinned fixture deliberately uses
-  the recorded key so the golden chain stays consistent; do not "fix" the oracle to the live key here.
-  This is exactly why fixtures are captured snapshots, not live fetches.
-- **Verification-method selection.** The live docs list the same key under `verificationMethod`,
-  `assertionMethod`, etc. For v1 take the verification method referenced by `assertionMethod` (the hub
-  signs checkpoints as an assertion; `cryptosuite eddsa-jcs-2022` / `proofPurpose assertionMethod` per
-  `schema.py`). `assertionMethod` entries may be either an inline object or a string DID-URL reference
-  (`#fragment`) into `verificationMethod` — handle the string-reference case by resolving the fragment to
-  the matching `verificationMethod[i].id`. Accept `type` of `Multikey` (live) and tolerate `Ed25519VerificationKey2020`.
-- **Key bytes.** Read `publicKeyMultibase`, pass it straight to the existing `pubkeyFromDID` (it already
-  strips the `z`, asserts the `0xED 0x01` multicodec, guards short keys, returns bytes `[2:34]`).
-  Do not re-implement base58/multicodec — reuse the verified function (Correctness rule: keep the
-  defensive `len(raw) < 34` guard intact, learnings).
-- **CID 1.0 validity (ADR-0009, plan `revoked_at`).** Parse optional `revoked` (and, if present,
-  `validFrom`/`validUntil`) on the verification method into a struct field; the live docs omit them, so
-  treat absence as "currently valid." Do **not** implement now-vs-window enforcement logic this step —
-  just surface the parsed timestamps so the follower can decide later. Keep it minimal (YAGNI).
-- **Errors, not panics.** Return a wrapped error (never panic / swallow) on: invalid JSON, no
-  verification method, no resolvable assertion key, missing `publicKeyMultibase`, or a `pubkeyFromDID`
-  failure. Functional, short, pure functions; package-level docstring already covers the file's purpose —
-  add a one-line file-purpose comment and evergreen docstrings per function.
-- Do NOT use `t.Skip`, `//nolint`, build tags, or swallow errors to pass the gate (target quality bar).
+- **W3C did:web resolution mapping** (port from the did:web method spec; there is no usable copy in
+  `cauldron/` — implement from the rule below):
+  1. Require the `did:web:` prefix; strip it to get the method-specific id (MSID). Return a wrapped
+     error on a missing prefix (e.g. a `did:key:` input) or an empty MSID.
+  2. The MSID is colon-separated: the first segment is the (possibly percent-encoded) `host[:port]`;
+     any later segments are path components. Percent-decode each segment with `url.PathUnescape`, so
+     `did:web:example.com%3A3000` → host `example.com:3000`.
+  3. Build `https://` + decoded-host, then: if there are **no** path segments, append
+     `/.well-known/did.json`; if there **are** path segments, append `/<seg1>/<seg2>/…/did.json`.
+     (`did:web:example.com:user:alice` → `https://example.com/user/alice/did.json`.)
+  4. Live hubs (no path, no port): `did:web:sb0.iscc.id` →
+     `https://sb0.iscc.id/.well-known/did.json`; `did:web:sb1.amlet.id` →
+     `https://sb1.amlet.id/.well-known/did.json`.
+- **Keep `DocumentURL` pure and WASM-shareable.** `fmt`, `strings`, and `net/url` (`PathUnescape`
+  only — not the networking half) are fine; **no `net`/`net/http`/`database/sql`**. Per learnings,
+  verify purity with `GOOS=js GOARCH=wasm go build ./internal/didweb`, NOT by grepping `os` out of
+  the dep list — `fmt` transitively pulls `os`, which is acceptable stdlib.
+- **Correctness rule (learnings, did:web / ADR-0009):** did:web is the only key source; resolution
+  must be deterministic. This URL derivation is the first link in that chain — wrong `.well-known`
+  placement silently points the fetcher at the wrong document.
+- **Export renames are mechanical:** `parseDIDDocument` → `ParseDIDDocument`, `verifierKey` →
+  `VerifierKey`. Update every call site (the two test files) and any wrapped-error string that embeds
+  the old name. Match the existing package error style (`fmt.Errorf("DocumentURL: …: %w", …)`).
+- Functional, short, pure functions with evergreen docstrings; package-level docstrings already
+  cover file purpose — add a one-line file-purpose comment to `url.go`.
+- Do NOT use `t.Skip`, `//nolint`, build tags, or swallow errors to pass the gate (target quality
+  bar).
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all exit 0).
 - `gofmt -l /workspace/iscc-monitor` prints nothing.
-- `go test -run TestParseDIDDocument ./internal/didweb` passes and asserts, for the captured fixtures,
-  that the parsed pubkey fed through `verifierKey(origin, pub)` equals the recorded golden vectors:
-  - sb0 (origin `sb0.iscc.id/log`) → `sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5`
-  - sb1 (origin `sb1.amlet.id/log`) → `sb1.amlet.id/log+22b08f3e+ATo2ruguSdJGh11PS76osrQf6OZKrufzzwH/HMwE3a8/`
-- `go test -run TestParseDIDDocument ./internal/didweb` also covers error cases: malformed JSON, a
-  document with empty `verificationMethod`, and one whose `publicKeyMultibase` is missing — each returns
-  a non-nil error.
-- `go test -run TestVerifierKey ./internal/didweb` still passes (no regression to the existing golden).
-- Purity assertion (mechanical): `resolve.go` imports no `net`, `net/http`, `os`, or `database/sql` —
-  e.g. `go list -deps ./internal/didweb` shows no `net/http`.
+- `go test -run TestDocumentURL ./internal/didweb` passes.
+- `DocumentURL("did:web:sb0.iscc.id") == "https://sb0.iscc.id/.well-known/did.json"`.
+- `DocumentURL("did:web:sb1.amlet.id") == "https://sb1.amlet.id/.well-known/did.json"`.
+- `DocumentURL("did:web:example.com%3A3000:user:alice") == "https://example.com:3000/user/alice/did.json"`.
+- `DocumentURL("")` and `DocumentURL("did:key:z6Mkabc")` (wrong method) each return a non-nil error.
+- `go test -run TestParseDIDDocument ./internal/didweb` and
+  `go test -run TestVerifierKey ./internal/didweb` still pass after the export renames — no regression
+  to the golden vectors `sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5` and
+  `sb1.amlet.id/log+22b08f3e+ATo2ruguSdJGh11PS76osrQf6OZKrufzzwH/HMwE3a8/`.
+- `GOOS=js GOARCH=wasm go build ./internal/didweb` succeeds (package stays WASM-shareable).
 
 ## Done When
-`mise run check` is green, `gofmt -l` is empty, and `go test -run TestParseDIDDocument ./internal/didweb`
-passes with the sb0/sb1 fixtures parsing to pubkeys whose `verifierKey` byte-matches the recorded golden
-vectors, plus the three error cases returning errors — all from a pure (`net`/`os`/`sql`-free) parser.
+`DocumentURL` returns the correct `.well-known/did.json` URL for both live hubs and the ported
+did:web path/port cases, the `ParseDIDDocument`/`VerifierKey` exports compile and the existing golden
+tests still pass, and `mise run check` is green.
