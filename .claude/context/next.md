@@ -1,114 +1,118 @@
 # Next Work Package
 
-## Step: Add the canonical tlog-tiles layout layer (`internal/tiles`) over `transparency-dev/tessera/api/layout`
+## Step: SQLiteFetcher — read mirrored tiles/bundles/checkpoint back as a `fsck.Fetcher`
 
 ## Goal
-Introduce the pure tlog-tiles path/coordinate math the monitor needs everywhere downstream — the
-canonical tile/entry-bundle paths, the partial-tile width (`is_full` only at `width==256`), and the
-`PartialTileSize` discipline — by **reusing** `transparency-dev/tessera/api/layout` (target mandate)
-behind a thin, golden-tested `internal/tiles` package. This is the smallest pure first slice of the
-tile-fetch / `SQLiteFetcher` / `ProofBuilder` infrastructure that the state, handoff, and learnings all
-name as the prerequisite for both wiring the M1 equivocation trigger and starting M2. No I/O, no
-follower wiring — pure path math first.
+Give the store a write side for the empty `tiles` / `entry_bundles` tables (`RecordTile` /
+`RecordEntryBundle`) and a `SQLiteFetcher` that reads tiles, entry bundles, and the latest checkpoint
+back out — implementing tessera's three-method `Fetcher` interface (`ReadCheckpoint` / `ReadTile` /
+`ReadEntryBundle`). This is the prerequisite seam for sourcing the RFC-6962 consistency-proof hashes the
+deferred M1 equivocation branch needs, and the foundation for the M2 `fsck` root-rebuild and the M3
+canonical-path mirror — all of which read mirror BLOBs from the local store, never re-hitting the hub.
 
 ## Scope
-- **Create**: `internal/tiles/layout.go` — a thin wrapper exposing the tlog-tiles layout primitives the
-  monitor will key its SQLite mirror on. Re-export (do not reimplement) tessera's `layout.TilePath`,
-  `layout.EntriesPath`, `layout.PartialTileSize`, and the `TileWidth = 256` / `TileHeight = 8`
-  constants, plus one project-specific helper `IsFull(width uint8) bool` encoding the ADR-0005
-  partial-tile rule. Keep the package import-clean (the `api/layout` closure is stdlib-only, so this
-  package must stay free of `net`/`net/http`/`database/sql` — it is the shared layout leaf, like
-  `didweb`).
-- **Create**: `internal/tiles/layout_test.go` — table-driven golden tests (this is the test file; it
-  does not count against the 3-file budget).
-- **Modify**: `go.mod`, `go.sum` — add `github.com/transparency-dev/tessera v1.0.2` as a direct require
-  (the authorized dep add; the only non-test, non-created change).
+- **Create**:
+  - `internal/store/tiles.go` — partial-tile-discipline write CRUD + read helpers over the `tiles` /
+    `entry_bundles` tables:
+    - `RecordTile(ctx, hubID int64, level, index uint64, width int, data []byte, observedAt time.Time) error`
+    - `RecordEntryBundle(ctx, hubID int64, bundleIndex uint64, width int, data []byte, observedAt time.Time) error`
+    - `ReadTileBlob(ctx, hubID int64, level, index uint64, width int) ([]byte, bool, error)`
+    - `ReadEntryBundleBlob(ctx, hubID int64, bundleIndex uint64, width int) ([]byte, bool, error)`
+    - `LatestCheckpointRaw(ctx, hubID int64) ([]byte, bool, error)`
+  - `internal/store/fetcher.go` — `SQLiteFetcher` struct (`{Store *Store; HubID int64}`) with the three
+    `fsck.Fetcher` methods, composing the helpers above and honoring the partial→full fallback +
+    `os.ErrNotExist` contract.
+  - `internal/store/tiles_test.go` + `internal/store/fetcher_test.go` (tests; do not count against the
+    3-file budget).
+- **Modify**: (none — keep `checkpoints.go`, `schema.sql`, `internal/tiles/layout.go` byte-identical)
 - **Reference**:
-  - `/workspace/iscc-monitor/cauldron/tessera/client/fetcher.go` — shows the canonical
-    `{ReadCheckpoint, ReadTile, ReadEntryBundle}` Fetcher seam and how `layout.TilePath`/
-    `layout.EntriesPath` feed it (the next slice builds the SQLite-backed version of this).
-  - Module-cache reference (read-only; do not import beyond `api/layout`):
-    `$(go env GOMODCACHE)/github.com/transparency-dev/tessera@v1.0.2/api/layout/paths.go` and
-    `.../api/layout/tile.go` — the exact `TilePath`/`EntriesPath`/`PartialTileSize`/`TileWidth`
-    semantics.
-  - `.../api/layout/paths_test.go` — the reference's own golden vectors (ground-truth, not
-    author-asserted): `TilePath(0,0,255) == "tile/0/000.p/255"`, `TilePath(1,0,0) == "tile/1/000"`,
-    `TilePath(15,455667,0) == "tile/15/x455/667"`, `EntriesPath(0,8) == "tile/entries/000.p/8"`,
-    `EntriesPath(255,0) == "tile/entries/255"`.
-  - `/workspace/iscc-monitor/internal/store/schema.sql` (the `tiles` / `entry_bundles` tables:
-    `(level, tile_index, width)` / `(bundle_index, width)` PKs, `is_full` default 0) — the SQLite
-    columns the layout keys map onto in the *next* slice.
-  - Learnings: ADR-0005 partial-tile discipline (`is_full` only at `width==256`, never promote a
-    partial) and the `merkle v0.0.2` / `sqlite v1.46.1` go-directive pitfall (verify the new dep keeps
-    `go 1.24.0`, no `toolchain` line).
+  - `internal/tiles/layout.go` — `IsFull(width int) bool`, `TileWidth = 256`, `PartialTileSize`,
+    `TilePath` / `EntriesPath` (the width math the fetcher's p-argument maps onto).
+  - `internal/store/schema.sql` (lines 71–97) — the `tiles` PK `(hub_id, level, tile_index, width)` and
+    `entry_bundles` PK `(hub_id, bundle_index, width)`, plus `is_full`, `sha256`, `updated_at` columns.
+  - `internal/store/checkpoints.go` — port the conventions: the `unixOrNil` helper for `updated_at`, the
+    `errors.Is(err, sql.ErrNoRows)` → `(…, false, nil)` "absent is not an error" pattern (from
+    `CheckpointAt` / `LookupHubKey`), and the `uint→int64` column casts. Since `tiles` / `entry_bundles`
+    have real composite PKs, prefer an `INSERT … ON CONFLICT(<pk cols>) DO UPDATE SET data=excluded.data,
+    is_full=excluded.is_full, sha256=excluded.sha256, updated_at=excluded.updated_at` upsert (cleaner
+    than the guarded-UPDATE-then-INSERT idiom `RecordHubKey` uses for its UNIQUE-less table).
+  - `cauldron/tessera/client/fetcher.go` (lines 97–132, `HTTPFetcher`/`FileFetcher`) — the exact method
+    shapes to mirror, including the `os.ErrNotExist` return on a 404 / missing file and the
+    `fetcher.PartialOrFullResource` partial→full fallback wrapper.
+  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/fsck/fsck.go` (lines 36–41) — the
+    canonical `Fetcher` interface (`ReadCheckpoint` / `ReadTile(ctx, l, i uint64, p uint8)` /
+    `ReadEntryBundle(ctx, i uint64, p uint8)`) the `SQLiteFetcher` must satisfy.
+  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/internal/fetcher/fallback.go` — the
+    `PartialOrFullResource(ctx, p, f)` semantics (p>0 + `os.ErrNotExist` → retry with p=0). It is an
+    `internal/` package and **cannot be imported** — replicate its tiny logic inline.
 
 ## Not In Scope
-- **No `SQLiteFetcher`, no HTTP tile fetcher, no `ProofBuilder`, no `fsck`** — this slice is path/width
-  math only. Implementing the `client.Fetcher` interface over the store is the very next slice and needs
-  this layer first.
-- **No follower wiring** — do not touch `internal/follower`, do not add the third `checkConsistency`
-  equivocation branch, do not source consistency-proof hashes. That waits on the fetcher slice.
-- **No store changes** — do not add tile/entry-bundle CRUD to `internal/store/checkpoints.go`; the
-  schema columns already exist and stay byte-identical here.
-- **No tile fixtures** — do not capture real hash tiles from the live hubs; the golden vectors are pure
-  path strings, not tile bytes.
-- **Do not import any tessera package other than `api/layout`** (e.g. `client`, `fsck`, `api`): those
-  pull `net/http`/otel/klog and would dirty this leaf and the WASM-shareable purity target.
+- Wiring `CheckEquivocation` into `follower.checkConsistency` — that is the *next* slice and depends on
+  this one; do not touch `internal/follower/`.
+- Running `fsck.New(...).Check(...)` / the full root-rebuild oracle, capturing real tile fixtures, or the
+  inclusion cross-check — those land in the dedicated conformance slice once fixtures exist. This slice
+  only proves the read/write round-trip + the not-exist contract with synthetic in-test BLOBs.
+- `ProofBuilder`, the `iscc_index` writer, the bundle-hasher, and any REST/serving surface.
+- Changing `schema.sql` (the `tiles` / `entry_bundles` tables already exist with the right PKs) or any
+  pure-`internal/tiles` path math.
+- Importing `tessera/fsck` or `tessera/client` into **production** store code — `SQLiteFetcher` satisfies
+  `fsck.Fetcher` structurally, so it must NOT pull `net/http`/otel/klog into the store closure. Pin
+  conformance with a `var _ fsck.Fetcher = SQLiteFetcher{}` assertion in the **test** file only.
 
 ## Implementation Notes
-- **Reuse, do not reimplement (target Stack rule).** `internal/tiles/layout.go` should be a thin
-  re-export, e.g. `func TilePath(level, index uint64, width uint8) string { return
-  layout.TilePath(level, index, width) }`, a matching `EntriesPath(index uint64, width uint8) string`,
-  `PartialTileSize(level, index, logSize uint64) uint8`, and `const TileWidth = layout.TileWidth` /
-  `TileHeight = layout.TileHeight`. Wrapping (not aliasing) gives the monitor a stable seam plus a
-  docstring per the project's "start each file with a docstring" rule; do not copy the body of tessera's
-  path math.
-- **`IsFull` is the one project-specific predicate** and encodes ADR-0005. Mind the two encodings of
-  "full": tessera's *path* API represents a full tile as **width `0`** (the `p > 0` partial suffix),
-  while the `tiles.width` SQLite **column** stores the actual leaf count (`256` for full, per
-  schema/learnings). `IsFull(width uint8) bool` must adopt the **column** convention — `width ==
-  TileWidth` → full (`true`), anything `< TileWidth` → partial (`false`). Document in the docstring that
-  this package owns that translation so callers never confuse path-API "0 == full" with column "256 ==
-  full". (`uint8` cannot hold 256, so define `TileWidth`/the comparison against a wider int, or document
-  that the column width caps at 255-as-partial vs a full sentinel — pick one and pin it in the test;
-  prefer comparing against `layout.TileWidth` as an untyped/int constant so `IsFull` reads `int(width)
-  == TileWidth` if you keep the `uint8` arg, OR take `width int`.)
-- **Dep-add hygiene (learnings pitfall, verified during scoping).** Run `go get
-  github.com/transparency-dev/tessera@v1.0.2` then `go mod tidy`. tessera v1.0.2's go directive is
-  `go 1.24.0`, and `api/layout`'s compiled closure is **stdlib-only** (`cmp`, `slices`), so the heavy
-  otel/klog/formats deps land in `go.sum` as module-graph requirements only (never compiled), exactly
-  like `go-cmp` did for merkle. After tidy, confirm `go.mod`'s directive is still `go 1.24.0` with **no
-  `toolchain` line** (drop it if auto-injected). If `go mod tidy` tries to bump the directive past
-  `1.24.0`, stop — that is a gate regression, not this step.
-- **Golden vectors are ground truth from the reference, not author-asserted.** Use the exact strings
-  from `api/layout/paths_test.go` (listed under Reference). Because `internal/tiles` only delegates, the
-  test proves the delegation wiring and pins the canonical paths so a future refactor cannot silently
-  diverge. The oracle/conformance gate is **N/A** here (no signature/RFC-6962/Merkle/did:web path; pure
-  path strings) — say so in the handoff; it re-arms at the fetcher + `fsck` slice.
-- **Purity is load-bearing** (learnings `internal/didweb` nuance): verify with `go list -deps
-  ./internal/tiles | grep -E '^net/http$|^database/sql$'` returning empty, not by grepping `os` out (it
-  rides in transitively via `fmt`). This package is destined to be shared by the SQLite store keys and
-  the M3 canonical-path mirror, so keep it a leaf.
+- **Partial-tile discipline (ADR-0005 / learnings "Correctness rules").** A row is keyed by `width`. Set
+  the `is_full` column to `1` **only** when `tiles.IsFull(width)` (i.e. `width == 256`); a partial is
+  `width < 256` with `is_full = 0`. Never promote a partial to full. Re-fetched partials overwrite in
+  place via the PK upsert; a full tile is immutable but an idempotent re-write of identical bytes is
+  harmless. Store `sha256 = sha256.Sum256(data)[:]` (`crypto/sha256` is stdlib — does not dirty the leaf)
+  and `updated_at` from the injected `observedAt time.Time` via `unixOrNil` (mirrors how `RecordHubKey`
+  takes a caller-supplied time rather than calling `time.Now()` in the method).
+- **The p-argument ↔ width mapping is the load-bearing translation.** The `fsck.Fetcher` methods take
+  `p uint8` where `p == 0` means "full" (path-API convention, per `internal/tiles` docstrings); the
+  SQLite `width` column stores the actual leaf count (`256` for full). So `ReadTile(ctx, l, i, p)` must
+  query `width = 256` when `p == 0`, else `width = int(p)`; same for `ReadEntryBundle`. Get this backwards
+  and a full-tile request would miss the stored row — pin it with the round-trip test below.
+- **Partial→full fallback (replicate `PartialOrFullResource` inline).** `tessera/internal/fetcher` is not
+  importable. In `ReadTile` / `ReadEntryBundle`: read at `p`; if `p > 0` and the inner read is
+  `os.ErrNotExist`, retry the read at full width (`256`) and return that; if `p == 0` and not found,
+  return the `os.ErrNotExist` (wrapped `%w`). This matches `fallback.go` exactly and the `cauldron`
+  `HTTPFetcher`/`FileFetcher` behavior.
+- **Not-exist contract.** A missing row makes the inner helper return `found=false`; the fetcher maps
+  `!found` → `fmt.Errorf("…: %w", os.ErrNotExist)` so `errors.Is(err, os.ErrNotExist)` survives for the
+  fallback and any future `fsck` consumer. `ReadCheckpoint` reads the most-recently observed raw
+  checkpoint via `LatestCheckpointRaw`: `SELECT raw FROM checkpoints WHERE hub_id = ? ORDER BY tree_size
+  DESC LIMIT 1`; no row → `os.ErrNotExist`. (The existing `CheckpointAt` is size-keyed; this new
+  size-agnostic read is what the fetcher needs.)
+- **store stays a leaf (learnings).** Do NOT import `internal/logclient` or anything pulling `net/http`
+  into the store closure. The `SQLiteFetcher` reads `s.Store.db` directly via the helpers (same package,
+  so the unexported `db` field is reachable). Verify `go list -deps ./internal/store | grep '^net/http$'`
+  stays empty.
+- **Oracle/conformance gate is N/A for this slice** — plain CRUD + BLOB round-trip; no signature /
+  RFC-6962 / Merkle / did:web / `fsck`-rebuild path is exercised (the rebuild oracle re-arms in the
+  dedicated fixtures+fsck slice). Keep `go.mod` / `go.sum` / `schema.sql` byte-identical; no new dep is
+  needed (tessera is already required), so any `go get` is a red flag.
 
 ## Verification
-- `mise run check` is green (build + vet + test all packages, `gofmt -l .` empty).
-- `go test -count=1 ./internal/tiles` passes.
-- `go list -m github.com/transparency-dev/tessera` prints `v1.0.2`; `go.mod`'s `go` directive is still
-  `go 1.24.0` with no `toolchain` line; `go mod tidy` is a no-op afterward and `go mod verify` passes.
-- `go list -deps ./internal/tiles | grep -E '^net/http$|^database/sql$'` is empty (leaf purity).
-- Golden assertions hold (ground truth from `api/layout/paths_test.go` / `tile.go`):
-  - `tiles.TilePath(0, 0, 255) == "tile/0/000.p/255"`
-  - `tiles.TilePath(1, 0, 0) == "tile/1/000"`
-  - `tiles.TilePath(15, 455667, 0) == "tile/15/x455/667"`
-  - `tiles.EntriesPath(0, 8) == "tile/entries/000.p/8"`
-  - `tiles.EntriesPath(255, 0) == "tile/entries/255"`
-  - `tiles.PartialTileSize(0, 0, 300) == 44` (300 % 256 = 44; the first tile of a 300-leaf tree is
-    partial-44 — confirm against `tile.go`'s `PartialTileSize`)
-  - `tiles.PartialTileSize(0, 0, 256) == 0` (an exactly-full first tile reports 0 = full)
-  - `tiles.IsFull(256) == true` and `tiles.IsFull(255) == false` (ADR-0005 width-256 rule)
+- `mise run check` is green (build + vet + test across all packages; `gofmt -l .` empty).
+- `go test -count=1 ./internal/store` passes (uncached).
+- Round-trip assertion: after `UpsertHub` to get a `hubID`, `RecordTile(hub, level=0, index=0, width=256,
+  data, t)` then `SQLiteFetcher{Store,HubID:hub}.ReadTile(ctx, 0, 0, 0)` returns the identical `data`
+  bytes, and `ReadTileBlob(hub, 0, 0, 256)` confirms the stored row; a `width=44` partial write then
+  `ReadTile(ctx, 0, 0, 44)` returns those bytes. Likewise for `RecordEntryBundle` / `ReadEntryBundle`.
+- `is_full` assertion: a `width=256` write sets `is_full=1`; a `width=44` write sets `is_full=0`
+  (asserted via a raw `SELECT is_full …` in the test).
+- Not-exist assertion: `ReadTile` / `ReadEntryBundle` for an un-written (level,index) returns an error
+  satisfying `errors.Is(err, os.ErrNotExist)`; `ReadCheckpoint` on a hub with no checkpoint row likewise.
+- Partial→full fallback assertion: with only a `width=256` full tile stored, `ReadTile(ctx, l, i, p=200)`
+  (a partial request) still returns the full tile's bytes (mirrors `PartialOrFullResource`).
+- `ReadCheckpoint` returns the **highest-`tree_size`** raw checkpoint bytes when two sizes are stored.
+- `var _ fsck.Fetcher = SQLiteFetcher{}` compiles in the test file (interface conformance pinned).
+- `go list -deps ./internal/store | grep -E '^net/http$|^database/sql$'` shows `database/sql` (expected,
+  already present) but **no** `net/http` (store stays a leaf).
+- `git diff --quiet HEAD -- internal/store/checkpoints.go internal/store/schema.sql internal/tiles` (the
+  reference files are untouched).
 
 ## Done When
-`advance` is done when `internal/tiles` re-exports the tessera tlog-tiles layout primitives behind a
-golden-tested seam (with the `IsFull` ADR-0005 predicate), tessera v1.0.2 is a clean direct dep that
-keeps the `go 1.24.0` directive, the package's dep closure is `net/http`/`database/sql`-free, and every
-Verification criterion passes.
+`SQLiteFetcher` satisfies `fsck.Fetcher`, round-trips tile / entry-bundle / checkpoint BLOBs through the
+store with the partial-tile-discipline width mapping and the `os.ErrNotExist` partial→full fallback, and
+all Verification criteria pass with `mise run check` green.
