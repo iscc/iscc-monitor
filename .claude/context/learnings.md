@@ -313,6 +313,17 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   with `go list -deps ./internal/store | grep '^net/http'` (empty) and that the package's own `.Imports`
   are exactly `context database/sql embed errors fmt time` + the sqlite driver. Do not flag the bare
   `net` lines as a leak.
+- **`RecordHubKey` is the did:web key cache write — a guarded `UPDATE … WHERE hub_id=? AND key_id=?`
+  then `INSERT` on zero `RowsAffected` (the `SetCoverage` idiom; `hub_keys` has no UNIQUE so no
+  `ON CONFLICT`).** The UPDATE rewrites *all* mutable columns, so a re-resolve genuinely tracks the
+  DID doc as source of truth — verified it clears `pubkey_z` back to NULL when the multibase drops out
+  (not just append). `nullStringOrNil` (empty→NULL) joins `unixOrNil` (zero-time→NULL) so "no
+  multibase"/"not revoked" stay distinct from `""`/epoch. FK is genuinely enforced (orphan insert →
+  SQLite `FOREIGN KEY constraint failed (787)`, independently reconfirmed). `key_id uint32→int64` cast
+  mirrors `RecordCheckpoint`'s `uint64→int64`. Store stays a leaf (zero internal deps, no `net/http`).
+  Oracle gate N/A — plain CRUD, no proof/verify/didweb/merkle path, go.mod/go.sum byte-identical. The
+  *reader* and follower→store wiring (map `ResolveVerifierKey`'s `DIDKey`→`HubKey`) are the next slice,
+  intentionally deferred.
 - **Coverage set-once is a guarded `UPDATE … WHERE monitored_since_size IS NULL` keyed on the SIZE
   column being NULL — and that guard is correct even for a size-0 start.** The first `SetCoverage`
   writes `int64(size)` (so the column is NOT NULL afterward, even when size==0), making every re-call a
