@@ -1,61 +1,60 @@
 # Handoff
 
-## 2026-06-20 — Review of: Add the canonical tlog-tiles layout layer (`internal/tiles`) over `tessera/api/layout`
+## 2026-06-20 — SQLiteFetcher — read mirrored tiles/bundles/checkpoint back as a `fsck.Fetcher`
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added the write/read CRUD for the `tiles` / `entry_bundles` tables (`RecordTile`,
+`RecordEntryBundle`, `ReadTileBlob`, `ReadEntryBundleBlob`) plus a size-agnostic `LatestCheckpointRaw`,
+and a `SQLiteFetcher{Store, HubID}` that satisfies tessera's three-method Fetcher shape
+(`ReadCheckpoint` / `ReadTile` / `ReadEntryBundle`) with the p↔width mapping and an inline
+`PartialOrFullResource` partial→full fallback honoring the `os.ErrNotExist` contract. Store stays a leaf.
 
-**Summary:** `advance` added `internal/tiles`, a thin golden-tested re-export of tessera's tlog-tiles
-layout primitives (`TilePath`/`EntriesPath`/`PartialTileSize`, `TileWidth=256`/`TileHeight=8`) plus the
-one ADR-0005 predicate `IsFull(width int) bool`, with `tessera v1.0.2` as a clean direct dep. Scope is
-tight (1 production file + 1 test + the authorized go.mod/go.sum dep), all gates are green, and every
-golden assertion is independently confirmed from tessera ground truth. The package stays a pure leaf
-(`net/http`/`database/sql`-free, WASM-green), so it is safely shareable by the SQLite store keys and the
-WASM proof path downstream.
+**Files changed:**
+- `internal/store/tiles.go` (new): partial-tile-discipline upsert CRUD + read helpers + `LatestCheckpointRaw`. `is_full=1` only at `width==256` (via `tiles.IsFull`); `sha256`+`updated_at` recorded from injected `observedAt`; composite-PK `ON CONFLICT … DO UPDATE` upsert overwrites partials in place. Absent row → `(nil, false, nil)`.
+- `internal/store/fetcher.go` (new): `SQLiteFetcher`. `widthForP(p)` maps `p==0→256`, else `int(p)`. `ReadTile`/`ReadEntryBundle` replicate `PartialOrFullResource` inline (p>0 + `os.ErrNotExist` → retry at full). Misses wrap `os.ErrNotExist` with `%w`. No `fsck`/`net/http` import in production code.
+- `internal/store/tiles_test.go` (new): round-trip, `is_full` column assertion, partial overwrite (1 row), absent-is-not-error, `LatestCheckpointRaw` highest-size + absent.
+- `internal/store/fetcher_test.go` (new): full/partial round-trip via `ReadTile`/`ReadEntryBundle`, `os.ErrNotExist` on miss, partial→full fallback, both-missing still `os.ErrNotExist`, `ReadCheckpoint` highest-size + absent. Conformance pinned via a local `fsckFetcher` interface (see Notes).
 
-**Verification:**
-- [x] `mise run check` green — build + vet + test, all 8 packages ok.
-- [x] `go test -count=1 ./internal/tiles` PASS (uncached).
-- [x] `go list -m …/tessera` → `v1.0.2`; `go.mod` directive still `go 1.24.0`, no `toolchain` line;
-  `go mod tidy` is a verified no-op (go.mod + go.sum byte-unchanged); `go mod verify` → all verified.
-- [x] `go list -deps ./internal/tiles | grep -E '^net/http$|^database/sql$'` empty (leaf purity); the
-  only `.Imports` entry is `api/layout`, whose own closure is stdlib-only; `GOOS=js GOARCH=wasm go build
-  ./internal/tiles` green.
-- [x] `gofmt -l .` empty.
-- [x] Golden assertions hold — independently re-ran the real `layout` funcs: `TilePath(0,0,255)==
-  "tile/0/000.p/255"`, `TilePath(1,0,0)=="tile/1/000"`, `TilePath(15,455667,0)=="tile/15/x455/667"`,
-  `EntriesPath(0,8)=="tile/entries/000.p/8"`, `EntriesPath(255,0)=="tile/entries/255"`,
-  `PartialTileSize(0,0,256)==0`, `IsFull(256)==true`, `IsFull(255)==false`. All four path strings are
-  verbatim from tessera's `api/layout/paths_test.go`.
-- [x] **`next.md`'s `PartialTileSize(0,0,300)==44` golden was factually WRONG; advance corrected it.**
-  Verified against tessera `tile.go` and by re-running the real func: `(0,0,300)=0` (first 256-leaf tile
-  is full), `(0,1,300)=44` (partial-44 spills into index 1), `(0,0,44)=44`. The corrected vectors are
-  pinned in the test. This is a justified, well-documented deviation that makes the golden match the
-  reference's real behavior — not a gate dodge.
-- [x] **Oracle/conformance gate: N/A** (pure path strings — no signature/RFC-6962/Merkle/did:web/fsck
-  path). Confirmed; it re-arms at the SQLiteFetcher + `fsck` slice. No `go run` of `cauldron/` done.
-- [x] Gate-integrity scan over the 3 unpushed commits: no `//nolint`, `t.Skip`, build-tag exclusions,
-  swallowed errors, or deleted tests/assertions. No existing file modified or deleted (only 2 new files
-  + the authorized dep add).
+**Verification:** `mise run check` → green (build + vet + test, all 8 packages ok). `gofmt -l .` empty.
+- [x] `go test -count=1 ./internal/store` PASS (uncached); all 22 store tests pass verbosely.
+- [x] Tile round-trip: `RecordTile(0,0,256,…)` → `ReadTile(0,0,p=0)` returns identical bytes; `ReadTileBlob(0,0,256)` confirms the row; `width=44` partial → `ReadTile(0,1,44)` returns its bytes.
+- [x] `is_full`: raw `SELECT is_full` = 1 for width 256, 0 for width 44 (tiles **and** entry_bundles).
+- [x] Not-exist: `ReadTile`/`ReadEntryBundle`/`ReadCheckpoint` on un-written keys satisfy `errors.Is(err, os.ErrNotExist)`.
+- [x] Partial→full fallback: only-full stored + `ReadTile(p=200)` returns the full bytes; both-missing `ReadTile(p=100)` still `os.ErrNotExist`.
+- [x] `ReadCheckpoint` returns highest-`tree_size` raw bytes (two sizes stored, asserts the higher).
+- [x] Conformance assertion compiles (`var _ fsckFetcher = SQLiteFetcher{}`).
+- [x] `go list -deps ./internal/store` shows `database/sql`, **no** `net/http` (store stays a leaf).
+- [x] `git diff --quiet HEAD -- internal/store/checkpoints.go internal/store/schema.sql internal/tiles` → clean (reference files untouched).
+- [x] `go.mod` / `go.sum` byte-identical to pre-change; `go mod tidy` is a verified no-op.
 
-**Issues found:** (none)
-
-**Next:** Build the `SQLiteFetcher` — implement the tessera `client.Fetcher` seam (`{ReadCheckpoint,
-ReadTile, ReadEntryBundle}`, see `cauldron/tessera/client/fetcher.go`) over the `tiles`/`entry_bundles`
-store tables, keyed by `tiles.TilePath`/`EntriesPath` and gated by `IsFull`. This is the prerequisite
-for sourcing the consistency-proof hashes the follower's deferred equivocation branch needs, and for
-the M3 canonical-path mirror. The oracle/conformance gate re-arms there (`fsck` root-rebuild over the
-`SQLiteFetcher`, inclusion cross-check) — it will need tile fixtures (still absent).
+**Next:** Wire `CheckEquivocation` into `follower.checkConsistency` — source the RFC-6962 consistency-proof
+hashes from the `SQLiteFetcher` (the prerequisite this slice built). That is the deferred equivocation
+branch; it touches `internal/follower/` and needs tile fixtures for an end-to-end test. The dedicated
+`fsck` root-rebuild conformance slice (real tile fixtures + `fsck.New(...).Check(...)` over the
+`SQLiteFetcher` + inclusion cross-check vs the hub's `IsccLogInclusionProof`) is still pending fixtures.
 
 **Notes:**
-- The `PartialTileSize` correction has a downstream consequence the SQLiteFetcher slice must honor: the
-  44-leaf partial of a 300-leaf tree is at **index 1**, never index 0. Captured in learnings.
-- `internal/tiles` (and `IsFull`) are an intentional unused-until-wired export seam — `go vet` clean,
-  not dead code; the SQLiteFetcher store-key slice is its first caller.
-- tessera v1.0.2's heavy deps (otel/klog/formats/`x/crypto`/backoff) are module-graph-only (never
-  compiled), so they stay out of `go.mod`'s indirect block and the package closure; `x/sys` bumped
-  0.37→0.41 from the require graph (benign, pure-Go).
-- Working branch is `develop`, 3 commits ahead of `origin/develop` (now 4 incl. this review). Remote
-  configured (github.com/iscc/iscc-monitor); pushing `develop` on this PASS verdict. Still no
-  `.github/workflows/` — no CI; flag for whoever wires it (the external `notecheck` oracle becomes
-  load-bearing once the tile-fetch / fixture slices arm the conformance gate).
+- **DESIGN DEVIATION (needs review sign-off): `var _ fsck.Fetcher` assertion does NOT import the real
+  `tessera/fsck`.** `next.md` required pinning conformance with `var _ fsck.Fetcher = SQLiteFetcher{}`
+  in the test AND keeping `go.mod`/`go.sum` byte-identical with "no new dep needed (tessera already
+  required)". These two are **mutually exclusive**: `fsck`'s package closure imports
+  otel/klog/errgroup/transparency-dev-formats (verified — `client/otel.go`, `fetcher.go`,
+  `client.go`), so importing it even in a `_test.go` makes `go mod tidy` add ~9 indirect requires and
+  ~31 `go.sum` lines, and `go build`/`vet`/`test` fail under `-mod=readonly` with "updates to go.mod
+  needed". The `next.md` premise was wrong about `fsck`'s closure (it was true only for `internal/tiles`
+  → `api/layout`, which is stdlib-only). Resolution: I copied `fsck.Fetcher`'s interface verbatim into
+  the test as `fsckFetcher` and asserted against it. I diffed it against the real interface
+  (`fsck@v1.0.2/fsck.go:37-41`) — method names, param names, types, returns all identical — so any
+  signature drift still breaks the build; the conformance guarantee is equivalent, the dep closure is
+  not pulled in, go.mod/go.sum stay byte-identical, and store stays a leaf. The production
+  `SQLiteFetcher` is unaffected. If `review` prefers the literal `fsck` import, that requires accepting
+  the indirect-dep additions (`go mod tidy`) and re-checking store leaf purity — I judged byte-identical
+  go.mod + leaf purity to be the higher-priority, explicitly-load-bearing constraint. **HUMAN REVIEW
+  REQUESTED** only if the literal `fsck` import is considered mandatory over byte-identical go.mod.
+- The actual `fsck.New(...).Check(...)` root-rebuild is out of scope here (no fixtures) and unaffected:
+  it lives in `cmd/` or a future conformance package that *can* take the `fsck` dep; this slice only
+  proves the read/write round-trip + not-exist contract with synthetic in-test BLOBs, as scoped.
+- `boolToInt` is a small new private helper in `tiles.go` (schema's INTEGER 0/1 from a Go bool), beside
+  the existing `unixOrNil`/`nullStringOrNil` helpers in `checkpoints.go` — same package, same style.
+- Oracle/conformance gate correctly **N/A** for this slice (plain CRUD + BLOB round-trip; no
+  signature / RFC-6962 / Merkle / did:web / `fsck`-rebuild path exercised). No `go run` of `cauldron/`.
+  Still no `.github/workflows/` in the repo — CI/`notecheck` remains unwired (flagged in prior handoff).
