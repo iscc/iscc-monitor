@@ -1,123 +1,102 @@
 # Next Work Package
 
-## Step: Single-poll follower — wire fetch → accept → record → advance for one hub
+## Step: Store-side freeze + violations seam (RecordViolation, Freeze)
 
 ## Goal
-Land the first real *caller* of the M1 verification + storage seams: a pure-wiring
-`PollHub` that, for one hub, fetches its checkpoint, runs the four-way `AcceptCheckpoint`
-verdict, persists the observed checkpoint, and advances the follow cursor **only** when
-verified. This closes the "nothing yet consumes FetchCheckpoint/AcceptCheckpoint/the store
-CRUD" gap with an end-to-end, fixture-driven slice — the backbone every later follower
-concern (consistency check, freeze, coverage, metrics) hangs off.
+Add the typed `internal/store` CRUD the freeze path needs — persist a self-consistency
+violation (`violations`) and set `frozen=1` (`follow_state`) — so the next step (the
+three-trigger RFC-6962 consistency check) has a tested, leaf-only persistence seam to drive.
+This directly advances the dominant unmet M1 Verify criterion (`violations.kind` + `frozen=1`
++ evidence survives restart) at the persistence layer, without yet pulling in merkle math,
+new fixtures, or a network `go get`.
 
 ## Goal-fit (state → target gap)
-`state.md` and the handoff `**Next:**` both point at "the follower poll loop", but that
-bundle (fetch + verdict→`CheckpointRecord` mapping + persistence + the `hub_keys` did:web
-cache + sb1 fixture refresh + the three-trigger consistency check + freeze/alert + coverage
-+ logs + `/metrics` + the goroutine/loop wrapper) spans far more than 3 files and many
-distinct behaviors. The pure chain (`FetchCheckpoint`, `AcceptCheckpoint`) and the store CRUD
-(`UpsertHub`/`RecordCheckpoint`/`AdvanceFollowState`) all exist and are tested, but **nothing
-calls them together**. This step takes the smallest coherent slice that proves the wiring:
-one observation, one hub, no loop. The consistency check, freeze, `hub_keys` cache, and the
-loop each follow as their own steps.
+M1's first Verify half (`origin`/`verifierKey`/single-poll) is met; the dominant remaining
+half is *synthetic fork/shrink/equivocation → correct `violations.kind` + `frozen=1` +
+exactly one alert + other hubs unaffected + evidence survives restart*. That full check needs
+`transparency-dev/merkle` (a network `go get`) plus tiles fixtures — too large and too
+dependency-heavy for one step. The smallest coherent slice that advances it *now*, with zero
+new deps and no new fixtures, is the **store-side persistence seam** the consistency check
+will drive: `RecordViolation` (writes `violations`) and `Freeze` (sets `frozen=1`). Both build
+directly on the existing `violations`/`follow_state` tables and the established
+`AdvanceFollowState` no-auto-unfreeze idiom — building on what exists, not skipping ahead into
+merkle math.
 
 ## Scope
-- **Create**:
-  - `/workspace/iscc-monitor/internal/follower/follower.go` — the new `follower` package +
-    `PollHub` (the one new non-test source file).
-  - `/workspace/iscc-monitor/internal/follower/follower_test.go` — fixture-driven seam test
-    (test file, not counted against the 3-file budget).
-- **Modify**: (none — purely additive)
-- **Reference** (read for context; do not import the store into logclient or vice-versa):
-  - `/workspace/iscc-monitor/internal/logclient/accept.go` — `AcceptCheckpoint`, `Status`,
-    `CheckpointInfo`, `Fetcher`. Note `CheckpointInfo` is the **zero value on every
-    non-verified verdict**, and the err-before-status contract (lines 84-104).
-  - `/workspace/iscc-monitor/internal/logclient/checkpoint.go` — `FetchCheckpoint` signature
-    and the `os.ErrNotExist`-on-404 contract.
-  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — `UpsertHub`,
-    `RecordCheckpoint`, `AdvanceFollowState`, `FollowState`, `CheckpointRecord` (note `Root`
-    is `[]byte`, `Status` is a string, `ObservedAt time.Time` is injected).
-  - `/workspace/iscc-monitor/internal/logclient/checkpoint_test.go` — the established
-    httptest-fetch-then-verify-against-sb0 pattern (`TestFetchCheckpointOverHTTP`) and the
-    `fakeFetcher`/`readCheckpoint`/`readFixture` helpers to mirror.
-  - `/workspace/iscc-monitor/internal/store/checkpoints_test.go` — the `t.TempDir()` store
-    test style and the public-method assertion patterns (`FollowState`).
+- **Create**: (none — extend the existing file)
+- **Modify**:
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — add a `Violation` struct +
+    `RecordViolation(ctx, Violation) (int64, error)` and `Freeze(ctx, hubID int64) error`.
+    (This is the only non-test/doc file changed — 1 of ≤3.)
+  - `/workspace/iscc-monitor/internal/store/checkpoints_test.go` — add the tests below
+    (test file, not counted against the budget).
+- **Reference**:
+  - `/workspace/iscc-monitor/internal/store/schema.sql` — `violations` columns
+    (`hub_id, kind, detected_at, raw_a, raw_b, proof_json`) and `follow_state`
+    (`hub_id, last_size, frozen, last_error`).
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — existing idioms to match:
+    `unixOrNil`, `%w`-wrapped errors, single open connection (`s.db.ExecContext` /
+    `QueryRowContext`), `LastInsertId`, the `AdvanceFollowState` upsert.
+  - `/workspace/iscc-monitor/internal/store/checkpoints_test.go` — the `openTemp(t)` /
+    `countRows` helpers and the raw-`db.QueryRow` column-assertion style to mirror.
+  - `/workspace/iscc-monitor/.claude/context/learnings.md` — "AdvanceFollowState upsert omits
+    frozen … no auto-unfreeze (ADR-0006)" and "Zero time.Time → NULL convention (unixOrNil)".
 
 ## Not In Scope
-- **No poll loop, goroutine, ticker, or single-writer goroutine wrapper.** `PollHub` does
-  exactly one observation per call and returns; the loop/scheduler is a later step.
-- **No consistency check** (fork/shrink/equivocation), no `transparency-dev/merkle`, no
-  tiles — leave `checkpoints.consistent`/`root_rebuilt` NULL.
-- **No freeze/alert path**, and do not read or honor `FollowState.Frozen` yet.
-- **No `hub_keys` did:web cache write**, and therefore **no sb1 `did.json` /
-  `derive_vkey.py` refresh** — that is its own step. IMPORTANT: the sb1 did:web fixture key
-  derives to keyhash `22b08f3e`, which does **not** match the sb1 *checkpoint* signer
-  `069d0f14`, so sb1 currently resolves to `StatusUnverified` end-to-end. Drive the verified
-  golden path with **sb0 only**; do not use sb1 as a verified vector here.
-- **No coverage (`monitored_since`), structured logs, `/metrics`, config, realm registry, or
-  `cmd/` binary.**
-- Do **not** add a status column to `checkpoints` or touch `schema.sql` — `Status` rides on
-  `CheckpointRecord` only.
+- The three-trigger consistency check itself (fork/shrink/equivocation detection over
+  `transparency-dev/merkle`) — that is the next step and needs the merkle dep + tiles fixtures.
+- Wiring `RecordViolation`/`Freeze` into `follower.PollHub` or any caller — this step only
+  adds and tests the store seam; no caller files change.
+- The alert ("exactly one alert") mechanism — separate concern, a later step.
+- Any `transparency-dev/*` dependency or `go get` (none is needed here; `go.mod` is untouched).
+- An `Unfreeze` method — there is deliberately no auto-unfreeze (ADR-0006); do not add one.
+- The `hub_keys` did:web cache write and the stale sb1-fixture refresh — independent step.
+- The poll loop / single-writer goroutine wrapper — independent step.
 
 ## Implementation Notes
-- New package `internal/follower` (NOT inside `store`, which must stay a leaf per learnings,
-  nor inside `logclient`): it is the composition layer importing both `internal/logclient`
-  and `internal/store`. The dependency direction is follower → {logclient, store}, never the
-  reverse, so `net/http` never enters the store closure.
-- Signature (clock injected — learnings: never `time.Now()` in this layer; `hubID` +
-  `baseURL` are pre-resolved by the caller to keep the seam small):
-  `func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string, observedAt time.Time) (logclient.Status, error)`.
-- Sequence inside `PollHub`:
-  1. `raw, err := logclient.FetchCheckpoint(ctx, fetcher, baseURL)` — on error, return it
-     wrapped (`%w`) and persist nothing. A fetch fault is transport, not a four-way verdict.
-  2. `status, info, err := logclient.AcceptCheckpoint(ctx, fetcher, baseURL, raw, observedAt)`
-     — **check `err` first**: a verified-but-garbled body returns non-nil err alongside
-     `StatusUnverified`'s zero (accept.go lines 92-100). On that error, return it wrapped and
-     persist nothing.
-  3. Persist only on `StatusVerified` (the non-verified verdicts carry the zero
-     `CheckpointInfo`, so there is no trustworthy `(size, root)` to record). Build a
-     `store.CheckpointRecord{HubID: hubID, Status: status.String(), TreeSize: info.TreeSize,
-     Root: info.Root[:], Raw: raw, ObservedAt: observedAt}` (note `info.Root [32]byte` →
-     `[]byte` via `info.Root[:]`) and call `st.RecordCheckpoint(ctx, rec)` (idempotent on
-     re-observe). Document this "record-only-on-verified" choice in the file docstring so a
-     later step can revisit recording non-verified observations.
-  4. Call `st.AdvanceFollowState(ctx, hubID, info.TreeSize)` **only** on `StatusVerified`.
-  5. Return `(status, nil)` for any of the four verdicts (non-verified is a *verdict*, not a
-     Go error); reserve the returned error for transport/garbled-body faults.
-- Test fetcher: `AcceptCheckpoint` resolves both the checkpoint *and* the did.json through
-  the same `Fetcher`, and the key is origin-bound — so an httptest live host cannot serve the
-  sb0-origin did.json (learnings: "httptest can prove fetch but NOT verify against a
-  live-host URL"). Mirror `TestFetchCheckpointOverHTTP`: use a small in-test composite
-  `Fetcher` that routes on the URL — return the sb0 `did.json` bytes when
-  `strings.HasSuffix(url, "did.json")`, else the sb0 checkpoint bytes — and pass
-  `baseURL="https://sb0.iscc.id"` with `observedAt` inside sb0's validity window. One
-  fetcher, full fetch→verify→persist chain, no live network.
-- Relevant Correctness rules (learnings.md): "verified is the only outcome that advances
-  accepted state"; "did:web is the only key source → unresolvable keeps mirroring, no
-  advance"; "Origin = `<domain>/log`" (reused via `FetchCheckpoint`/`AcceptCheckpoint`, never
-  re-derived here); clock injection.
-- `store.Store.db` is unexported, so from `internal/follower` assert via the store's public
-  methods (`FollowState`); do not reach into store internals. A `checkpoints` row-count check
-  belongs in the store's own in-package test, not here — for this step, asserting
-  `FollowState(...).LastSize` is the load-bearing observable.
-- Style: file-level docstring stating purpose; short pure functions; wrap errors with `%w`;
-  no `t.Skip` / `//nolint` / swallowed errors / build tags.
+- `Freeze(ctx, hubID)` sets `frozen=1` on the hub's `follow_state` row and **must work whether
+  or not a row already exists** (a hub can be frozen before its first verified advance). Use an
+  upsert on the `frozen` column, mirroring `AdvanceFollowState`:
+  `INSERT INTO follow_state (hub_id, frozen) VALUES (?, 1) ON CONFLICT(hub_id) DO UPDATE SET frozen = 1`.
+  This complements `AdvanceFollowState` (which omits `frozen` from its `DO UPDATE SET`): an
+  advance after a freeze keeps `frozen=1` (ADR-0006, no auto-unfreeze).
+- `Violation` struct (mirror `CheckpointRecord`'s field/doc style): `HubID int64`,
+  `Kind string` (one of `fork`/`shrink`/`equivocation`), `RawA []byte`, `RawB []byte`,
+  `ProofJSON string`, `DetectedAt time.Time`. `RecordViolation` does a **plain** INSERT (no
+  `ON CONFLICT` — `violations` has no UNIQUE constraint; re-detection is itself evidence) and
+  returns the new `id` via `res.LastInsertId()`. Map `DetectedAt` through `unixOrNil` (zero →
+  SQL NULL, matching the existing convention). `proof_json` is a TEXT column — store
+  `ProofJSON` as a plain string (an empty string is fine; do not coerce to NULL).
+- Keep `store` a **leaf**: add no imports beyond what `checkpoints.go` already uses
+  (`context`, `database/sql`, `errors`, `fmt`, `time`). Do **not** import `internal/logclient`;
+  `Kind` is a plain string the future caller supplies, exactly as `Status` rides on
+  `CheckpointRecord` today.
+- Relevant Correctness rule (learnings.md): "A self-consistency violation freezes, never
+  crashes (ADR-0006) … persist both raw checkpoints + proof permanently, set `frozen=1` …
+  no auto-unfreeze, survive restart, other hubs unaffected." Tests must pin the
+  no-auto-unfreeze and other-hubs-unaffected properties at this layer; `raw_a`/`raw_b`/
+  `proof_json` persistence is the "permanent evidence" part.
+- Style: evergreen docstrings on the new struct + both methods; short, single-purpose methods;
+  wrap every error with `%w`; no `t.Skip` / `//nolint` / swallowed errors / build tags.
 
 ## Verification
-- `mise run check` is green (`go build ./... && go vet ./... && go test ./...` all exit 0).
-- `gofmt -l .` lists nothing.
-- `go test -count=1 -run TestPollHub ./internal/follower` passes.
-- Verified path: `PollHub` with the composite fetcher (sb0 checkpoint + sb0 did.json),
-  `baseURL="https://sb0.iscc.id"`, and an `observedAt` inside sb0's validity window returns
-  `StatusVerified` and afterward `st.FollowState(ctx, hubID).LastSize == 10183`.
-- Non-advancing path: `PollHub` where the did.json serves a mismatching key (e.g. the sb1
-  multibase `z6MkiNW46AUjNmKTV2YNyFi9ANG9wbfYQQoUQgADGwScd9jk`) returns `StatusUnverified`
-  and advances nothing — `st.FollowState(ctx, hubID).LastSize == 0` afterward.
-- `go list -deps ./internal/store` shows **no** `github.com/iscc/iscc-monitor/internal`
-  dependency (store stays a leaf; the follower depends on store, never the reverse).
+- `mise run check` is green (`go build ./... && go vet ./... && go test ./...` exit 0;
+  `gofmt -l .` empty).
+- `go test -count=1 -run 'TestRecordViolation|TestFreeze' ./internal/store` passes.
+- `RecordViolation` test: register a hub via `UpsertHub`, insert
+  `Violation{Kind:"equivocation", RawA:…, RawB:…, ProofJSON:…, DetectedAt:…}`; assert the
+  returned `id > 0` and that a raw `SELECT kind, raw_a, raw_b, proof_json FROM violations
+  WHERE id = ?` round-trips the exact `kind`, both raw blobs, and the proof JSON.
+- `Freeze` no-prior-row: `Freeze(ctx, hubID)` on a hub with no `follow_state` row, then
+  `FollowState(ctx, hubID).Frozen == true`.
+- No-auto-unfreeze: `Freeze(ctx, hubID)` then `AdvanceFollowState(ctx, hubID, 99)`, then
+  `FollowState(ctx, hubID)` has `Frozen == true` AND `LastSize == 99` (the advance updated the
+  cursor but did not clear the freeze).
+- Other-hubs-unaffected: freeze hub A, then `FollowState(ctx, hubB).Frozen == false`.
+- `go list -deps ./internal/store` shows zero internal `iscc-monitor` deps (store stays a leaf).
 
 ## Done When
-`PollHub` exists in the new `internal/follower` package, drives one observation end-to-end
-against the sb0 fixtures (verified → recorded + cursor advanced; non-verified → never
-advanced), keeps store a leaf, and every Verification criterion passes with `mise run check`
-green.
+`mise run check` is green and the `TestRecordViolation`/`TestFreeze` tests pass, proving the
+store can persist a violation (`kind` + both raw checkpoints + proof) and set/keep `frozen=1`
+(no auto-unfreeze, other hubs unaffected) over `t.TempDir()` databases — the leaf-only
+persistence seam the consistency-check step will drive.
