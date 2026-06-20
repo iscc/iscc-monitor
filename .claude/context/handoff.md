@@ -1,58 +1,64 @@
 # Handoff
 
-## 2026-06-20 — Enforce the CID 1.0 key validity window (pure `DIDKey.ValidAt`)
+## 2026-06-20 — Review of: Enforce the CID 1.0 key validity window (pure `DIDKey.ValidAt`)
 
-**Done:** Added a pure `func (k DIDKey) ValidAt(now time.Time) bool` to `internal/didweb` that
-enforces the parsed CID 1.0 validity window — active in the half-open interval
-`[ValidFrom, ValidUntil)`, not revoked at/after `now`, with each zero-valued field meaning "no
-constraint" so a zero-value `DIDKey` is always valid (matching `parseTime` and the live-fixture
-"currently valid" case). It takes `now` as an argument (deterministic, never reads the wall clock),
-returns a bool, and imports only `time` so the WASM build stays green. No logic change to
-`ParseDIDDocument` / `parseTime`; only the `DIDKey` doc comment was repointed at `ValidAt`.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/didweb/validity.go` (new): the `DIDKey.ValidAt` predicate, `time`-only.
-- `internal/didweb/validity_test.go` (new): table-driven test, 12 cases pinning the half-open
-  boundaries at exact instants (at-/just-before-`ValidFrom`, at-/just-before-`ValidUntil`,
-  at-/just-before-`Revoked`, all-zero, expired, not-yet-active, revoked, Revoked-overrides-window) +
-  a `ValidAt(time.Now())==true` zero-key check.
-- `internal/didweb/resolve.go`: `DIDKey` doc comment now says zero = "no constraint" and points at
-  `ValidAt` for window evaluation (was "the follower decides enforcement later, not this parser").
-  No code change.
+**Summary:** `internal/didweb/validity.go` adds a pure `func (k DIDKey) ValidAt(now time.Time) bool`
+that enforces the CID 1.0 wall-clock window — half-open `[ValidFrom, ValidUntil)`, revoked at/after
+`Revoked`, each zero field meaning "no constraint" so a zero-value `DIDKey` is always valid. It takes
+`now` as an argument (deterministic, never reads the clock), imports only `time` (WASM-pure), and is
+backed by a 12-case table test pinning every boundary at exact instants. Scope is exactly what
+`next.md` asked: one new source file, one new test file, and a doc-only repoint of the `DIDKey`
+comment. Every verification criterion passes and I re-derived the boundary behavior with an
+independent throwaway test rather than trusting the author's table.
 
-**Verification:** `mise run check` → green (build + vet + test, exit 0). Per-criterion:
-- [x] `mise run check` green.
-- [x] `gofmt -l internal/didweb` prints nothing.
-- [x] `go test -run TestValidAt ./internal/didweb` PASS (all 12 subtests + `TestValidAtZeroKeyNow`).
-- [x] Zero-value `DIDKey{}.ValidAt(time.Now())` → `true`.
-- [x] `ValidUntil=2020-01-01` at 2026-06-20 → `false`; `ValidFrom=2030-01-01` at 2026-06-20 →
-  `false`; `Revoked=2020-01-01` at 2026-06-20 → `false`.
-- [x] Half-open boundary: `ValidUntil=T` → `ValidAt(T)==false`, `ValidAt(T-1ns)==true`.
-  (Also covered symmetrically for `ValidFrom` and `Revoked`.)
-- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (validity.go stays WASM-pure).
+**Verification:**
+- [x] `mise run check` (build + vet + test) — green, exit 0 on a freshly cleared test cache.
+- [x] `gofmt -l internal/didweb` and `gofmt -l .` — both empty.
+- [x] `go test -run TestValidAt ./internal/didweb` — PASS (all 12 subtests + `TestValidAtZeroKeyNow`).
+- [x] Zero-value `DIDKey{}.ValidAt(time.Now())` → `true` (matches the live "currently valid" fixtures).
+- [x] `ValidUntil=2020-01-01` @2026-06-20 → `false`; `ValidFrom=2030-01-01` → `false`;
+  `Revoked=2020-01-01` → `false`. Re-confirmed with an independent reviewer test.
+- [x] Half-open boundary: `ValidUntil=T` → `ValidAt(T)==false`, `ValidAt(T-1ns)==true`;
+  `ValidFrom=T` → `ValidAt(T)==true` (inclusive lower bound); `Revoked=T` → `ValidAt(T)==false`.
+- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (`validity.go` imports only `time`).
+- [x] Trust-root/oracle gate — N/A by construction (no crypto/Merkle/`SQLiteFetcher`/`internal/proof`
+  touched), but verified anyway: `derive_vkey.py` still prints both golden vectors byte-exact
+  (`sb0…+40b74463+…`, `sb1…+22b08f3e+…`); `.claude/.scratch/` cleaned up afterward.
+- [x] Gate integrity — across all unpushed commits, no `//nolint` / `t.Skip` / build-tag exclusion /
+  swallowed error / loosened gate / deleted assertion in source (matches are prose-only in context md).
+- [x] sb1 fixture / `derive_vkey.py` `HUBS` correctly left at the pre-rotation `22b08f3e` (out of
+  scope this step; pinned to the `hub_keys` step).
+
+**Issues found:**
+- Filed `[review]` `normal`: `parseTime` fails *open* on a malformed (non-empty, unparseable)
+  validity timestamp — it maps to the zero time, which `ValidAt` reads as "no constraint". Correctly
+  deferred from this pure-predicate step (the advance/define-next docs flagged it); recorded in
+  `issues.md` to be decided at the `hub_keys`/fixture step (a garbled `revoked` arguably should
+  degrade to not-`verified`, not be treated as unconstrained).
+
+**Minor fix applied (review):** aligned the now-stale `verificationMethod` doc comment in `resolve.go`
+("the follower may later enforce") to point at `DIDKey.ValidAt`, matching the authoritative `DIDKey`
+comment. Doc-only; gofmt/build/vet re-confirmed clean.
 
 **Next:** Wire the SQLite `hub_keys` cache + the follower's checkpoint-acceptance path
-(`ResolveVerifierKey` → `VerifyCheckpoint`), and call `DIDKey.ValidAt(observedAt)` there: a key that
-verifies the signature but is out-of-window maps to not-`verified` (rotation/revocation case),
-distinct from `ErrUnresolvable → unresolvable` / `ErrUnverified → unverified`. That step should also
-refresh the sb1 did.json fixture + `derive_vkey.py` `HUBS` entry to the current key (`069d0f14`) —
-still pinned to the `hub_keys`/validity-cache step, not done here. The three-trigger RFC-6962
-consistency check is the step after.
+(`ResolveVerifierKey` → `VerifyCheckpoint`), calling `DIDKey.ValidAt(observedAt)`: an in-window
+matching key → `verified`; an out-of-window matching key → **not-`verified`** (rotation/revocation),
+*distinct* from `ErrUnverified → unverified` and `ErrUnresolvable → unresolvable`. That step also
+refreshes the sb1 did.json fixture + `derive_vkey.py` `HUBS` to the current key (`069d0f14`) and
+should resolve the `parseTime` fail-open issue above. The three-trigger RFC-6962 consistency check
+(fork/shrink/equivocation via `transparency-dev/merkle`) is the step after.
 
 **Notes:**
-- **Trust-root/oracle gate scope for this step:** N/A by construction. This is a pure arithmetic
-  predicate over `time.Time` fields — no signature/vkey derivation, no Merkle code, no SQLiteFetcher,
-  no `internal/proof`. The relevant gate (vkey golden parity via `derive_vkey.py` + live fixtures
-  under `note.Open`) was satisfied by the prior step and is unaffected; `mise run check` re-runs all
-  existing didweb + logclient tests and they stay green.
-- **Did not touch `parseTime`'s lenient (unparseable → zero time) behavior**, per next.md "Not In
-  Scope". Consequence to note for the parser/fixture step: a malformed (non-empty but unparseable)
-  `revoked`/`validUntil` timestamp parses to zero time, which `ValidAt` reads as "no constraint" —
-  i.e. fail-open on a malformed timestamp. This is by design here (changing it would alter parsing
-  semantics + the existing golden test). next.md says to file it as an issue for the parser/fixture
-  step rather than fix it here; flagging for `review` to record in `issues.md` if warranted.
-- The `verificationMethod` struct doc in resolve.go still reads "the follower may later enforce"; I
-  left it untouched to stay within the single non-test source touch budget (only the `DIDKey` doc was
-  in scope). Minor wording drift only; the now-authoritative comment is on the consumer type `DIDKey`.
-- Gate integrity: no `//nolint`, `t.Skip`, build-tag exclusion, swallowed error, loosened gate, or
-  deleted assertion. Branch: `develop`.
+- M1 is only *partially* met: the verification primitives (did:web chain, signed-note checkpoint
+  verify, now the validity predicate) are pure and golden-tested, but there is still **no follower, no
+  SQLite store, no binary entrypoint, no consistency check, no coverage/metrics**. Loop stays
+  CONTINUE; nowhere near v1 DONE.
+- **No CI / `notecheck` job exists yet** (`.github/workflows/` still absent). The signature-parity
+  oracle these steps feed is the natural CI gate; flag for whoever adds the workflow. CI must also
+  exclude the gitignored `cauldron/` trees (a fresh `go build ./...` over them needs stub `go.mod`s).
+- `net/url` appears in the *package* import closure (from `url.go`), not from `validity.go`; per
+  learnings it does not pull `net`/`net/http`, and the WASM build is green — not a purity regression.
+- Pushed to `origin/develop` on PASS (remote configured). Branch: `develop`; never push `main`.

@@ -20,8 +20,9 @@ import (
 // verificationMethod is a CID 1.0 / W3C DID verification method entry.
 //
 // Only the fields the monitor needs are decoded; unknown fields are ignored.
-// validFrom/validUntil/revoked are the CID 1.0 validity window the follower may
-// later enforce against the observation time; they are absent in the live docs.
+// validFrom/validUntil/revoked are the CID 1.0 validity window; they are parsed
+// here (absent in the live docs) and evaluated against an observation time by
+// DIDKey.ValidAt, not by this parser.
 type verificationMethod struct {
 	ID                 string `json:"id"`
 	Type               string `json:"type"`

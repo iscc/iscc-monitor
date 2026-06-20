@@ -77,6 +77,17 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   1)`).** Otherwise a `host:port` splits at the colon into a path segment. Live hubs have no port so
   this is exercised only by the `httptest` random-port path — but it is required there and matches the
   `did:web:example.com%3A3000` golden.
+- **CID 1.0 validity is a pure predicate, `DIDKey.ValidAt(now) bool` (`validity.go`, `time`-only).**
+  Half-open `[ValidFrom, ValidUntil)` with `Revoked` revoking at/after its instant; each zero field =
+  "no constraint" so a zero `DIDKey` is always valid (matches `parseTime` + the live "currently valid"
+  fixtures). Boundaries compare with `Before` only (never `==`/`After`), guarded by `!IsZero()`. The
+  follower must call this and treat out-of-window as **not-`verified`** (rotation/revocation) — a
+  *distinct* outcome from `ErrUnverified` (signature matches no key) and `ErrUnresolvable`.
+- **Fail-open on a *malformed* validity timestamp is a live gap (deferred to the parser step).**
+  `parseTime` maps both absent AND non-empty-but-unparseable `validFrom/validUntil/revoked` to the zero
+  `time.Time`, which `ValidAt` reads as "no constraint" → a garbled `revoked`/`validUntil` silently
+  fails open (key stays valid). Acceptable for the pure-predicate step (changing it alters parsing
+  semantics + the golden test); see issues.md — fix at the `hub_keys`/fixture step, not in `ValidAt`.
 
 ## Checkpoint signed-note verification (`logclient/verify.go`)
 
