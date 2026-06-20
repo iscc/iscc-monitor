@@ -1,52 +1,61 @@
 # Handoff
 
-## 2026-06-20 — did:web HTTP resolver at the outbound-fetch seam (base URL → verifier key, `unresolvable` on failure)
+## 2026-06-20 — Review of: did:web HTTP resolver at the outbound-fetch seam (base URL → verifier key, `unresolvable` on failure)
 
-**Done:** Added `internal/logclient/didresolve.go`: a 1-method `Fetcher` seam, an `httpFetcher`
-adapter (constructed via `NewHTTPFetcher`) mirroring Tessera's fetch shape, an exported
-`ErrUnresolvable` sentinel, and `ResolveVerifierKey(ctx, fetcher, baseURL)` that wires
-`origin` → `did:web:<host>` → `didweb.DocumentURL` → `fetcher.Fetch` → `didweb.ParseDIDDocument` →
-`didweb.VerifierKey`, collapsing every fetch/parse/derive failure to `ErrUnresolvable`. Purely
-additive; `internal/didweb` is untouched and still builds for WASM.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/logclient/didresolve.go` (new): the networked did:web resolver + `Fetcher` seam.
-- `internal/logclient/didresolve_test.go` (new): table-driven golden + error tests via a fake
-  `Fetcher`, plus a real-HTTP path over `httptest.NewTLSServer`.
-- `internal/logclient/testdata/{sb0.iscc.id_did.json,sb1.amlet.id_did.json}` (new): copies of the
-  didweb fixtures so the resolver test stays offline.
+**Summary:** `advance` added `internal/logclient/didresolve.go` — a 1-method `Fetcher` seam, an
+unexported `httpFetcher` (via `NewHTTPFetcher`) mirroring Tessera's fetch shape, an exported
+`ErrUnresolvable` sentinel, and `ResolveVerifierKey(ctx, fetcher, baseURL)` wiring
+`origin → did:web:<host%3Aport> → DocumentURL → Fetch → ParseDIDDocument → VerifierKey`, collapsing
+every failure to `ErrUnresolvable`. Purely additive; `internal/didweb` untouched and still WASM-pure.
+Wiring, error mapping, and golden-vector parity all verified independently. Clean, in-scope, no gate
+games.
 
-**Verification:** `mise run check` → green (build + vet + test, exit 0). `gofmt -l .` prints nothing.
-`GOOS=js GOARCH=wasm go build ./internal/didweb` succeeds. `go list -deps ./internal/didweb` shows no
-`net/http`/`database/sql`. Per criterion:
-- [x] sb0 fixture → `sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5` (full
-  string asserted) and fetched URL `https://sb0.iscc.id/.well-known/did.json`.
-- [x] sb1 fixture → `sb1.amlet.id/log+22b08f3e+ATo2ruguSdJGh11PS76osrQf6OZKrufzzwH/HMwE3a8/`.
-- [x] fetch error / `os.ErrNotExist` (404) / malformed JSON / no-assertionMethod / empty base URL each
-  satisfy `errors.Is(err, ErrUnresolvable)`.
-- [x] Real-HTTP path over `httptest.NewTLSServer` resolves through `httpFetcher`; a 404 server yields
-  `os.ErrNotExist` from `Fetch` and `ErrUnresolvable` from `ResolveVerifierKey`.
+**Verification:**
+- [x] `mise run check` (build + vet + test) — green, exit 0 (re-run, not just from handoff).
+- [x] `gofmt -l /workspace/iscc-monitor` — prints nothing.
+- [x] `go test -run TestResolveVerifierKey ./internal/logclient` — PASS (all subtests verbose-run).
+- [x] sb0 fixture → `sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5` for
+  `https://sb0.iscc.id`; fetched URL `https://sb0.iscc.id/.well-known/did.json` (full string asserted).
+- [x] sb1 fixture → `sb1.amlet.id/log+22b08f3e+ATo2ruguSdJGh11PS76osrQf6OZKrufzzwH/HMwE3a8/` for
+  `https://sb1.amlet.id` (full string asserted).
+- [x] Fetch error / 404 (`os.ErrNotExist`) / malformed JSON / no-assertionMethod / empty base URL each
+  satisfy `errors.Is(err, ErrUnresolvable)` (asserted with `errors.Is`).
+- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` succeeds; `go list -deps ./internal/didweb` has
+  no `net`/`net/http`/`database/sql` (purity intact — `net/http` isolated to `logclient`).
+- [x] **Trust-root oracle gate:** re-ran `python3 .claude/derive_vkey.py` — both golden vectors print
+  byte-exact (`sb0…+40b74463…`, `sb1…+22b08f3e…`), matching the test assertions. Scratch dir cleaned.
+- [x] `internal/logclient/testdata/{sb0,sb1}` fixtures are byte-identical to the `internal/didweb`
+  source fixtures (`diff` clean) — no drift in the trust-root inputs.
+- [x] Gate-integrity scan of unpushed range (`@{upstream}..HEAD`): no `//nolint`, `t.Skip`, build
+  tags, deleted assertions, or loosened gates. The single `_ = resp.Body.Close()` is the idiomatic
+  deferred close, not a swallowed gate error.
+- [x] Scope: exactly 1 non-test source file + 1 test file + 2 fixtures; nothing from `## Not In Scope`
+  leaked (no signature verification, no SQLite, no follower loop, no external deps).
 
-**Next:** Wire signature verification — verify a hub-signed checkpoint (Ed25519 signed-note) against
-the verifier key this resolver returns, mapping a signature that matches no listed key to status
-`unverified` (vs `unresolvable` here). That step needs an actual checkpoint and a `note.Verifier`/
-signed-note parser, and pairs with the `hub_keys` SQLite cache + CID 1.0 validity-window enforcement
-(consuming `DIDKey.ValidFrom`/`ValidUntil`/`Revoked`, currently parsed but unenforced).
+**Issues found:** (none)
+
+**Next:** Wire Ed25519 signed-note signature verification: parse a hub-signed checkpoint and verify it
+against the key `ResolveVerifierKey` returns, mapping a signature matching no listed key to status
+`unverified` (distinct from `unresolvable`). This needs an actual checkpoint fixture and a
+`note.Verifier`/signed-note parser, and pairs with the `hub_keys` SQLite cache + CID 1.0
+validity-window enforcement (consuming `DIDKey.ValidFrom`/`ValidUntil`/`Revoked`, currently
+parsed-but-unenforced). Capturing a real sb0/sb1 checkpoint into `testdata/live/` is a prerequisite.
 
 **Notes:**
-- **did:web port encoding (design decision, worth a look):** for a host with a port, the resolver
-  percent-encodes the colon (`strings.Replace(host, ":", "%3A", 1)`) before forming
-  `did:web:<host%3Aport>`, per W3C did:web §3.2, so `DocumentURL` round-trips it back to `host:port`
-  rather than splitting the port off as a path segment. Live hubs (sb0/sb1) have no port, so this only
-  affects local/test hosts — but it is required to make the `httptest` server (random port) resolve
-  correctly, and matches the existing `did:web:example.com%3A3000` golden in `internal/didweb/url_test.go`.
-- **did:web is HTTPS-only:** `DocumentURL` always emits `https://`, so the real-HTTP test uses
-  `httptest.NewTLSServer` + `srv.Client()` (trusts the test cert). A plain-HTTP hub cannot be resolved
-  by design — correct per spec.
-- **Deferred body close discards its error** (`defer func() { _ = resp.Body.Close() }()`). This is the
-  idiomatic Go pattern, not a gate dodge; Tessera logs it via klog, which I deliberately did not pull
-  in (stdlib `net/http` only, per scope). No swallowed error affects the returned result.
-- **Validity-window fields still parsed-but-unenforced** (carried over from prior handoff): `DIDKey`'s
-  `ValidFrom`/`ValidUntil`/`Revoked` are returned but not checked here — enforcement belongs to the
-  store/follower step (explicitly out of scope).
-- Branch `develop`; committing implementation + tests + this handoff only.
+- **No CI configured** (`.github/workflows/` absent). The `notecheck` external-oracle signature-parity
+  job does not exist yet — correct at this stage, since no end-to-end signature-verification code is in
+  tree. The trust-root gate at this point is `derive_vkey.py` parity, re-run and green. Flag for
+  whoever wires the GitHub workflow (and: a fresh `go build ./...` over the gitignored `cauldron/`
+  trees breaks — CI must exclude them; see learnings).
+- **Host re-derivation** uses `TrimSuffix(origin(baseURL), "/log")` rather than a second host parser —
+  reuse, not duplication, matching `next.md`'s "one host-extraction helper" intent. Sound.
+- **did:web colon percent-encoding** (`strings.Replace(host, ":", "%3A", 1)`) is required only for the
+  `httptest` random-port path (live hubs have no port) and matches the existing
+  `did:web:example.com%3A3000` golden. Documented inline. The `httptest` golden correctly asserts only
+  the `<addr>/log` origin prefix (the key embeds the fixture's origin, not the fetch host).
+- Validity-window fields (`ValidFrom`/`ValidUntil`/`Revoked`) remain parsed-but-unenforced — correctly
+  out of scope here; enforcement belongs to the store/follower step.
+- Branch `develop`, remote `origin` configured; pushing on PASS.

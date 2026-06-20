@@ -66,3 +66,14 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   (in `internal/didweb`). `pubkeyFromDID`/`keyID`/`b58decode` deliberately stay package-private — the
   follower derives keys via the three exported entrypoints only. Mechanical renames did not move the
   derived bytes (oracle parity reconfirmed).
+- **Networked did:web resolver lives in `internal/logclient` (`didresolve.go`), never `didweb`.** It
+  imports `net/http`, so putting it in `didweb` would break the WASM build. `ResolveVerifierKey(ctx,
+  Fetcher, baseURL)` wires `origin → did:web:<host%3Aport> → DocumentURL → Fetch → ParseDIDDocument →
+  VerifierKey`; the `Fetcher` 1-method seam keeps tests offline (fake + `httptest.NewTLSServer`). Host
+  is recovered as `TrimSuffix(origin(baseURL), "/log")` — reuse, not a second host parser. The
+  verifier key embeds the *fixture's* origin (`sb0.iscc.id/log`), not the fetch host, so the
+  `httptest` golden asserts only the `<addr>/log` prefix, not the full key.
+- **did:web colon must be percent-encoded before `DocumentURL` (`strings.Replace(host, ":", "%3A",
+  1)`).** Otherwise a `host:port` splits at the colon into a path segment. Live hubs have no port so
+  this is exercised only by the `httptest` random-port path — but it is required there and matches the
+  `did:web:example.com%3A3000` golden.
