@@ -1,107 +1,103 @@
 # Next Work Package
 
-## Step: `internal/config` — pure config loader leaf for the monitor binary
+## Step: `cmd/iscc-monitor` binary — wire config → registry → store → poll loop
 
 ## Goal
-Add the pure, golden-testable configuration package that the (next-step) `cmd/iscc-monitor`
-binary will consume: turn a flat key/value lookup plus the on-disk realm-document path into a
-validated, typed `Config` (DB path, realm-doc path, poll intervals). This is the last pure leaf the
-binary wiring needs before the loop can be assembled, and it is the cleanest no-crypto, no-network
-slice toward "the monitor actually runs and survives restart" (M1).
-
-## Goal-fit (state → target gap)
-M1's first Verify half (`origin`/`verifierKey`/single-poll) plus two of three triggers (shrink+fork
-freeze) are met end-to-end, the poll loop drives `PollHub` on a cadence, and the pure realm-registry
-parser landed. The named M1 list opens with "**config** + realm registry + …"; the registry exists,
-config does not (`internal/config/` is absent). Both review and state name the `cmd/iscc-monitor`
-binary as the unblocked slice, but that binary needs validated startup values (DB path, realm-doc
-path, poll intervals) *and* it forces an as-yet-unmade decision about how it obtains each hub's
-`origin` for `store.UpsertHub`. Splitting that decision and the untestable blocking `Run` loop off
-into the binary step, and landing the **pure, golden-testable config leaf first**, follows the loop's
-"pure functions before I/O, runnable+testable before infrastructure" ordering. The heavier
-merkle-equivocation trigger (new dep + tile fixtures + oracle gate) and the `hub_keys`/
-`derive_vkey.py` refresh stay deferred to their own steps.
+Stand up the `cmd/iscc-monitor` entrypoint that turns the four landed leaves
+(`config.Load`, `registry.Parse`, `store.Open`/`UpsertHub`, `follower.Loop`) into a running monitor
+process. This is config's only consumer and the slice that makes M1 a runnable program rather than a
+library of disconnected pieces.
 
 ## Scope
 - **Create**:
-  - `/workspace/iscc-monitor/internal/config/config.go` — the package (pure: parse + validate; no
-    `os`/`net`/`flag` in the load path. Take the raw lookup as an injected
-    `func(key string) (string, bool)` so it is unit-testable without touching the environment).
-  - `/workspace/iscc-monitor/internal/config/config_test.go` — table-driven + golden tests (test
-    file, not counted toward the 3-file limit).
-- **Modify**: (none — this step adds a leaf package only)
-- **Reference**:
-  - `/workspace/iscc-monitor/internal/registry/registry.go` — the sibling pure-leaf style to mirror
-    (leading package docstring, single pure entry point, fail-closed wrapped errors, minimal
-    stdlib-only imports).
-  - `/workspace/iscc-monitor/internal/follower/loop.go` lines 45–53 — the `Loop` fields config feeds
-    (`Normal`, `Frozen time.Duration`; the docstring documents `Frozen >= Normal` as the back-off).
-  - `/workspace/iscc-monitor/internal/store/sqlite.go` lines 59–76 — `Open(path string)` is the
-    DB-path consumer (config supplies that path).
+  - `cmd/iscc-monitor/main.go` — the binary entrypoint plus a testable `registerHubs` helper.
+  - `cmd/iscc-monitor/main_test.go` — table/golden test for `registerHubs` (test file, not counted
+    against the 3-file budget).
+- **Modify**:
+  - `internal/logclient/origin.go` — add an exported `Origin(baseURL string) (string, error)` that
+    **delegates to the existing private `origin`** (a one-line wrapper). Do NOT rename `origin` or
+    touch its body; the two internal callers (`checkpoint.go`, `didresolve.go`) keep calling the
+    private `origin` unchanged. This resolves the open origin-export decision without a second deriver.
+- **Reference** (read for context; never import the `cauldron/` trees):
+  - `/workspace/iscc-monitor/internal/config/config.go` — `Load(get) (Config, error)`; fields
+    `DBPath/RealmPath/Normal/Frozen`; key constants.
+  - `/workspace/iscc-monitor/internal/registry/registry.go` — `Parse([]byte) ([]Entry, error)`,
+    `Entry{Domain, BaseURL}`.
   - `/workspace/iscc-monitor/internal/store/checkpoints.go` lines 56–77 — `UpsertHub(ctx, domain,
-    origin, baseURL)` needs `origin` (`<domain>/log`), which `logclient.origin` keeps private; see
-    Not In Scope (this is a binary-wiring decision, not config's).
-  - `/workspace/iscc-monitor/.claude/adr/0007-*.md` (one DB file per network) and `0005`/`0006` — the
-    rules behind "one DB path" and the freeze back-off the `Frozen` interval encodes.
+    origin, baseURL) (int64, error)`.
+  - `/workspace/iscc-monitor/internal/store/sqlite.go` lines 59–80 — `Open(path) (*Store, error)`,
+    `Close()`.
+  - `/workspace/iscc-monitor/internal/follower/loop.go` lines 31–53,121–135 — `Loop{Store, Fetcher,
+    Targets, Normal, Frozen, Alert}`, `HubTarget{HubID, BaseURL}`, `Run(ctx) error`.
+  - `/workspace/iscc-monitor/internal/logclient/didresolve.go` lines 48–56 — `NewHTTPFetcher(c
+    *http.Client) Fetcher` (the production Fetcher for `Loop.Fetcher`).
+  - `/workspace/iscc-monitor/internal/follower/follower.go` lines 41–46 — `AlertFunc` signature for the
+    placeholder `Alert`.
 
 ## Not In Scope
-- **Do NOT create `cmd/iscc-monitor/main.go` or wire `Loop.Run` this step.** The binary is the next
-  slice: it has an untestable blocking `Run` loop and forces the origin-export decision below, so
-  keeping it separate keeps this step a clean, fully-testable leaf.
-- **Do NOT export, duplicate, or re-derive `logclient.origin`.** `UpsertHub` needs `<domain>/log`,
-  but how the binary obtains origin without a second deriver (export `logclient.Origin` vs. carry it
-  on `registry.Entry`) is a *binary-wiring* decision for the next step. Config must not pre-empt it
-  or grow an `origin()` of its own (learnings: "One `origin()` helper, golden-tested"; highest-
-  probability bug).
-- Do NOT read the realm document or open the DB here — config only *parses/validates* values
-  (the realm-doc path stays a string). The binary does the actual `os.ReadFile` / `registry.Parse` /
-  `store.Open`. Keep `os`/`net`/`net/http` out of the load path.
-- Do NOT add a YAML/JSON/TOML dependency — `go.mod`/`go.sum` must stay byte-identical (KISS: a flat
-  key/value `Load` is enough; the realm registry itself is already a flat text format).
-- No coverage tracking (`monitored_since`), structured logs, `/metrics`, or alert transport — each is
-  its own later M1 step.
+- The merkle-backed **equivocation** trigger, `transparency-dev/merkle`, and tile fixtures — that is the
+  separate heavy slice that trips the oracle gate; do not add the dep or fixtures here.
+- The `hub_keys` did:web cache write and the stale sb1 fixture refresh (`22b08f3e`→`069d0f14`).
+- Coverage (`monitored_since`), structured logging, `/metrics`, and real alert transport — the `Alert`
+  here is a minimal stderr/log one-liner placeholder, not a delivery system.
+- **Do not test `Loop.Run`** (a blocking `select` over a ticker — untestable without sleeping; the
+  reviewer already ratified `Run` as correctly untested). Keep all branching/wiring in `registerHubs`.
+- Do not rename the private `logclient.origin` or change its body; do not give `Origin` its own copy of
+  the derivation math (it must delegate to `origin`). Do not carry origin on `registry.Entry`.
 
 ## Implementation Notes
-- Mirror `internal/registry` exactly for style: a leading package docstring stating purpose + the
-  config keys + their defaults, a small typed result struct, one pure entry point, fail-closed
-  wrapped errors naming the bad key, and a minimal stdlib-only import set (`fmt`, `strings`, `time`).
-- Suggested surface (adjust names to taste; keep it minimal):
-  - `type Config struct { DBPath string; RealmPath string; Normal, Frozen time.Duration }`.
-  - `func Load(get func(key string) (string, bool)) (Config, error)` — pure: pull each key via
-    `get`, apply documented defaults for the intervals, parse durations with `time.ParseDuration`,
-    validate, return. Injecting `get` (instead of reading `os.Getenv`/`flag` here) is what keeps it
-    I/O-free and unit-testable; the binary passes an `os.LookupEnv`-backed closure next step.
-- Validation rules to encode (each is a golden/table assertion):
-  - `DBPath` and `RealmPath` required (absent/empty → wrapped error naming the missing key).
-  - `Normal > 0`; `Frozen > 0`; **`Frozen >= Normal`** (the `loop.go` back-off invariant — a
-    `Frozen < Normal` config is rejected, not silently accepted). This is the load-bearing cross-check
-    that ties config to ADR-0006's backed-off evidence-only cadence.
-  - An unparseable duration (`time.ParseDuration` error) is wrapped + named, not swallowed.
-  - Sensible defaults when an interval key is absent (e.g. `Normal=5m`, `Frozen=1h`) so a minimal
-    config with only the two paths loads cleanly; document the defaults in the docstring.
-- Relevant learnings / correctness rules:
-  - **One DB file per network (ADR-0007)** — `DBPath` is a single network's DB file; config carries
-    one path, not a list (multi-network is out of scope here).
-  - **Freeze back-off (ADR-0006)** — the `Frozen` interval is the evidence-only re-poll cadence;
-    enforcing `Frozen >= Normal` here is *why* the loop's `due()` actually backs a frozen hub off.
-  - Keep errors fail-closed and wrapped (`fmt.Errorf("config: ... %q: %w", key, err)`), mirroring
-    `registry.Parse`, and return the zero `Config` alongside any error so the binary surfaces a
-    precise startup failure rather than a half-built config.
+- **Origin export (the open decision):** add `func Origin(baseURL string) (string, error) { return
+  origin(baseURL) }` to `origin.go` with a one-line docstring. Rationale per learnings ("One `origin()`
+  helper, golden-tested against both live hubs"): there stays exactly **one** derivation; `Origin` only
+  exposes it so the binary can pass `<domain>/log` to `store.UpsertHub`'s `origin` argument. Carrying
+  origin on `registry.Entry` would create a second derivation path and is rejected.
+- **`main.go` structure** — keep `main` thin, push logic into the helper:
+  - `get := os.LookupEnv` — `os.LookupEnv` already has the `func(string) (string, bool)` shape
+    `config.Load` wants; pass it directly.
+  - `cfg, err := config.Load(get)`; on error print to `os.Stderr` and `os.Exit(1)` (the `main` shell
+    owns process exit — keep `os.Exit` out of the testable helper).
+  - `data, err := os.ReadFile(cfg.RealmPath)` then `entries, err := registry.Parse(data)`. Config
+    learning: a whitespace-only path passes `config.Load` and fails here at `os.ReadFile` — wrap that
+    error with the path so the startup failure is clear.
+  - `st, err := store.Open(cfg.DBPath)`; defer close with `defer func() { _ = st.Close() }()`
+    (`Close` returns an error).
+  - **Extract** `func registerHubs(ctx context.Context, st *store.Store, entries []registry.Entry)
+    ([]follower.HubTarget, error)`: for each `Entry`, derive `org, err := logclient.Origin(e.BaseURL)`
+    (wrap + name the bad domain on error), call `id, err := st.UpsertHub(ctx, e.Domain, org,
+    e.BaseURL)`, append `follower.HubTarget{HubID: id, BaseURL: e.BaseURL}`. Return the slice (first
+    error short-circuits). This is the unit `main_test.go` drives.
+  - Build `loop := &follower.Loop{Store: st, Fetcher: logclient.NewHTTPFetcher(nil), Targets: targets,
+    Normal: cfg.Normal, Frozen: cfg.Frozen, Alert: <log-to-stderr one-liner>}` and call `loop.Run(ctx)`
+    where `ctx` comes from `signal.NotifyContext(context.Background(), os.Interrupt)` so SIGINT cleanly
+    cancels and `Run` returns `ctx.Err()`.
+  - File starts with a docstring (project convention) explaining it is the monitor entrypoint.
+- **`main_test.go`** drives `registerHubs` only: `store.Open(filepath.Join(t.TempDir(), "test.db"))`,
+  build the two real testnet `Entry`s (`sb0.iscc.id`, `sb1.amlet.id`) inline or via
+  `registry.Parse` of the fixture at `internal/registry/testdata/realm.txt`, call `registerHubs`, and
+  assert: (a) two targets returned; (b) each `HubTarget.BaseURL == "https://"+domain` and `HubID > 0`;
+  (c) **idempotency** — a second `registerHubs` call returns identical `HubID`s (`UpsertHub` is
+  idempotent on domain). Keep it a `func Test`, no test class. The test must not start `Run`.
+- Correctness rule in play: **Origin = `<domain>/log`, never the bare domain** (learnings, highest-prob
+  bug) — feed `Origin(BaseURL)` to `UpsertHub`'s `origin` arg, never `e.Domain`.
+- Oracle/conformance gate is correctly **N/A** here: nothing touches a proof/verify/merkle/signature/
+  fsck path. `Origin` only re-exports the already-golden-tested `origin`; `go.mod`/`go.sum` stay
+  byte-identical (no new dependency — `net/http` is already in the logclient closure via `didresolve.go`).
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass).
-- `gofmt -l internal/config` prints nothing.
-- `go test -count=1 ./internal/config` passes (uncached).
-- `go test -count=1 -run TestLoad ./internal/config` passes.
-- `go list -deps ./internal/config | grep -E '^(net|net/http)$'` prints nothing (pure leaf; no
-  network in the closure).
-- `git status --short go.mod go.sum` is empty (no dependency added).
-- Table/golden assertions prove: a minimal input `{DBPath, RealmPath}` loads with the documented
-  default intervals; an input with `Frozen < Normal` returns a non-nil wrapped error; a missing
-  required path returns a non-nil error naming the key; an unparseable interval returns a non-nil
-  error; a valid full input round-trips every field.
+- `mise run check` is green (`go build ./...` now also compiles `cmd/iscc-monitor`; `go vet ./...`;
+  `go test ./...` all pass) and `gofmt -l .` prints nothing.
+- `go build -o /tmp/iscc-monitor ./cmd/iscc-monitor` exits 0 (binary compiles).
+- `go test -run TestOrigin ./internal/logclient` passes — the exported `Origin` path stays golden:
+  `Origin("https://sb0.iscc.id") == "sb0.iscc.id/log"` and
+  `Origin("https://sb1.amlet.id") == "sb1.amlet.id/log"`.
+- `go test -run TestRegisterHubs ./cmd/iscc-monitor` passes: two targets, each `HubID > 0`, each
+  `BaseURL == "https://"+domain`, and a second `registerHubs` call returns identical `HubID`s
+  (idempotent).
+- `git diff -- go.mod go.sum` is empty (no dependency added).
+- Missing-env failure surfaces cleanly: `env -u ISCC_MONITOR_DB -u ISCC_MONITOR_REALM
+  /tmp/iscc-monitor` exits non-zero and prints a `config: required key` message to stderr (no panic).
 
 ## Done When
-`internal/config` exists as a pure, dependency-free leaf whose golden/table tests pass under
-`mise run check`, with the `Frozen >= Normal` and required-path validations covered, no new
-dependency, and no `cmd/` binary, `logclient.origin` export, or real I/O introduced.
+`cmd/iscc-monitor` builds and runs as the wired config→registry→store→loop entrypoint, `registerHubs`
+is golden-tested for both real testnet hubs (idempotent, origin-correct), and every Verification check
+passes with `mise run check` green and `go.mod`/`go.sum` byte-identical.
