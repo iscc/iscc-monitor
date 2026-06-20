@@ -48,7 +48,8 @@ type didDocument struct {
 // PublicKey is the 32-byte Ed25519 key (multicodec header already stripped by
 // pubkeyFromDID); Multibase is its z6Mk… did:key form; the validity fields carry
 // the parsed CID 1.0 timestamps (zero when the document omits them, meaning
-// "currently valid" — the follower decides enforcement later, not this parser).
+// "no constraint"). ParseDIDDocument does no now-vs-window enforcement; call
+// ValidAt to evaluate the window against an observation time.
 type DIDKey struct {
 	Multibase  string
 	PublicKey  []byte
