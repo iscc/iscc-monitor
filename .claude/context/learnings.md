@@ -250,6 +250,16 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   `AcceptCheckpoint` to surface its already-resolved key was Not In Scope). A caching fetcher or a
   signature change to thread the key out is a later optimization — not a defect, but the obvious next
   efficiency win once a key *reader* lands.
+- **`LookupHubKey(ctx, hubID, keyID)` is the read side of the cache and is now landed** — the exact
+  column-by-column inverse of `RecordHubKey` (`pubkey_raw`→`[]byte`, `pubkey_z`/`revoked_at`/
+  `resolved_at` via `sql.NullString`/`sql.NullInt64`→`""`/zero-time), `HubID`/`KeyID` reconstructed
+  from the in-args (never re-scanned), absent row → `(HubKey{}, false, nil)` per `FollowState`/
+  `Coverage`. **The `uint32` key id never has to be recovered from the signed `int64` column on read**
+  (it comes from the lookup arg), so high-bit ids like `0xdeadbeef` round-trip losslessly —
+  independently verified with a throwaway high-bit test (PASS, then removed). `LIMIT 1` (no `ORDER BY`)
+  is sound because `RecordHubKey`'s UPDATE-then-INSERT keeps ≤1 row per `(hub_id, key_id)`. Still
+  unwired into `PollHub`/verification (deliberate next slice). Oracle gate correctly N/A — pure CRUD,
+  `go.mod`/`go.sum`/`schema.sql` byte-identical (`git diff --quiet HEAD~1..HEAD` exit 0).
 
 ## Realm registry (`internal/registry`)
 
