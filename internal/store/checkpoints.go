@@ -152,6 +152,58 @@ func (s *Store) AdvanceFollowState(ctx context.Context, hubID int64, lastSize ui
 	return nil
 }
 
+// Violation is one self-consistency violation to persist permanently into the
+// violations table (irreplaceable evidence, ADR-0006). Kind carries the trigger
+// the consistency check supplies ("fork"/"shrink"/"equivocation") as a plain
+// string, mirroring how Status rides on CheckpointRecord. RawA / RawB are the two
+// contradictory hub-signed checkpoint bytes and ProofJSON the supporting
+// consistency proof; a zero DetectedAt is written as NULL.
+type Violation struct {
+	HubID      int64
+	Kind       string
+	RawA       []byte
+	RawB       []byte
+	ProofJSON  string
+	DetectedAt time.Time
+}
+
+// RecordViolation inserts one violation and returns its id. It is a plain INSERT
+// with no ON CONFLICT: violations has no UNIQUE constraint because re-detecting a
+// violation is itself evidence, so every detection is recorded. proof_json is a
+// plain string (empty stays empty, not NULL); a zero DetectedAt is stored as NULL.
+func (s *Store) RecordViolation(ctx context.Context, v Violation) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		"INSERT INTO violations (hub_id, kind, detected_at, raw_a, raw_b, proof_json) "+
+			"VALUES (?, ?, ?, ?, ?, ?)",
+		v.HubID, v.Kind, unixOrNil(v.DetectedAt), v.RawA, v.RawB, v.ProofJSON,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store.RecordViolation: insert: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("store.RecordViolation: last insert id: %w", err)
+	}
+	return id, nil
+}
+
+// Freeze sets frozen=1 on the hub's follow_state row, upserting so it works
+// whether or not a row exists yet (a hub can be frozen before its first verified
+// advance). It is the only writer of frozen; AdvanceFollowState deliberately omits
+// frozen from its conflict update, so an advance after a freeze keeps frozen=1
+// (ADR-0006, no auto-unfreeze).
+func (s *Store) Freeze(ctx context.Context, hubID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		"INSERT INTO follow_state (hub_id, frozen) VALUES (?, 1) "+
+			"ON CONFLICT(hub_id) DO UPDATE SET frozen = 1",
+		hubID,
+	)
+	if err != nil {
+		return fmt.Errorf("store.Freeze: hub %d: %w", hubID, err)
+	}
+	return nil
+}
+
 // unixOrNil maps a time.Time to the schema's INTEGER unix-seconds, writing a zero
 // time as NULL so "never observed" stays distinct from the unix epoch.
 func unixOrNil(t time.Time) any {

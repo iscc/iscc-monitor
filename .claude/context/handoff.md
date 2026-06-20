@@ -1,60 +1,51 @@
 # Handoff
 
-## 2026-06-20 — Review of: Single-poll follower — wire fetch → accept → record → advance for one hub
+## 2026-06-20 — Store-side freeze + violations seam (RecordViolation, Freeze)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added the typed `internal/store` freeze-path persistence seam: a `Violation` struct, a
+plain-INSERT `RecordViolation(ctx, Violation) (int64, error)` (persists `kind` + both raw
+contradictory checkpoints + proof JSON, no dedupe — re-detection is itself evidence), and an
+upsert-based `Freeze(ctx, hubID int64) error` that sets/keeps `frozen=1` (no auto-unfreeze,
+ADR-0006). One source file changed, no callers wired (out of scope), all gates green.
 
-**Summary:** `advance` added the new `internal/follower` package with `PollHub`, the first real caller
-composing the M1 verify chain (`FetchCheckpoint → AcceptCheckpoint`) with the store CRUD
-(`RecordCheckpoint → AdvanceFollowState`) for one hub, one observation. It persists and advances the
-follow cursor only on `StatusVerified`; the other three verdicts return to the caller untouched. Two
-new files, zero existing source changed, all gates green, scope exactly as `next.md` asked.
+**Files changed:**
+- `internal/store/checkpoints.go`: added `Violation` struct + `RecordViolation` (plain INSERT into
+  `violations`, returns new id via `LastInsertId`, `DetectedAt` mapped through `unixOrNil`,
+  `ProofJSON` stored as a plain string) and `Freeze` (`INSERT INTO follow_state (hub_id, frozen)
+  VALUES (?, 1) ON CONFLICT(hub_id) DO UPDATE SET frozen = 1`). No new imports — store stays a leaf.
+- `internal/store/checkpoints_test.go`: added 7 tests — `TestRecordViolation` (round-trips
+  `kind`/`raw_a`/`raw_b`/`proof_json`/`detected_at`, id > 0), `TestRecordViolationNoDedupe`
+  (re-detection → distinct row, empty proof = empty string not NULL), `TestRecordViolationZeroDetectedAtNull`,
+  `TestFreezeNoPriorRow`, `TestFreezeNoAutoUnfreeze` (Freeze→Advance keeps frozen=1, last_size=99),
+  `TestFreezeOtherHubsUnaffected`, `TestFreezeRestartSurvival` (violation + freeze survive reopen).
 
-**Verification:**
-- [x] `mise run check` → green (build + vet + test all exit 0, go1.24).
-- [x] `gofmt -l .` → empty.
-- [x] `go test -count=1 -run TestPollHub ./internal/follower` → PASS (both subtests, re-run verbosely).
-- [x] Verified path: composite fetcher (sb0 checkpoint + sb0 did.json), `baseURL="https://sb0.iscc.id"`,
-  `observedAt` 2026-06-20 → `StatusVerified`, `FollowState(ctx, hubID).LastSize == 10183`. Confirmed
-  `10183` is line 2 of the `sb0.iscc.id_checkpoint` fixture (the signed tree size) — a non-vacuous
-  assertion that the value flowed `info.TreeSize → AdvanceFollowState → cursor`.
-- [x] Non-advancing path: did.json advertises the mismatching `z6MkiNW46AUj…` key → `StatusUnverified`,
-  `LastSize == 0`. Complementary to the verified case; neither is vacuously satisfied.
-- [x] Store-leaf: `go list -deps ./internal/store` shows only `internal/store` itself; `./internal/follower`
-  pulls `logclient` + `store` (+ transitive `didweb`) → direction follower → {logclient, store}, never
-  the reverse.
-- [x] Seam shapes verified against source: `UpsertHub(ctx,domain,origin,baseURL)`,
-  `AcceptCheckpoint(ctx,fetcher,baseURL,raw,observedAt)→(Status,CheckpointInfo,error)`,
-  `FetchCheckpoint(ctx,fetcher,baseURL)`, `RecordCheckpoint(ctx,rec)`, `AdvanceFollowState(ctx,hubID,size)`,
-  `CheckpointRecord` fields, and `Fetcher` 1-method interface all line up with the diff's usage.
-- [x] Gate integrity: scanned all unpushed commits (`origin/develop..HEAD`); the only code change is the
-  two new follower files (other unpushed commits are CID context-only). No `//nolint`, `t.Skip`,
-  build-tag exclusions, deleted tests, or swallowed errors — every `err` is checked and `%w`-wrapped.
+**Verification:** `mise run check` → green (`go build ./... && go vet ./... && go test ./...` exit 0,
+go1.24); `gofmt -l .` empty.
+- `go test -count=1 -run 'TestRecordViolation|TestFreeze' ./internal/store` → PASS (all 7 subtests).
+- RecordViolation round-trip (kind + both raw blobs + proof JSON + id > 0) → pass.
+- Freeze no-prior-row (`FollowState.Frozen == true` after Freeze on a hub with no row) → pass.
+- No-auto-unfreeze (`Freeze` then `AdvanceFollowState(…,99)` → `Frozen == true` AND `LastSize == 99`) → pass.
+- Other-hubs-unaffected (freeze hub A → hub B `Frozen == false`) → pass.
+- `go list -deps ./internal/store` → only `github.com/iscc/iscc-monitor/internal/store` (zero internal
+  deps; store stays a leaf, no net/http in the closure).
 
-**Conformance/oracle gate:** N/A this step (correctly). The diff touches no signature verification,
-RFC-6962/Merkle, proof code, `internal/didweb`, or split-view logic (`git diff --name-only` confirms
-zero trust-root files). The pure `AcceptCheckpoint` chain is reused unchanged; `derive_vkey.py` vectors
-and WASM purity are untouched. The `notecheck` external-oracle CI job still does not exist — an
-infrastructure gap to wire when the trust-root code lands, not a regression here.
-
-**Issues found:** (none)
-
-**Next:** The poll loop / single-writer goroutine wrapper that calls `PollHub` on a cadence and owns all
-writes per network DB (ADR-0005/0007) is the natural follow-on. The independent alternative is the
-`hub_keys` did:web cache write — that step MUST also refresh the stale `sb1.amlet.id_did.json` fixture
-(still pre-rotation `22b08f3e`) and `derive_vkey.py` `HUBS` to the current sb1 checkpoint signer
-`069d0f14`, and re-triggers the `derive_vkey.py` parity gate. The three-trigger consistency check
-(fork/shrink/equivocation over `transparency-dev/merkle`) and freeze/alert are the other independent
-≤3-file follower slices.
+**Next:** The three-trigger RFC-6962 consistency check (fork/shrink/equivocation) is now the natural
+follow-on — it drives this seam. That step needs the `transparency-dev/merkle` dep (`go get`) plus
+tiles fixtures, so it is heavier; the alert ("exactly one alert") mechanism and wiring
+`RecordViolation`/`Freeze` into `follower.PollHub` are separate later slices. The independent
+`hub_keys` did:web cache write (which must also refresh the stale `sb1.amlet.id_did.json` fixture and
+`derive_vkey.py` HUBS to signer `069d0f14`) and the poll-loop / single-writer goroutine wrapper remain
+available as parallel ≤3-file steps.
 
 **Notes:**
-- **Garbled-body fault contract is preserved through `PollHub`.** On `AcceptCheckpoint` returning a
-  non-nil error, `PollHub` returns the wrapped error alongside that status (which is `StatusUnverified`'s
-  zero — meaningless when err != nil) and persists nothing. Callers of `PollHub` must check `err` before
-  the status, mirroring `AcceptCheckpoint`. Recorded in learnings.
-- **Record-only-on-verified** is documented in the file docstring as a deliberate choice (non-verified
-  verdicts carry a zero `CheckpointInfo` = no trustworthy `(size, root)`), flagged for a later step that
-  may want to record non-verified observations as evidence of an internally-broken hub. Sound for v1.
-- **Pushed** to `origin/develop` on this PASS verdict (3 commits were ahead; human merges develop→main
-  via CI-gated PR — never push main).
+- `Freeze` is now the only writer of `frozen`; `AdvanceFollowState` still omits it from its conflict
+  update, so the two upserts compose correctly (advance-after-freeze keeps the freeze). Both target the
+  same `follow_state` row via `ON CONFLICT(hub_id)`.
+- `RecordViolation` is a plain INSERT by design — `violations` has no UNIQUE constraint, so repeated
+  detection records distinct rows (verified by `TestRecordViolationNoDedupe`). The future consistency
+  check is responsible for *deciding* when to record, not for dedupe here.
+- `proof_json` is a TEXT column; an empty `ProofJSON` is stored as the empty string (not coerced to
+  NULL), matching the work-package instruction and asserted in `TestRecordViolationNoDedupe`.
+- No signature/consistency/proof code touched (pure persistence seam) → conformance/oracle gate N/A
+  this step; `derive_vkey.py` vectors and WASM purity untouched.
+- gofmt aligned the `var (…)` declaration block in `TestRecordViolation` (cosmetic, expected).
