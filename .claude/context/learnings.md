@@ -222,6 +222,36 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   oracle/conformance gate is correctly N/A here (pure path strings, no signature/RFC-6962/did:web/fsck
   path); it re-arms at the SQLiteFetcher + `fsck` slice.
 
+## SQLiteFetcher / mirror read-back (`internal/store/tiles.go` + `fetcher.go`)
+
+- **`next.md`'s "`var _ fsck.Fetcher = SQLiteFetcher{}` AND byte-identical go.mod" was a contradiction
+  — advance correctly resolved it by copying the interface, not importing it.** Reviewer reconfirmed
+  from source: `go list -deps github.com/transparency-dev/tessera/fsck` pulls `net/http`, `otel`, and
+  `klog` (via `fsck` → `tessera/client` + `errgroup`), so importing `fsck` even in a `_test.go` would
+  break store's leaf purity AND force `go mod tidy` to add indirect requires. The test instead declares
+  a local `fsckFetcher` interface that is **byte-for-byte identical** to `fsck.Fetcher@v1.0.2`
+  (`ReadCheckpoint`/`ReadTile(ctx,l,i uint64,p uint8)`/`ReadEntryBundle(ctx,i uint64,p uint8)` — names,
+  params, types, returns all match; diffed against `fsck/fsck.go:38-42`) and pins it with `var _
+  fsckFetcher = SQLiteFetcher{}`. Equivalent drift-detection guarantee, no dep-closure leak,
+  go.mod/go.sum byte-identical, store stays a leaf (`.Imports` = `context crypto/sha256 database/sql
+  embed errors fmt internal/tiles modernc.org/sqlite os time`, no `net/http`). Not a gate dodge.
+- **The p↔width translation is the load-bearing bug surface and is pinned correctly.** `widthForP(p)`:
+  `p==0 → tiles.TileWidth (256)`, else `int(p)`; a full-tile request (`p==0`) must look up width 256,
+  not 0. `RecordTile`/`RecordEntryBundle` set `is_full=1` only when `tiles.IsFull(width)` (width==256)
+  via `boolToInt`; partials overwrite in place through the composite-PK `ON CONFLICT … DO UPDATE`
+  (TestRecordTilePartialOverwrite asserts row count stays 1). `LatestCheckpointRaw` is the
+  size-agnostic `ORDER BY tree_size DESC LIMIT 1` read (distinct from size-keyed `CheckpointAt`).
+- **The partial→full fallback wraps `os.ErrNotExist` on BOTH legs, so `errors.Is` survives a double
+  miss.** `ReadTile`/`ReadEntryBundle` retry at width 256 only when `p>0 && errors.Is(err,
+  os.ErrNotExist)`; if the full leg also misses it returns *that* wrapped `os.ErrNotExist`
+  (TestFetcherReadTilePartialNoFallbackNoFull). `readTileAt`/`readEntryBundleAt` are the no-fallback
+  inner reads; a `p==0` miss returns the wrapped sentinel directly. Matches tessera's
+  `PartialOrFullResource` (which is `internal/` and not importable) exactly.
+- **Oracle/conformance gate correctly N/A for this slice** — plain CRUD + BLOB round-trip with
+  synthetic in-test bytes; no signature/RFC-6962/Merkle/did:web/`fsck`-rebuild path. The actual
+  `fsck.New(...).Check(...)` root-rebuild + inclusion cross-check is the *next* conformance slice
+  (needs real tile fixtures) and is the point where this seam first faces the trust-root oracle.
+
 ## Monitor binary (`cmd/iscc-monitor`)
 
 - **The binary is the only consumer that wires all four M1 leaves**: `config.Load(os.LookupEnv)` →
