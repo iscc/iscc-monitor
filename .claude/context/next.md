@@ -1,134 +1,87 @@
 # Next Work Package
 
-## Step: Verify Ed25519 signed-note checkpoints (reuse `sumdb/note`); map a non-matching signature to `unverified`
+## Step: Enforce the CID 1.0 key validity window (pure `DIDKey.ValidAt`)
 
 ## Goal
-Give the monitor its first real checkpoint-acceptance primitive: a pure function that takes a
-hub-signed C2SP checkpoint plus the verifier key `ResolveVerifierKey` already returns, verifies the
-Ed25519 signature via `golang.org/x/mod/sumdb/note`, and yields `(origin, treeSize, root)` on success
-— mapping any signature that does not match the resolved key to status `unverified` (distinct from the
-`unresolvable` resolution failure already handled in `didresolve.go`). This is the last load-bearing
-crypto unit before the follower/store can begin, and it adds the project's first reused dependency.
+Turn the parsed-but-unenforced CID 1.0 validity fields on `DIDKey`
+(`ValidFrom`/`ValidUntil`/`Revoked`) into a pure, golden-tested predicate that decides whether a
+resolved key is valid at a given observation time. This is the precondition the follower's
+checkpoint-acceptance path needs before it can trust a `verified` verdict, and it closes the
+documented "parses-but-does-not-enforce" gap — without yet pulling in SQLite or the follower.
 
 ## Scope
-- **Create**: `/workspace/iscc-monitor/internal/logclient/verify.go` — the signed-note checkpoint
-  verifier (per the plan's `logclient/{origin.go,follower.go,verify.go}` layout). 1 non-test source.
-- **Create**: `/workspace/iscc-monitor/internal/logclient/verify_test.go` — table-driven golden test
-  (test file, not counted toward the 3-file limit).
-- **Create**: `/workspace/iscc-monitor/testdata/live/sb0.iscc.id_checkpoint` and
-  `/workspace/iscc-monitor/testdata/live/sb1.amlet.id_checkpoint` — real checkpoints captured once from
-  the live hubs (golden fixtures, not counted as source).
-- **Modify**: `/workspace/iscc-monitor/go.mod` — add `require golang.org/x/mod v0.33.0` (version
-  constraint in Implementation Notes). `go.sum` is created by `go mod tidy`; that is expected output,
-  not a separate scope item.
-- **Reference** (read, do not import):
-  - `/workspace/iscc-monitor/cauldron/iscc-hub/iscc_hub/checkpoint_note.py` — the exact wire format and
-    key-id derivation to mirror; in particular `parse_checkpoint`, `verify_checkpoint`, and the
-    body/signature layout.
-  - `/workspace/iscc-monitor/cauldron/iscc-hub/conformance/notecheck/main.go` — the Go reference
-    oracle: shows the `note.Open(body, note.VerifierList(v))` + `len(n.Sigs)`/`len(n.UnverifiedSigs)`
-    pattern to follow.
-  - `/workspace/iscc-monitor/internal/logclient/didresolve.go` — `ResolveVerifierKey` returns the
-    `vkey` string this consumes; match its sentinel-error style (`ErrUnverified` parallel to
-    `ErrUnresolvable`).
-  - `/workspace/iscc-monitor/internal/didweb/vkey.go` — confirms the vkey string format
-    `note.NewVerifier` parses.
+- **Create**: `/workspace/iscc-monitor/internal/didweb/validity.go` (a single pure method on `DIDKey`)
+- **Create**: `/workspace/iscc-monitor/internal/didweb/validity_test.go` (table-driven test)
+- **Modify**: `/workspace/iscc-monitor/internal/didweb/resolve.go` — only the `DIDKey` doc comment
+  that today says the follower "decides enforcement later, not this parser", to point at the new
+  `ValidAt`. No logic change to `ParseDIDDocument` or `parseTime`. (Counts as the single non-test
+  source touch besides the new file; total ≤3.)
+- **Reference**:
+  - `/workspace/iscc-monitor/internal/didweb/resolve.go` (the `DIDKey` struct + `parseTime` it builds
+    on; note `parseTime` maps absent/unparseable timestamps to the zero `time.Time`)
+  - `/workspace/iscc-monitor/.claude/adr/0009-didweb-trust-root.md` (validity windows are the domain
+    owner's rotation/revocation mechanism — `verificationMethod` + `revoked` validity windows; a
+    signature outside the window must not be `verified`)
+  - `/workspace/iscc-monitor/internal/didweb/resolve_test.go` (existing assertion that live fixtures
+    have zero-valued validity fields = "currently valid" — the new predicate must agree)
 
 ## Not In Scope
-- The follower loop, polling, or `tessera/client` wiring — no fetch of `/log/checkpoint` in production
-  code. This step verifies bytes handed to it; the live fixtures are captured by hand (a one-time
-  `curl`), not fetched at test time.
-- The three-trigger fork/shrink/equivocation **consistency** check and RFC-6962 / Merkle math — a
-  later step (needs two successive checkpoints + `transparency-dev/merkle`).
-- Any SQLite store, `hub_keys` cache, or persistence.
-- **CID 1.0 validity-window enforcement** (`DIDKey.ValidFrom`/`ValidUntil`/`Revoked`): leave them
-  parsed-but-unenforced as today; enforcement belongs to the store/follower step.
-- The pure `internal/proof/verify` package (Merkle inclusion/consistency, WASM) — distinct from this
-  signed-note `logclient/verify.go`; do not create it here.
-- Wiring `transparency-dev/formats/note` — not needed for the Ed25519 case (stdlib `sumdb/note`
-  handles alg `0x01` natively, verified during scoping).
+- **No SQLite, no `hub_keys` cache, no follower acceptance path** — those are the next step. This
+  step only adds the pure predicate that step will call.
+- **No status mapping** (`unresolvable`/`unverified`/`verified`) and no wiring into `VerifyCheckpoint`
+  or `ResolveVerifierKey`. `ValidAt` returns a bool; the caller decides what an out-of-window key
+  means for hub status.
+- **No fixture refresh** (`sb1.amlet.id_did.json` / `derive_vkey.py` to `069d0f14`) — handoff pins
+  that to the `hub_keys`/validity-cache step, not here.
+- **Do not change `parseTime`'s lenient behavior** (unparseable → zero time). Changing it would alter
+  parsing semantics and the existing golden test; if fail-open on a *malformed* (non-empty) timestamp
+  is a concern, file it as an issue for the parser/fixture step rather than fixing it here.
 
 ## Implementation Notes
-- **Reuse, do not reimplement (ADR-0003 / target Stack).** Verification goes through
-  `golang.org/x/mod/sumdb/note`, not a hand-rolled Ed25519 path. The flow, mirroring
-  `notecheck/main.go`:
-  ```
-  v, err := note.NewVerifier(vkey)        // vkey is exactly what ResolveVerifierKey returns
-  n, err := note.Open(body, note.VerifierList(v))
-  // success iff err == nil && len(n.Sigs) >= 1
-  ```
-  Then parse the verified body's three lines (`<origin>\n<tree_size>\n<base64(root)>\n`) into
-  `(origin, treeSize, root)`. Port the body-parsing rules from `checkpoint_note.py:parse_checkpoint`:
-  decimal `tree_size` with **no leading zeros** (reject `"01"`, accept `"0"`), non-negative; root is
-  **std** base64 and **exactly 32 bytes**. `note.Open` already enforces the signed-note framing
-  (trailing-`\n` body, blank separator, `— <name> <base64>` sig line), so do not re-parse the
-  signature line yourself — let `note.Open` own it.
-- **Status mapping (learnings: "A signature matching no listed key → `unverified`").** Two distinct
-  failure shapes from `note.Open` BOTH mean the checkpoint was not signed by the hub's resolved key →
-  return a sentinel `ErrUnverified`:
-  1. body present but the listed verifier's name+keyhash matched a sig line yet the signature is
-     invalid → `n.UnverifiedSigs` populated, `n.Sigs` empty;
-  2. no sig line matches the verifier's name/keyhash at all → `note.Open` returns the error
-     `"note has no verifiable signatures"` (verified during scoping with the sb1 vkey on the sb0
-     checkpoint).
-  Suggested signature:
-  ```go
-  // ErrUnverified marks a checkpoint whose signature does not match the hub's
-  // resolved did:web key (an internally-broken hub). Distinct from ErrUnresolvable.
-  var ErrUnverified = errors.New("checkpoint signature unverified")
-
-  // VerifyCheckpoint verifies raw against vkey and returns the signed (origin, treeSize, root).
-  func VerifyCheckpoint(vkey string, raw []byte) (origin string, treeSize uint64, root [32]byte, err error)
-  ```
-  Keep `VerifyCheckpoint` **pure** — it imports only `sumdb/note` + stdlib (`encoding/base64`,
-  `strconv`, `strings`, `errors`, `fmt`); NO `net`/`os`/`database/sql`. `sumdb/note` is pure Go (it
-  ships in the std `cmd/vendor` tree), so this function stays WASM-shareable. (`net/http` already lives
-  in this package via `didresolve.go`, so the package as a whole is not WASM-pure — that is fine; the
-  follower seam, not WASM, consumes `VerifyCheckpoint`. The pure WASM verify path is the later
-  `internal/proof/verify`.)
-- **`go.mod` version constraint (verified during scoping).** `golang.org/x/mod@v0.35.0`+ require
-  `go >= 1.25.0`, which breaks the pinned `go 1.24` directive. `golang.org/x/mod v0.33.0` works under
-  go 1.24 and verifies the live sb0 checkpoint (`note.Open` → `verified=1 unverified=0`). Pin
-  `v0.33.0`. Run `go mod tidy` to populate `go.sum`, then `mise run fmt`. Do **not** bump the module's
-  `go 1.24` directive.
-- **Capturing the live fixtures.** Fetchable now:
-  `curl -fsS https://sb0.iscc.id/log/checkpoint` and `https://sb1.amlet.id/log/checkpoint`. Save the
-  raw bytes verbatim (preserve the trailing newline; do not reformat) to the `testdata/live/` files.
-  The sb0 fixture verifies against
-  `sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5` and sb1 against
-  `sb1.amlet.id/log+22b08f3e+ATo2ruguSdJGh11PS76osrQf6OZKrufzzwH/HMwE3a8/` (the existing golden vkeys).
-  Because the live tree grows, assert the parsed `origin` and that `treeSize >= 1` and `root` is 32
-  non-zero bytes — do NOT hard-code the live `treeSize`/`root` (they drift). For an exact-value golden,
-  optionally add a synthetic inline checkpoint constant (fixed origin+size+root+sig) only if you can
-  produce one deterministically; otherwise the live fixture plus the negative/tamper cases below
-  suffice.
-- **Negative cases the test must cover** (assert `errors.Is(err, ErrUnverified)`): (a) the sb0
-  checkpoint verified against the **sb1** vkey (name/keyhash mismatch → `"no verifiable signatures"`);
-  (b) a tampered sb0 checkpoint (flip one base64 char in the root line) against the correct vkey (sig
-  invalid → `UnverifiedSigs`). (c) A body with a leading-zero `tree_size` or a non-32-byte root must
-  return a **parse** error — it must NOT be `ErrUnverified` when the signature itself was valid; keep
-  the two concerns separable (a distinct sentinel or a plain wrapped error is fine).
-- **Correctness rule (learnings):** origin is `<domain>/log`; the verified signed-note `name`
-  (`n.Sigs[0].Name`) must equal the checkpoint's first body line — assert they match.
-- Short, pure functions with evergreen docstrings; file starts with a one-line purpose docstring. Do
-  NOT use `t.Skip`, `//nolint`, build tags, or swallow errors to pass the gate (target quality bar;
-  learnings "Never weaken a gate").
+- Add a method on the value type: `func (k DIDKey) ValidAt(now time.Time) bool` — pure, takes the
+  observation time as an argument so it never reads the wall clock itself (deterministic, testable).
+  Returning a bool keeps it minimal; the follower owns the status decision. (If a reason string is
+  wanted later, add it then — YAGNI now.)
+- Semantics (CID 1.0 / ADR-0009 wall-clock window; the zero `time.Time` means "no constraint",
+  matching `parseTime` and the existing `resolve_test.go` assertion that live docs are "currently
+  valid"):
+  - `ValidFrom` non-zero and `now.Before(k.ValidFrom)` → not valid (key not yet active).
+  - `ValidUntil` non-zero and `!now.Before(k.ValidUntil)` → not valid (half-open `[from, until)`;
+    `now == ValidUntil` is expired).
+  - `Revoked` non-zero and `!now.Before(k.Revoked)` → not valid (revoked at/after that instant;
+    half-open the same way, so `now == Revoked` is already revoked).
+  - All-zero validity fields (the live testnet case) → always valid.
+- Guard each field with `!field.IsZero()` before comparing, so an absent field never constrains.
+  Compare with `time.Time.Before` only (avoid `==`/`After` on `time.Time` — monotonic-clock and
+  half-open-boundary pitfalls). Pin the boundary instants explicitly in tests.
+- Keep the file pure: import only `time`. No `net`/`os`/`database/sql`. This is the same WASM-purity
+  rule as the rest of `internal/didweb` (Correctness rule: `proof/verify`/`didweb` stay import-clean
+  so the WASM build does not break). Verify with the `GOOS=js GOARCH=wasm` build below.
+- Start the new file with a docstring explaining it enforces the CID 1.0 validity window parsed by
+  `ParseDIDDocument`, consumed later by the follower's checkpoint-acceptance path. Short, pure
+  function, evergreen docstring.
+- Relevant Correctness rule (learnings.md): "**did:web is the only key source (ADR-0009).** … A
+  signature matching no listed key → `unverified`." A key that verifies a signature but is *outside
+  its validity window* is the rotation/revocation case this predicate gates — the follower will treat
+  an out-of-window key as not-`verified`, exactly as a key rotation/revocation should.
+- Do NOT use `t.Skip`, `//nolint`, build tags, or swallow errors to pass the gate (target quality
+  bar; learnings "Never weaken a gate").
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all exit 0).
-- `gofmt -l /workspace/iscc-monitor` prints nothing.
-- `go test -run TestVerifyCheckpoint ./internal/logclient` passes (all subtests).
-- Positive: `VerifyCheckpoint("sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5",
-  <testdata/live/sb0.iscc.id_checkpoint bytes>)` returns `origin == "sb0.iscc.id/log"`, `treeSize >= 1`,
-  a 32-byte non-zero `root`, and `err == nil`; same shape for sb1 with its vkey.
-- Negative: the sb0 checkpoint verified against the sb1 vkey, and a one-char-tampered sb0 checkpoint
-  against the sb0 vkey, each return `errors.Is(err, ErrUnverified) == true`.
-- External oracle parity (re-run): `python3 /workspace/iscc-monitor/.claude/derive_vkey.py` prints both
-  golden vkeys byte-exact (`sb0…+40b74463…`, `sb1…+22b08f3e…`) matching the vkeys the test uses;
-  `rm -rf /workspace/iscc-monitor/.claude/.scratch` afterward so it does not dirty the tree.
-- `GOOS=js GOARCH=wasm go build ./internal/didweb` still succeeds (didweb untouched, purity intact).
+- `mise run check` is green (`go build ./...` + `go vet ./...` + `go test ./...` all exit 0).
+- `gofmt -l /workspace/iscc-monitor/internal/didweb` prints nothing.
+- `go test -run TestValidAt ./internal/didweb` passes (all subtests).
+- Assertion: a zero-value `DIDKey{}` (no validity fields) `.ValidAt(time.Now())` returns `true`
+  (matches the live-fixture "currently valid" case in `resolve_test.go`).
+- Assertion: with `ValidUntil = 2020-01-01T00:00:00Z`, `.ValidAt(2026-06-20T00:00:00Z)` returns
+  `false` (expired); with `ValidFrom = 2030-01-01T00:00:00Z`, `.ValidAt(2026-06-20T00:00:00Z)`
+  returns `false` (not yet active); with `Revoked = 2020-01-01T00:00:00Z`,
+  `.ValidAt(2026-06-20T00:00:00Z)` returns `false`.
+- Assertion (half-open boundary): for `ValidUntil = T`, `.ValidAt(T)` returns `false` and
+  `.ValidAt(T.Add(-time.Nanosecond))` returns `true`.
+- `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (validity.go stays WASM-pure).
 
 ## Done When
-`VerifyCheckpoint` verifies the live sb0/sb1 checkpoint fixtures against their derived vkeys, maps a
-non-matching signature to `ErrUnverified`, and all Verification criteria pass with `mise run check`
-green.
+`internal/didweb` exposes a pure `DIDKey.ValidAt(now)` predicate enforcing the CID 1.0
+`ValidFrom`/`ValidUntil`/`Revoked` window with half-open boundaries and zero = "no constraint", all
+Verification criteria pass, and the WASM build stays green.
