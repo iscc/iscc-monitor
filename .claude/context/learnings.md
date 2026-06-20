@@ -131,6 +131,23 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   yields a trailing empty element; `len >= 3` + reading `lines[0:3]` is correct and tolerates C2SP
   extension lines after the root. Verify `note.Open`'s framing — never re-parse the sig line by hand.
 
+## Consistency triggers (`internal/logclient/consistency.go`)
+
+- **Shrink is the one size-only trigger; it lands dep-free.** `CheckShrink(prev, next uint64) bool ==
+  prev > 0 && next < prev`. The `prev > 0` guard is load-bearing: it stops the fresh-store
+  `FollowState{}.LastSize == 0` from being misread as a shrink (any `next` over a zero prior is growth).
+  Fork (same size, different root) is the next dep-free slice (a `[rootBytes]byte` compare at equal
+  size); only equivocation (RFC-6962 consistency proof) needs `transparency-dev/merkle` + tile
+  fixtures. `ViolationShrink ViolationKind = "shrink"` is the exact `store.Violation.Kind` /
+  `violations.kind` string — kept as a logclient string type so store stays import-free of logclient,
+  mirroring how `Status` rides on `CheckpointRecord`.
+- **`CheckShrink`/`ViolationShrink` are an intentional unused-until-wired export seam, not dead code.**
+  `next.md` scoped the `follower.PollHub` wiring (map `LastSize→prev`, `TreeSize→next`; on true →
+  `RecordViolation` + `Freeze` + alert-once) as a deliberately separate later slice. `go vet` is clean;
+  do not flag the new exported symbols as dead. The shrink check is pure arithmetic, so the
+  conformance/oracle gate (`notecheck`/`derive_vkey.py`/`fsck`) is correctly N/A here — it only trips
+  once the merkle-backed equivocation slice lands.
+
 ## Follower composition (`internal/follower`)
 
 - **`PollHub` is the first real caller composing the M1 chain + store CRUD** (`follower.go`):
