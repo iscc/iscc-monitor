@@ -195,6 +195,33 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   consistency-proof) now remains deferred to the merkle-backed slice. Test guard `if rootA == rootB
   { t.Fatal }` makes the "different root" cases non-vacuous.
 
+## tlog-tiles layout seam (`internal/tiles`)
+
+- **`internal/tiles` is a thin re-export of `tessera/api/layout`, not a reimplementation** — wrappers
+  `TilePath`/`EntriesPath`/`PartialTileSize` delegate 1:1 (matching arg order: `TilePath(level, index
+  uint64, p uint8)`, `EntriesPath(n uint64, p uint8)`), plus `const TileWidth/TileHeight = layout.*`
+  and the one project predicate `IsFull(width int) bool == width == TileWidth`. The package's compiled
+  closure is `api/layout` only, and `api/layout`'s own closure is **stdlib-only** — so `net/http`/
+  `database/sql` stay out and the WASM build is green (verified). `IsFull` takes `int` (not `uint8`)
+  because the column-convention full sentinel 256 cannot fit in `uint8`; `next.md` left the choice open
+  and `int` is the clean pick.
+- **`next.md`'s `PartialTileSize(0,0,300)==44` golden was WRONG — advance correctly pinned `0`.** Per
+  tessera `tile.go`: `sizeAtLevel=300`, `fullTiles=300/256=1`, `index 0 < fullTiles` → **0** (the first
+  256-leaf tile is *full*); the leftover 44 spill into index **1**. Reviewer re-ran the real
+  `layout.PartialTileSize` independently: `(0,0,300)=0`, `(0,1,300)=44`, `(0,0,44)=44`, `(0,0,256)=0`.
+  Downstream load-bearing: the SQLiteFetcher slice must address the 44-leaf partial of a 300-leaf tree
+  at **index 1**, never index 0. All four `TilePath`/`EntriesPath` golden strings are verbatim from
+  tessera's `api/layout/paths_test.go` (ground truth, not author-asserted).
+- **tessera v1.0.2 is a clean dep on the 1.24 toolchain.** Its go directive is `go 1.24.0`; the heavy
+  otel/klog/formats/`x/crypto`/backoff deps land in `go.sum` as module-graph requirements only (never
+  compiled, so absent from `go.mod`'s indirect block and the `internal/tiles` closure) — same pattern as
+  go-cmp for merkle. `go mod tidy` is a verified no-op, `go mod verify` passes, directive stays `go
+  1.24.0` with no `toolchain` line. The tessera require graph bumped `x/sys 0.37→0.41` (benign, pure-Go).
+- **`IsFull`/`internal/tiles` are an intentional unused-until-wired export seam** (like the consistency
+  triggers) — `go vet` clean, not dead code; the SQLiteFetcher store-key slice is its first caller. The
+  oracle/conformance gate is correctly N/A here (pure path strings, no signature/RFC-6962/did:web/fsck
+  path); it re-arms at the SQLiteFetcher + `fsck` slice.
+
 ## Monitor binary (`cmd/iscc-monitor`)
 
 - **The binary is the only consumer that wires all four M1 leaves**: `config.Load(os.LookupEnv)` →
