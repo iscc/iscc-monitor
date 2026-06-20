@@ -57,7 +57,7 @@ type DIDKey struct {
 	Revoked    time.Time
 }
 
-// parseDIDDocument parses did.json bytes into the hub's assertion-method key.
+// ParseDIDDocument parses did.json bytes into the hub's assertion-method key.
 //
 // It JSON-decodes the document, resolves the verification method referenced by
 // assertionMethod (inline object or #fragment reference into verificationMethod),
@@ -65,21 +65,21 @@ type DIDKey struct {
 // surfaces any CID 1.0 validity timestamps. It returns a wrapped error on invalid
 // JSON, a missing or unresolvable assertion method, a missing publicKeyMultibase,
 // or a pubkeyFromDID failure. It performs no I/O and no now-vs-window enforcement.
-func parseDIDDocument(data []byte) (DIDKey, error) {
+func ParseDIDDocument(data []byte) (DIDKey, error) {
 	var doc didDocument
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return DIDKey{}, fmt.Errorf("parseDIDDocument: invalid JSON: %w", err)
+		return DIDKey{}, fmt.Errorf("ParseDIDDocument: invalid JSON: %w", err)
 	}
 	vm, err := assertionKey(doc)
 	if err != nil {
-		return DIDKey{}, fmt.Errorf("parseDIDDocument: %w", err)
+		return DIDKey{}, fmt.Errorf("ParseDIDDocument: %w", err)
 	}
 	if vm.PublicKeyMultibase == "" {
-		return DIDKey{}, fmt.Errorf("parseDIDDocument: verification method %q has no publicKeyMultibase", vm.ID)
+		return DIDKey{}, fmt.Errorf("ParseDIDDocument: verification method %q has no publicKeyMultibase", vm.ID)
 	}
 	pub, err := pubkeyFromDID(vm.PublicKeyMultibase)
 	if err != nil {
-		return DIDKey{}, fmt.Errorf("parseDIDDocument: %w", err)
+		return DIDKey{}, fmt.Errorf("ParseDIDDocument: %w", err)
 	}
 	return DIDKey{
 		Multibase:  vm.PublicKeyMultibase,

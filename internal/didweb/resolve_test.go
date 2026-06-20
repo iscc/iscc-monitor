@@ -1,5 +1,5 @@
 // Golden + error tests for the pure did:web document parser. The parsed pubkey,
-// fed through verifierKey(origin, pub), must byte-match the recorded oracle
+// fed through VerifierKey(origin, pub), must byte-match the recorded oracle
 // vectors so the resolve -> vkey chain stays a single coherent golden. Fixtures
 // in testdata/ are captured snapshots (see next.md re: the live sb1 rotation) and
 // must not be hand-edited.
@@ -38,16 +38,16 @@ func TestParseDIDDocument(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read fixture %q: %v", tc.fixture, err)
 			}
-			key, err := parseDIDDocument(data)
+			key, err := ParseDIDDocument(data)
 			if err != nil {
-				t.Fatalf("parseDIDDocument(%q) error: %v", tc.fixture, err)
+				t.Fatalf("ParseDIDDocument(%q) error: %v", tc.fixture, err)
 			}
 			if len(key.PublicKey) != 32 {
 				t.Fatalf("pubkey is %d bytes, want 32", len(key.PublicKey))
 			}
-			got := verifierKey(tc.origin, key.PublicKey)
+			got := VerifierKey(tc.origin, key.PublicKey)
 			if got != tc.want {
-				t.Errorf("verifierKey(%q) = %q, want %q", tc.origin, got, tc.want)
+				t.Errorf("VerifierKey(%q) = %q, want %q", tc.origin, got, tc.want)
 			}
 			// Live docs omit CID 1.0 validity fields -> "currently valid".
 			if !key.Revoked.IsZero() {
@@ -88,8 +88,8 @@ func TestParseDIDDocumentErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := parseDIDDocument([]byte(tc.data)); err == nil {
-				t.Errorf("parseDIDDocument(%s) = nil error, want error", tc.name)
+			if _, err := ParseDIDDocument([]byte(tc.data)); err == nil {
+				t.Errorf("ParseDIDDocument(%s) = nil error, want error", tc.name)
 			}
 		})
 	}
@@ -114,13 +114,13 @@ func TestParseDIDDocumentInlineAssertion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal doc: %v", err)
 	}
-	key, err := parseDIDDocument(data)
+	key, err := ParseDIDDocument(data)
 	if err != nil {
-		t.Fatalf("parseDIDDocument(inline) error: %v", err)
+		t.Fatalf("ParseDIDDocument(inline) error: %v", err)
 	}
-	got := verifierKey("sb0.iscc.id/log", key.PublicKey)
+	got := VerifierKey("sb0.iscc.id/log", key.PublicKey)
 	want := "sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5"
 	if got != want {
-		t.Errorf("verifierKey = %q, want %q", got, want)
+		t.Errorf("VerifierKey = %q, want %q", got, want)
 	}
 }

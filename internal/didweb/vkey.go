@@ -85,12 +85,12 @@ func keyID(name string, pub []byte) uint32 {
 	return binary.BigEndian.Uint32(h.Sum(nil)[:4])
 }
 
-// verifierKey returns the signed-note verifier-key string for a name and pubkey.
+// VerifierKey returns the signed-note verifier-key string for a name and pubkey.
 //
 // The format is "<name>+<keyid:08x>+<base64(0x01 || pub)>" using standard
 // padded base64, matching .claude/derive_vkey.py byte-for-byte. The name is the
 // hub origin (e.g. sb0.iscc.id/log).
-func verifierKey(name string, pub []byte) string {
+func VerifierKey(name string, pub []byte) string {
 	encoded := append([]byte{algEd25519}, pub...)
 	return fmt.Sprintf("%s+%08x+%s", name, keyID(name, pub), base64.StdEncoding.EncodeToString(encoded))
 }

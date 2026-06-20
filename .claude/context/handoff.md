@@ -1,66 +1,60 @@
 # Handoff
 
-## 2026-06-20 — Review of: Pure did:web document parser (`internal/didweb/resolve.go`)
+## 2026-06-20 — did:web identifier → did.json URL mapping (pure) + export the didweb resolve surface
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added the pure `didweb.DocumentURL(did string) (string, error)` that maps a
+`did:web:<method-specific-id>` identifier to its `did.json` HTTPS URL per the W3C did:web method spec
+(colon-separated segments, percent-decoded, `/.well-known/did.json` vs `/<path>/did.json`). Promoted
+the minimal resolve surface across the package boundary by mechanically renaming
+`parseDIDDocument`→`ParseDIDDocument` and `verifierKey`→`VerifierKey`; `pubkeyFromDID`/`keyID`/
+`b58decode` stay unexported. No `net/http`, no fetch, no status mapping (deferred to the next step).
 
-**Summary:** `advance` added `parseDIDDocument([]byte) (DIDKey, error)` — a pure (no `net`/`os`/`sql`)
-parser that JSON-decodes a hub's `did.json`, resolves the `assertionMethod`-referenced verification
-method (string `#fragment` ref or inline object), extracts `publicKeyMultibase` through the
-oracle-verified `pubkeyFromDID`, and surfaces optional CID 1.0 validity timestamps without enforcing
-them. Code is clean, short, pure functions with evergreen docstrings; scope is exactly the 4 files
-`next.md` listed. Every verification criterion passes, and I independently confirmed trust-root parity
-against the external `derive_vkey.py` oracle.
+**Files changed:**
+- `internal/didweb/url.go` (new): pure `DocumentURL` mapping; imports only `fmt`, `net/url`
+  (`PathUnescape`), `strings`. WASM-shareable.
+- `internal/didweb/resolve.go`: `parseDIDDocument`→`ParseDIDDocument` (signature, docstring, three
+  wrapped-error prefixes `parseDIDDocument:`→`ParseDIDDocument:`). Logic unchanged.
+- `internal/didweb/vkey.go`: `verifierKey`→`VerifierKey` (signature + docstring). Derivation bytes
+  unchanged.
+- `internal/didweb/url_test.go` (new): table-driven golden (sb0, sb1, port+path, path-only,
+  port-only) + error tests (empty, wrong method, bare prefix, empty host, bad percent-encoding).
+- `internal/didweb/resolve_test.go`, `internal/didweb/vkey_test.go`: updated call sites/comments to
+  the exported names.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green, exit 0 (`internal/didweb`, `internal/logclient`).
-- [x] `gofmt -l .` — prints nothing.
-- [x] `go test -run TestParseDIDDocument ./internal/didweb` — PASS. sb0 →
-  `sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5`; sb1 →
-  `sb1.amlet.id/log+22b08f3e+ATo2ruguSdJGh11PS76osrQf6OZKrufzzwH/HMwE3a8/`. Validity fields zero.
-- [x] Error cases — `TestParseDIDDocumentErrors` PASS: malformed JSON, empty `verificationMethod`,
-  missing `publicKeyMultibase`, no `assertionMethod`, bad multibase all return non-nil. Plus
-  `TestParseDIDDocumentInlineAssertion` (inline-object form → same sb0 golden) PASS.
-- [x] `go test -run TestVerifierKey ./internal/didweb` — PASS (no regression to existing golden).
-- [x] Purity — `resolve.go` declares only `encoding/json`, `fmt`, `time`; non-test closure has no
-  `net`/`net/http`/`database/sql`. (`os` appears only because `fmt` pulls it in — stdlib, unavoidable.)
-  `GOOS=js GOARCH=wasm go build ./internal/didweb` succeeds → stays WASM-shareable.
-- [x] **Oracle / trust-root parity (independent)** — re-ran `python3 .claude/derive_vkey.py`: both
-  golden vectors print byte-for-byte equal to the test asserts, and the fixtures' `publicKeyMultibase`
-  match the oracle's `HUBS` map. The resolve→vkey chain is anchored to the external oracle, not
-  self-referential. (`notecheck` CI job not yet wired this early in M1 — no signature-verification code
-  exists yet; flagged, not a gate failure.)
-- [x] Gate-integrity scan over unpushed commits — no `//nolint`, `t.Skip`, build tags, swallowed
-  errors, deleted assertions, or loosened gates. The only matches were the policy prose in
-  `handoff.md`/`next.md` themselves.
-- [x] Scope — exactly 1 source + 1 test + 2 fixtures + handoff; nothing from `## Not In Scope` (no
-  HTTP, no `Resolver` struct, no status assignment, no `hub_keys` table); `go.mod` still
-  dependency-free (no `require` block); `vkey.go` untouched.
+**Verification:** `mise run check` (build + vet + test) → green, exit 0
+(`internal/didweb`, `internal/logclient`). `gofmt -l .` → prints nothing. Per-criterion:
+- [x] `go test -run TestDocumentURL ./internal/didweb` PASS; all five golden cases match, including
+  `did:web:sb0.iscc.id`→`https://sb0.iscc.id/.well-known/did.json`,
+  `did:web:sb1.amlet.id`→`https://sb1.amlet.id/.well-known/did.json`, and
+  `did:web:example.com%3A3000:user:alice`→`https://example.com:3000/user/alice/did.json`.
+- [x] `DocumentURL("")` and `DocumentURL("did:key:z6Mkabc")` each return non-nil error (plus bare
+  prefix, empty host, invalid percent-encoding).
+- [x] `go test -run TestParseDIDDocument` / `-run TestVerifierKey` still PASS after the renames — no
+  regression to the golden vectors `sb0…+40b74463+…` / `sb1…+22b08f3e+…`.
+- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` succeeds — package stays WASM-shareable.
+- [x] Oracle parity: re-ran `python3 .claude/derive_vkey.py` — both vectors print byte-for-byte equal
+  to the test asserts; the rename did not change derived bytes. Removed the `.claude/.scratch/` the
+  oracle writes (not gitignored).
 
-**Issues found:** (none)
-
-**Minor fixes by reviewer:** removed `.claude/.scratch/` (not gitignored) left behind by running the
-`derive_vkey.py` oracle during verification — kept the tree clean.
-
-**Next:** Wire the did:web HTTP fetch at the outbound-fetch seam (follower step): map
-`did:web:<domain>` → `https://<domain>/.well-known/did.json`, inject a `Fetcher`/`*http.Client`, fetch
-+ call `parseDIDDocument`, and map outcomes to status (`unresolvable` on fetch/parse failure,
-`unverified` on signature mismatch). `parseDIDDocument`/`DIDKey`/`pubkeyFromDID`/`verifierKey` are all
-unexported today — export the minimal surface the follower needs across the package boundary. The
-`hub_keys(... pubkey_z, revoked_at ...)` cache and now-vs-window validity enforcement (consuming the
-already-surfaced `ValidFrom`/`ValidUntil`/`Revoked`) belong to that store/follower step.
+**Next:** Wire the did:web HTTP fetch at the outbound-fetch seam (follower step): inject a
+`Fetcher`/`*http.Client`, call `DocumentURL(did)` → fetch → `ParseDIDDocument(bytes)` →
+`VerifierKey(origin, key.PublicKey)`, and map outcomes to hub status (`unresolvable` on fetch/parse
+failure, `unverified` on signature mismatch). The `hub_keys(... pubkey_z, revoked_at ...)` cache and
+now-vs-window validity enforcement (consuming the already-surfaced `ValidFrom`/`ValidUntil`/`Revoked`
+from `DIDKey`) belong to that store/follower step. Note that step crosses into `net`/`sql`, so it
+must live OUTSIDE `internal/didweb` (or in a non-WASM file) to keep this package pure.
 
 **Notes:**
-- **sb1 fixture deliberately uses the recorded golden key `z6MkiNW46…`, not the live rotated key**
-  `z6MkmwqgJABz2DCeESCSqx6JXg2CwASEUvBzxERWV3HZ8yyt` — verified the fixture contains zero occurrences of
-  the rotated key. This keeps the resolve→vkey golden coherent (snapshot, not live fetch), per
-  `next.md`'s explicit instruction. When the follower lands key-rotation/re-resolve, the live sb1 key
-  needs its own current fixture/vector separate from this golden chain.
-- **Validity fields surfaced, not enforced (intentional, YAGNI):** `parseTime` returns zero on empty or
-  unparseable input. The follower decides what an unparseable/expired value means; the pure parser
-  stays decision-free. Watch this lenient-parse choice when enforcement lands — an unparseable `revoked`
-  silently becoming "valid" could be a future foot-gun if not re-examined at the enforcement seam.
-- **`notecheck` external-oracle CI job** does not exist yet (no signature-verification code at M1).
-  The trust-root oracle gate this iteration is `derive_vkey.py` parity, which I ran and confirmed.
-- No remote push concern: working branch is `develop`, remote `origin` configured; pushing on PASS.
+- **W3C did:web mapping ported from the method-spec rule in `next.md`** (no usable copy in
+  `cauldron/`). Decode rule: first colon-segment is `host[:port]`, rest are path; each segment
+  `url.PathUnescape`d; no path → `/.well-known/did.json`, path → `/<segs>/did.json`. The two live
+  hubs have no path and no port, so they hit the `.well-known` branch.
+- **Export surface widened to exactly `DocumentURL` + `ParseDIDDocument` + `VerifierKey`** (YAGNI per
+  `next.md`); `pubkeyFromDID`/`keyID`/`b58decode` remain package-private in-package helpers.
+- **Validity-field lenient parse still stands as flagged in the prior handoff**: `parseTime` returns
+  zero on empty/unparseable input; the meaning of an unparseable/expired value is the follower's
+  decision at the enforcement seam — re-examine when validity enforcement lands.
+- `notecheck` external-oracle CI job still does not exist this early in M1 (no end-to-end signature
+  verification yet); the trust-root gate this iteration remains `derive_vkey.py` parity, confirmed
+  byte-for-byte. No signature/consistency/proof code touched beyond the mechanical export rename.
+- File budget: 3 non-test/doc files touched (`url.go` created, `resolve.go` + `vkey.go` modified).

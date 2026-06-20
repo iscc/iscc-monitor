@@ -34,9 +34,9 @@ func TestVerifierKey(t *testing.T) {
 			if len(pub) != 32 {
 				t.Fatalf("pubkey is %d bytes, want 32", len(pub))
 			}
-			got := verifierKey(tc.origin, pub)
+			got := VerifierKey(tc.origin, pub)
 			if got != tc.want {
-				t.Errorf("verifierKey(%q) = %q, want %q", tc.origin, got, tc.want)
+				t.Errorf("VerifierKey(%q) = %q, want %q", tc.origin, got, tc.want)
 			}
 		})
 	}
