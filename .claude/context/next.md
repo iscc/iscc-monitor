@@ -1,115 +1,114 @@
 # Next Work Package
 
-## Step: Pure RFC-6962 consistency-proof verifier (`CheckEquivocation`) + `transparency-dev/merkle` dep
+## Step: Add the canonical tlog-tiles layout layer (`internal/tiles`) over `transparency-dev/tessera/api/layout`
 
 ## Goal
-Land the dep-bearing, pure building block of M1's third freeze trigger: a golden-tested
-`CheckEquivocation` that verifies an RFC-6962 consistency proof relates a prior accepted root at
-size M to a new root at size N (M < N), returning `true` when the proof FAILS to verify (= a
-self-consistency violation / split view). This is the one Merkle primitive the later follower
-wiring + tile-fetch slices will compose; landing it pure and golden-tested first keeps the
-conformance/oracle gate honest before any I/O or tile fixtures exist.
+Introduce the pure tlog-tiles path/coordinate math the monitor needs everywhere downstream — the
+canonical tile/entry-bundle paths, the partial-tile width (`is_full` only at `width==256`), and the
+`PartialTileSize` discipline — by **reusing** `transparency-dev/tessera/api/layout` (target mandate)
+behind a thin, golden-tested `internal/tiles` package. This is the smallest pure first slice of the
+tile-fetch / `SQLiteFetcher` / `ProofBuilder` infrastructure that the state, handoff, and learnings all
+name as the prerequisite for both wiring the M1 equivocation trigger and starting M2. No I/O, no
+follower wiring — pure path math first.
 
 ## Scope
-- **Create**: (none — extend the existing consistency file)
-- **Modify**:
-  - `internal/logclient/consistency.go` — add `ViolationEquivocation ViolationKind = "equivocation"`
-    and `CheckEquivocation(prevSize uint64, prevRoot [rootBytes]byte, nextSize uint64, nextRoot [rootBytes]byte, proof [][]byte) (violated bool, err error)`. Update the file's package doc, which
-    currently says equivocation is "deferred to a merkle-backed slice" and that the file "stays
-    import-free of any new dep" — both lines change with this step.
-  - `go.mod` / `go.sum` — add `github.com/transparency-dev/merkle v0.0.2` (this is the dep change for
-    this step; it is the exact reuse target named in `target.md`'s Stack block).
-  - `internal/logclient/consistency_test.go` — add `TestCheckEquivocation` (golden, table-driven) and
-    `TestViolationEquivocationKind` (test file, not counted against the 3-file budget).
+- **Create**: `internal/tiles/layout.go` — a thin wrapper exposing the tlog-tiles layout primitives the
+  monitor will key its SQLite mirror on. Re-export (do not reimplement) tessera's `layout.TilePath`,
+  `layout.EntriesPath`, `layout.PartialTileSize`, and the `TileWidth = 256` / `TileHeight = 8`
+  constants, plus one project-specific helper `IsFull(width uint8) bool` encoding the ADR-0005
+  partial-tile rule. Keep the package import-clean (the `api/layout` closure is stdlib-only, so this
+  package must stay free of `net`/`net/http`/`database/sql` — it is the shared layout leaf, like
+  `didweb`).
+- **Create**: `internal/tiles/layout_test.go` — table-driven golden tests (this is the test file; it
+  does not count against the 3-file budget).
+- **Modify**: `go.mod`, `go.sum` — add `github.com/transparency-dev/tessera v1.0.2` as a direct require
+  (the authorized dep add; the only non-test, non-created change).
 - **Reference**:
-  - `/workspace/iscc-monitor/cauldron/iscc-hub/specs/iscc-log.md` §10.2 "Consistency proof"
-    (lines 296–305): a failing consistency proof between trusted size M and later size N is evidence
-    of a split view.
-  - `/workspace/iscc-monitor/cauldron/iscc-hub/iscc_hub/log_tree.py` (`tree_head`, `inclusion_proof`)
-    for how the hub builds RFC-6962 structures (Python reference; do NOT import — Go reuses
-    `transparency-dev/merkle`).
-  - `/workspace/iscc-monitor/internal/logclient/verify.go` line 35 (`const rootBytes = 32`) — the
-    existing root-array type.
-  - `/workspace/iscc-monitor/internal/logclient/consistency.go` (the shrink/fork twins this sits beside).
+  - `/workspace/iscc-monitor/cauldron/tessera/client/fetcher.go` — shows the canonical
+    `{ReadCheckpoint, ReadTile, ReadEntryBundle}` Fetcher seam and how `layout.TilePath`/
+    `layout.EntriesPath` feed it (the next slice builds the SQLite-backed version of this).
+  - Module-cache reference (read-only; do not import beyond `api/layout`):
+    `$(go env GOMODCACHE)/github.com/transparency-dev/tessera@v1.0.2/api/layout/paths.go` and
+    `.../api/layout/tile.go` — the exact `TilePath`/`EntriesPath`/`PartialTileSize`/`TileWidth`
+    semantics.
+  - `.../api/layout/paths_test.go` — the reference's own golden vectors (ground-truth, not
+    author-asserted): `TilePath(0,0,255) == "tile/0/000.p/255"`, `TilePath(1,0,0) == "tile/1/000"`,
+    `TilePath(15,455667,0) == "tile/15/x455/667"`, `EntriesPath(0,8) == "tile/entries/000.p/8"`,
+    `EntriesPath(255,0) == "tile/entries/255"`.
+  - `/workspace/iscc-monitor/internal/store/schema.sql` (the `tiles` / `entry_bundles` tables:
+    `(level, tile_index, width)` / `(bundle_index, width)` PKs, `is_full` default 0) — the SQLite
+    columns the layout keys map onto in the *next* slice.
+  - Learnings: ADR-0005 partial-tile discipline (`is_full` only at `width==256`, never promote a
+    partial) and the `merkle v0.0.2` / `sqlite v1.46.1` go-directive pitfall (verify the new dep keeps
+    `go 1.24.0`, no `toolchain` line).
 
 ## Not In Scope
-- **No follower wiring.** Do NOT touch `internal/follower/*`, `checkConsistency`, or `PollHub`.
-  Mapping `FollowState` + a fetched consistency proof into a `CheckEquivocation` call (and the third
-  branch of `checkConsistency` returning `ViolationEquivocation`) is the NEXT slice.
-- **No tile fetching / `SQLiteFetcher` / `ProofBuilder`.** Obtaining the real consistency-proof
-  hashes from mirrored hash tiles is M2-adjacent work; this step verifies a proof it is GIVEN.
-- **No new live fixtures.** Do NOT add tile/entry-bundle files under `testdata/live/`. The golden
-  vector is built in-test from a known RFC-6962 tree (see notes), not from captured hub tiles.
-- **No `store`/schema changes.** `internal/store/schema.sql` and `internal/store/checkpoints.go`
-  stay byte-identical.
-- Do not change `internal/didweb` purity or the WASM build target — `logclient` already imports
-  `net/http` (via `didresolve.go`), so adding `merkle` here does not introduce a new WASM constraint.
+- **No `SQLiteFetcher`, no HTTP tile fetcher, no `ProofBuilder`, no `fsck`** — this slice is path/width
+  math only. Implementing the `client.Fetcher` interface over the store is the very next slice and needs
+  this layer first.
+- **No follower wiring** — do not touch `internal/follower`, do not add the third `checkConsistency`
+  equivocation branch, do not source consistency-proof hashes. That waits on the fetcher slice.
+- **No store changes** — do not add tile/entry-bundle CRUD to `internal/store/checkpoints.go`; the
+  schema columns already exist and stay byte-identical here.
+- **No tile fixtures** — do not capture real hash tiles from the live hubs; the golden vectors are pure
+  path strings, not tile bytes.
+- **Do not import any tessera package other than `api/layout`** (e.g. `client`, `fsck`, `api`): those
+  pull `net/http`/otel/klog and would dirty this leaf and the WASM-shareable purity target.
 
 ## Implementation Notes
-- **API (verified by `go doc` against `v0.0.2`):**
-  `proof.VerifyConsistency(hasher merkle.LogHasher, size1, size2 uint64, proof [][]byte, root1, root2 []byte) error`
-  in `github.com/transparency-dev/merkle/proof`; pass `rfc6962.DefaultHasher` (a `*rfc6962.Hasher`
-  that satisfies `merkle.LogHasher`) from `github.com/transparency-dev/merkle/rfc6962`. Requires
-  `0 <= size1 <= size2`.
-- **Semantics (load-bearing — mirror the shrink/fork guards):** `CheckEquivocation` returns
-  `(violated, err)`. The trigger fires (`violated=true`) when `VerifyConsistency` returns a non-nil
-  error for a *growing* pair (`prevSize > 0 && nextSize > prevSize`) — the hub presented two roots a
-  consistent append-only log could never both produce. Boundaries that are NOT this trigger's
-  concern (each returns `false, nil`, never an error, and must NOT call `VerifyConsistency`):
-  `prevSize == 0` (fresh store, nothing accepted yet — matches the `CheckShrink`/`CheckFork`
-  `prev > 0` guard); `nextSize == prevSize` (fork's concern, a same-size root compare);
-  `nextSize < prevSize` (shrink's concern). Only the strictly-growing case calls `VerifyConsistency`.
-  A *successful* verification means the log is consistent → `false, nil`.
-- **Error vs. violation discipline (ADR-0006 "freeze, never crash"):** A failed proof is a *verdict*
-  (`violated=true, err=nil`), NOT a Go error — the caller will freeze on it. The simplest correct
-  contract: convert ANY `VerifyConsistency` failure on the growing path to `violated=true, err=nil`
-  (the proof not verifying IS the evidence). Document this clearly: a non-verifying proof must never
-  surface as a poll error that could abort the loop. Reserve the returned `err` for nothing in this
-  pure layer unless you choose to validate input root lengths — if you do, an obviously-malformed
-  input (wrong-length root slice) may return a non-nil `err`, but a failing-yet-well-formed proof
-  must stay `violated=true, err=nil`.
-- **Pass roots as slices:** `VerifyConsistency` wants `root1, root2 []byte`; pass `prevRoot[:]` and
-  `nextRoot[:]`. Keep the `[rootBytes]byte` array params for signature symmetry with `CheckFork`.
-- **Imports:** add `github.com/transparency-dev/merkle/proof` and `.../rfc6962` to `consistency.go`.
-  This is the first non-stdlib dep in this file — update the file doc and drop the "import-free of any
-  new dep" sentence.
-- **go.mod hygiene (learnings — the `modernc`/`x/mod` precedent):** `merkle v0.0.2` declares a low
-  `go` directive; after `go get` confirm the module directive stays `go 1.24.0` with NO `toolchain`
-  line (drop any auto-injected `toolchain go1.24.x`). Run `go mod tidy` and verify it is a no-op
-  diff afterward. If `v0.0.2` forces the directive above `1.24.0`, fall back to `v0.0.1` and note why
-  in the commit/handoff.
-- **Correctness rule (learnings / `target.md` oracle gate):** this IS crypto / RFC-6962 code, so the
-  conformance/oracle gate APPLIES — a green-but-wrong verify (e.g. one accepting a malformed proof)
-  must not ship on an LLM PASS alone. The golden vector must be ground truth, not author-asserted.
-  Build a real RFC-6962 tree IN-TEST with `github.com/transparency-dev/merkle/compact`
-  (`compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}`, leaves via
-  `rfc6962.DefaultHasher.HashLeaf`) to obtain `rootM`, `rootN`, and a VALID consistency proof: use
-  `proof.Consistency(M, N)` to get the `Nodes`, then read each node hash out of the compact range.
-  Positive (consistent) case must verify → `violated=false`; negative case flips one byte of `rootN`
-  (or corrupts a proof element) → `violated=true`. Make it non-vacuous: assert the consistent and
-  corrupted roots actually differ before asserting opposite verdicts, mirroring the
-  `if rootA == rootB { t.Fatal }` guard in `TestCheckFork`. If wiring `compact` proves heavier than
-  this step's budget, the acceptable minimum is a hand-built two-/three-leaf tree whose interior and
-  root hashes are derived in-test directly from `rfc6962.DefaultHasher` (still ground-truth from the
-  hasher) — never a hard-coded magic root.
+- **Reuse, do not reimplement (target Stack rule).** `internal/tiles/layout.go` should be a thin
+  re-export, e.g. `func TilePath(level, index uint64, width uint8) string { return
+  layout.TilePath(level, index, width) }`, a matching `EntriesPath(index uint64, width uint8) string`,
+  `PartialTileSize(level, index, logSize uint64) uint8`, and `const TileWidth = layout.TileWidth` /
+  `TileHeight = layout.TileHeight`. Wrapping (not aliasing) gives the monitor a stable seam plus a
+  docstring per the project's "start each file with a docstring" rule; do not copy the body of tessera's
+  path math.
+- **`IsFull` is the one project-specific predicate** and encodes ADR-0005. Mind the two encodings of
+  "full": tessera's *path* API represents a full tile as **width `0`** (the `p > 0` partial suffix),
+  while the `tiles.width` SQLite **column** stores the actual leaf count (`256` for full, per
+  schema/learnings). `IsFull(width uint8) bool` must adopt the **column** convention — `width ==
+  TileWidth` → full (`true`), anything `< TileWidth` → partial (`false`). Document in the docstring that
+  this package owns that translation so callers never confuse path-API "0 == full" with column "256 ==
+  full". (`uint8` cannot hold 256, so define `TileWidth`/the comparison against a wider int, or document
+  that the column width caps at 255-as-partial vs a full sentinel — pick one and pin it in the test;
+  prefer comparing against `layout.TileWidth` as an untyped/int constant so `IsFull` reads `int(width)
+  == TileWidth` if you keep the `uint8` arg, OR take `width int`.)
+- **Dep-add hygiene (learnings pitfall, verified during scoping).** Run `go get
+  github.com/transparency-dev/tessera@v1.0.2` then `go mod tidy`. tessera v1.0.2's go directive is
+  `go 1.24.0`, and `api/layout`'s compiled closure is **stdlib-only** (`cmp`, `slices`), so the heavy
+  otel/klog/formats deps land in `go.sum` as module-graph requirements only (never compiled), exactly
+  like `go-cmp` did for merkle. After tidy, confirm `go.mod`'s directive is still `go 1.24.0` with **no
+  `toolchain` line** (drop it if auto-injected). If `go mod tidy` tries to bump the directive past
+  `1.24.0`, stop — that is a gate regression, not this step.
+- **Golden vectors are ground truth from the reference, not author-asserted.** Use the exact strings
+  from `api/layout/paths_test.go` (listed under Reference). Because `internal/tiles` only delegates, the
+  test proves the delegation wiring and pins the canonical paths so a future refactor cannot silently
+  diverge. The oracle/conformance gate is **N/A** here (no signature/RFC-6962/Merkle/did:web path; pure
+  path strings) — say so in the handoff; it re-arms at the fetcher + `fsck` slice.
+- **Purity is load-bearing** (learnings `internal/didweb` nuance): verify with `go list -deps
+  ./internal/tiles | grep -E '^net/http$|^database/sql$'` returning empty, not by grepping `os` out (it
+  rides in transitively via `fmt`). This package is destined to be shared by the SQLite store keys and
+  the M3 canonical-path mirror, so keep it a leaf.
 
 ## Verification
-- `mise run check` is green (build + vet + test, all packages; `gofmt -l .` empty).
-- `go test -count=1 -run TestCheckEquivocation ./internal/logclient` passes.
-- `go test -count=1 -run TestViolationEquivocationKind ./internal/logclient` passes and
-  `string(ViolationEquivocation) == "equivocation"`.
-- A valid consistency proof for a growing pair `(M, N), M < N` yields
-  `CheckEquivocation(...) == (false, nil)`; the same call with a corrupted `nextRoot` (or proof)
-  yields `(true, nil)`.
-- `CheckEquivocation` with `prevSize == 0` (and with `nextSize <= prevSize`) returns `(false, nil)`
-  and does NOT call `VerifyConsistency` (the fresh-store / non-growing guards, asserted in the table).
-- `go list -m github.com/transparency-dev/merkle` reports `v0.0.2` (or the documented `v0.0.1`
-  fallback); the `go.mod` module directive is still `go 1.24.0` with no `toolchain` line; `go mod
-  tidy` produces a no-op diff.
-- `git diff --quiet HEAD -- internal/store/schema.sql internal/store/checkpoints.go internal/follower/follower.go`
-  exits 0 (no store/follower change in this slice).
+- `mise run check` is green (build + vet + test all packages, `gofmt -l .` empty).
+- `go test -count=1 ./internal/tiles` passes.
+- `go list -m github.com/transparency-dev/tessera` prints `v1.0.2`; `go.mod`'s `go` directive is still
+  `go 1.24.0` with no `toolchain` line; `go mod tidy` is a no-op afterward and `go mod verify` passes.
+- `go list -deps ./internal/tiles | grep -E '^net/http$|^database/sql$'` is empty (leaf purity).
+- Golden assertions hold (ground truth from `api/layout/paths_test.go` / `tile.go`):
+  - `tiles.TilePath(0, 0, 255) == "tile/0/000.p/255"`
+  - `tiles.TilePath(1, 0, 0) == "tile/1/000"`
+  - `tiles.TilePath(15, 455667, 0) == "tile/15/x455/667"`
+  - `tiles.EntriesPath(0, 8) == "tile/entries/000.p/8"`
+  - `tiles.EntriesPath(255, 0) == "tile/entries/255"`
+  - `tiles.PartialTileSize(0, 0, 300) == 44` (300 % 256 = 44; the first tile of a 300-leaf tree is
+    partial-44 — confirm against `tile.go`'s `PartialTileSize`)
+  - `tiles.PartialTileSize(0, 0, 256) == 0` (an exactly-full first tile reports 0 = full)
+  - `tiles.IsFull(256) == true` and `tiles.IsFull(255) == false` (ADR-0005 width-256 rule)
 
 ## Done When
-`CheckEquivocation` and `ViolationEquivocation` exist as a pure, golden-tested RFC-6962
-consistency-proof verifier backed by `transparency-dev/merkle`, with `mise run check` green and
-every Verification criterion passing — leaving follower wiring and tile-fetch for the next slices.
+`advance` is done when `internal/tiles` re-exports the tessera tlog-tiles layout primitives behind a
+golden-tested seam (with the `IsFull` ADR-0005 predicate), tessera v1.0.2 is a clean direct dep that
+keeps the `go 1.24.0` directive, the package's dep closure is `net/http`/`database/sql`-free, and every
+Verification criterion passes.
