@@ -1,114 +1,107 @@
 # Next Work Package
 
-## Step: Pure realm-registry parser (domains-only membership document)
+## Step: `internal/config` — pure config loader leaf for the monitor binary
 
 ## Goal
-Add `internal/registry` — a pure, dependency-free parser that turns a domains-only realm
-membership document into a list of hub entries with their derived base URLs. This is the missing
-prerequisite tissue between the per-network poll loop and a real `cmd/` binary: the `Loop` today
-takes a hand-written `[]HubTarget`, and the registry is the spec'd source of those targets
-(domains only, no keys — ADR-0009). Doing the pure parse first (before any fetch or `main` wiring)
-keeps a testable unit ahead of infrastructure.
+Add the pure, golden-testable configuration package that the (next-step) `cmd/iscc-monitor`
+binary will consume: turn a flat key/value lookup plus the on-disk realm-document path into a
+validated, typed `Config` (DB path, realm-doc path, poll intervals). This is the last pure leaf the
+binary wiring needs before the loop can be assembled, and it is the cleanest no-crypto, no-network
+slice toward "the monitor actually runs and survives restart" (M1).
 
 ## Goal-fit (state → target gap)
-M1's first Verify half (`origin`/`verifierKey`/single-poll) and two of three triggers (shrink+fork
-freeze) are met end-to-end, and the poll loop now drives `PollHub` on a cadence. The named M1 list
-still opens with "config + realm registry (domains only)" — and the registry is currently absent
-(`internal/registry/` does not exist). Both review and state name the `cmd/iscc-monitor` binary as
-the lowest-risk unblocked slice, but that binary needs *somewhere to get its hubs from*: the `Loop`
-takes a fixed `[]HubTarget`, and the realm registry is the spec'd source. The registry's **parse**
-half is a pure, golden-testable leaf with no I/O and no new dependency — exactly the "pure functions
-before infrastructure, runnable+testable before wiring" ordering the loop prefers. It unblocks the
-`cmd/` binary without coupling to it, and defers the riskier merkle-equivocation + `hub_keys`/
-`derive_vkey.py` refresh (both trip the oracle gate) to their own later steps.
+M1's first Verify half (`origin`/`verifierKey`/single-poll) plus two of three triggers (shrink+fork
+freeze) are met end-to-end, the poll loop drives `PollHub` on a cadence, and the pure realm-registry
+parser landed. The named M1 list opens with "**config** + realm registry + …"; the registry exists,
+config does not (`internal/config/` is absent). Both review and state name the `cmd/iscc-monitor`
+binary as the unblocked slice, but that binary needs validated startup values (DB path, realm-doc
+path, poll intervals) *and* it forces an as-yet-unmade decision about how it obtains each hub's
+`origin` for `store.UpsertHub`. Splitting that decision and the untestable blocking `Run` loop off
+into the binary step, and landing the **pure, golden-testable config leaf first**, follows the loop's
+"pure functions before I/O, runnable+testable before infrastructure" ordering. The heavier
+merkle-equivocation trigger (new dep + tile fixtures + oracle gate) and the `hub_keys`/
+`derive_vkey.py` refresh stay deferred to their own steps.
 
 ## Scope
-- **Create**: `/workspace/iscc-monitor/internal/registry/registry.go` — the pure parser + entry type.
-- **Create**: `/workspace/iscc-monitor/internal/registry/registry_test.go` — table-driven golden tests.
-- **Create**: `/workspace/iscc-monitor/internal/registry/testdata/realm.txt` — a small golden
-  membership fixture (the two live golden hubs + a comment + a blank line).
-- **Modify**: (none — this is a new leaf package; touch nothing else)
+- **Create**:
+  - `/workspace/iscc-monitor/internal/config/config.go` — the package (pure: parse + validate; no
+    `os`/`net`/`flag` in the load path. Take the raw lookup as an injected
+    `func(key string) (string, bool)` so it is unit-testable without touching the environment).
+  - `/workspace/iscc-monitor/internal/config/config_test.go` — table-driven + golden tests (test
+    file, not counted toward the 3-file limit).
+- **Modify**: (none — this step adds a leaf package only)
 - **Reference**:
-  - `/workspace/iscc-monitor/.claude/plans/cosmic-baking-octopus.md` lines 96–118 (package layout:
-    `internal/registry/` = "fetch+parse realm membership (domains only); reconcile add/remove/inactive")
-    and the `hubs(... domain, origin, base_url, active, status ...)` schema block (lines 135–147).
-  - `/workspace/iscc-monitor/.claude/adr/0009-didweb-trust-root.md` (realm registry advertises
-    **domains/membership only — no keys**; domain ownership *is* identity).
-  - `/workspace/iscc-monitor/.claude/prd/0001-iscc-monitor-v1.md` line 138 ("For pilot deployments
-    the Hub-List is a static document").
-  - `/workspace/iscc-monitor/internal/follower/loop.go` lines 26–34 (`HubTarget{HubID, BaseURL}` —
-    the shape the registry feeds, indirectly, once wiring lands; the registry produces `BaseURL`).
-  - `/workspace/iscc-monitor/internal/logclient/origin.go` (origin derivation — note it is
-    package-private; the registry must NOT reach for it, see Implementation Notes).
+  - `/workspace/iscc-monitor/internal/registry/registry.go` — the sibling pure-leaf style to mirror
+    (leading package docstring, single pure entry point, fail-closed wrapped errors, minimal
+    stdlib-only imports).
+  - `/workspace/iscc-monitor/internal/follower/loop.go` lines 45–53 — the `Loop` fields config feeds
+    (`Normal`, `Frozen time.Duration`; the docstring documents `Frozen >= Normal` as the back-off).
+  - `/workspace/iscc-monitor/internal/store/sqlite.go` lines 59–76 — `Open(path string)` is the
+    DB-path consumer (config supplies that path).
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go` lines 56–77 — `UpsertHub(ctx, domain,
+    origin, baseURL)` needs `origin` (`<domain>/log`), which `logclient.origin` keeps private; see
+    Not In Scope (this is a binary-wiring decision, not config's).
+  - `/workspace/iscc-monitor/.claude/adr/0007-*.md` (one DB file per network) and `0005`/`0006` — the
+    rules behind "one DB path" and the freeze back-off the `Frozen` interval encodes.
 
 ## Not In Scope
-- **No network fetch.** Do not add an HTTP fetch of a remote realm document, a `Fetcher` call, or
-  any `net/http` import. This step parses bytes already in hand; the fetch seam is a later step.
-- **No `cmd/iscc-monitor` binary and no `internal/config`.** Wiring DI / `Loop.Run` / flags / env /
-  reading the file from disk is the *next* step and depends on this one — do not start it here.
-- **No change to `internal/follower` or `HubTarget`.** Do not rewire `Loop` to consume registry
-  output yet (that needs `HubID`s, which come from `store.UpsertHub` at wiring time).
-- **No `origin()` derivation in this package.** The registry produces `BaseURL` only; the follower
-  already derives origin + verifier key from `BaseURL` inside `PollHub`. Do not duplicate or export
-  `logclient.origin`.
-- **No YAML/JSON dependency.** Use the line-based format below; do not add `gopkg.in/yaml.v3` or any
-  parser dep for a pilot static document (YAGNI; keep `go.mod`/`go.sum` byte-identical).
-- **No `active`/`inactive`/`status` reconciliation, sorting, or dedupe.** The plan mentions reconcile
-  add/remove/inactive, but that is store-coupled and belongs with the wiring step. Parse membership
-  only, preserving input order.
+- **Do NOT create `cmd/iscc-monitor/main.go` or wire `Loop.Run` this step.** The binary is the next
+  slice: it has an untestable blocking `Run` loop and forces the origin-export decision below, so
+  keeping it separate keeps this step a clean, fully-testable leaf.
+- **Do NOT export, duplicate, or re-derive `logclient.origin`.** `UpsertHub` needs `<domain>/log`,
+  but how the binary obtains origin without a second deriver (export `logclient.Origin` vs. carry it
+  on `registry.Entry`) is a *binary-wiring* decision for the next step. Config must not pre-empt it
+  or grow an `origin()` of its own (learnings: "One `origin()` helper, golden-tested"; highest-
+  probability bug).
+- Do NOT read the realm document or open the DB here — config only *parses/validates* values
+  (the realm-doc path stays a string). The binary does the actual `os.ReadFile` / `registry.Parse` /
+  `store.Open`. Keep `os`/`net`/`net/http` out of the load path.
+- Do NOT add a YAML/JSON/TOML dependency — `go.mod`/`go.sum` must stay byte-identical (KISS: a flat
+  key/value `Load` is enough; the realm registry itself is already a flat text format).
+- No coverage tracking (`monitored_since`), structured logs, `/metrics`, or alert transport — each is
+  its own later M1 step.
 
 ## Implementation Notes
-- **Format (KISS, pilot static document):** one hub domain per line; ignore blank lines and lines
-  whose first non-whitespace character is `#` (comments); trim surrounding whitespace on each kept
-  line. This is the simplest thing that satisfies "static document, domains only" without a new dep.
-  Document the format in the package + function docstrings (evergreen wording, no "new"/"improved").
-- **Entry type:** export a small struct, e.g. `type Entry struct { Domain string; BaseURL string }`.
-  Derive `BaseURL` as `"https://" + Domain` (hubs are HTTPS; the spec origin example `sb0.iscc.id/log`
-  is served over TLS). Keep `Domain` as the bare host (e.g. `sb0.iscc.id`) so a later step can pass it
-  to `store.UpsertHub(domain, …)`.
-- **Parse signature:** a pure func over bytes, e.g. `func Parse(data []byte) ([]Entry, error)`.
-  Prefer `bufio.NewScanner` over a `bytes.NewReader` (stdlib only). Reject a domain containing a
-  scheme (`://`), whitespace, or a path/slash (`/`) with a wrapped error naming the offending line —
-  fail closed, do not silently coerce a URL into a domain. A `host:port` form is acceptable to allow
-  (live hubs have none, but the colon path is already handled downstream by `didweb`); do not
-  over-validate beyond "no scheme, no slash, non-empty after trim".
-- **Determinism:** preserve input order in the returned slice (the poll loop iterates targets in
-  order; stable order keeps tests + logs deterministic). Do not sort or dedupe in this step — dedupe
-  is reconciliation, which is Not In Scope.
-- **Purity:** this is a leaf, so keep it import-clean: `bufio`, `bytes`, `fmt`, `strings` only. No
-  `net`, no `net/http`, no `os` (the *caller* reads the file and passes bytes — embedding/reading is
-  the wiring step's job). Verify the package's own `.Imports` are exactly those stdlib packages.
-- **Golden fixture (`testdata/realm.txt`):** the two live golden hubs plus at least one comment line
-  and one blank line, e.g.:
-  ```
-  # iscc testnet realm — pilot membership (domains only, ADR-0009)
-  sb0.iscc.id
-
-  sb1.amlet.id
-  ```
-  In the test, read the fixture with `os.ReadFile` (the *test* may use `os`; the package must not) and
-  assert `Parse(...)` yields exactly `[{sb0.iscc.id, https://sb0.iscc.id}, {sb1.amlet.id,
-  https://sb1.amlet.id}]` (comment + blank dropped, order preserved). Add table-driven error cases (a
-  line with `https://...`, a line with `sb0.iscc.id/log`) and an all-comment/all-blank document case
-  (→ empty slice, nil err).
-- **Relevant Correctness rule (learnings):** "did:web is the only key source (ADR-0009) — the realm
-  registry advertises domains only." This parser must therefore carry **no key field** and reject
-  anything URL-shaped. It is purely a domain list.
+- Mirror `internal/registry` exactly for style: a leading package docstring stating purpose + the
+  config keys + their defaults, a small typed result struct, one pure entry point, fail-closed
+  wrapped errors naming the bad key, and a minimal stdlib-only import set (`fmt`, `strings`, `time`).
+- Suggested surface (adjust names to taste; keep it minimal):
+  - `type Config struct { DBPath string; RealmPath string; Normal, Frozen time.Duration }`.
+  - `func Load(get func(key string) (string, bool)) (Config, error)` — pure: pull each key via
+    `get`, apply documented defaults for the intervals, parse durations with `time.ParseDuration`,
+    validate, return. Injecting `get` (instead of reading `os.Getenv`/`flag` here) is what keeps it
+    I/O-free and unit-testable; the binary passes an `os.LookupEnv`-backed closure next step.
+- Validation rules to encode (each is a golden/table assertion):
+  - `DBPath` and `RealmPath` required (absent/empty → wrapped error naming the missing key).
+  - `Normal > 0`; `Frozen > 0`; **`Frozen >= Normal`** (the `loop.go` back-off invariant — a
+    `Frozen < Normal` config is rejected, not silently accepted). This is the load-bearing cross-check
+    that ties config to ADR-0006's backed-off evidence-only cadence.
+  - An unparseable duration (`time.ParseDuration` error) is wrapped + named, not swallowed.
+  - Sensible defaults when an interval key is absent (e.g. `Normal=5m`, `Frozen=1h`) so a minimal
+    config with only the two paths loads cleanly; document the defaults in the docstring.
+- Relevant learnings / correctness rules:
+  - **One DB file per network (ADR-0007)** — `DBPath` is a single network's DB file; config carries
+    one path, not a list (multi-network is out of scope here).
+  - **Freeze back-off (ADR-0006)** — the `Frozen` interval is the evidence-only re-poll cadence;
+    enforcing `Frozen >= Normal` here is *why* the loop's `due()` actually backs a frozen hub off.
+  - Keep errors fail-closed and wrapped (`fmt.Errorf("config: ... %q: %w", key, err)`), mirroring
+    `registry.Parse`, and return the zero `Config` alongside any error so the binary surfaces a
+    precise startup failure rather than a half-built config.
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass).
-- `gofmt -l internal/registry` prints nothing.
-- `go test -count=1 ./internal/registry` passes.
-- `go test -count=1 -run TestParse ./internal/registry` passes; the golden case asserts
-  `Parse(testdata/realm.txt)` returns exactly two entries in input order:
-  `{Domain:"sb0.iscc.id", BaseURL:"https://sb0.iscc.id"}` then
-  `{Domain:"sb1.amlet.id", BaseURL:"https://sb1.amlet.id"}`.
-- A line containing `https://sb0.iscc.id` or `sb0.iscc.id/log` returns a non-nil error naming the
-  bad line; an all-comment / all-blank document returns `(len 0, nil)`.
+- `gofmt -l internal/config` prints nothing.
+- `go test -count=1 ./internal/config` passes (uncached).
+- `go test -count=1 -run TestLoad ./internal/config` passes.
+- `go list -deps ./internal/config | grep -E '^(net|net/http)$'` prints nothing (pure leaf; no
+  network in the closure).
 - `git status --short go.mod go.sum` is empty (no dependency added).
-- `go list -deps ./internal/registry | grep -E '^(net|net/http)$'` prints nothing (leaf, no net stack).
+- Table/golden assertions prove: a minimal input `{DBPath, RealmPath}` loads with the documented
+  default intervals; an input with `Frozen < Normal` returns a non-nil wrapped error; a missing
+  required path returns a non-nil error naming the key; an unparseable interval returns a non-nil
+  error; a valid full input round-trips every field.
 
 ## Done When
-`internal/registry` exists as a pure leaf package whose `Parse` turns the golden domains-only
-`realm.txt` into the two ordered `Entry{Domain, BaseURL}` values, rejects URL-shaped lines, and all
-Verification criteria pass with `mise run check` green and no new dependency.
+`internal/config` exists as a pure, dependency-free leaf whose golden/table tests pass under
+`mise run check`, with the `Frozen >= Normal` and required-path validations covered, no new
+dependency, and no `cmd/` binary, `logclient.origin` export, or real I/O introduced.
