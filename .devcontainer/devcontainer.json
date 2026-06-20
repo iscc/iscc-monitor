@@ -1,0 +1,33 @@
+{
+  "name": "iscc-monitor",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "TZ": "${localEnv:TZ:UTC}",
+      "CLAUDE_CODE_VERSION": "latest"
+    }
+  },
+  "initializeCommand": "bash .devcontainer/init-host.sh",
+  "remoteUser": "dev",
+  "mounts": [
+    "source=${localEnv:USERPROFILE}/.claude,target=/home/dev/.claude,type=bind",
+    "source=${localEnv:USERPROFILE}/.claude.json,target=/home/dev/.claude.json,type=bind",
+    "source=${localEnv:USERPROFILE}/.codex,target=/home/dev/.codex-host,type=bind,readonly",
+    "source=iscc-monitor-codex-${devcontainerId},target=/home/dev/.codex,type=volume",
+    "source=${localEnv:USERPROFILE}/.gitconfig,target=/home/dev/.gitconfig-host,type=bind,readonly",
+    "source=iscc-monitor-bashhistory-${devcontainerId},target=/commandhistory,type=volume",
+    "source=iscc-monitor-go-mod-${devcontainerId},target=/home/dev/go/pkg/mod,type=volume",
+    "source=iscc-monitor-go-build-${devcontainerId},target=/home/dev/.cache/go-build,type=volume"
+  ],
+  "containerEnv": {
+    "NODE_OPTIONS": "--max-old-space-size=4096",
+    "GH_TOKEN": "${localEnv:GH_TOKEN}",
+    "CGO_ENABLED": "0",
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "commit.gpgsign",
+    "GIT_CONFIG_VALUE_0": "false"
+  },
+  "postCreateCommand": "sudo chown -R dev:dev /home/dev/go /home/dev/.cache/go-build && bash .devcontainer/setup-gitconfig.sh && { bash .devcontainer/setup-codex.sh || echo 'codex: setup failed (non-fatal) — run bash .devcontainer/setup-codex.sh manually'; } && mise trust && mise install",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/iscc-monitor,type=bind,consistency=delegated",
+  "workspaceFolder": "/workspace/iscc-monitor"
+}
