@@ -1,44 +1,48 @@
-<!-- assessed-at: ac4a643b3c5181018a93620043ab6c30fe577c0a -->
+<!-- assessed-at: 4eaead8b5bbace793e56a63e37c358879a1cd2e0 -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: M1 in progress (with first M2-prerequisite slice landed) — verify core + cadence + parser + config + `cmd/` binary + coverage + `hub_keys` cache + **pure equivocation verifier** + **`internal/tiles` tlog-tiles layout seam** are landed; equivocation is still **not wired into the follower**, and `SQLiteFetcher`/`ProofBuilder` + tile fixtures + structured logs + `/metrics` + real alert transport are still missing
+## Phase: M1 in progress (with M2-prerequisite seams landing) — verify core + cadence + parser + config + `cmd/` binary + coverage + `hub_keys` cache + **pure equivocation verifier** + **`internal/tiles` layout seam** + **`SQLiteFetcher` mirror read-back** are landed; equivocation is still **not wired into the follower**, and tile fixtures + `fsck` root-rebuild + `ProofBuilder` + structured logs + `/metrics` + real alert transport are still missing
 
 The M1 crypto/verification core (did:web → vkey/origin → 4-way accept → shrink/fork freeze), the
 single-writer poll-loop cadence, both pure no-crypto leaves (realm-registry parser + typed config
 loader), the wired `cmd/iscc-monitor` binary, set-once coverage tracking, the full `hub_keys` did:web
-key cache, and the pure `CheckEquivocation` consistency-proof verifier have all landed. The newest slice
-adds `internal/tiles` — a thin golden-tested re-export of tessera's tlog-tiles layout primitives — which
-is the first building block of the **tile-fetch / `SQLiteFetcher` / `ProofBuilder`** infrastructure that
-both M2 and the M1 equivocation-wiring depend on. What still blocks M1: wire `CheckEquivocation` into
-the follower (needs the `SQLiteFetcher`/`ProofBuilder` to source proof hashes — not yet built),
-structured logs, `/metrics`, and a real alert transport.
+key cache, the pure `CheckEquivocation` consistency-proof verifier, and the `internal/tiles` tlog-tiles
+layout seam have all landed. The newest slice adds `internal/store/{tiles.go,fetcher.go}` — the
+partial-tile-discipline mirror write/read CRUD plus `SQLiteFetcher`, which structurally satisfies
+tessera's three-method Fetcher shape over the store. This is the read seam the deferred M1 equivocation
+branch and the M2 `fsck` root-rebuild both depend on. What still blocks M1: wire `CheckEquivocation`
+into the follower (now sourceable via `SQLiteFetcher`, but still needs tile fixtures for an end-to-end
+test), structured logs, `/metrics`, and a real alert transport.
 
 ## M1 — Read-only Monitor
 **Status**: partially met (verify primitives + shrink/fork freeze + poll-loop cadence + realm-registry
 parser + config loader + wired `cmd/` binary + coverage tracking + `hub_keys` cache + pure equivocation
-verifier + tlog-tiles layout seam; the equivocation trigger is **not yet wired into the follower**, and
-logs/metrics/alert transport remain missing)
+verifier + tlog-tiles layout seam + `SQLiteFetcher` mirror read-back; the equivocation trigger is
+**not yet wired into the follower**, and logs/metrics/alert transport remain missing)
 
-- **Verified incrementally** from the prior assessment at `8a8279d`. The diff `8a8279d..HEAD` touches
-  **only** the new `internal/tiles/` package (`layout.go` + `layout_test.go`), `go.mod`/`go.sum` (the
-  tessera dep add), and context files. Confirmed byte-unchanged: `internal/follower/`, `internal/store/`,
-  `internal/logclient/`, `internal/didweb/`, `internal/registry/`, `internal/config/`, `cmd/`, and the
-  fixtures. All sections below other than the new `internal/tiles` line are re-confirmed unchanged and
-  carried forward.
+- **Verified incrementally** from the prior assessment at `ac4a643`. The diff `ac4a643..HEAD` touches
+  **only** the store package — two new production files (`internal/store/tiles.go`,
+  `internal/store/fetcher.go`) + their tests — and context files. Confirmed unchanged (no diff):
+  `internal/follower/`, `internal/logclient/`, `internal/didweb/`, `internal/registry/`,
+  `internal/config/`, `internal/tiles/`, `cmd/`, `go.mod`/`go.sum`, `schema.sql`, and the fixtures. All
+  sections below other than the new store lines are re-confirmed unchanged and carried forward.
 
-  - **NEW — `internal/tiles` tlog-tiles layout seam landed** (`internal/tiles/layout.go`): a pure leaf
-    that re-exports (never reimplements, per the Stack rule) tessera's `api/layout` primitives —
-    `TilePath`, `EntriesPath`, `PartialTileSize`, consts `TileWidth=256` / `TileHeight=8` — plus the one
-    ADR-0005 predicate `IsFull(width int) bool` (column convention: `width==256` is full). `net/http`-
-    and `database/sql`-free, WASM-green. **+5 `func Test`**, golden vectors confirmed by `review` against
-    tessera ground truth (path strings verbatim from tessera's own `paths_test.go`). Review also caught
-    and corrected a wrong `PartialTileSize(0,0,300)` vector from `next.md` (correct: `(0,0,300)=0`,
-    `(0,1,300)=44`). This is the **first building block** of the deferred tile-fetch infrastructure; it
-    is an intentional unused-until-wired export seam (`go vet` clean, not dead code) whose first caller
-    will be the `SQLiteFetcher` store-key slice.
+  - **NEW — `SQLiteFetcher` + partial-tile mirror CRUD landed** (`internal/store/tiles.go` +
+    `internal/store/fetcher.go`): `tiles.go` adds `RecordTile`/`RecordEntryBundle`/`ReadTileBlob`/
+    `ReadEntryBundleBlob`/`LatestCheckpointRaw` (partial-tile discipline: `is_full=1` only at
+    `width==256`, sha256 column, composite-PK upsert, `os.ErrNotExist` on a missing row). `fetcher.go`
+    adds `SQLiteFetcher{Store,HubID}` with the three Fetcher methods (`ReadCheckpoint`/`ReadTile`/
+    `ReadEntryBundle`), the **load-bearing `widthForP` p↔width mapping** (`p==0` → `tiles.TileWidth=256`
+    full, else `int(p)`), and an inline `PartialOrFullResource` partial→full fallback honoring the
+    `errors.Is(err, os.ErrNotExist)` contract. **+17 `func Test`** (store 31 → 48), all uncached-green
+    per `review`. Store stays a **leaf**: it deliberately does NOT import `tessera/fsck` or
+    `tessera/client` (that closure pulls `net/http`/`otel`/`klog`); conformance to `fsck.Fetcher` is
+    structural, pinned by a local `fsckFetcher` interface copy + `var _ fsckFetcher = SQLiteFetcher{}`
+    in `fetcher_test.go` (accepted by `review` as drift-detection equivalent without the dep leak).
+    `go.mod`/`go.sum` byte-identical, `go mod tidy` a verified no-op.
 
   - **Pure equivocation verifier** (`internal/logclient/consistency.go`, unchanged this slice):
     `CheckEquivocation(prevSize, prevRoot, nextSize, nextRoot, consistencyProof) (violated, err)` — for
@@ -48,10 +52,12 @@ logs/metrics/alert transport remain missing)
     `VerifyConsistency`. Golden-tested against a genuine `testonly.New(rfc6962.DefaultHasher)` tree.
 
   - **CRITICAL CAVEAT — `CheckEquivocation` is STILL NOT wired into the follower** (confirmed: zero
-    `CheckEquivocation`/`ViolationEquivocation` references in `internal/follower/` or `cmd/`). It is a
-    pure verdict function only; `follower.checkConsistency` still has only the shrink + fork branches.
-    Wiring needs the consistency-proof hashes, which only the `SQLiteFetcher`/`ProofBuilder` can source
-    from mirrored hash tiles — **not yet built**. So the equivocation trigger is **not met end-to-end**.
+    `CheckEquivocation`/`ViolationEquivocation`/`SQLiteFetcher` references in `internal/follower/` or
+    `cmd/`). It remains a pure verdict function; `follower.checkConsistency` still has only the shrink +
+    fork branches (`logclient.CheckShrink` + `logclient.CheckFork`, no third branch). The
+    `SQLiteFetcher` read seam needed to source the consistency-proof hashes now exists, but the wiring
+    and an end-to-end test (which needs **tile fixtures, still absent**) are not built. The M1
+    equivocation trigger is **not met end-to-end**.
 
   - **Schema caveat carried forward**: the cached `HubKey` row carries only `revoked_at` (no
     `valid_from`/`valid_until`), so a full CID-1.0 validity-window re-check from the cache alone is not
@@ -80,9 +86,11 @@ logs/metrics/alert transport remain missing)
   - `internal/store/checkpoints.go` — typed CRUD: `UpsertHub`/`RecordCheckpoint`/`FollowState`/
     `AdvanceFollowState`/`RecordViolation`/`Freeze`/`SetCoverage`/`Coverage`/`RecordHubKey`/`LookupHubKey`.
 
-  - `internal/store/{sqlite,schema,checkpoints}.go` — `modernc.org/sqlite v1.46.1`, ADR-0005/0007
-    single-writer discipline (WAL, `busy_timeout=5000`, `foreign_keys=ON`, `synchronous=NORMAL`,
-    `SetMaxOpenConns(1)`), embedded nine-table `schema.sql` (incl. `hub_keys`).
+  - `internal/store/{sqlite,schema,checkpoints,tiles,fetcher}.go` — `modernc.org/sqlite v1.46.1`,
+    ADR-0005/0007 single-writer discipline (WAL, `busy_timeout=5000`, `foreign_keys=ON`,
+    `synchronous=NORMAL`, `SetMaxOpenConns(1)`), embedded **nine-table** `schema.sql` (`hubs`,
+    `hub_keys`, `checkpoints`, `violations`, `tiles`, `entry_bundles`, `iscc_index`, `follow_state`,
+    `ots`).
 
   - `internal/logclient/{checkpoint,accept,verify,didresolve,origin,keyid,checkpointkey,consistency}.go`
     — transport-only `FetchCheckpoint`, pure 4-way `AcceptCheckpoint`/`VerifyCheckpoint`, networked
@@ -92,48 +100,60 @@ logs/metrics/alert transport remain missing)
   - `internal/didweb/{url,resolve,vkey,validity}.go` — `DocumentURL`, `ParseDIDDocument`, `VerifierKey`/
     `DIDKey` (byte-exact port of `derive_vkey.py`), pure `ValidAt`. WASM-pure.
 
+  - `internal/tiles/layout.go` — pure leaf re-exporting tessera's `api/layout` primitives (`TilePath`,
+    `EntriesPath`, `PartialTileSize`, `TileWidth=256`, `TileHeight=8`) + the `IsFull(width)` predicate.
+    `net/http`- and `database/sql`-free, WASM-green.
+
   - `testdata/live/sb0.iscc.id_checkpoint` + `sb1.amlet.id_checkpoint` — real hub-signed checkpoints;
     per-package `testdata/{sb0,sb1}_did.json` + `internal/registry/testdata/realm.txt`.
 
-  - **Test totals (verified by grep)**: 9 (`didweb`) + 26 (`logclient`) + 31 (`store`) + 8 (`follower`) +
-    3 (`registry`) + 4 (`config`) + **5 (`tiles`, new)** + 1 (`cmd/iscc-monitor`) = **87 `func Test`**.
+  - **Test totals (verified by grep)**: 9 (`didweb`) + 26 (`logclient`) + **48 (`store`, +17)** +
+    8 (`follower`) + 3 (`registry`) + 4 (`config`) + 5 (`tiles`) + 1 (`cmd/iscc-monitor`) =
+    **104 `func Test`**.
 
 - **Missing (remaining M1 connective tissue):**
-  - **Equivocation trigger end-to-end** — the pure `CheckEquivocation` verifier exists, but the follower
-    wiring is unbuilt (no third branch in `checkConsistency`, no source for the proof hashes). That source
-    is the **`SQLiteFetcher` / `ProofBuilder`** slice (M2 territory, partially scaffolded now by
-    `internal/tiles`) — needs tile fixtures (still absent) and will arm the conformance/oracle gate.
-  - **Structured logs** — no `slog` anywhere in `internal`/`cmd` (confirmed). Two stderr placeholders
-    remain: `alert` in `cmd/iscc-monitor/main.go` and the per-tick swallowed error in `loop.go`.
+  - **Equivocation trigger end-to-end** — the pure `CheckEquivocation` verifier AND the `SQLiteFetcher`
+    read seam now both exist, but the follower wiring is unbuilt (no third branch in `checkConsistency`).
+    The end-to-end test needs **tile fixtures (still absent)**, and the conformance/oracle gate re-arms
+    once the consistency-proof hashes flow through `SQLiteFetcher`.
+  - **`fsck` root-rebuild conformance** — `fsck.New(...).Check(...)` over `SQLiteFetcher` + the inclusion
+    cross-check vs the hub's `IsccLogInclusionProof` is unbuilt (needs tile fixtures + the `fsck` dep,
+    which must live in `cmd/` or a future conformance package, not the store leaf).
+  - **Structured logs** — no `slog` anywhere in `internal`/`cmd` (confirmed; all `slog`/`net/http`-string
+    grep hits in non-test code are comments, except `didresolve.go`'s legitimate `net/http` import for
+    did resolution). Two stderr placeholders remain: `alert` in `cmd/iscc-monitor/main.go` and the
+    per-tick swallowed error in `loop.go`.
   - **`/metrics`** — no metrics impl, no `expvar`/prometheus, no http server (confirmed).
   - **Real alert transport** — `alert`/`AlertFunc` is a stderr-only placeholder.
 
 - **Fixtures**: `testdata/live/` holds **only the two checkpoints — no tiles or entry bundles** (needed
-  for the equivocation follower wiring + M2; confirmed still absent). **Known stale-fixture drift, still
-  not acted on:** the `sb1.amlet.id_did.json` fixtures (both `internal/didweb/` and `internal/logclient/`)
-  and `derive_vkey.py` still carry sb1's PRE-rotation key (`22b08f3e`); the live sb1 signer is `069d0f14`.
-  Captured in `verify_test.go` prose/tests (not green-but-wrong), but the did.json fixtures remain stale.
+  for the equivocation follower wiring + the `fsck` root-rebuild + M2; confirmed still absent). **Known
+  stale-fixture drift, still not acted on:** the `sb1.amlet.id_did.json` fixtures (both `internal/didweb/`
+  and `internal/logclient/`) and `derive_vkey.py` still carry sb1's PRE-rotation key (`22b08f3e`); the
+  live sb1 signer is `069d0f14`. Captured in `verify_test.go` prose/tests (not green-but-wrong), but the
+  did.json fixtures remain stale.
 
 - **Reuse imports wired**: `golang.org/x/mod/sumdb/note`, `modernc.org/sqlite`,
-  `github.com/transparency-dev/merkle v0.0.2` (`logclient/consistency.go`), and **now**
-  `github.com/transparency-dev/tessera v1.0.2` (`internal/tiles/layout.go` — `api/layout` only;
-  module-graph-only heavy deps stay out of the package closure). **Not yet wired** (confirmed zero
-  non-comment imports): the rest of tessera (`client`/`api`/`fsck`), `transparency-dev/formats`,
-  `nbd-wtf/opentimestamps`.
+  `github.com/transparency-dev/merkle v0.0.2` (`logclient/consistency.go`), and
+  `github.com/transparency-dev/tessera v1.0.2` (`internal/tiles/layout.go` — `api/layout` only). The
+  `SQLiteFetcher` proves conformance to `tessera/fsck.Fetcher` **structurally** (local interface copy),
+  so heavy tessera deps stay out of the store closure. **Not yet wired** (confirmed zero non-comment
+  imports): the rest of tessera (`client`/`fsck`), `transparency-dev/formats`, `nbd-wtf/opentimestamps`.
 
 - **Verify criteria status**: `origin("https://sb0.iscc.id") == "sb0.iscc.id/log"` and `VerifierKey`
   byte-match — **met**. **Two of three triggers fully met end-to-end** (synthetic shrink AND fork each →
   correct `violations.kind` + `frozen=1` + exactly-one-alert + other-hubs-unaffected + evidence-survives-
   restart). Coverage (`monitored_since`) — **tracked** and asserted set-once. The **third trigger,
-  equivocation, has a verified pure verifier but is NOT wired into the follower**, so the M1 Verify line
-  is **not satisfied**.
+  equivocation, has a verified pure verifier and now a read seam, but is NOT wired into the follower**,
+  so the M1 Verify line is **not satisfied**.
 
 ## M2 — Aggregator
-**Status**: not started — but the **first prerequisite slice has landed**: `internal/tiles` re-exports
-tessera's tlog-tiles layout math + the `IsFull` partial-tile predicate. The next M2 slice is the
-`SQLiteFetcher` (tessera `client.Fetcher` seam over the store's `tiles`/`entry_bundles` tables), which
-is also the prerequisite for wiring the M1 equivocation trigger, so it is being pulled forward. Tile
-fixtures are still absent and must be captured for both the SQLiteFetcher and the `fsck`/inclusion oracle.
+**Status**: not started — but **two prerequisite slices have landed**: `internal/tiles` re-exports
+tessera's tlog-tiles layout math + the `IsFull` partial-tile predicate, and `internal/store/{tiles,
+fetcher}.go` now provides the partial-tile mirror CRUD + `SQLiteFetcher` (structural `client.Fetcher`/
+`fsck.Fetcher`). What remains for M2: tile/entry-bundle fixtures, the actual `fsck.New(...).Check(...)`
+root-rebuild over `SQLiteFetcher` (the trust-root oracle re-arm), the `iscc_index` projection writer,
+and `inclusion`/`consistency`/`entries` served via a `ProofBuilder` from the local store.
 
 ## M3 — Trust API + dashboard
 **Status**: not started.
@@ -145,33 +165,38 @@ fixtures are still absent and must be captured for both the SQLiteFetcher and th
 **Status**: green (as recorded by `review`; not re-run here)
 - `go.mod` present (`go 1.24.0`, no `toolchain` line; requires `merkle v0.0.2` + `tessera v1.0.2` +
   `x/mod v0.33.0` + `sqlite v1.46.1`); `mise run check` runnable. Latest `review` handoff (2026-06-20,
-  "Add the canonical tlog-tiles layout layer (`internal/tiles`)", verdict **PASS / CONTINUE**) records
-  the gate green at HEAD `ac4a643`: `mise run check` green (build + vet + test, all 8 packages ok),
-  `gofmt -l .` empty, `go mod tidy` no-op, `go mod verify` passes, `GOOS=js GOARCH=wasm go build
-  ./internal/tiles` green. **Oracle/conformance gate correctly N/A this slice** (pure path strings — no
-  signature/RFC-6962/Merkle/did:web/fsck path); it re-arms at the `SQLiteFetcher` + `fsck` slice.
+  "SQLiteFetcher — read mirrored tiles/bundles/checkpoint back as a `fsck.Fetcher`", verdict
+  **PASS_WITH_NOTES / CONTINUE**) records the gate green at HEAD `4eaead8`: `mise run check` green
+  (build + vet + test, all 8 packages ok), `gofmt -l .` empty, `go mod tidy` no-op, `go mod verify`
+  passes, store stays a leaf (`go list -deps` has no `net/http`). **Oracle/conformance gate correctly
+  N/A this slice** (plain CRUD + synthetic BLOB round-trip — no signature/RFC-6962/Merkle/did:web/`fsck`-
+  rebuild path); it re-arms at the `fsck` root-rebuild + equivocation-wiring slice. The one accepted
+  note: the `var _ fsckFetcher` assertion uses a local interface copy (not the real `fsck` import) to
+  avoid the `net/http`/`otel`/`klog` dep leak — equivalent drift-detection, recorded in learnings.
 - Remote `origin` configured (github.com/iscc/iscc-monitor); working branch is **`develop`**, in sync
-  with `origin/develop` (0/0); tree clean at HEAD `ac4a643`. **No `.github/workflows/` — no CI
+  with `origin/develop` (0/0); tree clean at HEAD `4eaead8`. **No `.github/workflows/` — no CI
   configured.** When CI is wired it must avoid `go build ./...` over the gitignored `cauldron/` reference
   trees and shell out the future `notecheck` oracle rather than `go run` from `cauldron/`.
 
 ## Next Milestone
-Continue M1. The pure equivocation verifier and the `internal/tiles` layout seam are done; the immediate
-gap is sourcing the equivocation proof hashes and wiring the trigger into the follower. Candidate slices,
-in rough order:
-1. **`SQLiteFetcher`** — implement the tessera `client.Fetcher` seam (`{ReadCheckpoint, ReadTile,
-   ReadEntryBundle}`) over the store's `tiles`/`entry_bundles` tables, keyed by `tiles.TilePath`/
-   `EntriesPath` and gated by `IsFull`. The only way to source the RFC-6962 consistency-proof hashes
-   `CheckEquivocation` consumes, and the foundation for the M3 canonical-path mirror. **Needs tile
-   fixtures (still absent) and re-arms the conformance/oracle gate** (`fsck` root-rebuild over the
-   `SQLiteFetcher`, inclusion cross-check, golden-vector parity, `notecheck` in CI).
-2. **Wire `CheckEquivocation` into `follower.checkConsistency`** as the third branch (map
+Continue M1. The pure equivocation verifier, the `internal/tiles` layout seam, and the `SQLiteFetcher`
+read seam are all done; the immediate gap is wiring the equivocation trigger into the follower and
+capturing the tile fixtures that both the wiring test and the `fsck` root-rebuild need. Candidate
+slices, in rough order:
+1. **Wire `CheckEquivocation` into `follower.checkConsistency`** as the third branch (map
    `FollowState.LastSize → prevSize`, stored root → `prevRoot`, `info.TreeSize → nextSize`, `info.Root →
-   nextRoot`, fetched consistency proof) → `ViolationEquivocation` → `RecordViolation` + evidence +
-   `Freeze` + alert-once, no advance — closing the M1 Verify line. Depends on (1).
+   nextRoot`, consistency proof sourced via `SQLiteFetcher`) → `ViolationEquivocation` → `RecordViolation`
+   + evidence + `Freeze` + alert-once, no advance — closing the M1 Verify line. Needs **tile fixtures**
+   for an end-to-end test, which re-arms the conformance/oracle gate.
+2. **`fsck` root-rebuild conformance slice** — real tile fixtures + `fsck.New(...).Check(...)` over
+   `SQLiteFetcher` + the inclusion cross-check vs the hub's `IsccLogInclusionProof`. First slice where
+   the trust-root **oracle gate re-arms** for the mirror path; lives in `cmd/` or a future conformance
+   package that *can* take the `fsck` dep (otel/klog closure), not the store leaf.
 3. **sb1 fixture refresh** (`22b08f3e`→`069d0f14` in the two `sb1.amlet.id_did.json` + `derive_vkey.py`)
    — its own trust-root step that re-arms the oracle gate.
 4. The lighter remaining M1 gaps — structured logs (`slog`, replacing the two stderr placeholders),
    `/metrics`, real alert transport — then complete M1's Verify criteria.
 No CI is configured: flag for whoever sets up the workflow (load-bearing now that the merkle crypto path
-has landed and the upcoming `SQLiteFetcher`/fixture slices arm the external `notecheck` oracle).
+has landed and the upcoming `fsck`-rebuild/fixture slices arm the external `notecheck` oracle — wire CI
+**before** the `fsck`-rebuild conformance slice so the trust-root oracle has CI coverage when the mirror
+path first faces it).
