@@ -1,62 +1,52 @@
 # Handoff
 
-## 2026-06-20 — Review of: did:web identifier → did.json URL mapping (pure) + export the didweb resolve surface
+## 2026-06-20 — did:web HTTP resolver at the outbound-fetch seam (base URL → verifier key, `unresolvable` on failure)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added `internal/logclient/didresolve.go`: a 1-method `Fetcher` seam, an `httpFetcher`
+adapter (constructed via `NewHTTPFetcher`) mirroring Tessera's fetch shape, an exported
+`ErrUnresolvable` sentinel, and `ResolveVerifierKey(ctx, fetcher, baseURL)` that wires
+`origin` → `did:web:<host>` → `didweb.DocumentURL` → `fetcher.Fetch` → `didweb.ParseDIDDocument` →
+`didweb.VerifierKey`, collapsing every fetch/parse/derive failure to `ErrUnresolvable`. Purely
+additive; `internal/didweb` is untouched and still builds for WASM.
 
-**Summary:** `advance` added the pure `didweb.DocumentURL(did) (string, error)` mapping a
-`did:web:<msid>` identifier to its `did.json` HTTPS URL per the W3C did:web method spec, and
-mechanically exported the minimal follower-facing surface (`parseDIDDocument`→`ParseDIDDocument`,
-`verifierKey`→`VerifierKey`). The mapping is correct against all golden + error cases, the renames
-moved no derived bytes, and the package stays pure/WASM-shareable. Scope is exactly what `next.md`
-asked (2 non-test source files modified + 1 created); nothing from `## Not In Scope` was touched.
+**Files changed:**
+- `internal/logclient/didresolve.go` (new): the networked did:web resolver + `Fetcher` seam.
+- `internal/logclient/didresolve_test.go` (new): table-driven golden + error tests via a fake
+  `Fetcher`, plus a real-HTTP path over `httptest.NewTLSServer`.
+- `internal/logclient/testdata/{sb0.iscc.id_did.json,sb1.amlet.id_did.json}` (new): copies of the
+  didweb fixtures so the resolver test stays offline.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green, exit 0 (`internal/didweb`, `internal/logclient`).
-- [x] `gofmt -l .` — prints nothing (re-checked after my one-char doc fix).
-- [x] `go test -run TestDocumentURL ./internal/didweb` — PASS. All five goldens match, incl.
-  `did:web:sb0.iscc.id`→`https://sb0.iscc.id/.well-known/did.json`,
-  `did:web:sb1.amlet.id`→`https://sb1.amlet.id/.well-known/did.json`,
-  `did:web:example.com%3A3000:user:alice`→`https://example.com:3000/user/alice/did.json`.
-- [x] `DocumentURL("")` and `DocumentURL("did:key:z6Mkabc")` each return non-nil error
-  (`TestDocumentURLErrors` PASS — also bare prefix, empty host segment, invalid percent-encoding).
-- [x] `go test -run TestParseDIDDocument` / `-run TestVerifierKey ./internal/didweb` — PASS after the
-  renames. No regression to goldens `sb0…+40b74463+…` / `sb1…+22b08f3e+…`.
-- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` — succeeds; package stays WASM-shareable.
-- [x] Purity — `go list -deps ./internal/didweb` shows no `net`/`net/http`/`database/sql` in the
-  closure. `net/url` is the URL-parsing half only; it does not drag in the networking stack.
-- [x] **Oracle / trust-root parity (independent)** — re-ran `python3 .claude/derive_vkey.py`: both
-  vectors print byte-for-byte equal to the test asserts, confirming the export rename did not change
-  derived bytes. (`notecheck` CI job still not wired this early in M1 — no end-to-end signature
-  verification code exists yet; flagged, not a gate failure.)
-- [x] Gate-integrity scan over the 3 unpushed commits — no `//nolint`, `t.Skip`, build tags, swallowed
-  errors, deleted assertions, or loosened gates. Only matches were policy prose in `handoff.md`/
-  `next.md`.
-- [x] Scope — `url.go` + `url_test.go` created; `resolve.go` + `vkey.go` modified (rename); two test
-  files updated. 2 non-test source files modified (≤3 budget). Export surface is exactly
-  `DocumentURL` + `ParseDIDDocument` + `VerifierKey`; `pubkeyFromDID`/`keyID`/`b58decode` stay private.
+**Verification:** `mise run check` → green (build + vet + test, exit 0). `gofmt -l .` prints nothing.
+`GOOS=js GOARCH=wasm go build ./internal/didweb` succeeds. `go list -deps ./internal/didweb` shows no
+`net/http`/`database/sql`. Per criterion:
+- [x] sb0 fixture → `sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5` (full
+  string asserted) and fetched URL `https://sb0.iscc.id/.well-known/did.json`.
+- [x] sb1 fixture → `sb1.amlet.id/log+22b08f3e+ATo2ruguSdJGh11PS76osrQf6OZKrufzzwH/HMwE3a8/`.
+- [x] fetch error / `os.ErrNotExist` (404) / malformed JSON / no-assertionMethod / empty base URL each
+  satisfy `errors.Is(err, ErrUnresolvable)`.
+- [x] Real-HTTP path over `httptest.NewTLSServer` resolves through `httpFetcher`; a 404 server yields
+  `os.ErrNotExist` from `Fetch` and `ErrUnresolvable` from `ResolveVerifierKey`.
 
-**Issues found:** (none)
-
-**Minor fixes by reviewer:** (1) `resolve.go` package docstring still referenced the pre-rename
-`verifierKey` symbol in prose — corrected to `VerifierKey` so the doc tracks the exported name.
-(2) Removed the `.claude/.scratch/` dir the `derive_vkey.py` oracle writes during verification (not
-gitignored), keeping the tree clean.
-
-**Next:** Wire the did:web HTTP fetch at the follower's outbound-fetch seam — inject a
-`Fetcher`/`*http.Client`, call `DocumentURL(did)` → fetch → `ParseDIDDocument(bytes)` →
-`VerifierKey(origin, key.PublicKey)`, and map outcomes to hub status (`unresolvable` on fetch/parse
-failure, `unverified` on signature mismatch). This crosses into `net`/`sql`, so it must live OUTSIDE
-`internal/didweb` (or a non-WASM file) to keep the package pure. The `hub_keys(... pubkey_z,
-revoked_at ...)` cache + now-vs-window validity enforcement (consuming `DIDKey`'s
-`ValidFrom`/`ValidUntil`/`Revoked`) belong to that store/follower step.
+**Next:** Wire signature verification — verify a hub-signed checkpoint (Ed25519 signed-note) against
+the verifier key this resolver returns, mapping a signature that matches no listed key to status
+`unverified` (vs `unresolvable` here). That step needs an actual checkpoint and a `note.Verifier`/
+signed-note parser, and pairs with the `hub_keys` SQLite cache + CID 1.0 validity-window enforcement
+(consuming `DIDKey.ValidFrom`/`ValidUntil`/`Revoked`, currently parsed but unenforced).
 
 **Notes:**
-- **Validity-field lenient parse still pending the enforcement seam:** `parseTime` returns zero on
-  empty/unparseable input. An unparseable `revoked` silently meaning "valid" is a foot-gun to
-  re-examine when the follower lands enforcement — not a defect in this pure parser.
-- **`.claude/.scratch/` is not gitignored.** Any iteration that runs `derive_vkey.py` for oracle
-  parity must `rm -rf .claude/.scratch` afterward, or consider adding it to `.gitignore` (a candidate
-  trivial cleanup for a future iteration; not filed as an issue since it's reviewer-handled each run).
-- Branch `develop` is 3 commits ahead of `origin/develop`; remote configured. Pushing on PASS.
+- **did:web port encoding (design decision, worth a look):** for a host with a port, the resolver
+  percent-encodes the colon (`strings.Replace(host, ":", "%3A", 1)`) before forming
+  `did:web:<host%3Aport>`, per W3C did:web §3.2, so `DocumentURL` round-trips it back to `host:port`
+  rather than splitting the port off as a path segment. Live hubs (sb0/sb1) have no port, so this only
+  affects local/test hosts — but it is required to make the `httptest` server (random port) resolve
+  correctly, and matches the existing `did:web:example.com%3A3000` golden in `internal/didweb/url_test.go`.
+- **did:web is HTTPS-only:** `DocumentURL` always emits `https://`, so the real-HTTP test uses
+  `httptest.NewTLSServer` + `srv.Client()` (trusts the test cert). A plain-HTTP hub cannot be resolved
+  by design — correct per spec.
+- **Deferred body close discards its error** (`defer func() { _ = resp.Body.Close() }()`). This is the
+  idiomatic Go pattern, not a gate dodge; Tessera logs it via klog, which I deliberately did not pull
+  in (stdlib `net/http` only, per scope). No swallowed error affects the returned result.
+- **Validity-window fields still parsed-but-unenforced** (carried over from prior handoff): `DIDKey`'s
+  `ValidFrom`/`ValidUntil`/`Revoked` are returned but not checked here — enforcement belongs to the
+  store/follower step (explicitly out of scope).
+- Branch `develop`; committing implementation + tests + this handoff only.
