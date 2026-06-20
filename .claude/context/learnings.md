@@ -147,6 +147,15 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   do not flag the new exported symbols as dead. The shrink check is pure arithmetic, so the
   conformance/oracle gate (`notecheck`/`derive_vkey.py`/`fsck`) is correctly N/A here — it only trips
   once the merkle-backed equivocation slice lands.
+- **Fork is the second dep-free trigger and landed in the same file as shrink.** `CheckFork(prevSize,
+  prevRoot [rootBytes]byte, nextSize, nextRoot [rootBytes]byte) bool == prevSize > 0 && nextSize ==
+  prevSize && nextRoot != prevRoot`. Same-size + differing root only; growth/shrink/identical-root all
+  false, and the `prevSize > 0` guard keeps the fresh-store zero from misreading. Uses array `!=` (Go
+  elementwise on fixed-size `[32]byte`) — `consistency.go` stays import-free of `bytes`/any dep
+  (verified: only `bytes` occurrence is the comment explaining why none is needed). `ViolationFork
+  ViolationKind = "fork"` matches the `violations.kind` string. Only equivocation (RFC-6962
+  consistency-proof) now remains deferred to the merkle-backed slice. Test guard `if rootA == rootB
+  { t.Fatal }` makes the "different root" cases non-vacuous.
 
 ## Follower composition (`internal/follower`)
 
