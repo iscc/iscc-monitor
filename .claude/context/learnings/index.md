@@ -19,11 +19,11 @@ path: a wrong decode resolves the wrong hub and proves the wrong leaf. WASM-shar
   The realm-1 vector `MEIGHFECJMOPMIAC` is constructed per the ADR layout. Both have **Length nibble
   0** (byte1 = 0x10) — any new vector must too.
 
-- **Length nibble is NOT validated (open `[review]` issue).** `Decode` checks MainType + Version but
-  ignores `raw[1]&0xF`, so a header like `MAIQAAAAAAAAAAAA` (byte1 = 0x11, Length nibble 1) is accepted
-  and its bytes 2:10 mis-read as the 64-bit body — a fail-closed gap on the trust root the file's own
-  docstring claims to enforce ("MainType, SubType, Version, Length"). Codex-found, reviewer-confirmed.
-  Fix = guard `raw[1]&0xF == 0` before reading the body; both golden vectors stay valid.
+- **settled: all four header nibbles are now validated fail-closed.** `Decode` rejects a wrong
+  MainType, wrong Version, AND a nonzero **Length nibble** (`raw[1]&0xF != 0`, the `MAIQAAAAAAAAAAAA`
+  case) before reading the body. The Length guard sits between the Version check and the body read;
+  both golden vectors (Length nibble 0) are unaffected. Any *new* valid vector must have byte1 low
+  nibble 0. (Was the open Codex-found `[review]` gap; closed 2026-06-21, mutation-proven.)
 
 - **Golden test must stay tied to ground truth, not the symbol.** `TestDecodeGoldenVectors` hard-codes
   the decoded fields (external truth) — it catches a `timestampShift` mutation but NOT a `hubIDMask`

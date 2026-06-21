@@ -18,27 +18,6 @@ filed it and does **not** affect priority.
 
 ---
 
-## ISCC-IDv1 decoder accepts a nonzero Length nibble (fail-closed gap on the trust root)
-- **Priority:** normal
-- **Source:** [review] (Codex-found P2, reviewer-confirmed against the hub schema + golden vectors)
-- **What / where / how to verify:** `internal/index/iscc.go` `Decode` (the realm-wide certificate's
-  trust-root decoder) validates the header's MainType (`raw[0]>>4 == 6`) and Version (`raw[1]>>4 == 1`)
-  nibbles but never checks the **Length nibble** (`raw[1] & 0xF`). For a canonical 64-bit ISCC-IDv1 the
-  Length nibble is **0** (both real golden vectors `MAIGHFECJMOPMIAB` / `MEIGHFECJMOPMIAC` have byte1 =
-  0x10). A header like `MAIQAAAAAAAAAAAA` (byte1 = 0x11, Length nibble 1) is NOT a valid v1 ID — it
-  describes a different/truncated body — yet `Decode` accepts it and mis-reads bytes 2:10 as the 64-bit
-  body, so a malformed id is routed to a hub instead of rejected. This violates the explicit
-  fail-closed contract (`next.md`: "a header that is not an ISCC-IDv1 ... must return a descriptive
-  error") and the file's own docstring, which lists Length as a header nibble. Fix: guard
-  `raw[1] & 0xF == 0` (reject otherwise) before reading the body, and add a golden malformed case for
-  `MAIQAAAAAAAAAAAA`. Verify fixed: `Decode("MAIQAAAAAAAAAAAA")` returns a non-nil error; both existing
-  golden vectors still decode (their Length nibble is 0); a mutation flipping the guard makes a test
-  FAIL. Confirmed harmless to every valid id (all real v1 ids have Length 0), so it is `normal`, not
-  `critical` — it does not corrupt any legitimate decode and does not block the resolver sub-step, but
-  it must land before this decoder is consumed on the certificate trust path.
-- **Spec:** ADR-0010:83-88 (ISCC-IDv1 header layout); `next.md` fail-closed contract;
-  iscc-hub `schema.py:65` (64-bit body = 52-bit ts + 12-bit hub).
-
 ## Single-record label test is vacuous on the kind-label constant value
 - **Priority:** low
 - **Source:** [review] (mutation-found in the constant-fix review)
