@@ -9,11 +9,12 @@
 // prior accepted checkpoint, and then either freezes the hub on a violation or
 // advances the follow cursor — but only a StatusVerified observation may advance
 // accepted state (ADR-0009). On that verified, non-violation path it also records
-// the hub's coverage start once (ADR-0001, set-once) and caches the resolved
-// did:web signing key (ADR-0009, hub_keys). The merkle-backed equivocation trigger
-// sources its consistency proof from the local mirror (a store.SQLiteFetcher), never
-// re-hitting the hub. The poll loop is its own later step; PollHub does exactly one
-// observation per call and returns.
+// the hub's coverage start once (ADR-0001, set-once), caches the resolved
+// did:web signing key (ADR-0009, hub_keys), and mirrors the hub's hash tiles and
+// entry bundles into the local store (ADR-0005, ingestTiles). The merkle-backed
+// equivocation trigger sources its consistency proof from that local mirror (a
+// store.SQLiteFetcher), never re-hitting the hub. The poll loop is its own later
+// step; PollHub does exactly one observation per call and returns.
 //
 // Record-only-on-verified: only a StatusVerified observation is persisted, since
 // the non-verified verdicts carry a zero CheckpointInfo and therefore no
@@ -174,6 +175,16 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	// contradictory or unverified observation must never populate the key cache.
 	if err := cacheHubKey(ctx, st, fetcher, hubID, baseURL, raw, observedAt); err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: cache hub key: %w", hubID, err)
+	}
+	// Mirror the hub's hash tiles and entry bundles into the local store
+	// (ADR-0005). This feeds the SQLiteFetcher so the equivocation consistency
+	// proof and the M2 fsck root-rebuild read real mirrored tiles. A fetch/store
+	// fault here is a genuine transport error (NOT a violation): it is surfaced so
+	// accepted state for the next poll is unaffected — the checkpoint is already
+	// recorded/advanced above, so the next poll re-fetches any missing coords via
+	// the idempotent upsert.
+	if err := ingestTiles(ctx, st, fetcher, hubID, baseURL, info.TreeSize, observedAt); err != nil {
+		return status, fmt.Errorf("follower.PollHub: hub %d: ingest tiles: %w", hubID, err)
 	}
 	recordVerdict(m, hubID, status, false, observedAt)
 	return status, nil

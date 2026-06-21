@@ -1,0 +1,242 @@
+// Tests for the live tile/entry-bundle mirror writer (ingestTiles) and its
+// PollHub-level integration. The unit test drives ingestTiles directly over a
+// boundary tree size (300) through a recording fetcher and asserts the exact
+// (level, index, width) BLOBs land in the store — pinning the load-bearing
+// widthForP translation (a full coord, Partial == 0, stored at width 256; a
+// 44-leaf partial at width 44). The integration test extends compositeFetcher to
+// serve synthetic tile/bundle bytes, drives a verified PollHub against the sb0
+// fixture, and asserts the enumerated coords are mirrored — all on observable
+// store outputs (ReadTileBlob / ReadEntryBundleBlob), never follower internals.
+//
+// The writer is transport + CRUD only (no crypto), so the synthetic per-URL bytes
+// suffice; byte-accurate live tile fixtures arrive with the inclusion cross-check.
+package follower
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/iscc/iscc-monitor/internal/logclient"
+	"github.com/iscc/iscc-monitor/internal/store"
+	"github.com/iscc/iscc-monitor/internal/tiles"
+)
+
+// recordingFetcher returns deterministic, URL-unique synthetic bytes for every
+// fetch and records each requested URL, so a test can assert both the bytes that
+// round-tripped into the store and which coords were fetched. It serves any URL
+// (tile, bundle, or otherwise) — the writer under test fetches only tile/bundle
+// URLs.
+type recordingFetcher struct {
+	urls []string
+}
+
+// Fetch records the URL and returns synthetic bytes unique to it ("body:" +
+// url), so a store read-back can be matched back to the exact coord fetched.
+func (f *recordingFetcher) Fetch(_ context.Context, url string) ([]byte, error) {
+	f.urls = append(f.urls, url)
+	return []byte("body:" + url), nil
+}
+
+// TestIngestTilesWidthMapping drives ingestTiles directly over the boundary tree
+// size 300 and asserts the exact (level, index, width) writes via store read-back.
+// Tree 300 yields hash tiles {0,0,full}, {0,1,p44}, {1,0,p1} and entry bundles
+// {0,full}, {1,p44}. The load-bearing assertion is that the full coords
+// (Partial == 0) are stored at width tiles.TileWidth (256), not 0, and the
+// 44-leaf partials at width 44 — read back at the matching width.
+func TestIngestTilesWidthMapping(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	fetcher := &recordingFetcher{}
+	observedAt := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	const treeSize = 300
+
+	if err := ingestTiles(ctx, s, fetcher, hubID, "https://sb0.iscc.id", treeSize, observedAt); err != nil {
+		t.Fatalf("ingestTiles: %v", err)
+	}
+
+	// Hash tiles: width is the load-bearing translation. A full coord (Partial 0)
+	// must be readable at width 256; a partial at its leaf count.
+	tileCases := []struct {
+		level, index uint64
+		partial      uint8
+		wantWidth    int
+	}{
+		{0, 0, 0, tiles.TileWidth}, // full level-0 tile -> width 256
+		{0, 1, 44, 44},             // 44-leaf partial -> width 44
+		{1, 0, 1, 1},               // 1-hash partial at level 1 -> width 1
+	}
+	for _, tc := range tileCases {
+		wantURL := "https://sb0.iscc.id/log/" + tiles.TilePath(tc.level, tc.index, tc.partial)
+		data, found, err := s.ReadTileBlob(ctx, hubID, tc.level, tc.index, tc.wantWidth)
+		if err != nil {
+			t.Fatalf("ReadTileBlob L%d I%d W%d: %v", tc.level, tc.index, tc.wantWidth, err)
+		}
+		if !found {
+			t.Errorf("tile L%d I%d not found at width %d (widthForP(%d) mismatch?)", tc.level, tc.index, tc.wantWidth, tc.partial)
+			continue
+		}
+		if string(data) != "body:"+wantURL {
+			t.Errorf("tile L%d I%d W%d bytes = %q, want body for %q", tc.level, tc.index, tc.wantWidth, data, wantURL)
+		}
+	}
+
+	// A full tile must NOT be readable at width 0 — that would make it invisible to
+	// the SQLiteFetcher (which looks a full tile up at width 256).
+	if _, found, err := s.ReadTileBlob(ctx, hubID, 0, 0, 0); err != nil {
+		t.Fatalf("ReadTileBlob full-at-width-0: %v", err)
+	} else if found {
+		t.Errorf("full tile readable at width 0, want stored at width %d only", tiles.TileWidth)
+	}
+
+	// Entry bundles: same width translation.
+	bundleCases := []struct {
+		index     uint64
+		partial   uint8
+		wantWidth int
+	}{
+		{0, 0, tiles.TileWidth}, // full bundle -> width 256
+		{1, 44, 44},             // 44-leaf partial -> width 44
+	}
+	for _, bc := range bundleCases {
+		wantURL := "https://sb0.iscc.id/log/" + tiles.EntriesPath(bc.index, bc.partial)
+		data, found, err := s.ReadEntryBundleBlob(ctx, hubID, bc.index, bc.wantWidth)
+		if err != nil {
+			t.Fatalf("ReadEntryBundleBlob I%d W%d: %v", bc.index, bc.wantWidth, err)
+		}
+		if !found {
+			t.Errorf("bundle I%d not found at width %d (widthForP(%d) mismatch?)", bc.index, bc.wantWidth, bc.partial)
+			continue
+		}
+		if string(data) != "body:"+wantURL {
+			t.Errorf("bundle I%d W%d bytes = %q, want body for %q", bc.index, bc.wantWidth, data, wantURL)
+		}
+	}
+
+	// Every named coord was fetched exactly once: 3 tiles + 2 bundles = 5 URLs.
+	if len(fetcher.urls) != 5 {
+		t.Errorf("fetched %d URLs, want 5 (3 tiles + 2 bundles for tree 300)", len(fetcher.urls))
+	}
+}
+
+// TestWidthForP pins the unexported width translation directly: a full qualifier
+// (p == 0) maps to tiles.TileWidth (256), any partial to int(p). This is the
+// re-derived store one-liner (the store's copy is unexported and must not be
+// exported); a wrong p==0 mapping (e.g. to 0) would make full tiles unreadable by
+// the SQLiteFetcher.
+func TestWidthForP(t *testing.T) {
+	cases := []struct {
+		p    uint8
+		want int
+	}{
+		{0, tiles.TileWidth}, // full -> 256, NOT 0
+		{1, 1},
+		{44, 44},
+		{255, 255},
+	}
+	for _, tc := range cases {
+		if got := widthForP(tc.p); got != tc.want {
+			t.Errorf("widthForP(%d) = %d, want %d", tc.p, got, tc.want)
+		}
+	}
+}
+
+// mirrorFetcher extends the routing pattern of compositeFetcher: it serves the sb0
+// did.json and checkpoint like compositeFetcher, and additionally serves synthetic
+// per-URL bytes for tile/bundle URLs ("tile:" + url) so a verified PollHub can
+// ingest a real mirror without live network or byte-accurate tile fixtures.
+type mirrorFetcher struct {
+	checkpoint []byte
+	didDoc     []byte
+}
+
+// Fetch routes did.json -> didDoc, tile/ URLs -> synthetic tile bytes, everything
+// else (the checkpoint) -> checkpoint. The tile branch precedes the checkpoint
+// fallback so a "/log/tile/..." URL never receives the checkpoint bytes.
+func (f mirrorFetcher) Fetch(_ context.Context, url string) ([]byte, error) {
+	switch {
+	case strings.HasSuffix(url, "did.json"):
+		return f.didDoc, nil
+	case strings.Contains(url, "/tile/"):
+		return []byte("tile:" + url), nil
+	default:
+		return f.checkpoint, nil
+	}
+}
+
+// TestPollHubMirrorsTiles drives a verified PollHub against the sb0 checkpoint
+// fixture (tree size 10183) through a fetcher that also serves synthetic tile and
+// bundle bytes, then asserts the enumerated coords are mirrored in the store. The
+// assertion is on observable store outputs (ReadTileBlob / ReadEntryBundleBlob
+// returning found == true with the fetched bytes), never on follower internals.
+func TestPollHubMirrorsTiles(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	fetcher := mirrorFetcher{
+		checkpoint: readCheckpoint(t, "sb0.iscc.id_checkpoint"),
+		didDoc:     readFixture(t, "sb0.iscc.id_did.json"),
+	}
+
+	status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", sb0ObservedAt(), noopAlert, nil)
+	if err != nil {
+		t.Fatalf("PollHub: %v", err)
+	}
+	if status != logclient.StatusVerified {
+		t.Fatalf("status = %s, want verified", status)
+	}
+
+	const treeSize = 10183 // the sb0 fixture's signed tree size.
+
+	// Every enumerated hash tile is mirrored at its widthForP width, with the bytes
+	// the fetcher served for that exact tile URL.
+	for _, c := range tiles.TileCoords(treeSize) {
+		width := widthForP(c.Partial)
+		wantURL := "https://sb0.iscc.id/log/" + tiles.TilePath(c.Level, c.Index, c.Partial)
+		data, found, err := s.ReadTileBlob(ctx, hubID, c.Level, c.Index, width)
+		if err != nil {
+			t.Fatalf("ReadTileBlob L%d I%d W%d: %v", c.Level, c.Index, width, err)
+		}
+		if !found {
+			t.Errorf("tile L%d I%d not mirrored at width %d", c.Level, c.Index, width)
+			continue
+		}
+		if string(data) != "tile:"+wantURL {
+			t.Errorf("tile L%d I%d W%d bytes = %q, want tile body for %q", c.Level, c.Index, width, data, wantURL)
+		}
+	}
+
+	// Every enumerated entry bundle is mirrored at its widthForP width.
+	for _, c := range tiles.BundleCoords(treeSize) {
+		width := widthForP(c.Partial)
+		wantURL := "https://sb0.iscc.id/log/" + tiles.EntriesPath(c.Index, c.Partial)
+		data, found, err := s.ReadEntryBundleBlob(ctx, hubID, c.Index, width)
+		if err != nil {
+			t.Fatalf("ReadEntryBundleBlob I%d W%d: %v", c.Index, width, err)
+		}
+		if !found {
+			t.Errorf("bundle I%d not mirrored at width %d", c.Index, width)
+			continue
+		}
+		if string(data) != "tile:"+wantURL {
+			t.Errorf("bundle I%d W%d bytes = %q, want tile body for %q", c.Index, width, data, wantURL)
+		}
+	}
+
+	// The first level-0 tile of the 10183-leaf tree is full and must be readable at
+	// width 256 — the SQLiteFetcher's full-tile read path.
+	var fetcher2 = store.SQLiteFetcher{Store: s, HubID: hubID}
+	if _, err := fetcher2.ReadTile(ctx, 0, 0, 0); err != nil {
+		t.Errorf("SQLiteFetcher.ReadTile(0,0,p0) over mirrored store: %v (full tile must round-trip at width 256)", err)
+	}
+}
