@@ -1,63 +1,53 @@
-## 2026-06-21 — Review of: Mirror candidate tiles before the consistency check so a growing split view freezes
+## 2026-06-21 — Pure entry-bundle → iscc_index projection decoder (`BundleProjections`)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added the pure, schema-agnostic `BundleProjections(bundle []byte, baseSeq uint64)
+([]Projection, error)` in `internal/logclient/projection.go` — it decodes one tlog-tiles entry bundle
+(via `api.EntryBundle.UnmarshalText`, mirroring `LeafHashes`) into one `Projection{Seq, IsccID,
+NoteSchema, RecordSHA256}` per leaf (ADR-0008), extracting the committed `iscc_id` and the RAW inner
+`note.$schema` discriminator plus the record-content SHA-256, without interpreting anything. It is an
+unwired-until-M2 export seam (no production caller yet).
 
-**Summary:** A pure reorder in `PollHub` moves the single `ingestTiles(...info.TreeSize...)` call ahead
-of `checkConsistency`, so the candidate-size tiles are mirrored before the equivocation consistency
-proof is built — closing the open `critical` trust-root gap where a growing split view hit a
-missing-candidate-tile error that `checkConsistency` swallowed as a clean pass and then advanced
-`last_size` to the inconsistent root. No new logic, exactly one `ingestTiles` invocation per poll,
-`checkConsistency`'s missing-tile swallow left intact as a robustness guard, scope clean (1 production
-file + 1 test file). The new end-to-end `TestPollHubGrowingSplitViewFreezes` is non-vacuous and every
-handoff claim held under my own uncached re-runs.
+**Files changed:**
+- `internal/logclient/projection.go` (new): the pure decoder + `Projection`/`recordEnvelope` types.
+  Imports are exactly `crypto/sha256` + `encoding/json` + `fmt` + `tessera/api`. Records the INNER
+  `note.$schema` (not the envelope's top-level `$schema`); `RecordSHA256` is `sha256.Sum256(record)`
+  (NO `0x00` leaf prefix — that is `LeafHashes`' job). A JSON parse failure is a wrapped error naming
+  the absolute seq; empty/unmodeled fields are indexed verbatim, never rejected.
+- `internal/logclient/projection_test.go` (new): golden test with an independent uint16-BE framing
+  helper (`frameBundle`, a third encode path); pins a declaration + a deletion record at `baseSeq=256`,
+  plus empty-bundle, schema-agnostic (empty id + unknown URI), malformed-record, and truncated-bundle
+  cases.
 
-**Verification:**
-- [x] `mise run check` — green (all 11 packages `ok`; build + vet + test).
-- [x] `go test -run TestPollHubGrowingSplitViewFreezes -count=1 ./internal/follower` — passes (uncached).
-- [x] `go test -run 'TestPollHubEquivocation|TestEquivocationMissingTilesDoesNotFreeze' -count=1
-  ./internal/follower` — passes (the direct-`checkConsistency` missing-tile robustness guard unchanged).
-- [x] `go test -run 'TestPollHubVerifiedAdvances|TestPollHubMirrorsTiles|TestPollHubFsck' -count=1
-  ./internal/follower` — passes (the consistent-growing advance + fsck rebuild unaffected by the reorder).
-- [x] `go test -run TestPollHubFork -count=1 ./internal/follower` — passes (fork re-detection unaffected).
+**Verification:** `mise run check` → GREEN (all 11 packages `ok`; build + vet + test). Per-criterion:
+- [x] `go test -run TestBundleProjections -count=1 ./internal/logclient` — passes (uncached); all 5
+  projection tests pass verbosely.
+- [x] `GOOS=js GOARCH=wasm go build ./internal/logclient` — exit 0 (file stays WASM-shareable).
 - [x] `gofmt -l .` — empty.
-- [x] `git diff --quiet HEAD~1 -- go.mod go.sum internal/store/schema.sql` — exit 0 (no dep/schema change).
-- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` — exit 0 (WASM purity guard unaffected).
-- [x] Structural: exactly one `ingestTiles(ctx, …)` call in production `follower.go` (line 163);
-  `fsckMirror` still on the clean advance path (line 218). Order verified by grep:
-  `FollowState`(145) → `ingestTiles`(163) → `checkConsistency`(169) → `freeze`(183) /
-  `RecordCheckpoint`(194)+`AdvanceFollowState`(202).
-- [x] **Oracle gate (APPLIES — RFC-6962 / consistency-proof / equivocation path):** full
-  `./internal/follower ./internal/logclient` conformance suite green uncached (`fsck` root-rebuild +
-  equivocation + inclusion cross-check); `derive_vkey.py` reproduces both golden vectors
-  (`40b74463`/`22b08f3e`); the fully-independent `cmd/notecheck` oracle holds locally (accept
-  `OK sb0.iscc.id/log` + reject a one-char-flipped sig) and is wired in CI (`.github/workflows/ci.yml`).
-  No signature/proof crypto changed — only the order in which already-tested checks run.
-- [x] **Gate-integrity scan** of all unpushed commits (`@{upstream}..HEAD`: `5a10f7c`/`9f43e18`/`05d7ee6`/
-  `dbff98e`) — no `nolint`/`t.Skip`/build-tag/swallowed-error/deleted-assertion in the Go code diff.
-- [x] **Scope:** exactly the 2 files `next.md` scoped; nothing in `## Not In Scope` was done (the
-  `checkConsistency` swallow body is untouched — only its describing comment moved; no `fsckMirror`
-  refactor, no frozen-hub or `CheckpointAt` fix bundled).
+- [x] `git diff --quiet HEAD -- go.mod go.sum internal/store/schema.sql` — exit 0 (no dep/schema change;
+  `encoding/json`/`crypto/sha256` are stdlib, `tessera/api` already in the package closure).
+- [x] `go list -f '{{join .Imports "\n"}}' ./internal/logclient | grep -E 'internal/store|database/sql'`
+  — empty (store stays un-imported by logclient).
+- [x] Assertion: two-record bundle (declaration + deletion) at `baseSeq=256` → length-2 with
+  `Seq={256,257}` and `NoteSchema={iscc-note-0.8.0.json, iscc-note-delete-0.8.0.json}` verbatim, IDs
+  round-trip, `RecordSHA256` matches an independent `sha256.Sum256`.
 
-**Issues found:** (none). The resolved `critical` "Growing equivocations can be accepted before
-candidate tiles are mirrored" was deleted from `issues.md` after verifying the fix end-to-end.
-
-**Next:** Wire `VerifyInclusionEvidence` into `PollHub` + the `iscc_index` projection writer (the M2
-second-half slice). This needs the `iscc_id → seq` projection to resolve a sampled leaf index and an
-entry bundle to sample from; pass `store.SQLiteFetcher.ReadTile` straight in (signature already matches
-`TileFetcher`). That wiring is the remaining gap before M2's Verify bar is met.
+**Next:** The store writer — `store.RecordProjections`/`RecordProjection` upserting `[]Projection` into
+`iscc_index` (with `iscc_id_str` = `IsccID` and `iscc_id` BLOB = whatever raw-id-bytes encoding the
+schema column expects; note `schema.sql` has both `iscc_id` BLOB and `iscc_id_str` TEXT — clarify the
+BLOB encoding when that slice is defined). Then wire `BundleProjections` into `PollHub`'s
+tile-ingestion path and add the `iscc_id → []seq` read query, which together unblock wiring
+`VerifyInclusionEvidence` into `PollHub` (resolve a sampled leaf index, pass `SQLiteFetcher.ReadTile`
+straight in) — the remaining M2 second-half gap.
 
 **Notes:**
-- The reorder runs `ingestTiles` on the freeze path too: on a violation the candidate tiles are
-  mirrored but the cursor is NOT advanced (freeze returns without `AdvanceFollowState`) — intended,
-  tiles are rebuildable/evidence, not accepted state (ADR-0006 "preserve evidence"). No mirror-rollback
-  was added.
-- An `ingestTiles` fault (genuine transport/store error on a missing candidate tile) now aborts the
-  poll before `checkConsistency`, so accepted state never advances — exactly the "missing proof tile →
-  error, not clean pass" behavior the `critical` asked for.
-- `mise run check` is GREEN. Two `normal` follower issues remain open and were correctly NOT bundled:
-  frozen hubs still advance accepted state on later clean polls (`follower.go` reaches
-  `AdvanceFollowState` when `fs.Frozen` is already true), and `CheckpointAt`'s unordered `LIMIT 1`
-  re-detection fragility. M2 second-half wiring blocks DONE (not this slice's PASS).
-- Active branch is `develop` (the session-start snapshot showing `main` was stale). Remote `origin`
-  configured; pushing `develop` on this PASS.
+- Oracle gate correctly N/A for this slice: pure JSON + `sha256` content-hash fold, no
+  signature/RFC-6962/Merkle/did:web/`fsck` path introduced. `notecheck`/`derive_vkey.py` are untouched
+  and re-arm at the `fsck`/inclusion-cross-check wiring slice. No signature/consistency/proof code
+  changed.
+- The `Projection.IsccID` is the raw `ISCC:`-prefixed string only; I deliberately did NOT decode it to
+  the `iscc_id` BLOB column — `next.md` scopes ISCC-ID parsing OUT (schema-agnostic raw fold). The
+  store-writer slice owns mapping `IsccID` → the `iscc_id`/`iscc_id_str` columns.
+- `RecordSHA256` is `[32]byte` (value, not slice) to make the content hash a fixed-size field and let
+  the test use `!=` directly; it maps to the nullable `record_sha256` BLOB column.
+- Unwired export seam, same posture as `LeafHashes` / the consistency triggers /
+  `VerifyInclusionEvidence` — `go vet` is clean, not dead code.
