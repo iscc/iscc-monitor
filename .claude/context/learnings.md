@@ -1047,3 +1047,32 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   reproduces `40b74463`/`22b08f3e`; CI `notecheck` parity job present + unchanged. `SQLiteFetcher.ReadTile`'s
   `(ctx, l, i uint64, p uint8)` is assignment-compatible with `logclient.TileFetcher` and passes straight in,
   as the inclusioncheck learnings predicted.
+
+## tlog-tiles HTTP read surface (`internal/tilesserve/handler.go`)
+
+- **`Handler(f store.SQLiteFetcher) http.Handler` is a pure static-byte read transport — the oracle
+  gate is correctly N/A and verified so, not asserted.** `go list -deps ./internal/tilesserve | grep
+  -E 'internal/proof|logclient|didweb|merkle|note|rfc6962'` is EMPTY — the served bodies are opaque
+  BLOBs (the verifier computes proofs locally in a later slice), so no signature/RFC-6962/Merkle/
+  did:web/fsck path is introduced. `notecheck`/`derive_vkey.py`/CI parity job all untouched + green;
+  they re-arm at the proof-serving / `verify-for-me` slice. Same leaf-wrapping posture as `metricshttp`
+  (which keeps `net/http` out of the pure `metrics` leaf): `tilesserve → store`, never the reverse —
+  `go list -deps ./internal/store` shows neither `tilesserve` nor `net/http`, so store stays a leaf.
+- **The routing is robust at every malformed boundary, reviewer-probed against the real tessera parser
+  (not just the 9 test subcases).** `serveTile` trims `tile/` then `strings.Cut(rest, "/")` on the FIRST
+  slash only (so `tile/0/001.p/44` → `level="0"`, `index="001.p/44"`, `width=44` passes straight as the
+  fetcher's `p`); a slash-less `tile/0` → `Cut` `ok=false` → 400; `tile/0/` and `tile/0/abc` →
+  `layout.ParseTileLevelIndexPartial` error → 400. The `tile/entries/` case MUST precede `tile/` in the
+  switch (entries is a sub-prefix) — confirmed present. tessera's returned `width` IS the `SQLiteFetcher`
+  `p` (shared 0==full convention), so it is passed through unmapped, matching `widthForP`.
+- **The body-equality + status assertions are mutation-proven non-vacuous (reviewer, reverted).** (1)
+  `w.Write([]byte("X"))` instead of the BLOB → all four 200-byte-equal subtests FAIL; (2) collapsing the
+  404 mapping to 200 → both the never-mirrored-tile and unmatched-path subtests FAIL. A green-but-wrong
+  handler that served constant bytes or 200'd a missing row cannot ship. The single `_, _ = w.Write`
+  swallow is the documented metricshttp idiom (the 200 is already on the wire), not a gate dodge.
+- **Intentional unwired export seam (like the prior M2 seams): no production caller yet — the binary
+  wiring (per-hub route prefix, hub→origin router, read-only pool) is the deferred next slice that
+  `next.md` scoped out.** `go vet` clean, not dead code. The handler takes `store.SQLiteFetcher` by
+  value (exported `Store *Store` + `HubID int64` fields), so the binary constructs one per hub with no
+  new store surface. go.mod/go.sum/schema byte-identical; `GOOS=js GOARCH=wasm go build ./internal/didweb`
+  still exits 0 (WASM purity rides on `didweb`, untouched by this net/http leaf-wrapper).
