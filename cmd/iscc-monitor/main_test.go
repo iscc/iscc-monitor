@@ -8,7 +8,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -277,6 +279,85 @@ func TestMirrorInclusionRoute(t *testing.T) {
 			t.Errorf("status = %d, want 200", rec.Code)
 		}
 	})
+}
+
+// TestMirrorEntriesRoute proves the /entries record-bytes route is mounted per hub
+// on the same combined mux as the static mirror and the other proof routes: it seeds
+// a verified mirror with one framed entry bundle and an accepted checkpoint, then
+// asserts GET /<origin>/log/entries?index=<seq> routes through the shared mux and
+// returns the exact record bytes, while /<origin>/log/checkpoint still reaches the
+// static mirror. This is the binary-level routing proof the new /entries mount does
+// not break the existing routing.
+func TestMirrorEntriesRoute(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "entries.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	hub, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	// A small within-one-bundle verified mirror: frame 5 records into entry bundle 0
+	// and advance the accepted size to 5.
+	const leaves = 5
+	records := make([][]byte, leaves)
+	for i := range records {
+		records[i] = []byte(fmt.Sprintf("record-%d", i))
+	}
+	at := time.Unix(1700000000, 0)
+	if err := st.RecordEntryBundle(ctx, hub, 0, leaves, frameEntryBundle(records), at); err != nil {
+		t.Fatalf("RecordEntryBundle: %v", err)
+	}
+	if _, _, err := st.RecordCheckpoint(ctx, store.CheckpointRecord{
+		HubID: hub, TreeSize: leaves, Root: []byte("root"), Raw: []byte("checkpoint"), ObservedAt: at,
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint: %v", err)
+	}
+	if err := st.AdvanceFollowState(ctx, hub, leaves); err != nil {
+		t.Fatalf("AdvanceFollowState: %v", err)
+	}
+
+	routes := []hubRoute{{HubID: hub, Origin: "sb0.iscc.id/log"}}
+	mux := buildMux(st, routes, metrics.New())
+
+	// GET /sb0.iscc.id/log/entries?index=2 -> 200 byte-equal to the seeded record.
+	t.Run("entries at origin prefix returns the record bytes", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id/log/entries?index=2", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+		}
+		if !bytes.Equal(rec.Body.Bytes(), records[2]) {
+			t.Errorf("body = %q, want %q", rec.Body.Bytes(), records[2])
+		}
+	})
+
+	// GET /sb0.iscc.id/log/checkpoint -> 200: the static mirror still routes.
+	t.Run("checkpoint still reaches the static mirror", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id/log/checkpoint", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200", rec.Code)
+		}
+	})
+}
+
+// frameEntryBundle frames raw records into a tlog-tiles entry bundle (big-endian
+// uint16 length prefix + data per record), the encoding api.EntryBundle.UnmarshalText
+// decodes — the test's independent encode path.
+func frameEntryBundle(records [][]byte) []byte {
+	var out []byte
+	for _, rec := range records {
+		var prefix [2]byte
+		binary.BigEndian.PutUint16(prefix[:], uint16(len(rec)))
+		out = append(out, prefix[:]...)
+		out = append(out, rec...)
+	}
+	return out
 }
 
 // decodeInclusionProof base64-Std-decodes the served proof hashes (the same encoding

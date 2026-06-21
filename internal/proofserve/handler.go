@@ -1,11 +1,13 @@
-// Package proofserve serves RFC-6962 inclusion and consistency proofs over
-// net/http, computed from one hub's mirrored hash tiles via the local
-// store.SQLiteFetcher and logclient.{Inclusion,Consistency}ProofFromTiles — never
+// Package proofserve serves RFC-6962 inclusion and consistency proofs plus single
+// leaf record bytes over net/http, computed from one hub's mirrored hash tiles and
+// entry bundles via the local store.SQLiteFetcher and
+// logclient.{Inclusion,Consistency}ProofFromTiles / RecordBytesFromBundle — never
 // re-hitting the hub. It is the proof-computing half of M2's Verify bar (the
 // static mirror in tilesserve is the other half): a client fetches GET
 // /inclusion?iscc_id=<id> and checks the returned proof against the hub's own
-// IsccLogInclusionProof, or GET /consistency?from=<n> and checks its own prior
-// (size, root) against the monitor's mirrored tree.
+// IsccLogInclusionProof, GET /consistency?from=<n> and checks its own prior
+// (size, root) against the monitor's mirrored tree, or GET /entries?index=<seq> to
+// pull the one leaf's raw record bytes the proof bundle commits to.
 //
 // The served inclusion proof is byte-compatible with the hub's evidence member: it
 // reuses logclient.InclusionEvidence's field names and the base64-Std proof
@@ -32,10 +34,15 @@ import (
 
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/store"
+	"github.com/iscc/iscc-monitor/internal/tiles"
 )
 
 // contentType is the media type for the JSON proof response body.
 const contentType = "application/json"
+
+// octetStreamType is the media type for the raw record bytes /entries serves: the
+// JCS-canonical log-entry envelope is an opaque BLOB, not the JSON proof shape.
+const octetStreamType = "application/octet-stream"
 
 // Handler returns an http.Handler that serves one hub's computed inclusion and
 // consistency proofs from the local mirror. It handles GET /inclusion?iscc_id=<id>
@@ -46,10 +53,14 @@ const contentType = "application/json"
 // consistency proof relating the prior root at size from to the accepted root at
 // LastSize, returning it as JSON.
 //
+// It also handles GET /entries?index=<seq> — extracting the raw record bytes of a
+// single accepted leaf from the hub's mirrored entry bundles and serving them
+// verbatim as application/octet-stream.
+//
 // Status mapping: non-GET → 405; an unmatched path → 404. The per-route flow
-// owns the rest (serveInclusion / serveConsistency); see each for its 400/404/500
-// mapping. CORS, caching, and conditional GET are intentionally out of scope for
-// this slice.
+// owns the rest (serveInclusion / serveConsistency / serveEntries); see each for
+// its 400/404/500 mapping. CORS, caching, and conditional GET are intentionally out
+// of scope for this slice.
 func Handler(st *store.Store, hubID int64) http.Handler {
 	f := store.SQLiteFetcher{Store: st, HubID: hubID}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +75,8 @@ func Handler(st *store.Store, hubID int64) http.Handler {
 			serveInclusion(w, r, st, f, hubID)
 		case "/consistency":
 			serveConsistency(w, r, st, f, hubID)
+		case "/entries":
+			serveEntries(w, r, st, f, hubID)
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}
@@ -227,6 +240,80 @@ func serveConsistency(w http.ResponseWriter, r *http.Request, st *store.Store, f
 	writeConsistency(w, from, size, proof)
 }
 
+// serveEntries extracts the raw record bytes of the single accepted leaf at the
+// absolute seq index from the hub's mirrored entry bundles and writes them verbatim
+// as application/octet-stream. It owns the full request flow and status mapping for
+// the /entries route, mirroring serveInclusion's accepted-tree guards. The index is
+// the absolute leaf seq (schema-agnostic, ADR-0008): this route interprets nothing,
+// it returns the leaf's bytes by index, never an ISCC-ID or note.$schema.
+//
+// Status mapping: a missing or non-numeric index → 400; no accepted checkpoint yet
+// (LastSize == 0) or seq >= LastSize (the leaf is not in the monitor's accepted
+// tree) → 404; the bundle not yet mirrored (a wrapped os.ErrNotExist) → 404; the
+// bundle mirrored but only partial and not yet covering this leaf
+// (ErrLeafOutOfBundle) → 404; any other read/decode error → 500.
+func serveEntries(w http.ResponseWriter, r *http.Request, st *store.Store, f store.SQLiteFetcher, hubID int64) {
+	ctx := r.Context()
+
+	seq, err := parseUint(r.URL.Query().Get("index"))
+	if err != nil {
+		http.Error(w, "missing or non-numeric index", http.StatusBadRequest)
+		return
+	}
+
+	// LastSize is the latest accepted tree size — the tree the monitor vouches
+	// for. A hub with no accepted checkpoint yet has no leaves to serve.
+	fs, err := st.FollowState(ctx, hubID)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	size := fs.LastSize
+	if size == 0 {
+		http.Error(w, "no accepted checkpoint", http.StatusNotFound)
+		return
+	}
+	if seq >= size {
+		http.Error(w, "leaf not covered by accepted checkpoint", http.StatusNotFound)
+		return
+	}
+
+	// The leaf lives in entry bundle seq/256 at position seq%256 (the bundle is up
+	// to 256 framed records). The bundle qualifier p is the partial leaf count this
+	// bundle is expected to hold within the accepted tree (0 == full): the final
+	// bundle of a non-multiple-of-256 tree is a partial, so requesting p == 0
+	// unconditionally would miss it. The SQLiteFetcher does the partial→full fallback
+	// when p > 0, so a partial that was later promoted to full still resolves.
+	bundleIndex := seq / tiles.TileWidth
+	offset := seq % tiles.TileWidth
+	p := tiles.PartialTileSize(0, bundleIndex, size)
+	bundle, err := f.ReadEntryBundle(ctx, bundleIndex, p)
+	if err != nil {
+		// An entry bundle not yet mirrored surfaces as a wrapped os.ErrNotExist (the
+		// SQLiteFetcher contract) — a 404, not a 500.
+		if errors.Is(err, os.ErrNotExist) {
+			http.Error(w, "bundle not mirrored", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	record, err := logclient.RecordBytesFromBundle(bundle, offset)
+	if err != nil {
+		// A mirrored-but-partial bundle that does not yet contain this leaf is a 404,
+		// not a 500 — the leaf is accepted but the bundle BLOB has not caught up.
+		if errors.Is(err, logclient.ErrLeafOutOfBundle) {
+			http.Error(w, "leaf not in mirrored bundle", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	writeRecord(w, record)
+}
+
 // selectSeq picks the leaf seq to prove. When the index query param is empty it
 // defaults to seqs[0] — the first committed seq is the deterministic default
 // because iscc_id → seq is one-to-many (ADR-0008) and the seqs are ascending.
@@ -311,6 +398,17 @@ func writeConsistency(w http.ResponseWriter, from, size uint64, proof [][]byte) 
 	}
 	w.Header().Set("Content-Type", contentType)
 	_ = encodeJSON(w, ev)
+}
+
+// writeRecord writes the raw record bytes of one leaf verbatim as
+// application/octet-stream — the opaque JCS-canonical log-entry envelope a proof
+// bundle commits to, NOT wrapped in any JSON shape. It keeps the documented
+// post-status write-drop convention (matching tilesserve.writeBlob): the 200 is
+// sent on the first byte and a mid-write fault on an opaque BLOB cannot un-send it,
+// so the only failure mode is a broken client connection, dropped deliberately.
+func writeRecord(w http.ResponseWriter, record []byte) {
+	w.Header().Set("Content-Type", octetStreamType)
+	_, _ = w.Write(record)
 }
 
 // encodeJSON marshals v to w. It keeps the single drop-the-write-error site tidy.
