@@ -1,95 +1,97 @@
 # Next Work Package
 
-## Step: Pure hash-tile (multi-level) coordinate enumeration for a tree of size N (`tiles.TileCoords`)
+## Step: Transport primitives to fetch a tile / entry bundle over the Fetcher seam (`logclient.FetchTile` / `FetchEntryBundle`)
 
 ## Goal
-Add the pure, boundary-exact enumeration naming which **hash tiles** (across every tile-level) a
-complete mirror of a tree of size N must hold — the sibling of `BundleCoords`. Together they are the
-two coordinate sources the M2 live tile-ingestion writer needs to know what to fetch; this is the last
-missing pure prerequisite before that writer (and thus `fsck` / the inclusion cross-check) becomes
-implementable.
+Add the two missing pure transport primitives that fetch one hash tile and one entry bundle from a
+hub at their canonical tlog-tiles paths — the seam between the existing `tiles.TileCoords` /
+`tiles.BundleCoords` enumerations and the existing `store.RecordTile` / `RecordEntryBundle` writers.
+This is the smallest unblocking slice of the M2 live tile-ingestion writer: with it, the next step
+can wire a `PollHub` fetch loop that walks the coords, fetches via these, and writes to the mirror.
 
 ## Scope
-- **Create**: `internal/tiles/tilecoords_test.go` (golden table test)
-- **Modify**: `internal/tiles/coords.go` — add `TileCoord{Level, Index uint64; Partial uint8}` and
-  `TileCoords(treeSize uint64) []TileCoord` (1 non-test file)
+- **Create**: `internal/logclient/tilefetch.go` — `FetchTile(ctx, fetcher Fetcher, baseURL string,
+  level, index uint64, p uint8) ([]byte, error)` and `FetchEntryBundle(ctx, fetcher Fetcher,
+  baseURL string, index uint64, p uint8) ([]byte, error)`.
+- **Create**: `internal/logclient/tilefetch_test.go` — offline table tests with a fake `Fetcher`.
+- **Modify**: (none — purely additive; no existing non-test file changes)
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/tiles/coords.go` + `/workspace/iscc-monitor/internal/tiles/layout.go`
-    — existing seam style + the `PartialTileSize`/`TilePath` wrappers and the two-convention
-    (path-`p` vs store-`width`) doc rules
-  - `/workspace/iscc-monitor/internal/tiles/coords_test.go` — golden-test style to mirror (table +
-    non-nil-empty zero case)
-  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/api/layout/tile.go` —
-    `PartialTileSize(level, index, logSize)` (`sizeAtLevel = logSize >> (level*8)`,
-    `fullTiles = sizeAtLevel/256`), `TileHeight = 8`, `TileWidth = 256` — the boundary oracle to delegate to
-  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/api/layout/paths.go` — `TilePath`
-    (already re-exported as `tiles.TilePath`)
-  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/fsck/fsck.go` (lines ~218–284) —
-    confirms tessera derives tiles by *replaying entries* (`visit`), so there is **no** single upstream
-    helper to port; the per-level loop below is the correct, minimal construction
+  - `/workspace/iscc-monitor/internal/logclient/checkpoint.go` — the primitive to port from (same
+    `origin()` → `"https://"+name+"/<path>"` → `fetcher.Fetch` → verbatim-bytes shape, same `%w` wrapping).
+  - `/workspace/iscc-monitor/internal/logclient/didresolve.go` — the `Fetcher` 1-method seam
+    (`Fetch(ctx, url) ([]byte, error)`) and its 404→`os.ErrNotExist` contract these must preserve.
+  - `/workspace/iscc-monitor/internal/tiles/layout.go` — `tiles.TilePath(level, index, p)` /
+    `tiles.EntriesPath(index, p)`, the canonical path producers to call (do not hand-build paths).
+  - `/workspace/iscc-monitor/internal/tiles/layout_test.go` — golden path strings (`tile/1/000`,
+    `tile/0/000.p/255`, `tile/entries/000.p/8`, `tile/entries/255`) to anchor the expected URLs.
+  - `/workspace/iscc-monitor/cauldron/tessera/client/fetcher.go` (lines 97-111) — the reference
+    `HTTPFetcher.ReadTile`/`ReadEntryBundle`: each is `fetch(ctx, layout.TilePath(...))` /
+    `fetch(ctx, layout.EntriesPath(...))`. Port the URL-construction shape (root + path), NOT the
+    `PartialOrFullResource` fallback.
 
 ## Not In Scope
-- The **live tile-ingestion writer** (`PollHub` fetch loop calling `RecordTile`/`RecordEntryBundle`) —
-  that is the next slice and consumes both `TileCoords` and `BundleCoords`. Do not wire any caller.
-- Any I/O, store, fetcher, or follower change. `TileCoords` is a pure unwired export seam, exactly like
-  `BundleCoords` / `IsFull` / the consistency triggers (`go vet` clean, not dead code).
-- The `fsck` root-rebuild, the inclusion cross-check, real tile/bundle fixtures in `testdata/live/`, or
-  the `iscc_index` writer — all downstream of the ingestion writer.
-- The open `low` issue (`cmd/notecheck`'s vestigial `out io.Writer`) — loop-skipped.
+- Wiring these into `PollHub` / a tile-ingestion loop that walks `TileCoords`/`BundleCoords` and
+  writes via `RecordTile`/`RecordEntryBundle` — that is the **next** step (it touches `follower.go`
+  and is its own ≤3-file unit). This step delivers only the fetch primitives + their tests.
+- The `PartialOrFullResource` partial→full fallback (tessera's `fetcher.PartialOrFullResource`). The
+  store's `SQLiteFetcher` already owns that fallback on the read side; the ingestion fetch fetches
+  exactly the `p` the coord enumeration names. Do not replicate it here.
+- Any `p`↔`width` translation, `RecordTile`/`RecordEntryBundle` calls, `is_full` logic, or
+  `widthForP` — all downstream of this step, in the store/follower layers.
+- `fsck` root-rebuild wiring, the inclusion cross-check, `iscc_index`, or capturing real tile/bundle
+  fixtures in `testdata/live/` — later M2 slices.
+- Touching the open `low` `cmd/notecheck` `out io.Writer` issue (loop-skipped).
 
 ## Implementation Notes
-- **Construction (no single `layout.Range` covers all levels — climb tile-levels yourself):** loop
-  `level := uint64(0), 1, 2, …`. At each level compute
-  `sizeAtLevel := treeSize >> (level * tiles.TileHeight)`. When `sizeAtLevel == 0`, stop. Otherwise emit
-  `fullTiles := sizeAtLevel / tiles.TileWidth` full tiles (`Index 0 .. fullTiles-1`, `Partial 0`)
-  followed by, **iff** `sizeAtLevel % tiles.TileWidth != 0`, one partial tile at `Index == fullTiles`
-  with `Partial == uint8(sizeAtLevel % tiles.TileWidth)`. After emitting the level, **stop once
-  `sizeAtLevel <= tiles.TileWidth`** (that level has collapsed to a single root tile; there is no level
-  above it). This stop-after-emit ordering is load-bearing: it correctly emits the lone root tile of an
-  exact-power-of-256 tree (e.g. `256 → {0,0,0}` then stop, `65536 → …256 full…, {1,0,0}` then stop)
-  and never adds a spurious empty level above the root.
-- **Delegate the per-tile `Partial` to tessera, don't hand-roll it twice:** derive each tile's `Partial`
-  via `tiles.PartialTileSize(level, index, treeSize)` (which already wraps `layout.PartialTileSize`)
-  rather than recomputing `% TileWidth` for the emitted value. Use the inline `fullTiles` /
-  `sizeAtLevel % TileWidth` arithmetic only to drive the loop bounds and the stop condition; `Partial`
-  on the emitted `TileCoord` comes from `PartialTileSize`. That keeps tessera the single source of truth
-  for the "0 == full" qualifier and matches how `coords.go` already leans on `layout` (Correctness rule:
-  re-use the transparency stack, never reimplement it). Use `tiles.TileWidth` / `tiles.TileHeight`
-  constants, not bare `256` / `8`.
-- **Two-convention discipline (carry the `BundleCoord` doc pattern verbatim in spirit):**
-  `TileCoord.Partial` is the **path-API** qualifier (`0 == full`, the same `p` arg `tiles.TilePath`
-  takes) — NOT the store's `width` column (`widthForP`: `0 → 256`). State this in the doc comment exactly
-  as `BundleCoord` does; the width translation belongs to the downstream ingestion writer, not here.
-- **Zero case:** `TileCoords(0)` must return a **non-nil, length-0** slice (`make([]TileCoord, 0)`),
-  mirroring `BundleCoords(0)`'s documented contract.
-- Keep the file a pure leaf: the only import stays `github.com/transparency-dev/tessera/api/layout`
-  (already present in `coords.go`); add **no** new dep, so `go.mod`/`go.sum` stay byte-identical
-  (`PartialTileSize` is already in the closure via `layout.go`).
-- **Oracle/conformance gate is correctly N/A** for this slice (pure path/coordinate math; no
-  signature / RFC-6962 / Merkle / did:web / `fsck`-rebuild path introduced). It re-arms when the fetched
-  tiles feed the `fsck` root-rebuild. Ground the goldens externally instead: re-run
-  `layout.PartialTileSize(level, index, size)` per vector to confirm each `Partial`, exactly as the
-  `BundleCoords` review re-ran `layout.Range`.
+- **Port `FetchCheckpoint` verbatim in shape.** It is the exact template: `origin(baseURL)` (the
+  private helper, reused — NOT a second parser) → `"https://" + name + "/" + path` → `fetcher.Fetch(ctx,
+  url)` → return body verbatim. `name` is already `<domain>/log` (e.g. `sb0.iscc.id/log`), so the URL
+  is `https://sb0.iscc.id/log/tile/1/000`. Note `FetchCheckpoint` writes `"https://" + name +
+  "/checkpoint"` (leading slash on a literal); here append `"/" + tiles.TilePath(...)` since
+  `TilePath`/`EntriesPath` return slash-less paths like `tile/1/000`.
+- **Path producers:** call `tiles.TilePath(level, index, p)` and `tiles.EntriesPath(index, p)` — never
+  hand-format the `tile/<l>/<i>` / `tile/entries/<i>` / `.p/<w>` strings. This keeps the package
+  delegating to tessera's layout math (target Stack rule: reuse, never reimplement).
+- **Import note:** `internal/logclient` does not yet import `internal/tiles`. Adding that import edge
+  is correct and clean (`tiles` is a pure `api/layout`-only leaf; no `net`/`sqlite` enters the
+  closure — `logclient` already imports `net/http` via `didresolve.go`, so the package's non-WASM
+  status is unchanged). `go.mod`/`go.sum` stay byte-identical (`tessera/api/layout` is already in the
+  closure via `proofbuilder.go`).
+- **Error wrapping (404-transparency rule):** wrap both the `origin()` error and the `fetcher.Fetch`
+  error with `%w`, exactly as `FetchCheckpoint` does, so a 404's `errors.Is(err, os.ErrNotExist)`
+  survives — the ingestion loop will need to tell "tile not served yet" from a hard transport fault.
+  Include the constructed `url` in the Fetch-error wrap (mirror `fetch checkpoint %q`).
+- **No `os.ErrNotExist` synthesis here.** Do NOT map a missing tile to a sentinel yourself; that is
+  the `Fetcher` implementation's contract (`httpFetcher.Fetch` already maps 404→`os.ErrNotExist`).
+  These primitives only propagate it via `%w`.
+- **Pure-transport, no parsing.** Return the raw bytes verbatim — do not `UnmarshalText` the tile or
+  bundle (that belongs to `LeafHashes` / the proof builders / fsck). Mirror `FetchCheckpoint`'s
+  "body verbatim" doc.
+- **Test seam:** use a fake `Fetcher` (a struct with a `Fetch` func field, or a `map[url]→bytes`, in
+  the spirit of the existing `compositeFetcher`/`countingFetcher` in `follower_test.go`) that records
+  the URL it was asked for and returns canned bytes. Assert the **exact URL** the primitive constructed
+  for representative coords (full + partial, both tile and bundle), and assert a fetcher error /
+  `os.ErrNotExist` propagates with `errors.Is`. The oracle/conformance gate is correctly **N/A** here
+  (pure URL construction + transport; no signature/RFC-6962/Merkle/did:web/`fsck` path), same as
+  `FetchCheckpoint` and the `tiles` layout slice.
 
 ## Verification
-- `mise run check` is green (build + vet + test; `go vet ./...` clean, all packages `ok`).
-- `gofmt -l internal/tiles/` is empty.
-- `go test -run TestTileCoords ./internal/tiles` passes (uncached `-count=1`).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass; `gofmt -l .`
+  empty).
+- `go test -run 'TestFetchTile|TestFetchEntryBundle' -count=1 ./internal/logclient` passes.
+- Asserted in the test: `FetchTile(ctx, fake, "https://sb0.iscc.id", 1, 0, 0, …)` requests URL
+  `https://sb0.iscc.id/log/tile/1/000` and returns the fake's bytes verbatim.
+- Asserted in the test: `FetchTile(ctx, fake, "https://sb0.iscc.id", 0, 0, 255, …)` requests
+  `https://sb0.iscc.id/log/tile/0/000.p/255` (partial suffix via `TilePath`).
+- Asserted in the test: `FetchEntryBundle(ctx, fake, "https://sb0.iscc.id", 255, 0, …)` requests
+  `https://sb0.iscc.id/log/tile/entries/255`; and a width-8 partial requests
+  `https://sb0.iscc.id/log/tile/entries/000.p/8`.
+- Asserted in the test: a `Fetcher` returning a `%w`-wrapped `os.ErrNotExist` makes both primitives
+  return an error for which `errors.Is(err, os.ErrNotExist)` is true.
 - `git diff --quiet HEAD -- go.mod go.sum` exits 0 (no dependency change).
-- `GOOS=js GOARCH=wasm go build ./internal/tiles` exits 0 (leaf-purity invariant holds).
-- Golden assertions (ground truth from the per-level construction above; `{Level, Index, Partial}`):
-  - `TileCoords(0)` is non-nil and length 0.
-  - `TileCoords(1) == [{0,0,1}]`
-  - `TileCoords(255) == [{0,0,255}]`
-  - `TileCoords(256) == [{0,0,0}]`
-  - `TileCoords(257) == [{0,0,0},{0,1,1},{1,0,1}]`
-  - `TileCoords(300) == [{0,0,0},{0,1,44},{1,0,1}]`
-  - `TileCoords(513) == [{0,0,0},{0,1,0},{0,2,1},{1,0,2}]`
-  - `TileCoords(65536)` ends with the root tile `{1,0,0}` and has exactly 257 entries (256 full level-0
-    tiles `{0,0,0} .. {0,255,0}` + one full level-1 root tile).
-  - `TileCoords(65537)` contains `{0,256,1}` (the lone extra leaf as a partial-1 at level-0 index 256)
-    and ends with `{1,0,0}`.
+- `GOOS=js GOARCH=wasm go build ./internal/tiles` still exits 0 (the WASM-shared leaf is untouched).
 
 ## Done When
-`advance` adds `TileCoord` + `TileCoords` to `internal/tiles/coords.go` with the golden test, and every
-Verification criterion above passes.
+`internal/logclient` exports `FetchTile` and `FetchEntryBundle` as pure transport primitives that
+build the canonical tlog-tiles URL via `tiles.TilePath`/`tiles.EntriesPath` and propagate
+`os.ErrNotExist`, with all Verification criteria passing.
