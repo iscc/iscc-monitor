@@ -76,5 +76,6 @@ touch it. Everything package-local stays in the detail file. See `README.md` for
 | `cmd/notecheck` | `learnings/notecheck.md` | faithful port of the reference notecheck; the in-repo external signature oracle shelled out in CI; reject-guard SIGPIPE nuance |
 | `.github/workflows/ci.yml` | `learnings/ci.md` | one CGO_ENABLED=0 job inlining mise check + the notecheck oracle shell-out; pipefail/SIGPIPE caveat |
 | `internal/metrics, internal/metricshttp` | `learnings/metrics.md` | stdlib-only Prometheus renderer; glossaryStatus mapping (rotated→unverified, frozen override); recordVerdict single mutation point |
+| `internal/dashboard` + `store.ListHubs` | `learnings/dashboard.md` | server-rendered `GET /` hub list; `/`-mount-vs-exact-path-guard; store-provable status subset (inactive>frozen>verified); coverage-honesty render; ListHubs leaf read |
 | `internal/registry` | `learnings/registry.md` | domains-only ADR-0009 parser; fails closed on URL-shaped lines; preserves order, no dedupe |
 | `internal/config` | `learnings/config.md` | pure env-value leaf; DB/REALM required; Frozen>=Normal cross-check ties to the back-off |

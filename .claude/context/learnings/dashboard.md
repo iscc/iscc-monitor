@@ -1,0 +1,44 @@
+<!-- area: internal/dashboard (handler.go, dashboard.html) + internal/store/hubs.go -->
+<!-- indexed-as: dashboard.md · owner: review · rotate at ~40 bullets / ~150 lines -->
+
+# Dashboard — server-rendered hub-list page at `GET /`
+
+Read this when a step touches the area above. Durable cross-cutting rules live in
+the index (`.claude/context/learnings.md`); the package-local mechanics are here.
+
+## `GET /` hub-list dashboard (`internal/dashboard` + `store.ListHubs`)
+
+- **The `/` mount is the lowest-priority `http.ServeMux` pattern, so it never shadows a more-specific
+  route — but it DOES catch every unmatched path, so the handler must guard `r.URL.Path != "/"` → 404
+  itself.** `buildMux` mounts `dashboard.Handler(st)` at `/` next to exact `/metrics`/`/healthz` and the
+  per-hub `/<domain>/log/` subtrees; most-specific match means all of those still win. Reviewer
+  re-confirmed with a standalone mux: a `/a/` subtree + `/` root resolves `/a`,`/a/`,`/a/x` to the
+  subtree and only `/b` to root. The dashboard's own exact-path guard is what stops `/b`-style unknowns
+  rendering the page. Keep BOTH the mount-at-`/` and the in-handler path guard — neither alone is enough.
+- **Status is the store-provable subset ONLY (`inactive`/`frozen`/`verified`), and `inactive` wins over
+  `frozen`.** `hubStatus(HubSummary)` switches `!Active → inactive`, `Frozen → frozen`, else `verified`
+  — it MIRRORS `proofserve.hubStatus` (which has no store table for `active`) and deliberately EXTENDS
+  it with the realm-registry `inactive` case. Do NOT add `unverified`/`unresolvable`/`rotated` here:
+  those live in the in-memory `metrics.Registry`, are not store-provable, and stay out so the page is
+  golden-testable on a fixture store. When a `metrics.Registry` thread-through lands, that is where the
+  richer statuses belong — not in `ListHubs`.
+- **`inactive` is currently unreachable through the public store API (no `SetActive` writer; `UpsertHub`
+  inserts the schema default `active=1`).** So the golden HTTP-seam test cannot drive a hub to
+  `inactive`; the advance covered it with a white-box table test on the package-private `hubStatus`
+  (hence `package dashboard`, not `dashboard_test`). When a registry-deactivation writer lands, add an
+  end-to-end inactive-render assertion through the public surface — until then the table test is the
+  only coverage and is correct.
+- **Coverage honesty (ADR-0001) is rendered, not just stored: `HasCoverage` false → literal "no coverage
+  yet"; true → "size N at <RFC3339>".** `ListHubs` reads `monitored_since_{size,time}` via the
+  `LEFT JOIN follow_state` so a never-polled hub still appears (its `last_size`/`frozen` are NULL → zero
+  value). `coverageTime` returns "" when `!Set || Since.IsZero()` so "coverage started, time unknown"
+  degrades to size-only. The fixture proves the split: the `AdvanceAccepted` hub shows `size 42 at …`,
+  the `AdvanceFollowState`-then-`Freeze` hub shows `no coverage yet` (advance-follow-state does NOT set
+  coverage). Never render the observed `last_size` as if it were a coverage guarantee.
+- **`store.ListHubs` is a pure read returning plain Go types (`HubSummary` + `CoverageInfo`), so store
+  stays a leaf** (`go list -deps ./internal/store | grep -E 'net/http|internal/dashboard|internal/logclient'`
+  empty). The dashboard imports `store`, never the reverse; its own closure is `bytes embed html/template
+  net/http internal/store`. `html/template` (NOT `text/template`) auto-escapes hub domains; render into a
+  `bytes.Buffer` first so a template/store error is a 500 BEFORE any 200 (the post-200 `buf.WriteTo(w)`
+  drop is the documented broken-client convention). Oracle gate N/A — pure HTML of persisted rows, no
+  signature/RFC-6962/Merkle/did:web/fsck/proof path; go.mod/go.sum/schema byte-identical.
