@@ -58,7 +58,7 @@ RUN mkdir -p $HOME/go/pkg/mod $HOME/.cache/go-build
 
 # Install mise (tool version manager + task runner). Go itself is provisioned by
 # `mise install` at postCreate from mise.toml — keeping mise the single source of
-# truth for the Go version (go = "1.24").
+# truth for the Go version (go = "1.26").
 RUN curl https://mise.run | sh
 
 # Install Claude Code, Codex CLI, and agent-browser. agent-browser is the headless
