@@ -1091,3 +1091,32 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   value (exported `Store *Store` + `HubID int64` fields), so the binary constructs one per hub with no
   new store surface. go.mod/go.sum/schema byte-identical; `GOOS=js GOARCH=wasm go build ./internal/didweb`
   still exits 0 (WASM purity rides on `didweb`, untouched by this net/http leaf-wrapper).
+
+## Computed inclusion proof HTTP surface (`internal/proofserve/handler.go`)
+
+- **Nesting a per-hub `http.ServeMux` under `StripPrefix` changes the strip discipline — strip `"/"+
+  Origin`, NOT `"/"+Origin+"/"`.** When the inner handler is itself a `ServeMux` (here: `/inclusion` →
+  proofserve, `/` → tilesserve), it 301-redirects any path missing its leading slash, so the strip must
+  leave the leading slash on the suffix. The earlier tilesserve-only mount stripped the full
+  trailing-slash prefix and worked only because `tilesserve` `TrimPrefix`-tolerates a slash-less path.
+  The mount prefix still keeps its trailing slash to arm subtree matching. Reviewer-confirmed with a
+  standalone mux: exact `/inclusion` wins over the `/` subtree; `/checkpoint`, `/tile/...`, and even
+  `/inclusion/x` fall through to tilesserve (the last 404s there, fine — not a real proof route).
+- **Oracle gate APPLIES here (RFC-6962 inclusion crypto) and is reviewer-mutation-proven non-vacuous.**
+  Three independent paths meet in `TestInclusionServedProofVerifies`: the `testonly.Tree` prover (owns
+  the real proof + root), `InclusionProofFromTiles` inside the handler (recompute over the mirror the
+  test wrote), and `proof.VerifyInclusion` (verifier). Reviewer reverted-mutated the handler twice: (1)
+  serve `proof = nil` → FAIL "wrong proof size 0, want N" across boundary leaves; (2) build for
+  `leafIndex+1` → FAIL (wrong-leaf verifies / 500 at the last leaf). A green-but-wrong handler cannot
+  ship. `notecheck`/`derive_vkey.py` correctly N/A — the checkpoint signature is never re-parsed or
+  served here (the served `{type,treeSize,leafIndex,inclusionProof}` omits `checkpoint`; the client
+  refetches `/checkpoint` from the mirror; `AcceptCheckpoint` owns signature/root).
+- **Default seq is `seqs[0]` and it is genuinely the lowest committed seq** because `SeqsForISCCID`
+  is `ORDER BY seq` ASC — so the documented "first committed seq" default is deterministic, not
+  arbitrary. An explicit `&index=<n>` must equal one of the committed seqs (else 400 via `selectSeq`),
+  never a silently-substituted leaf; `parseUint` rejects any non-digit → 400, not a silent default.
+  `leafIndex >= size` is guarded before building → 404 (never a 500/panic) on a stale/racing size.
+- **Dep direction holds: `proofserve → {store, logclient}`, never the reverse.** `go list -deps
+  ./internal/store | grep -E 'proofserve|net/http'` and `go list -deps ./internal/logclient | grep
+  proofserve` both empty, so `net/http` stays out of the store/logclient closures. Proof is built from
+  the LOCAL mirror only (`f.ReadTile`), never re-hitting the hub.

@@ -1,67 +1,63 @@
-## 2026-06-21 — Serve computed inclusion proofs over HTTP from the local mirror
+## 2026-06-21 — Review of: Serve computed inclusion proofs over HTTP from the local mirror
 
-**Done:** Added a new leaf package `internal/proofserve` exposing `Handler(st *store.Store, hubID
-int64) http.Handler` that serves `GET /inclusion?iscc_id=<id>` (optionally `&index=<n>`) by resolving
-the leaf seq via `SeqsForISCCID`, building an RFC-6962 inclusion proof from the hub's mirrored tiles
-via `logclient.InclusionProofFromTiles` (never re-hitting the hub) against the accepted tree size
-(`FollowState.LastSize`), and returning JSON shaped like the hub's `IsccLogInclusionProof`. Mounted it
-per hub on the binary's combined mux next to the `tilesserve` mirror routes.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/proofserve/handler.go` (new): the proof-serving leaf package; resolves iscc_id → seq
-  (schema-agnostic, ADR-0008), defaults to `seqs[0]` when `index` is absent, base64-Std-encodes the
-  proof hashes into `logclient.InclusionEvidence`'s field shape. Status mapping: non-GET 405, non-
-  `/inclusion` 404, missing `iscc_id` 400, bad `index` 400, no accepted checkpoint / unknown iscc_id /
-  uncovered leaf / unmirrored tile 404, else 500.
-- `internal/proofserve/handler_test.go` (new): oracle-gated conformance test over a verified 300-leaf
-  mirror; plus the 400/404/405/no-checkpoint negatives.
-- `cmd/iscc-monitor/main.go`: new `hubHandler` combines `proofserve.Handler` (`/inclusion`) and
-  `tilesserve.Handler` (everything else) behind a per-hub `*http.ServeMux`; `mirrorHandler` now strips
-  the prefix WITHOUT its trailing slash (load-bearing — see Notes) so the inner mux gets leading-slash
-  paths.
-- `cmd/iscc-monitor/main_test.go`: added `TestMirrorInclusionRoute` (binary-level proof mount, served
-  proof re-verified) and confirmed the existing `TestMirrorRouter` still passes under the strip change.
+**Summary:** `advance` added a new leaf package `internal/proofserve` serving `GET
+/inclusion?iscc_id=<id>[&index=<n>]`, which resolves the leaf seq via `SeqsForISCCID`, builds an
+RFC-6962 inclusion proof from the hub's mirrored tiles via `InclusionProofFromTiles` (never re-hitting
+the hub) against the accepted tree size (`FollowState.LastSize`), and returns JSON shaped like the
+hub's `IsccLogInclusionProof`. It is mounted per hub behind a nested `*http.ServeMux` next to the
+existing `tilesserve` mirror routes. The diff is exactly 2 production files (well within scope), every
+Verification check passes, and the oracle gate is reviewer-mutation-proven non-vacuous.
 
-**Verification:** `mise run check` → green (build + vet + all 13 packages `ok`); `gofmt -l .` empty.
-- `go test -run TestInclusion -count=1 ./internal/proofserve` PASS — happy-path proof verifies via
+**Verification:**
+- [x] `mise run check` green — build + vet + all 13 packages `ok` (incl. `cmd/notecheck` oracle).
+- [x] `gofmt -l .` empty — no formatting failures.
+- [x] `go test -run TestInclusion -count=1 ./internal/proofserve` PASS — served proof verifies via
   `proof.VerifyInclusion` against the tree root for leaves `{0,5,255,256,260,299}` (both tile-boundary
-  sides); unknown iscc_id → 404; missing param → 400; non-GET → 405; `LastSize == 0` → 404.
-- `go test -run TestMirror -count=1 ./cmd/iscc-monitor` PASS — `/sb0.iscc.id/log/inclusion?iscc_id=…`
-  → 200 verifiable JSON, `/sb0.iscc.id/log/checkpoint` → 200, `/metrics` → 200; old mirror routing
-  (checkpoint byte-equal, missing-`/log` 404) intact.
-- `git diff --quiet HEAD -- internal/store/schema.sql go.mod go.sum` → exit 0 (no schema/dep change).
-- `go list -deps ./internal/store | grep -E 'proofserve|net/http'` empty; `go list -deps
-  ./internal/logclient | grep proofserve` empty — `proofserve` depends on both, never the reverse.
-- WASM purity (`GOOS=js GOARCH=wasm go build ./internal/didweb`) OK.
+  sides), wrong-leaf re-label rejected; unknown iscc_id → 404; missing param → 400; non-GET → 405;
+  `LastSize == 0` → 404; unmatched path → 404.
+- [x] `go test -run TestMirror -count=1 ./cmd/iscc-monitor` PASS — `/sb0.iscc.id/log/inclusion?iscc_id=…`
+  → 200 verifiable JSON, `/sb0.iscc.id/log/checkpoint` → 200 (static mirror), `/metrics` → 200; prior
+  mirror routing intact.
+- [x] `git diff --quiet HEAD -- internal/store/schema.sql go.mod go.sum` → exit 0 (no schema/dep change).
+- [x] Dep direction: `go list -deps ./internal/store | grep -E 'proofserve|net/http'` empty;
+  `go list -deps ./internal/logclient | grep proofserve` empty — `proofserve → {store, logclient}`,
+  never the reverse; `net/http` stays out of those closures.
+- [x] WASM purity: `GOOS=js GOARCH=wasm go build ./internal/didweb` OK (untouched leaf).
+- [x] **Oracle gate (RFC-6962 inclusion crypto) reviewer-verified non-vacuous** — two reverted
+  mutations of `handler.go`: (1) serve `proof = nil` → `TestInclusionServedProofVerifies` FAILS
+  ("wrong proof size 0, want N"); (2) build for `leafIndex+1` → FAILS (wrong-leaf verifies / 500 at
+  last leaf). A green-but-wrong handler cannot ship. `notecheck`/`derive_vkey.py` correctly N/A — the
+  checkpoint signature is never re-parsed or served here (response omits `checkpoint`; the client
+  refetches `/checkpoint`; `AcceptCheckpoint` owns signature/root). CI `notecheck` parity job
+  unchanged + green at the last-pushed SHA.
+
+**Issues found:** (none new). Scope-clean: exactly 2 production files (`internal/proofserve/handler.go`
+new, `cmd/iscc-monitor/main.go`); nothing from `## Not In Scope` was added (no consistency/entries
+endpoint, no CORS/ETag/healthz, no signature re-verify, follower untouched). The pre-existing
+`CheckpointAt` unordered-`LIMIT 1` issue stays open and was correctly out of scope for this slice — it
+belongs to the consistency slice that revisits prior-root selection.
 
 **Next:** The `consistency` endpoint slice — serve `ConsistencyProofFromTiles(smaller=prev,
-larger=LastSize)` over the same per-hub mux (`GET /consistency?from=<n>`), reusing this routing. That
-slice is also the natural place to revisit the `CheckpointAt` unordered-`LIMIT 1` prior-root selection
-(still open) and to start owning the M3-deferred CORS / caching / conditional-GET / healthz this slice
-intentionally skipped. Wiring a `verify-for-me` inbound consumer of `/inclusion` is a separate later
-concern.
+larger=LastSize)` over the same per-hub nested mux (`GET /consistency?from=<n>`), reusing this routing.
+That slice is the natural place to fix the open `CheckpointAt` unordered-`LIMIT 1` prior-root selection
+(issues.md) and to start owning the M3-deferred CORS / caching / conditional-GET / healthz this slice
+intentionally skipped.
 
 **Notes:**
-- **Oracle gate APPLIES and is mutation-proven non-vacuous.** Two mutations (both reverted): (1) serve
-  an empty proof → `TestInclusionServedProofVerifies` FAILS; (2) build the proof for `leafIndex+1` →
-  FAILS with root-mismatch / wrong-proof-size across the boundary leaves. The test's three independent
-  paths (the `testonly.Tree` prover, `InclusionProofFromTiles` inside the handler, and
-  `proof.VerifyInclusion`) are non-circular; a green-but-wrong handler cannot ship. `notecheck` /
-  `derive_vkey.py` correctly N/A (no signature/did:web path — the checkpoint is not re-parsed or even
-  served here; `AcceptCheckpoint` owns that).
-- **Load-bearing mount detail (candidate for learnings):** because `hubHandler` is itself an
-  `http.ServeMux`, `StripPrefix` must leave the leading slash on the suffix (strip `"/"+Origin`, NOT
-  `"/"+Origin+"/"`) or the inner mux 301-redirects every request (`/checkpoint` without a leading slash
-  → "Moved Permanently"). The prior slice mounted `tilesserve.Handler` directly (which tolerates a
-  slash-less path via `TrimPrefix`), so stripping the full trailing-slash prefix worked; a nested
-  ServeMux does not tolerate it. The mount prefix itself keeps its trailing slash for subtree matching.
-  Verified: the pre-existing `TestMirrorRouter` (checkpoint byte-equal + missing-`/log` 404) still
-  passes under the strip change.
-- **Default seq choice:** with `index` absent the handler proves `seqs[0]` (the first/lowest committed
-  seq), documented in `selectSeq` — `iscc_id → seq` is one-to-many (ADR-0008), so this is the
-  deterministic default; an explicit `index` must be one of the committed seqs (else 400), never a
-  silently-substituted one.
-- **`checkpoint` field omitted** from the response (per Not In Scope) — the client refetches
-  `/checkpoint` from the mirror. The served `{type, treeSize, leafIndex, inclusionProof}` is still
-  shape-compatible with `logclient.InclusionEvidence` / `VerifyInclusionEvidence`.
-- Test totals: +8 `func Test` (6 in proofserve, 1 added in cmd, plus the existing TestMirrorRouter kept).
+- **Nested-ServeMux mount detail is load-bearing and correct.** Because `hubHandler` is itself an
+  `http.ServeMux` (`/inclusion` → proofserve, `/` → tilesserve), `mirrorHandler` strips only `"/"+
+  Origin` (leaving the leading slash) — stripping the full trailing-slash prefix would 301-redirect
+  every request. Reviewer confirmed with a standalone mux: exact `/inclusion` wins over the `/`
+  subtree; `/checkpoint`, `/tile/...`, and `/inclusion/x` all fall through to tilesserve.
+- **Default seq `seqs[0]` is genuinely the lowest committed seq** — `SeqsForISCCID` is `ORDER BY seq`
+  ASC, so the documented default is deterministic. An explicit `&index=` must equal a committed seq
+  (else 400 via `selectSeq`); `parseUint` rejects non-digits → 400; `leafIndex >= size` is guarded →
+  404 (never 500/panic) on a stale/racing size.
+- **CI / push:** branch `develop` is 3 commits ahead of `origin/develop` (define-next + advance + this
+  review). CI was green at the last-pushed SHA `ae5238b`; the new commits will be CI-gated on push.
+  `main` lags at `c59d380` and is merged by a human via a CI-gated PR — never pushed here.
+- M2 remains IN_PROGRESS (inclusion proof now served; `consistency`/`entries` proofs still to serve).
+  M3 / WASM / OTS not started — loop is not DONE, no human-only decision open → CONTINUE.
