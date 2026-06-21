@@ -12,41 +12,229 @@
        /_ds/fonts/, no runtime CDN). The path is a literal; keep it in sync with
        web.FontsCSSPath. -->
   <link rel="stylesheet" href="/_ds/fonts.css">
+  <!-- Page-scoped layout for the Evidence-Ledger realm index. Every rule is
+       expressed through the embedded DS tokens (var(--*)) so the type resolves to
+       the self-hosted Readex Pro / JetBrains Mono and the surfaces use the DS
+       palette. Kept local to this page (not in the shared tokens.css) so it can
+       never regress another surface. No external/CDN URL appears here — the
+       grain.png is intentionally omitted, exactly as in tokens.css. -->
+  <style>
+    body {
+      font-family: var(--font-sans);
+      color: var(--text-body);
+      background: var(--surface-page);
+    }
+
+    /* Document chrome: the masthead identifying this monitor instance. */
+    .chrome {
+      display: flex;
+      align-items: center;
+      gap: var(--space-4);
+      flex-wrap: wrap;
+      padding: var(--space-4) var(--space-8);
+      background: var(--surface-card);
+      border-bottom: var(--border-width) solid var(--border-default);
+    }
+    .chrome-mark {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      letter-spacing: var(--tracking-widest);
+      text-transform: uppercase;
+      color: var(--text-heading);
+      font-weight: var(--weight-semibold);
+    }
+    .chrome-sub {
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+      font-weight: var(--weight-light);
+    }
+
+    .page {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: var(--space-10) var(--space-8) var(--space-14);
+    }
+
+    /* Realm-ledger heading row. */
+    .ledger-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: var(--space-2);
+      margin-bottom: var(--space-3);
+    }
+    .ledger-title {
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--text-heading);
+      font-weight: var(--weight-bold);
+      margin: 0;
+    }
+    .ledger-count {
+      font-size: var(--text-sm);
+      color: var(--text-muted);
+      font-weight: var(--weight-light);
+    }
+
+    /* The ledger card: a bordered, shadowed surface holding the grid rows. */
+    .ledger {
+      background: var(--surface-card);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-xs);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* Each row (and the column-header row) is a grid with the same columns:
+       Hub · domain | Coverage since | Observed size | Status. */
+    .ledger-row {
+      display: grid;
+      grid-template-columns: 1.8fr 1.3fr 1fr 150px;
+      gap: var(--space-4);
+      align-items: center;
+      padding: var(--space-3) var(--space-5);
+      border-bottom: var(--border-width) solid var(--border-subtle);
+    }
+    .ledger-row:last-child {
+      border-bottom: 0;
+    }
+    .ledger-colhead {
+      font-family: var(--font-mono);
+      font-size: var(--text-2xs);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-bottom: 2px solid var(--text-heading);
+    }
+    /* Frozen-row tint: decorative only. The status is already conveyed
+       grayscale-safe by the badge (icon + label + silhouette), so this hue is
+       never the sole status signal (ADR-0010 invariant 4). */
+    .ledger-row[data-status="frozen"] {
+      background: var(--status-error-bg, rgba(245, 97, 105, 0.06));
+    }
+
+    .hub-name {
+      font-weight: var(--weight-semibold);
+      font-size: var(--text-base);
+      color: var(--text-heading);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .hub-origin {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .cell-mono {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-body);
+    }
+    .cell-note {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-faint);
+    }
+    .ledger-empty {
+      padding: var(--space-6) var(--space-5);
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    /* The status badge partial (icon + label). Coloring is decorative and keyed
+       on data-status; the silhouette + label remain the load-bearing,
+       grayscale-safe status signal. */
+    .hub-status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-family: var(--font-sans);
+      font-size: var(--text-xs);
+      font-weight: var(--weight-bold);
+      line-height: 1.1;
+      white-space: nowrap;
+      color: var(--text-body);
+    }
+    .hub-status-badge svg {
+      flex: none;
+    }
+    .hub-status-badge[data-status="verified"] {
+      color: var(--status-success-text);
+    }
+    .hub-status-badge[data-status="unresolvable"] {
+      color: var(--status-warning-text);
+    }
+    .hub-status-badge[data-status="unverified"] {
+      color: var(--status-error-text);
+    }
+    .hub-status-badge[data-status="frozen"] {
+      color: var(--status-error-text);
+    }
+    .hub-status-badge[data-status="inactive"] {
+      color: var(--text-muted);
+    }
+
+    .footnote {
+      font-size: var(--text-xs);
+      font-weight: var(--weight-light);
+      color: var(--text-faint);
+      line-height: var(--leading-normal);
+      margin: var(--space-4) var(--space-1) 0;
+    }
+  </style>
 </head>
 <body>
-  <h1>ISCC Monitor</h1>
-  <p>Followed hubs and their store-provable status and coverage window.</p>
-  <table>
-    <thead>
-      <tr>
-        <th>Hub</th>
-        <th>Origin</th>
-        <th>Status</th>
-        <th>Observed size</th>
-        <th>Coverage since</th>
-      </tr>
-    </thead>
-    <tbody>
+  <header class="chrome">
+    <div>
+      <div class="chrome-mark">Trust &amp; Transparency Monitor</div>
+      <div class="chrome-sub">Evidence of record · ISCC-Hub network</div>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="ledger-head">
+      <h1 class="ledger-title">Realm register</h1>
+      <span class="ledger-count">Followed hubs and their store-provable status and coverage window.</span>
+    </div>
+
+    <div class="ledger">
+      <div class="ledger-row ledger-colhead">
+        <span>Hub · domain</span>
+        <span>Coverage since</span>
+        <span>Observed size</span>
+        <span>Status</span>
+      </div>
       {{- range .Hubs}}
-      <tr>
-        <td>{{.Domain}}</td>
-        <td>{{.Origin}}</td>
-        <td>{{template "hubStatusBadge" .}}</td>
-        <td>{{.LastSize}}</td>
-        <td>
+      <div class="ledger-row" data-status="{{.Status}}">
+        <div>
+          <div class="hub-name">{{.Domain}}</div>
+          <div class="hub-origin">{{.Origin}}</div>
+        </div>
+        <div>
           {{- if .HasCoverage}}
-          size {{.SinceSize}}{{if .SinceTime}} at {{.SinceTime}}{{end}}
+          <span class="cell-mono">size {{.SinceSize}}</span>
+          {{- if .SinceTime}}<div class="cell-note">at {{.SinceTime}}</div>{{end}}
           {{- else -}}
-          no coverage yet
+          <span class="cell-note">no coverage yet</span>
           {{- end}}
-        </td>
-      </tr>
+        </div>
+        <div class="cell-mono">{{.LastSize}}</div>
+        <div>{{template "hubStatusBadge" .}}</div>
+      </div>
       {{- else}}
-      <tr>
-        <td colspan="5">No hubs followed.</td>
-      </tr>
+      <div class="ledger-empty">No hubs followed.</div>
       {{- end}}
-    </tbody>
-  </table>
+    </div>
+
+    <p class="footnote">Coverage windows recorded for every hub. Guarantees hold only from coverage start — entries committed before the monitor began watching are mirrored but not vouched for. Every hub is mirrored and served regardless of status.</p>
+  </main>
 </body>
 </html>

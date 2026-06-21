@@ -112,9 +112,27 @@ func TestDashboardRendersEveryHub(t *testing.T) {
 			t.Errorf("body missing badge markup %q\n%s", want, body)
 		}
 	}
-	// The verified hub recorded coverage; the page must show its start size.
+	// Coverage honesty is rendered, not just stored (ADR-0001): the verified hub
+	// shows its recorded start size, the frozen hub (no coverage set) shows the
+	// explicit "no coverage yet" — the observed size is never passed off as a
+	// coverage guarantee.
 	if !strings.Contains(body, "size 42") {
 		t.Errorf("body missing coverage start for the verified hub\n%s", body)
+	}
+	if !strings.Contains(body, "no coverage yet") {
+		t.Errorf("body missing the no-coverage state for the frozen hub\n%s", body)
+	}
+
+	// The Evidence-Ledger redress is observable at the seam: the page is styled
+	// through the DS font tokens (so the type resolves to the self-hosted
+	// webfonts) and lays out the ledger as a CSS grid, not an HTML <table>.
+	for _, want := range []string{"var(--font-sans)", "var(--font-mono)", "display: grid"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing redress marker %q\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "<table") {
+		t.Errorf("body still contains a <table> element; the grid redress is incomplete\n%s", body)
 	}
 }
 
