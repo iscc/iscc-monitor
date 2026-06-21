@@ -362,6 +362,18 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   WASM-green); go.mod/go.sum byte-identical. Unwired seam — its first caller is the M2 live
   tile-ingestion fetch loop. **Sibling still deferred:** hash-tile (multi-level) enumeration needs its
   own per-level loop (no single `Range` call covers all levels), via `PartialTileSize(level,index,size)`.
+- **`TileCoords(treeSize)` is the multi-level hash-tile sibling — both pure coordinate sources now
+  exist** (`coords.go`). It climbs tile-levels itself (`sizeAtLevel = treeSize >> (level*TileHeight)`),
+  emits `fullTiles` then one partial per level, and takes each `Partial` from `PartialTileSize` (never
+  recomputed). The **stop-after-emit** ordering (`break` *after* emitting once `sizeAtLevel <=
+  TileWidth`) is load-bearing: it emits the lone root tile of an exact-power-of-256 tree
+  (`256→{0,0,0}`; `65536→…256 full…,{1,0,0}`) and adds no spurious empty level above the root. Reviewer
+  re-derived all 9 vectors against the tessera oracle in a throwaway module (matched byte-for-byte,
+  incl. `65537` ending `{1,0,0}` — a *full* root, since the extra leaf splits only the level-0 row) and
+  mutation-proved the golden non-vacuous two ways (reverted): (1) `Partial` from `index+1` → golden +
+  oracle-cross-check FAIL; (2) drop the stop-after-emit → all three boundary tests FAIL. Oracle gate
+  correctly N/A (pure coordinate math, no signature/RFC-6962/Merkle/did:web/fsck path);
+  go.mod/go.sum byte-identical, WASM-green, unwired seam. Its first caller is the M2 tile-ingestion writer.
 
 ## SQLiteFetcher / mirror read-back (`internal/store/tiles.go` + `fetcher.go`)
 
