@@ -32,6 +32,9 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/transparency-dev/merkle/proof"
+	"github.com/transparency-dev/merkle/rfc6962"
+
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/store"
 	"github.com/iscc/iscc-monitor/internal/tiles"
@@ -57,10 +60,16 @@ const octetStreamType = "application/octet-stream"
 // single accepted leaf from the hub's mirrored entry bundles and serving them
 // verbatim as application/octet-stream.
 //
+// Finally it handles GET /verify?iscc_id=<id> — the weaker verify-for-me path that
+// returns a single self-contained JSON verdict (the caller trusts the verdict
+// rather than verifying a proof bundle itself): the hub's persisted status, the
+// accepted checkpoint (size, root), and a real RFC-6962 inclusion result recomputed
+// from the mirror and Merkle-verified against the accepted root.
+//
 // Status mapping: non-GET → 405; an unmatched path → 404. The per-route flow
-// owns the rest (serveInclusion / serveConsistency / serveEntries); see each for
-// its 400/404/500 mapping. CORS, caching, and conditional GET are intentionally out
-// of scope for this slice.
+// owns the rest (serveInclusion / serveConsistency / serveEntries / serveVerify);
+// see each for its 400/404/500 mapping. CORS, caching, and conditional GET are
+// intentionally out of scope for this slice.
 func Handler(st *store.Store, hubID int64) http.Handler {
 	f := store.SQLiteFetcher{Store: st, HubID: hubID}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +86,8 @@ func Handler(st *store.Store, hubID int64) http.Handler {
 			serveConsistency(w, r, st, f, hubID)
 		case "/entries":
 			serveEntries(w, r, st, f, hubID)
+		case "/verify":
+			serveVerify(w, r, st, f, hubID)
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}
@@ -314,6 +325,164 @@ func serveEntries(w http.ResponseWriter, r *http.Request, st *store.Store, f sto
 	writeRecord(w, record)
 }
 
+// VerifyVerdict is the JSON response shape for the verify-for-me route: a single
+// self-contained verdict for an iscc_id that the caller trusts rather than
+// verifying itself. HubStatus is the glossary status the store can substantiate
+// ("frozen" if the hub is frozen, else "verified" once it has an accepted
+// checkpoint — only signature-verified checkpoints advance the accepted size,
+// ADR-0006). TreeSize and Root are the accepted checkpoint the monitor vouches for
+// (Root base64-Std encoded, matching the package's other proof encodings).
+// LeafIndex / Included describe the recomputed RFC-6962 inclusion result for the
+// resolved leaf, Merkle-verified against Root. Verified is the overall verdict —
+// true only when the leaf resolved AND proof.VerifyInclusion accepted; Reason is
+// empty on success and carries the non-verified cause otherwise.
+type VerifyVerdict struct {
+	IsccID    string `json:"iscc_id"`
+	HubStatus string `json:"hub_status"`
+	TreeSize  uint64 `json:"tree_size"`
+	Root      string `json:"root"`
+	LeafIndex uint64 `json:"leaf_index"`
+	Included  bool   `json:"included"`
+	Verified  bool   `json:"verified"`
+	Reason    string `json:"reason"`
+}
+
+// serveVerify returns the verify-for-me JSON verdict for an iscc_id. Unlike the
+// other proof routes, an id-shaped input fault is always a 200 verdict
+// ({verified:false, reason:...}), never a 5xx — the verify-for-me contract yields a
+// verdict for every id input. A non-200 is reserved for a genuine infra fault: a
+// FollowState / CheckpointAt / SeqsForISCCID / bundle-read DB error → 500, and a
+// non-os.ErrNotExist proof build/read error → 500. A tile or bundle the mirror has
+// not caught up to (os.ErrNotExist / ErrLeafOutOfBundle) is a 200 verdict
+// {verified:false, reason:"tile not mirrored"} — the leaf is accepted but not yet
+// mirrored, a verdict, not a fault.
+func serveVerify(w http.ResponseWriter, r *http.Request, st *store.Store, f store.SQLiteFetcher, hubID int64) {
+	ctx := r.Context()
+
+	isccID := r.URL.Query().Get("iscc_id")
+	if isccID == "" {
+		writeVerdict(w, VerifyVerdict{Verified: false, Reason: "missing iscc_id"})
+		return
+	}
+
+	// LastSize is the accepted tree size — the tree the monitor vouches for; Frozen
+	// is the only hub-status fact the store persists. A DB fault here is a genuine
+	// infra fault, so it is a 500, not a verdict.
+	fs, err := st.FollowState(ctx, hubID)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	status := hubStatus(fs)
+	size := fs.LastSize
+	if size == 0 {
+		writeVerdict(w, VerifyVerdict{IsccID: isccID, HubStatus: status, Verified: false, Reason: "no accepted checkpoint"})
+		return
+	}
+
+	// The accepted root is the RFC-6962 tree head the monitor vouches for at the
+	// accepted size; the inclusion result is Merkle-verified against it.
+	root, _, found, err := st.CheckpointAt(ctx, hubID, size)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	rootB64 := base64.StdEncoding.EncodeToString(root)
+
+	// iscc_id → seq is one-to-many and schema-agnostic (ADR-0008): default to the
+	// first committed seq via selectSeq and interpret nothing about the id.
+	seqs, err := st.SeqsForISCCID(ctx, hubID, isccID)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if len(seqs) == 0 {
+		writeVerdict(w, VerifyVerdict{IsccID: isccID, HubStatus: status, TreeSize: size, Root: rootB64, Verified: false, Reason: "iscc_id not found"})
+		return
+	}
+	leafIndex := seqs[0]
+
+	// A stale/racing size could leave a committed seq outside the accepted tree; a
+	// leaf the accepted checkpoint does not cover is a non-verified verdict.
+	if leafIndex >= size {
+		writeVerdict(w, VerifyVerdict{IsccID: isccID, HubStatus: status, TreeSize: size, Root: rootB64, LeafIndex: leafIndex, Verified: false, Reason: "leaf not covered by accepted checkpoint"})
+		return
+	}
+
+	// Read the leaf's raw record bytes from the mirrored entry bundle, the same way
+	// serveEntries does: the final bundle of a non-multiple-of-256 tree is a partial,
+	// so request its expected p (the SQLiteFetcher does the partial→full fallback).
+	bundleIndex := leafIndex / tiles.TileWidth
+	offset := leafIndex % tiles.TileWidth
+	p := tiles.PartialTileSize(0, bundleIndex, size)
+	bundle, err := f.ReadEntryBundle(ctx, bundleIndex, p)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeVerdict(w, VerifyVerdict{IsccID: isccID, HubStatus: status, TreeSize: size, Root: rootB64, LeafIndex: leafIndex, Verified: false, Reason: "tile not mirrored"})
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	record, err := logclient.RecordBytesFromBundle(bundle, offset)
+	if err != nil {
+		if errors.Is(err, logclient.ErrLeafOutOfBundle) {
+			writeVerdict(w, VerifyVerdict{IsccID: isccID, HubStatus: status, TreeSize: size, Root: rootB64, LeafIndex: leafIndex, Verified: false, Reason: "tile not mirrored"})
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Build the inclusion proof from the mirror and Merkle-verify it against the
+	// accepted root — a REAL RFC-6962 check, not a stub.
+	builtProof, err := logclient.InclusionProofFromTiles(ctx, f.ReadTile, leafIndex, size)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeVerdict(w, VerifyVerdict{IsccID: isccID, HubStatus: status, TreeSize: size, Root: rootB64, LeafIndex: leafIndex, Verified: false, Reason: "tile not mirrored"})
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Arg-order gotcha (learnings): VerifyInclusion(hasher, index, size, leafHash,
+	// proof, root) — leafHash precedes proof, unlike VerifyConsistency.
+	leafHash := rfc6962.DefaultHasher.HashLeaf(record)
+	included := proof.VerifyInclusion(rfc6962.DefaultHasher, leafIndex, size, leafHash, builtProof, root) == nil
+
+	verdict := VerifyVerdict{
+		IsccID:    isccID,
+		HubStatus: status,
+		TreeSize:  size,
+		Root:      rootB64,
+		LeafIndex: leafIndex,
+		Included:  included,
+		Verified:  included,
+	}
+	if !included {
+		verdict.Reason = "inclusion proof did not verify"
+	}
+	writeVerdict(w, verdict)
+}
+
+// hubStatus maps the persisted follow state to the glossary hub-status subset the
+// store can substantiate: "frozen" if the hub is frozen (a self-consistency
+// violation, ADR-0006), else "verified" once it has an accepted checkpoint (only
+// signature-verified checkpoints advance LastSize). It deliberately invents no
+// status the store cannot prove (verified/unverified/unresolvable/rotated/inactive
+// are tracked elsewhere; this route reads only what the store persists).
+func hubStatus(fs store.FollowState) string {
+	if fs.Frozen {
+		return "frozen"
+	}
+	return "verified"
+}
+
 // selectSeq picks the leaf seq to prove. When the index query param is empty it
 // defaults to seqs[0] — the first committed seq is the deterministic default
 // because iscc_id → seq is one-to-many (ADR-0008) and the seqs are ascending.
@@ -409,6 +578,17 @@ func writeConsistency(w http.ResponseWriter, from, size uint64, proof [][]byte) 
 func writeRecord(w http.ResponseWriter, record []byte) {
 	w.Header().Set("Content-Type", octetStreamType)
 	_, _ = w.Write(record)
+}
+
+// writeVerdict writes the verify-for-me JSON verdict with a 200 status. Every
+// verdict — verified or not — is a 200: the route reserves non-200 for genuine
+// infra faults (handled before this call). It keeps writeEvidence's drop-the-
+// write-error-after-200 posture: a marshal of a fixed-shape struct of
+// strings/uints/bools cannot fail for content reasons, and a mid-write fault
+// cannot un-send the 200.
+func writeVerdict(w http.ResponseWriter, v VerifyVerdict) {
+	w.Header().Set("Content-Type", contentType)
+	_ = encodeJSON(w, v)
 }
 
 // encodeJSON marshals v to w. It keeps the single drop-the-write-error site tidy.

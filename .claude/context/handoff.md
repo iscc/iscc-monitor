@@ -1,75 +1,72 @@
-## 2026-06-21 — Review of: Unify the tlog-tiles `p`-vocabulary — store owns the only `p→width` translation
+## 2026-06-21 — verify-for-me JSON verdict — `GET /<domain>/log/verify?iscc_id=<id>`
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added the `/verify` route to the existing per-hub `proofserve.Handler`: a single
+self-contained JSON verdict (`VerifyVerdict`) carrying the hub's persisted status, the accepted
+checkpoint `(size, root)`, and a REAL RFC-6962 inclusion result recomputed from the local mirror and
+Merkle-verified against the accepted root. Wired it on the per-hub mux in `cmd/iscc-monitor/main.go`
+and documented the endpoint in `CLAUDE.md`. This is the weaker verify-for-me path (caller trusts the
+verdict); an id-shaped input fault is always a 200 verdict, never a 5xx.
 
-**Summary:** `advance` re-parameterized `Store.RecordTile`/`RecordEntryBundle` to take the tlog-tiles
-partial qualifier `p uint8` (computing `width := widthForP(p)` internally via the package-private
-single authority in `fetcher.go`), deleted the follower's duplicate `widthForP`, and switched both
-ingest call sites to pass `c.Partial` straight through. The diff is scope-clean (3 production files,
-one of them a comment-only doc fix), store stays a leaf, and the load-bearing invariant is
-reviewer-mutation-proven non-vacuous through the public surface. Resolves the last open `normal`
-issue (ADR-0005 single-source-of-truth for the mirror coordinate mapping).
+**Files changed:**
+- `internal/proofserve/handler.go`: added `case "/verify"` to the path switch, the `serveVerify`
+  function, the `hubStatus` helper, the `VerifyVerdict` response struct, and the `writeVerdict` writer
+  (post-200 write-drop idiom). Added `merkle/proof` + `merkle/rfc6962` imports. Updated the `Handler`
+  doc comment.
+- `cmd/iscc-monitor/main.go`: added `mux.Handle("/verify", proofs)` next to the three existing exact
+  mounts; updated the `hubHandler` doc comment (three → four proof routes).
+- `CLAUDE.md`: added the `GET /<domain>/log/verify?iscc_id=<id>` line to the dev-instance endpoint list.
+- `internal/proofserve/verify_test.go` (new): `buildVerifyMirror` (mirrors hash tiles AND entry
+  bundles from the same leaf data + projections + accepted checkpoint, with a `corruptRoot` flag),
+  `getVerdict` HTTP-seam helper, and 7 tests.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green, all 15 packages `ok`.
-- [x] `gofmt -l .` — empty (clean).
-- [x] `grep -rn "func widthForP" internal/` — exactly **one** hit (`internal/store/fetcher.go:113`).
-- [x] `grep -n "widthForP" internal/follower/ingest.go` — empty (exit 1); both call sites pass
-  `c.Partial` directly.
-- [x] `go test -count=1 -run 'TestRecordTile|TestRecordEntryBundle|TestFetcher' ./internal/store` — PASS
-  uncached. Named regression guards `TestRecordTilePartialOverwrite` (p=100), `TestRecordTileRoundTrip`,
-  `TestRecordEntryBundleRoundTrip`, `TestRecordTilePartialIsNotFull`, `TestFetcherReadTile*`,
-  `TestFetcherReadEntryBundle*` all `--- PASS`.
-- [x] `go test -count=1 ./internal/follower ./internal/logclient ./internal/proofserve
-  ./internal/tilesserve` — all `ok` **uncached** (full/partial mirror round-trips, fsck root-rebuild,
-  equivocation/inclusion consistency-proof all read the mirror back correctly; no conformance regression).
-- [x] `go list -deps ./internal/store | grep -E "net/http|internal/logclient|internal/follower"` —
-  empty (store stays a leaf). `git diff --stat HEAD~1..HEAD -- internal/store/schema.sql go.mod go.sum`
-  — empty.
-- [x] **Mutation testing (reviewer, reverted) — the public-surface invariant is non-vacuous.** Forcing
-  `widthForP`'s full mapping to `tiles.TileWidth - 1` makes `TestIngestTilesWidthMapping` ("tile L0 I0
-  not found at width 256") AND `TestRecordTileRoundTrip` ("full tile not found") FAIL. A green-but-wrong
-  `widthForP` cannot ship through the public `RecordTile`/`ReadTileBlob` seam; reverting restores green.
-- [x] **Deleted `TestWidthForP` is not a gate dodge.** It tested the now-deleted follower-private
-  `widthForP` arithmetic directly; the load-bearing "full coord (p=0) readable at width 256, NOT 0"
-  invariant is now pinned *more strongly* by `TestIngestTilesWidthMapping` over the public surface (both
-  the positive read-at-256 and the negative not-readable-at-0).
-- [x] **Gate-integrity scan over the 3 unpushed commits (`@{upstream}..HEAD`)** — no `//nolint` /
-  `t.Skip` / build-tag exclusion / swallowed-error / loosened gate in code (the single grep hit is a
-  prose line in the prior `handoff.md`).
-- [x] **Not-In-Scope respected** — `fetcher.go` (`widthForP` body + read methods), `schema.sql`, and
-  `cmd/notecheck` all byte-untouched; `ReadTileBlob`/`ReadEntryBundleBlob` keep their `width int` param.
-- [x] **Oracle/conformance gate correctly N/A** for this slice (plain CRUD + the existing pure `p→width`
-  arithmetic; no signature/RFC-6962/Merkle/did:web/fsck *path* changed) — but the four
-  mirror-consuming packages were re-run uncached anyway because their fsck root-rebuild and
-  equivocation/inclusion proofs read the mirror back via `SQLiteFetcher`.
+**Verification:** `mise run check` → green (all 15 packages `ok`); `gofmt -l .` empty. Per-criterion:
+- `go test -count=1 -run TestVerify ./internal/proofserve` → PASS (golden known-id across the 256-leaf
+  boundary {0,5,255,256,260,299}, unknown-id 200 verdict, missing-id 200 verdict, non-vacuous
+  corrupted-root negative, frozen hub_status, no-accepted-checkpoint, leaf-hash-matches-tree).
+- `go test -count=1 ./internal/proofserve ./cmd/iscc-monitor` → PASS uncached (route mount + handler).
+- `go list -deps ./internal/store | grep -E 'proofserve|net/http'` → empty (store stays a leaf);
+  `go list -deps ./internal/logclient | grep proofserve` → empty.
+- `git diff --stat -- go.mod go.sum internal/store/schema.sql` → empty (byte-unchanged).
+- `GOOS=js GOARCH=wasm go build ./internal/didweb` → exit 0 (WASM verifier seam untouched).
+- Mirror-consuming pkgs re-ran uncached green: `follower`, `logclient`, `tilesserve`, `store`.
+- Known-id verdict: HTTP 200, `verified==true`, `included==true`, `tree_size==300`, `leaf_index==5`,
+  base64-decoded `root == tree.Hash()`. Unknown id: HTTP 200, `verified==false`, non-empty `reason`.
 
-**Issues found:** (none). Resolved + deleted the ADR-0005 `normal` issue "Tile writers require `width`,
-duplicating the tlog `p` translation in the follower" (verified the fix in production + test). One `low`
-issue remains in `issues.md`: the `cmd/notecheck` vestigial `out io.Writer` param (loop-skipped).
+**Mutation-proven non-vacuous (oracle gate APPLIES — RFC-6962 inclusion crypto):** reverted-mutated
+`serveVerify` to ignore the `proof.VerifyInclusion` result (`included := true`) → over a byte-accurate
+mirror with a corrupted accepted root, `TestVerifyInclusionIsNonVacuous` FAILS on all three asserts
+(verified/included/reason); reverted → green. A green-but-wrong handler cannot ship. The unknown-id
+test catches a hardcoded `verified:true`.
 
-**Next:** The `normal` backlog is drained. With the M3 mirror arc + three computed proofs + HTTP
-serving + this single-source cleanup landed, the natural next arc is the proof-surface cache /
-verify-for-me REST surface. Scope the proof-bundle assembly (`{checkpoint, inclusion proof, record
-bytes, hub key, ots?}`) that both the in-browser verifier and verify-for-me share, reading from the
-now-unified store/SQLiteFetcher seam — start with the bundle assembler in `internal/proofserve` (or a
-sibling) that composes `LatestCheckpointRaw` + `InclusionProofFromTiles` + the record bytes + the
-resolved hub key into one self-contained, client-verifiable package.
+**Next:** The other two open M3 Verify criteria are the HTML dashboard (`GET /`) and the HTML log
+browser (`GET /<domain>/log/`) — the next sub-steps in this same arc. After those, the authoritative
+path: a full proof-bundle assembler packaging `{checkpoint, inclusion proof, record bytes, hub key,
+ots?}` into one downloadable client-verifiable artifact (the WASM verifier reuses the same
+store/SQLiteFetcher seam). `serveVerify` already composes every piece the bundle needs except the
+resolved hub key (in `hub_keys`) and the raw checkpoint bytes (`CheckpointAt` returns `raw` too,
+currently discarded with `_`).
 
 **Notes:**
-- **Third production file `internal/tiles/coords.go` is a comment-only doc fix** (confirmed via diff
-  filter: every changed line is a comment) — its `BundleCoord`/`TileCoord` docs claimed the *writer*
-  does the `p→width` translation, now false after the move. Within the ≤3 scope ceiling; flagged
-  transparently by the advance author. `next.md` listed only 2 modify targets, so this is a benign
-  over-list, not a scope violation.
-- **`uint8(256)` is never written** — every full coord is the literal `0` per the lossy-guard rule; the
-  test sites carrying a runtime `width` variable (`equivocation_test.go`'s `len(nodes)`,
-  `entries_test.go`'s `last-first`) translate with an explicit `if width == tiles.TileWidth { p = 0 }`
-  guard so a future full bundle/tile in those loops maps to `0`, never a wrapped `uint8(256)`.
-- **`.devcontainer/devcontainer.json` is modified in the working tree but NOT committed** (pre-existing
-  infra tuning: `--memory` runArgs + `GOFLAGS=-p=2`) — left for the human/infra owner, correctly not
-  swept into this loop's commits.
-- **Loop is CONTINUE:** M1/M2 met, M3 in progress (mirror arc + three computed proofs + HTTP serving +
-  this cleanup done); verify-for-me REST, dashboard, log browser, WASM verifier, and OTS anchoring
-  remain the bulk of v1 — not DONE. No human-only decision open — not STOP.
+- **`hub_status` is the store-provable glossary subset only.** `serveVerify` derives it from
+  `FollowState`: `frozen` if `Frozen`, else `verified` (only signature-verified checkpoints advance
+  `LastSize`, ADR-0006). Per Not-In-Scope, I did NOT add a status column or thread the metrics registry
+  into proofserve. The richer statuses (unverified/unresolvable/rotated/inactive) live in the in-memory
+  metrics registry and are not visible to this route — a known, documented limitation for this slice.
+- **`buildVerifyMirror` does NOT reuse `buildMirror` (handler_test.go)** because `buildMirror` mirrors
+  only hash tiles, not entry bundles — and `serveVerify` reads the leaf's record bytes from an entry
+  bundle to hash them (the inclusion check needs the real leaf hash). `buildVerifyMirror` mirrors BOTH,
+  framing entry bundles from the same `"leaf-%08d"` data the tree is built from, so
+  `HashLeaf(record) == tree.LeafHash(i)`. `TestVerifyLeafHashMatchesTree` pins that assumption. It does
+  reuse `nodeHash`, `leafISCCID`, `mirrorTree`, and `mirrorLeaves` from `handler_test.go`.
+- **A mirror-not-caught-up miss is a 200 verdict, not a 5xx.** An entry-bundle/tile `os.ErrNotExist`
+  or `ErrLeafOutOfBundle` → `{verified:false, reason:"tile not mirrored"}` (the leaf is accepted but
+  the mirror lags). Genuine infra faults (DB read errors on `FollowState`/`CheckpointAt`/
+  `SeqsForISCCID`/bundle-read, a non-`os.ErrNotExist` proof build error, or a `CheckpointAt`
+  not-found at the accepted size) → 500.
+- **`CheckpointAt(size)` not-found at the accepted size is treated as a 500 infra fault**, not a
+  verdict: `LastSize > 0` means a checkpoint was recorded at that size, so a missing row is a real
+  store inconsistency, not bad id input.
+- Scope clean: 3 production files (handler.go, main.go, CLAUDE.md doc) + 1 test file, within the ≤3
+  ceiling (docs/tests excluded). go.mod/go.sum/schema byte-unchanged. No `//nolint`/`t.Skip`/swallowed
+  error introduced (the `writeVerdict` post-200 write-drop is the documented package idiom shared by
+  `writeEvidence`/`writeConsistency`/`writeRecord`, not a new dodge).

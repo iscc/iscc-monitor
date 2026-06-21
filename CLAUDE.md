@@ -55,6 +55,8 @@ these are JSON / text / Prometheus endpoints and `/` returns 404:
 - `GET /<domain>/log/entries?index=<seq>` — single-leaf record bytes from the local mirror.
 - `GET /<domain>/log/inclusion?iscc_id=<id>[&index=<n>]` — computed inclusion proof.
 - `GET /<domain>/log/consistency?from=<n>` — computed consistency proof.
+- `GET /<domain>/log/verify?iscc_id=<id>` — verify-for-me JSON verdict (hub status +
+  accepted checkpoint `(size, root)` + Merkle-verified inclusion result).
 
 ## Language
 
