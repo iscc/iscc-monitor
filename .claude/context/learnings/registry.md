@@ -31,14 +31,21 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   slot. Stays WASM-shareable: `yaml.v3` + `net/url` are pure (`net/url` pulls `net/netip`, NOT
   `net`/`net/http`); `os` appears only transitively via `fmt` (the documented purity nuance) — prove
   with `GOOS=js GOARCH=wasm go build`, not by grepping `os`.
-- **`hubDomain` is fail-OPEN on a scheme'd path-bearing url — known gap, see issues.md.** It only checks
-  `u.Host == ""`, so `https://host/path` parses and `Resolve` returns `host`, dropping the path —
-  despite next.md/docstring/handoff all claiming path-bearing is rejected. The scheme-LESS test case
-  (`host/path`) is rejected via the *no-host* branch, masking the real gap. A genuine path-bearing
-  reject needs a `u.Path != ""` check. Treat any url-host-extraction helper as fail-open until it
-  rejects path/query/fragment AND a scheme'd-path test proves it.
-- **YAML zero-value fail-open: a missing `hub_id` decodes to slot 0** (a plain `uint16` cannot tell
-  absent from `0`). Same trap as any required scalar YAML field — presence-track (`*uint16` /
-  `yaml.Node` / custom `UnmarshalYAML`) if absence must fail closed. See issues.md.
+- **settled (landed): two fail-opens hardened.** `hubDomain` now rejects `u.Path != "" || u.RawQuery
+  != "" || u.Fragment != ""` after the host check (a scheme'd `https://host/log` is rejected, not
+  host-stripped); `Hub.HubID` is now `*uint16` so an absent `hub_id` is rejected ("hub_id is required")
+  instead of decoding to slot 0. Both mutation-proven non-vacuous; trailing-slash `https://host/`
+  rejected (path `/`). `Resolve(uint16)(string,bool)` signature unchanged; the public `Hub` shape
+  changed (`uint16`→`*uint16`, in-package reader only).
+- **`url.Parse` fail-open trap is wider than path/query/fragment fields: `ForceQuery`.** `u.RawQuery
+  != ""` does NOT catch `https://host?` — `net/url` sets `u.ForceQuery=true` with `RawQuery==""`, so a
+  trailing `?` slips past the guard and `u.String()` round-trips the delimiter (callers retain
+  `Hub.URL`). The empty fragment `https://host#` Go drops on round-trip (harmless), but `?` does not.
+  Any "bare host base url" guard must also reject `u.ForceQuery`. See issues.md (open, normal).
+  General rule: enumerate `url.URL`'s shape-carrying fields (`Path RawQuery ForceQuery Fragment
+  Opaque User`), not just the obvious three, before claiming "host only".
+- **YAML required-scalar fail-open (general): a missing `hub_id` decodes to the zero value** (a plain
+  `uint16` cannot tell absent from `0`). Presence-track required scalar YAML fields with `*T` /
+  `yaml.Node` / custom `UnmarshalYAML`. (Landed: `HubID *uint16`.)
 - **`KnownFields(false)`** is deliberate: unknown keys (notably `pubkey`, future fields) are tolerated,
   not rejected — the parse-and-ignore contract. Do not flip to `true` without re-deciding `pubkey`.

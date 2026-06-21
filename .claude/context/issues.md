@@ -44,48 +44,26 @@ filed it and does **not** affect priority.
     it reds the gate for the whole module.
 - **Spec:** ADR-0011; target.md "Stack (locked — ADR-0003, ADR-0011)"; iscc/iscc-lib#43.
 
-## Hub-List `hubDomain` accepts a scheme'd path-bearing URL (fail-open against the claimed contract)
+## Hub-List `hubDomain` accepts a trailing `?` (ForceQuery fail-open against the bare-host contract)
 - **Priority:** normal
 - **Source:** [review] (Codex P2, reviewer-confirmed)
-- **What / where / how to verify:** `internal/registry/registry.go` `hubDomain` (lines 161-173) only
-  rejects a url with an empty `Host`, so a scheme'd path-bearing url like `https://sb0.iscc.id/log`
-  parses cleanly and `Resolve` silently returns `sb0.iscc.id`, dropping `/log`. This contradicts
-  (a) `next.md`'s Implementation Notes ("Fail closed... a `url` that is empty/**path-bearing** — so a
-  path is never silently coerced into a domain"), (b) the function's own docstring ("fails closed on a
-  url that... carries no host (e.g. a bare path)"), and (c) the advance handoff's claim
-  ("fail-closed on... empty-or-path-bearing url"). The guarding test `TestParseHubListErrors`
-  case `"path-bearing url"` (hublist_test.go) uses the **scheme-less** `sb0.iscc.id/log`, which is
-  rejected via the *no-host* branch, NOT a path branch — so it gives false confidence and a genuine
-  scheme'd-path url slips through (reviewer-confirmed: `hubDomain("https://sb0.iscc.id/log")` returns
-  `("sb0.iscc.id", nil)`). Not currently exploitable (live wiring deferred; the `testnet.yaml` fixture
-  uses clean `https://host` urls), but it is a trust-root-adjacent resolver (a wrong domain proves the
-  wrong leaf, per the index learnings). Fix: in `hubDomain`, after the host check, reject a non-empty
-  `u.Path` (and likely `RawQuery`/`Fragment`) with a wrapped "path-bearing"/"not a bare host base url"
-  error; then replace/augment the test's `"path-bearing url"` case with a **scheme'd** path url
-  (`https://sb0.iscc.id/log`) so the gate is non-vacuous. Verify fixed: `ParseHubList` with a
-  `https://host/path` url returns a non-nil error + nil list, and reverting the new `u.Path` check
+- **What / where / how to verify:** `internal/registry/registry.go` `hubDomain` (line 188) now rejects
+  `u.Path != "" || u.RawQuery != "" || u.Fragment != ""`, but `net/url` represents a bare trailing `?`
+  (e.g. `https://sb0.iscc.id?`) as `ForceQuery == true` with `RawQuery == ""`, so the guard does NOT
+  fire and `ParseHubList` accepts the url. `u.String()` round-trips the delimiter (`"https://sb0.iscc.id?"`),
+  and `Hub.URL` is retained for callers, so the query delimiter survives despite the docstring's
+  "path/query/fragment not allowed" contract. Reviewer-confirmed: `hubDomain("https://sb0.iscc.id?")`
+  returns `("sb0.iscc.id", nil)` (no error). The trailing-`#` case (`https://sb0.iscc.id#`) Go drops
+  on round-trip (harmless), so only `?`/`ForceQuery` is load-bearing. Same fail-open class as the two
+  path/missing-hub_id gaps just closed; not currently exploitable (live wiring deferred, fixture uses
+  clean `https://host` urls), but a trust-root-adjacent resolver should fully enforce its stated
+  contract before the certificate page consumes it. Fix when `hubDomain` is next touched: add
+  `|| u.ForceQuery` to the line-188 reject; add a `TestParseHubListErrors` case with url
+  `https://sb0.iscc.id?` asserting the "not a bare host base url" fragment. Verify fixed: `ParseHubList`
+  with a `https://host?` url returns a non-nil error + nil list, and reverting the `u.ForceQuery` clause
   makes that test FAIL.
 - **Spec:** next.md "Fail closed, like Parse" Implementation Note; ADR-0010 Hub-List schema; CLAUDE.md
-  "did:web key resolution" / registry-rejects-URL-shapes precedent (`Parse` rejects path separators).
-
-## Hub-List entry missing `hub_id` silently becomes slot 0 (YAML zero-value fail-open)
-- **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed)
-- **What / where / how to verify:** `internal/registry/registry.go` `Hub.HubID uint16` (line 86) with
-  `yaml:"hub_id"`: a Hub-List entry that omits or misspells `hub_id` unmarshals the YAML zero value, so
-  the entry silently becomes slot **0** and passes the range/duplicate checks (reviewer-confirmed: a
-  `hubs:` entry with only `url`/`active` parses with `HubID == 0` and `Resolve(0)` returns its domain).
-  In a real Hub-List where slot 0 is otherwise absent, a typo'd `hub_id` would map that hub to slot 0
-  and mis-resolve hub-0 ISCC-IDs to the wrong hub while leaving the intended slot unresolved — a
-  fail-open in a trust-root-adjacent resolver. Not required by `next.md` (it named only invalid YAML /
-  over-range / duplicate / empty-or-path url), so this is hardening beyond the original scope, but it is
-  the same fail-open class as the path-bearing gap above. Fix when `ParseHubList` is next touched:
-  decode with presence tracking — either decode each entry to a `yaml.Node` (or a struct with
-  `HubID *uint16` / a custom `UnmarshalYAML`) and reject an absent `hub_id` with a wrapped error. Verify
-  fixed: a `hubs:` entry omitting `hub_id` returns a non-nil error + nil list; the valid fixtures still
-  parse.
-- **Spec:** next.md "Fail closed, like Parse" Implementation Note (extends it); ADR-0010 Hub-List
-  schema (`hub_id` is a required field).
+  registry-rejects-URL-shapes precedent (a bare host base url carries no query).
 
 ## Single-record label test is vacuous on the kind-label constant value
 - **Priority:** low
