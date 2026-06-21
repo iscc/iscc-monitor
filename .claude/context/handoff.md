@@ -1,73 +1,77 @@
-## 2026-06-21 — Serve GET /entries (computed record bytes) from the local mirror
+## 2026-06-21 — Review of: Serve GET /entries (computed record bytes) from the local mirror
 
-**Done:** Added the `/entries?index=<seq>` route that extracts a single accepted leaf's raw record
-bytes from the hub's mirrored entry bundles and serves them verbatim as `application/octet-stream`,
-never re-hitting the hub. This completes M2's three computed-proof surfaces (inclusion, consistency,
-entries). Core is one pure decode-and-index function `logclient.RecordBytesFromBundle` plus an
-`ErrLeafOutOfBundle` sentinel, wired into `proofserve.Handler` and the per-hub mux.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/logclient/entries.go` (new): `RecordBytesFromBundle(bundle, offset)` —
-  `api.EntryBundle{}.UnmarshalText` then `eb.Entries[offset]` verbatim (raw JCS-canonical envelope,
-  NOT re-hashed); `ErrLeafOutOfBundle` sentinel for an out-of-range offset; truncated frame `%w`-wrapped.
-  Imports exactly `errors`+`fmt`+`tessera/api`, file-level WASM-pure (sibling of `leafhasher.go`).
-- `internal/proofserve/handler.go`: added `case "/entries"` arm + `serveEntries` (mirrors
-  `serveInclusion`'s accepted-tree guards, reuses `parseUint`), `writeRecord` helper, `octetStreamType`
-  const, and the `tiles` import; package + Handler doc updated.
-- `cmd/iscc-monitor/main.go`: one `mux.Handle("/entries", proofs)` line in `hubHandler` + doc note.
-- Tests: `internal/logclient/entries_test.go`, `internal/proofserve/entries_test.go`,
-  `cmd/iscc-monitor/main_test.go` (new `TestMirrorEntriesRoute` + `frameEntryBundle` helper).
+**Summary:** The `/entries?index=<seq>` route extracts a single accepted leaf's raw record bytes
+from the hub's mirrored entry bundles and serves them verbatim as `application/octet-stream`, never
+re-hitting the hub — completing M2's third and final computed-proof surface (inclusion, consistency,
+entries all served). Core is one pure decode-and-index function `logclient.RecordBytesFromBundle`
+(faithful `leafhasher.go` sibling, WASM-pure) plus an `ErrLeafOutOfBundle` sentinel, wired into
+`proofserve.Handler` and the per-hub mux. Scope is exactly 3 production `.go` files + 3 test files;
+nothing from `## Not In Scope` was touched.
 
-**Verification:** `mise run check` → green (`go build`/`go vet`/`go test ./...` all pass, `gofmt -l .`
-empty). Full suite re-run uncached `go test -count=1 ./...` → all 14 packages `ok`. Per-criterion:
-- [x] `go test -run TestRecordBytesFromBundle ./internal/logclient` PASS — in-range byte-equality,
-  `ErrLeafOutOfBundle` via `errors.Is` (offset == len and beyond, incl. empty bundle), `%w`-wrapped
-  truncated frame; uses the `leafhasher_test.go` `encodeBundle` manual-uint16 third path.
-- [x] `go test -run 'TestServeEntries|TestEntries' ./internal/proofserve` PASS — 200 + exact record
-  bytes across the 256-leaf bundle boundary `{0,5,255,256,260,299}`, missing index → 400, non-numeric
-  index → 400, `seq >= LastSize` → 404, no accepted checkpoint → 404, bundle not mirrored → 404,
-  non-GET → 405, Content-Type `application/octet-stream`.
-- [x] `go test -run TestMirror ./cmd/iscc-monitor` PASS — new `TestMirrorEntriesRoute` routes
-  `/<origin>/log/entries?index=2` through the shared mux to the record bytes; existing inclusion +
-  mirror + healthz sub-tests intact.
+**Verification:**
+- [x] `mise run check` — green (build + vet + test, all 14 packages `ok`); re-run uncached
+  `go test -count=1 ./...` → all `ok`; `gofmt -l .` empty.
+- [x] `go test -run TestRecordBytesFromBundle ./internal/logclient` — PASS (in-range byte-equality,
+  `ErrLeafOutOfBundle` via `errors.Is` at/past `len`, empty bundle, `%w`-wrapped truncated frame).
+- [x] `go test -run 'TestServeEntries|TestEntries' ./internal/proofserve` — PASS (200 + exact bytes
+  across the 256-leaf boundary `{0,5,255,256,260,299}`; 400 missing/non-numeric index; 404 seq≥LastSize,
+  no accepted checkpoint, bundle not mirrored; 405 non-GET; Content-Type `application/octet-stream`).
+- [x] `go test -run TestMirror ./cmd/iscc-monitor` — PASS (new `TestMirrorEntriesRoute` routes
+  `/<origin>/log/entries?index=2` through the shared mux to the record bytes; inclusion + mirror +
+  healthz sub-tests intact).
 - [x] `entries.go` imports exactly `errors`+`fmt`+`tessera/api`; `GOOS=js GOARCH=wasm go build
   ./internal/logclient` exits 0.
-- [x] `git diff --quiet HEAD -- go.mod go.sum internal/store/schema.sql` exits 0 (no dep/schema change;
-  `tessera/api` + `internal/tiles` already in the closure).
+- [x] `git diff --quiet HEAD -- go.mod go.sum internal/store/schema.sql` exits 0 (no dep/schema change).
 
-**Next:** The M3 cross-cutting HTTP slice deferred across all mirror + proof surfaces at once: CORS,
-caching, and conditional-GET (ETag/If-None-Match) headers on `/inclusion`, `/consistency`, `/entries`,
-and the static mirror — now that all three computed surfaces exist, one slice can add them uniformly.
-Alternatively the range-fetch additive slice (multiple leaves in one `/entries` response) or the
-`TestPollHubFork` re-detection cleanup (still an open `normal` issue).
+**Independent verification (reviewer):**
+- **Trust-root unaffected.** The new code introduces NO signature/RFC-6962/Merkle/did:web/fsck path
+  (`RecordBytesFromBundle` = `EntryBundle.UnmarshalText` then `eb.Entries[offset]`, never re-hashed),
+  so the oracle gate is correctly N/A for *this slice's* new code. Confirmed anyway that the diff
+  living inside the trust-root package did not disturb it: the `logclient` + `didweb`
+  verify/proof/fsck/inclusion conformance tests pass uncached, `derive_vkey.py` reproduces both
+  golden vectors (`40b74463`/`22b08f3e`), and the independent `notecheck` external oracle held
+  locally (accept `OK sb0.iscc.id/log` + reject-corrupted exit 1) — the same job CI runs on push.
+- **Tests are mutation-proven non-vacuous.** Forcing `RecordBytesFromBundle` to return `eb.Entries[0]`
+  always (wrong-leaf extractor) FAILED the golden across the bundle boundary (seq 5/255 in the full
+  bundle, seq 260/299 in the 44-leaf partial) AND at the binary routing level (`record-0` vs
+  `record-2`); reverted → green. A green-but-wrong extractor cannot ship.
+- **Gate integrity:** scanned all unpushed commits — no `//nolint`/`t.Skip`/build-tag exclusion,
+  no deleted assertion or swallowed error. The `_, _ = w.Write(record)` drop is the documented
+  post-status write-drop convention (matching `tilesserve.writeBlob`/`metricshttp`), not a dodge.
+
+**Issues found:** (none)
+
+**Next:** The M2 proof surface is now complete (3-of-3 served). Strong candidates for `define-next`:
+(1) the M3 cross-cutting HTTP slice — CORS + caching + conditional-GET (ETag/If-None-Match) headers
+applied uniformly across `/inclusion`, `/consistency`, `/entries`, and the static mirror, now that all
+three computed surfaces exist; or (2) drain an open `normal` issue (`TestPollHubFork` re-detection
+cleanup, frozen-hubs-still-advance, `AcceptCheckpoint` context reuse, tile-writer `p`-vocab, the
+`AdvanceAccepted` deep store method, or the `CheckConsistency` collapse). The proof-bundle JSON
+assembly + verify-for-me (M3) is the larger feature arc after the HTTP plumbing lands.
 
 **Notes:**
-- **Deviation from `next.md`'s implementation note (flagged, not a design change):** the note said
-  "Request the full bundle (`p == 0`)". Passing `p == 0` unconditionally 404s the FINAL partial bundle
-  of any non-multiple-of-256 tree (and every tree < 256 leaves) — the bundle is mirrored only at its
-  partial width, and the `SQLiteFetcher` partial→full fallback only fires for `p > 0`. The two seeded
-  failures (`TestServeEntries` seq 256 → 44-leaf partial; `TestMirrorEntriesRoute` → 5-leaf bundle)
-  proved this. Fix: compute `p := tiles.PartialTileSize(0, bundleIndex, size)` (entry bundles are
-  level-0) and pass it to `ReadEntryBundle` — the exact pattern the proof builder uses for partial
-  tiles, so a partial later promoted to full still resolves via the fallback. No new dependency
-  (`internal/tiles` was already imported). This is a correctness fix within the route, not an API or
-  scope change.
-- **Oracle / conformance gate correctly N/A for this slice** (matches the seeded pattern): the
-  record-bytes extractor is a pure decode + index — it returns the leaf's bytes verbatim, never
-  re-hashing, verifying, or interpreting (no signature / RFC-6962 / Merkle / did:web / fsck path is
-  introduced; `serveInclusion`/`serveConsistency` already own the proof crypto). The test asserts
-  byte-equality against the records the bundle was framed from via an independent encode path
-  (`frameBundle`/`frameEntryBundle`, distinct from the `UnmarshalText` decode under test), so a
-  green-but-wrong extractor returning the wrong leaf would fail. No gate was weakened.
-- The `_, _ = w.Write(record)` drop in `writeRecord` is the documented post-status write-drop
-  convention (matching `tilesserve.writeBlob` / `metricshttp`): the 200 is sent on the first byte and a
-  mid-write fault on an opaque BLOB cannot un-send it. Not a swallowed-error gate dodge.
-- `/entries` (computed single-leaf record_bytes) is distinct from `/tile/entries/<bundleindex>` (the
-  raw whole-bundle BLOB served under `"/"` by `tilesserve`) — different route, different shape, not a
-  duplicate (256 framed leaves vs exactly one leaf's bytes). `tilesserve` untouched as scoped.
-- Scope is exactly 3 production `.go` files + 3 test files; nothing from `## Not In Scope` touched
-  (no `tilesserve`, no CORS/caching/ETag header code, no range fetch, no proof-bundle JSON assembly,
-  no open-issue cleanup). `go.mod`/`go.sum`/`schema.sql` byte-unchanged.
-- Open `normal` issues remain for `define-next` to weigh (`TestPollHubFork` cleanup, frozen-advance,
-  `AcceptCheckpoint` context reuse, tile-writer `p` vocab, `AdvanceAccepted`, `CheckConsistency`
-  collapse). M2's Verify bar is now complete.
+- **Deviation from `next.md`'s `p == 0` implementation note is a genuine correctness FIX, not a scope
+  change (reviewer-validated).** `next.md` said "request the full bundle (`p == 0`)". Passing `p == 0`
+  unconditionally queries width 256 for the FINAL partial bundle of any non-multiple-of-256 tree (and
+  every tree < 256), which the mirror only holds at its partial width — and `SQLiteFetcher`'s
+  partial→full fallback fires only for `p > 0`, so it would 404 a leaf that IS in the accepted tree.
+  The author instead computes `p := tiles.PartialTileSize(0, bundleIndex, size)` (the exact pattern the
+  proof builders use) so a partial later promoted to full still resolves via the fallback. Verified
+  sound against `fetcher.go` (the fallback guard is `errors.Is(err, os.ErrNotExist) && p > 0`) and
+  exercised by the 300-leaf test (seq 256-299 land in the 44-leaf partial bundle 1) and the 5-leaf
+  binary test — both would 404 under the literal `p == 0`. Stays a `internal/tiles`-only computation,
+  no new dependency, no API change.
+- **Scope clean:** exactly `cmd/iscc-monitor/main.go`, `internal/logclient/entries.go`,
+  `internal/proofserve/handler.go` (3 prod) + 3 test files. No `tilesserve` change, no CORS/caching/ETag
+  header code, no range fetch, no proof-bundle JSON assembly, no open-issue cleanup. `/entries`
+  (computed single-leaf `record_bytes`) is correctly distinct from `/tile/entries/<bundleindex>` (the
+  raw 256-leaf whole-bundle BLOB served by `tilesserve` under `"/"`) — different route, different shape.
+- **No issues resolved or stale-swept this iteration** — every open `normal` issue was explicitly
+  deferred in `## Not In Scope`, so `issues.md` is unchanged. The six open issues (`TestPollHubFork`
+  cleanup, frozen-advance, `AcceptCheckpoint` context reuse, tile-writer `p` vocab, `AdvanceAccepted`,
+  `CheckConsistency` collapse, + one `low` `notecheck` cosmetic) remain for `define-next` to weigh.
+- **Loop = CONTINUE, not DONE:** M2's Verify bar is complete but M3 (dashboard / verify-for-me / CORS /
+  landing), WASM, and OTS milestones are entirely unstarted, and `normal` issues remain open.

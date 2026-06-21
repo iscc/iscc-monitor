@@ -1171,3 +1171,33 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   `follower_test.go:280` claiming the query is "unordered … non-deterministic" is now STALE; rewiring
   `TestPollHubFork` to re-detect via a second `PollHub` (not a direct `freeze`) is the remaining
   follow-up — tracked in issues.md, out of scope for the store-only slice.
+
+## Computed record-bytes HTTP surface (`/entries` + `internal/logclient/entries.go`)
+
+- **`GET /entries?index=<seq>` completes M2's proof surface (3-of-3 served) and is the simplest of the
+  three — a pure decode + index, NOT crypto.** `logclient.RecordBytesFromBundle(bundle, offset)` is a
+  verbatim `leafhasher.go` sibling: `api.EntryBundle{}.UnmarshalText` then `eb.Entries[offset]` returned
+  RAW (the JCS-canonical envelope, never re-hashed/verified). It imports exactly `errors`+`fmt`+
+  `tessera/api` (WASM-pure, verified `GOOS=js GOARCH=wasm` green); `ErrLeafOutOfBundle` is the sentinel
+  the handler maps via `errors.Is` (offset >= `len(Entries)` -> 404, a partial bundle not yet covering the
+  leaf). Served `application/octet-stream` via `writeRecord` (post-status write-drop convention, like
+  `tilesserve.writeBlob`). Oracle gate correctly N/A (no signature/RFC-6962/Merkle/did:web/fsck path);
+  go.mod/go.sum/schema byte-identical. Three exact mounts (`/inclusion`,`/consistency`,`/entries`) now
+  share one `proofserve.Handler` via the inner path switch; all beat `/`->tilesserve by most-specific match.
+- **`next.md`'s `p == 0` (full-bundle request) note was WRONG for the final partial bundle — advance
+  correctly fixed it to `p := tiles.PartialTileSize(0, bundleIndex, size)`.** Passing `p == 0`
+  unconditionally queries the mirror at width 256, but the final bundle of any non-multiple-of-256 tree
+  (and every tree < 256 leaves) is stored only at its partial width; `SQLiteFetcher`'s partial->full
+  fallback fires ONLY for `p > 0` (`errors.Is(err, os.ErrNotExist) && p > 0` in `fetcher.go`), so `p == 0`
+  would 404 a leaf that IS in the accepted tree. `PartialTileSize` (entry bundles are level-0) returns the
+  exact `p`-qualifier the proof builders already use -> a partial later promoted to full still resolves.
+  This is the same partial-bundle gotcha the inclusion/consistency builders handle; remember it for any
+  future bundle/tile read keyed on an absolute index. The 300-leaf test (`{256,260,299}` land in the
+  44-leaf partial bundle 1) and the 5-leaf binary test both exercise it — both would 404 under `p == 0`.
+- **`serveEntries` accepted-tree guards mirror `serveInclusion` exactly:** `FollowState.LastSize == 0`
+  -> 404 "no accepted checkpoint"; `seq >= LastSize` -> 404 "leaf not covered by accepted checkpoint";
+  bundle-miss `os.ErrNotExist` -> 404; `ErrLeafOutOfBundle` -> 404; missing/non-numeric `index` (reused
+  `parseUint`) -> 400; non-GET -> 405. The index is the absolute leaf **seq**, schema-agnostic (ADR-0008) —
+  this route interprets nothing (no ISCC-ID codec, no `note.$schema`). Reviewer mutation-proved the tests
+  non-vacuous: forcing the extractor to `eb.Entries[0]` FAILED the golden across the bundle boundary AND
+  the binary routing test (`record-0` vs `record-2`), then reverted -> green.
