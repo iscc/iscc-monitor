@@ -18,29 +18,6 @@ filed it and does **not** affect priority.
 
 ---
 
-## Bare-domain dossier mount collides with reserved exact routes (`/metrics`, `/healthz`) → startup panic
-- **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed by reproduction)
-- **What / where / how to verify:** `cmd/iscc-monitor/main.go:205` mounts
-  `mux.Handle("/"+r.Domain, dossier.Handler(...))` inside `mirrorHandler`, which `buildMux` (line 170)
-  runs BEFORE it registers the built-in exact routes `/metrics` (172), `/healthz` (173), and the
-  `web.Prefix` (`/_ds/`) subtree (174). `internal/registry.Parse` accepts any non-URL-shaped bare token
-  as a `Domain` (it only rejects `://` and `/`), so a realm-document line `metrics` (or `healthz`)
-  yields `Entry{Domain:"metrics"}` → the dossier registers `/metrics` first → `buildMux`'s later
-  `mux.Handle("/metrics", ...)` panics `http.ServeMux: pattern "/metrics" ... conflicts` and the monitor
-  fails to start. Reviewer reproduced the exact panic with `routes := []hubRoute{{HubID:1,
-  Domain:"metrics", Origin:"metrics/log"}}` driven through `buildMux`. This is a misconfiguration crash
-  (a real hub domain is always multi-label; the testnet realm is `sb0.iscc.id`/`sb1.amlet.id`), not a
-  normal-operation or remote defect — but it is a NEW crash surface this advance introduced (the prior
-  `/<domain>/log/` subtree mount never collided with the exact `/metrics`). Fix at the root: before
-  mounting the dossier, reject or skip a `Domain` that equals a reserved mount name (`metrics`,
-  `healthz`, the `web.Prefix` segment, and the empty/`/`-colliding case the handoff already flagged) —
-  prefer failing `registerHubs`/`Parse` loudly over a silent skip so the operator learns the config is
-  invalid. Verify fixed: a realm entry `metrics`/`healthz` either errors at registration or is rejected
-  by the parser, and `buildMux` no longer panics for that config (add a test driving the reserved name
-  through `buildMux`).
-- **Spec:** no ADR; single-listener mux invariant (`learnings/cmd-monitor.md`).
-
 ## `cmd/notecheck`'s `run` has a vestigial `out io.Writer` parameter
 - **Priority:** low
 - **Source:** [review]

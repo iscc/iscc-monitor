@@ -41,16 +41,23 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   packages, `tilesserve` serves opaque BLOBs (no signature/RFC-6962/Merkle/did:web/fsck path);
   store stays a leaf (`go list -deps ./internal/store | grep tilesserve` empty — dep is binary→
   tilesserve→store), go.mod/go.sum/schema byte-identical.
-- **A `mux.Handle("/"+r.Domain, …)` mount over an operator-controlled domain can COLLIDE with a
-  built-in exact route — `mirrorHandler` runs before `buildMux` registers `/metrics`/`/healthz`/`/_ds/`,
-  so the per-hub mount registers first and `http.ServeMux.Handle` PANICS on the duplicate pattern.**
-  `internal/registry.Parse` only rejects `://`/`/`, so a bare token like `metrics` is a valid `Domain`;
-  a realm line `metrics` crashes the binary at startup (reviewer reproduced the exact
-  `pattern "/metrics" … conflicts` panic through `buildMux`). The handoff already flagged the empty-Domain
-  `/`-collision; reserved single-label names (`metrics`, `healthz`, the `web.Prefix` segment) are the
-  same class. Any future exact bare-domain mount must reject/skip reserved + empty domains before
-  mounting (prefer failing `registerHubs`/`Parse` loudly so the operator sees the bad config), and a
-  test must drive a reserved name through `buildMux`. Open as a `normal` issue this iteration.
+- **An exact `mux.Handle("/"+r.Domain, …)` mount over an operator-controlled domain MUST reject
+  reserved + empty domains before mounting, or `http.ServeMux.Handle` PANICS on a duplicate pattern.**
+  `mirrorHandler` runs before `buildMux` registers `/metrics`/`/healthz`/`/_ds/`, so a per-hub mount
+  registers first; `registry.Parse` only rejects `://`/`/`, so a bare token like `metrics` is a valid
+  `Domain` and a realm line `metrics` crashed the binary at startup (`pattern "/metrics" … conflicts`).
+  Settled: a package-level `reservedDomain(domain)` predicate (empty/whitespace + the
+  `reservedMountNames` set `{metrics, healthz, strings.Trim(web.Prefix,"/")}` — `_ds` derived from the
+  const, never hardcoded) gates BOTH sites. `registerHubs` returns a named error (loud fail-at-startup,
+  the production path); `mirrorHandler` ALSO skips the dossier mount under the same predicate as
+  defense-in-depth so `buildMux` is total over any route slice. The skip is REQUIRED — not scope creep:
+  the verification criterion `TestBuildMuxReservedDomainNoPanic` drives `buildMux` directly (bypassing
+  `registerHubs`), so a `registerHubs`-only guard cannot satisfy it; it is a conditional skip, NOT a
+  mount reorder (the forbidden fix that would only move the panic). The map lookup is case-sensitive,
+  which is correct — `http.ServeMux` patterns are case-sensitive too (`/Metrics ≠ /metrics`). The
+  mirror SUBTREE mount `"/"+Origin+"/"` (e.g. `/metrics/log/`) stays for a reserved domain — a subtree
+  disjoint from the exact `/metrics`, so only the exact dossier mount is conditional. Future exact
+  bare-domain mounts reuse `reservedDomain`; add the new collision name to `reservedMountNames`.
 - **`/healthz` is a `metricshttp`-style leaf that pings the store WITHOUT importing it.** `internal/
   healthz` declares its own 1-method `Pinger interface { Ping(context.Context) error }` (NOT a `store`
   import); `*store.Store` satisfies it structurally via a thin `Ping(ctx) error` → `db.PingContext`

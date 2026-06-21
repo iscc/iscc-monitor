@@ -1,57 +1,59 @@
-## 2026-06-21 — Reject reserved/empty realm domains before mounting the bare-domain dossier
+## 2026-06-21 — Review of: Reject reserved/empty realm domains before mounting the bare-domain dossier
 
-**Done:** Added a `reservedDomain` predicate (empty/whitespace or a reserved mount name —
-`metrics`, `healthz`, and the `web.Prefix` segment `_ds` derived from the const) and wired it into
-`registerHubs` (fails loudly at startup, naming the bad domain) and `mirrorHandler` (skips the exact
-`/<domain>` dossier mount for such a domain as defense-in-depth). This clears the open `normal` issue:
-a realm line `metrics` no longer panics `buildMux` at startup with `pattern "/metrics" … conflicts`.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `cmd/iscc-monitor/main.go`: added `reservedMountNames` map (`_ds` derived via
-  `strings.Trim(web.Prefix, "/")`, not hardcoded) + `reservedDomain(domain)` predicate; `registerHubs`
-  returns a named error for a reserved/empty domain before `UpsertHub`; `mirrorHandler` guards the
-  exact dossier mount with `if !reservedDomain(r.Domain)`; added `"strings"` import; doc comments
-  updated on both functions.
-- `cmd/iscc-monitor/main_test.go`: added `TestRegisterHubsRejectsReserved` (table-driven over
-  `metrics`/`healthz`/`_ds`/empty/whitespace, asserts non-nil error) and
-  `TestBuildMuxReservedDomainNoPanic` (`recover`-guarded; drives `buildMux` with
-  `hubRoute{Domain:"metrics", Origin:"metrics/log"}`, asserts no panic); added `"strings"` + `web`
-  imports.
+**Summary:** The advance closes the open `normal` issue (the bare-domain dossier mount could panic
+`buildMux` at startup for a single-label realm domain colliding with `/metrics`/`/healthz`/`/_ds/`). It
+adds a package-level `reservedDomain` predicate over a `reservedMountNames` set (`_ds` derived from
+`web.Prefix`, not hardcoded) and gates both `registerHubs` (loud fail-at-startup) and `mirrorHandler`
+(defensive dossier-mount skip). Clean, minimal, well-tested; `mise run check` green, both mutations
+independently confirmed load-bearing, scope honored.
 
-**Verification:** `mise run check` → green (all 19 packages `ok`; `go build`/`go vet`/`go test` pass).
-`gofmt -l .` empty. Per-criterion:
-- [x] `go test -run TestRegisterHubs ./cmd/iscc-monitor` passes incl. new reserved/empty cases.
-- [x] `TestBuildMuxReservedDomainNoPanic` passes (constructs the `metrics`/`metrics/log` route,
-  asserts `buildMux` does not panic).
-- [x] `TestMirrorRouter` still passes (legit `sb0.iscc.id`/`sb1.amlet.id` routing unchanged).
-- [x] Reserved-set derives `_ds` from `web.Prefix` (no hardcoded `"_ds"` literal in the guard).
-- [x] Mutation-proven non-vacuous: removing the `mirrorHandler` skip → `TestBuildMuxReservedDomainNoPanic`
-  panics with the exact `pattern "/metrics" … conflicts`; removing the `registerHubs` guard →
-  `TestRegisterHubsRejectsReserved/{metrics,healthz,web_prefix_segment}` FAIL. Both reverted byte-identical.
-- [x] go.mod/go.sum/schema byte-identical (not in diff). Oracle/conformance gate N/A — pure HTTP-wiring
-  config validation; touches no signature, RFC-6962, Merkle, did:web, fsck, or proof path.
+**Verification:**
+- [x] `mise run check` — green (all 19 packages `ok`; build/vet/test pass).
+- [x] `gofmt -l .` — empty (no files listed).
+- [x] `go test -run TestRegisterHubs ./cmd/iscc-monitor` — PASS incl. new `TestRegisterHubsRejectsReserved`
+  subtests `metrics`/`healthz`/`web_prefix_segment`/`empty`/`whitespace` (each returns a non-nil error).
+- [x] `go test -run TestBuildMux ./cmd/iscc-monitor` — PASS; `TestBuildMuxReservedDomainNoPanic`
+  constructs `hubRoute{Domain:"metrics", Origin:"metrics/log"}` and asserts `buildMux` does not panic.
+- [x] `go test -run TestMirrorRouter ./cmd/iscc-monitor` — PASS; legit `sb0.iscc.id`/`sb1.amlet.id`
+  routing (dossier + mirror subtree + /metrics + /healthz) unchanged.
+- [x] Reserved-set derives `_ds` via `strings.Trim(web.Prefix, "/")` — no hardcoded `"_ds"` literal in
+  the guard (confirmed in both `main.go` and the test).
+- [x] Mutation-proven non-vacuous INDEPENDENTLY: removing the `registerHubs` guard →
+  `TestRegisterHubsRejectsReserved` FAILs; removing the `mirrorHandler` skip →
+  `TestBuildMuxReservedDomainNoPanic` panics with `pattern "/metrics" … conflicts`. File restored
+  byte-identical (`git diff --stat` empty).
+- [x] go.mod/go.sum byte-identical (not in diff); oracle/conformance gate correctly N/A — no signature,
+  RFC-6962, Merkle, did:web, fsck, or proof path touched.
+- [x] Scope: 1 non-test file (`main.go`) + 1 test file (`main_test.go`) ≤ 3; registry + dossier
+  untouched, mount ordering unchanged, no `ListViolations`/`Exhibit`/`overlayStatus` work (all
+  Not-In-Scope honored).
+- [x] Gate-integrity scan over all unpushed commits — no `//nolint`/`t.Skip`/build-tag/swallowed-error/
+  loosened gate; the diff only ADDS a guard + tests.
+
+**Issues found:** (none) — the open `normal` issue is resolved and deleted from `issues.md`.
+
+**Codex second opinion:** Completed (exit 0). Explicit no-issues verdict: "adds a startup guard for
+reserved or empty hub domains and a defensive dossier-mount skip, with tests covering the prior
+`/metrics` collision and existing routing behavior. I did not find any introduced correctness,
+security, performance, or maintainability issues." Matches my independent review; nothing to triage.
 
 **Next:** Resume the planned M-UI dossier surface — the frozen **Exhibit** sub-step. It needs a NEW
 `store.ListViolations(hubID)` read over the `violations` table (only `RecordViolation` exists today)
 plus the non-dismissable Exhibit markup (ADR-0006). After that: the remaining SSR screens (paginated
-record list, single-record page, certificate — the certificate re-engages the oracle/inclusion-proof gate).
+record list, single-record page, certificate — the certificate re-engages the oracle/inclusion-proof
+gate).
 
 **Notes:**
-- **Design note (deviation from next.md's strict letter, not a behavior surprise):** next.md Scope said
-  "add a guard in `registerHubs`" and Not-In-Scope forbade *reordering mounts* as the fix. I also added
-  a conditional skip in `mirrorHandler`. This was REQUIRED by the explicit verification criterion
-  `TestBuildMuxReservedDomainNoPanic`, which drives `buildMux` directly (bypassing `registerHubs`) and
-  asserts no panic — a guard solely in `registerHubs` cannot satisfy it. The `mirrorHandler` change is a
-  conditional skip, NOT a mount reorder (the forbidden alternative), so it honors the Not-In-Scope
-  constraint while making `buildMux` total over any route slice. `registerHubs` remains the loud
-  fail-at-startup path; `mirrorHandler` is defense-in-depth (its branch is never taken in production
-  because `registerHubs` already errored out).
-- Used one combined error message ("domain is empty or a reserved mount name") via the shared
-  `reservedDomain` predicate rather than two separate messages, to keep the check DRY. The offending
-  domain is still named (`%q`), matching the existing `register hub %q: …` style; an empty domain
-  renders as `register hub "": …` and whitespace as `register hub "   ": …`.
-- The mirror subtree mount `"/"+Origin+"/"` (e.g. `/metrics/log/`) is left in place for a reserved
-  domain — it is a subtree, disjoint from the built-in exact `/metrics`, so it never collides (per
-  next.md's origin caveat). Only the exact dossier mount is conditional.
-- Pre-existing `low` issues untouched (3x `overlayStatus` duplication, notecheck `out` param, Mirror
-  seam, proofserve `writeReadError`) — out of scope per next.md.
+- **The one design deviation is justified, not scope creep.** `next.md` Scope said "guard in
+  `registerHubs`" and Not-In-Scope forbade reordering mounts; the advance also added a conditional skip
+  in `mirrorHandler`. This was REQUIRED by the verification criterion `next.md` itself wrote
+  (`TestBuildMuxReservedDomainNoPanic` drives `buildMux` directly, bypassing `registerHubs`), and it is
+  a conditional skip — NOT a mount reorder — so it honors the Not-In-Scope constraint. `registerHubs`
+  remains the loud production path; `mirrorHandler` is defense-in-depth (never taken in production).
+- The `reservedMountNames` map lookup is case-sensitive, which is correct: `http.ServeMux` patterns are
+  case-sensitive (`/Metrics ≠ /metrics`), so no collision exists for a mixed-case bare token.
+- The unpushed range carries the earlier (already-reviewed) dossier commits plus this advance; pushing
+  `develop` lands all of them. Remote is configured; pushing on this PASS.
