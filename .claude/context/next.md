@@ -1,143 +1,147 @@
 # Next Work Package
 
-## Step: Redress the `GET /<domain>/log/` log browser into the Evidence-Ledger design (DS token/font shell, no-JS)
+## Step: Hub dossier skeleton — `GET /<domain>` Evidence-Ledger page (status + coverage honesty), no-JS
 
 ## Advances
-M-UI — Evidence Ledger frontend. Verify criterion:
+M-UI (Evidence Ledger frontend) Verify criterion:
 
-> every SSR surface (`/` realm index, hub dossier, log-browser record list, single record, certificate)
-> returns `200 text/html`, embeds the DS tokens + self-hosted fonts with **no external CDN URL in the
-> body**, and is **complete with JavaScript disabled** (content in the served HTML, not script-gated)
+> every SSR surface (`/` realm index, **hub dossier**, log-browser record list, single record,
+> certificate) returns `200 text/html`, embeds the DS tokens + self-hosted fonts with **no external CDN
+> URL in the body**, and is **complete with JavaScript disabled**… the coverage window
+> (`monitored_since` size + RFC-3339 time, or an explicit "coverage just started" / "no coverage yet")
+> shows for **every** hub on the index + **dossier** and a pre-coverage state never renders as a
+> guarantee (ADR-0001).
 
-This step closes the **log-browser** slice of that "every SSR surface … embeds the DS tokens + fonts,
-no external CDN URL" requirement. Today `/` is the only screen wired to the DS shell; the log browser
-at `/<domain>/log/` still renders a bare `<table>` and links no token/font CSS (state.md M-UI "Still
-open": "`proofserve.serveBrowser` still links no token/font CSS"). It is the handoff's explicit
-`**Next:**` (2026-06-21 PASS_WITH_NOTES) and the lowest-risk next screen because its view-model
-(`browserData`, `overlayStatus`, the `hubStatusBadge` partial) is already complete — only the template
-changes.
+This is the first of the still-open M-UI screens (state.md M-UI "Still open: **hub dossier**
+(`/<domain>`…)"). It is also the review handoff's explicit `**Next:**` ("Thread the same DS-token/font
+shell + Evidence-Ledger card pattern into the next SSR surface — the hub dossier (`/<domain>`)").
+Skeleton-first: this step lands the dossier *page + route* (masthead, five-status badge, coverage
+honesty); the categorically-distinct **frozen Exhibit** — which needs a NEW `store` violation read that
+does not yet exist — is the next sub-step (see `## Not In Scope`).
 
 ## Goal
-Replace the bare `<table>` markup in `internal/proofserve/browser.html` with the Evidence-Ledger card
-screen (DS-token-styled scoped `<style>`, `<link>`s to `/_ds/tokens.css` + `/_ds/fonts.css`, masthead +
-bordered/shadowed card), so the log browser matches the `/` index. The functional content (accepted
-`(size, root)`, the five-status badge, the proof-surface links, the no-checkpoint coverage-honesty
-state) stays equivalent in meaning — this is a redress, not a feature change.
+Stand up a per-hub dossier page at the bare `GET /<domain>` (no `/log`) — a new `internal/dossier` leaf
+that renders one hub's status badge + coverage window in the Evidence-Ledger card pattern, wired into
+the mux. It closes the bulk of the dossier Verify criterion (200 text/html, DS tokens + fonts, no-CDN,
+no-JS, coverage honesty for that hub) and gives the next iteration a place to add the frozen Exhibit.
 
 ## Scope
-- **Create**: (none)
+- **Create**:
+  - `/workspace/iscc-monitor/internal/dossier/handler.go` — handler + view-model + the
+    `StatusSource`/`overlayStatus`/`hubStatus`/`coverageTime` shape, ported from
+    `internal/dashboard/handler.go` (see Not In Scope on why the duplication is accepted here).
 - **Modify**:
-  - `/workspace/iscc-monitor/internal/proofserve/browser.html` — the embedded log-browser template (the
-    `<table>` → ledger card redress; the primary change). Treated as a doc/asset like the prior
-    `.html`/`.css` work, NOT a source file against the ≤3 budget.
-  - `/workspace/iscc-monitor/internal/proofserve/browser_test.go` — add the DS-shell + no-CDN HTTP-seam
-    assertions (a test file, uncounted).
-- **Source files modified (the ≤3 budget): ZERO.** `handler.go` already supplies the full view-model
-  (`browserData{Status, Label, HasCheckpoint, Size, Root}`) and the `hubStatusBadge` partial is already
-  associated into `browserTmpl`; the redress needs no new field, helper, or Go change. If you find you
-  *must* touch `handler.go`, stop and re-scope.
+  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` — add `Domain string` to `hubRoute`, set it in
+    `registerHubs`, and mount `dossier.Handler(st, r.HubID, m)` at the exact path `"/" + r.Domain`
+    inside `mirrorHandler`'s per-route loop.
+- **Create (asset/template — not a Go source file, like the prior `.html` work)**:
+  - `/workspace/iscc-monitor/internal/dossier/dossier.html` — the Evidence-Ledger card template
+    (port the `<head>` DS-shell + page-scoped `<style>` from `internal/dashboard/dashboard.html` and
+    the single-hub card body from `internal/proofserve/browser.html`).
+- **Create (test — uncounted)**:
+  - `/workspace/iscc-monitor/internal/dossier/handler_test.go`
+- **Modify (doc — uncounted)**:
+  - `/workspace/iscc-monitor/CLAUDE.md` — add a `GET /<domain>` bullet to the route list (after the
+    `GET /` line, before `GET /<domain>/log/`).
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/dashboard/dashboard.html` — the canonical Evidence-Ledger page to
-    mirror: the two `<link>`s, the scoped `<style>` over `var(--*)` tokens, the `.chrome` masthead, the
-    `.ledger` bordered/shadowed card, the `.hub-status-badge[data-status=…]` color block, the
-    `--status-error-bg` literal-fallback frozen tint, and the `.hub-cell { min-width: 0 }` ellipsis fix.
-  - `/workspace/iscc-monitor/internal/dashboard/handler_test.go` — `TestDashboardLinksTokensNoCDN`
-    (~191-210, the `href="/_ds/tokens.css"` + banned-substring asserts) and the
-    `var(--font-sans)`/`display: grid`/no-`<table>` asserts (~128-135): mirror these for the browser.
-  - `/workspace/iscc-monitor/internal/web/tokens.css` — the available `var(--*)` token names (every
-    dashboard token resolves here EXCEPT `--status-error-bg`, which needs a literal fallback).
-  - `/workspace/iscc-monitor/internal/badge/badge.html` — the `hubStatusBadge` partial already invoked
-    via `{{template "hubStatusBadge" .}}`; the redress keeps invoking it unchanged in both branches.
-  - `/workspace/iscc-monitor/.claude/context/learnings/dashboard.md` — the scoped-`<style>`-over-shared-
-    tokens rule, the `--status-error-bg` literal-fallback rule, the CSS-Grid `min-width:0` trap.
-  - `/workspace/iscc-monitor/.claude/context/learnings/web.md` — the CDN-ban trap: the body's `https://`
-    ban survives only because the page renders scheme-less values; do NOT render a hub `base_url` here.
-  - `/workspace/iscc-monitor/.claude/context/learnings/http-surface.md` — the `serveBrowser` section
-    (status mapping, post-200 write-drop, `html/template`, the overlay shape) so the redress keeps that
-    posture.
+  - `/workspace/iscc-monitor/internal/dashboard/handler.go` — the EXACT pattern to mirror: handler
+    shape, the `StatusSource` interface, `overlayStatus`/`hubStatus` precedence, `buildRows` +
+    `badge.Label` `!ok → label = status` fallback, `coverageTime`, render-into-`bytes.Buffer`-then-200,
+    the `template.Must(...).Parse(badge.Source)` init idiom.
+  - `/workspace/iscc-monitor/internal/dashboard/dashboard.html` — the DS `<head>` (two `<link>`s +
+    page-scoped `<style>` over `var(--*)` tokens, `.chrome` masthead).
+  - `/workspace/iscc-monitor/internal/proofserve/browser.html` + `browser_test.go` — the single-hub
+    `.ledger` card body layout + the `TestBrowserLinksTokensNoCDN` no-CDN assertion shape to copy.
+  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` lines 165-244 (`buildMux`/`mirrorHandler`/
+    `hubHandler`) + 246-271 (`registerHubs`, where `e.Domain` is available) + 42-50 (`hubRoute`).
+  - `/workspace/iscc-monitor/internal/store/hubs.go` (`ListHubs` / `HubSummary` / `CoverageInfo`) — the
+    read this handler filters by `hubID`; `HubSummary` carries `.HubID`, `.Domain`, `.Origin`,
+    `.Active`, `.LastSize`, `.Frozen`, `.Coverage`.
+  - `/workspace/iscc-monitor/.claude/context/learnings/dashboard.md`,
+    `/workspace/iscc-monitor/.claude/context/learnings/http-surface.md`,
+    `/workspace/iscc-monitor/.claude/context/learnings/badge.md`,
+    `/workspace/iscc-monitor/.claude/context/learnings/web.md` — Read all four before writing: overlay
+    precedence, the CSS-literal `data-status` trap, the badge `.Label` precompute, the
+    `noExternalCDN` / scheme-less-origin rule.
 
 ## Not In Scope
-- Adding the **paginated record list** / single-record page / certificate of inclusion — those are later
-  M-UI screens with new handlers and store reads; this step touches only the existing log-browser
-  template. (They remain in `## Not In Scope` so the same arc continues, not an unrelated refactor.)
-- **No `handler.go` change.** No new `browserData` fields, no new helper, no route change. The
-  `<link>` paths are literals in the template (templates can't read Go consts), exactly as in
-  `dashboard.html`.
-- Refactoring the duplicated `overlayStatus`/`hubStatus` out of dashboard + proofserve (open `low`
-  issue) — leave the Go handler untouched; this step is HTML + test only.
-- Adding ETag/Cache-Control/conditional-GET to `/<domain>/log/` (not a Verify criterion).
-- **No new component classes added to `internal/web/tokens.css`.** Keep the page-specific layout in a
-  scoped `<style>` block in `browser.html` (referencing the `var(--*)` tokens), so this step touches no
-  shared asset and cannot regress `/` or any other surface. tokens.css stays the token layer only.
-- No anchor panel / no proof-bundle assembler / no tier-1-vs-tier-2 affordance — those are later M-UI
-  sub-steps (the proof-bundle assembler re-engages the oracle gate).
+- **The frozen Exhibit** (violation kind + detected-at + "do not trust new state", non-dismissable,
+  categorically-distinct markup, ADR-0006). It needs a NEW store read (`store.ListViolations(hubID)`
+  over the `violations` table — only `RecordViolation` exists today, no read) plus the Exhibit block in
+  the template. That is the next sub-step. This skeleton renders the `frozen` *status badge* honestly
+  via the overlay, but does NOT fabricate or render violation detail.
+- **De-duplicating `overlayStatus`/`hubStatus`** into `internal/badge` (the open `low` issue "Hub-status
+  overlay precedence is duplicated"). This step copies the dashboard/proofserve shape a third time
+  DELIBERATELY — consolidation is its own tracked step, not a prerequisite here. Do not refactor the two
+  existing copies in this step (it would balloon scope and touch unrelated packages).
+- **Any new `store` method, schema change, or write path.** Reuse `ListHubs` filtered by `hubID`.
+- **The record list / single record / certificate / proof-bundle / anchor panels** — later M-UI steps.
+- **ETag / Cache-Control / conditional-GET** on the dossier — not a Verify criterion (matches `/`).
 
 ## Implementation Notes
-- **The whole redress lives in `browser.html`.** Add the two `<link rel="stylesheet">` tags
-  (`/_ds/tokens.css`, `/_ds/fonts.css`) to `<head>` and one scoped `<style>` block, all rules expressed
-  through the embedded `var(--*)` tokens so the type resolves to the self-hosted Readex Pro / JetBrains
-  Mono and the surfaces use the DS palette. Port the `.chrome` masthead and `.ledger` card chrome from
-  `dashboard.html` (reuse the `body { font-family: var(--font-sans); color: var(--text-body);
-  background: var(--surface-page); }` base and the `.hub-status-badge[data-status]` color block verbatim).
-- **No `<table>`.** Replace the existing `<table>`/`<tr>`/`<th>` block with a card layout — definition-
-  style rows (Status / Accepted size / Accepted root) inside the bordered `.ledger` card. A small
-  `display: grid` for the label/value rows mirrors the index and satisfies the no-`<table>` intent; the
-  browser shows ONE hub's checkpoint, not a multi-hub grid, so trim the multi-row grid down.
-- **The accepted root is long.** Keep it in a `<code>`/mono cell that wraps or scrolls (e.g.
-  `word-break: break-all` or `overflow-wrap`), NOT an ellipsized cell — the full base64 root must remain
-  readable/selectable. Only add `min-width: 0` (dashboard.md CSS-Grid trap) if you choose to ellipsize
-  some cell; for a wrapping `<code>` it is not needed.
-- **Coverage honesty (ADR-0001) must survive the redress.** Keep BOTH template branches: `{{if
-  .HasCheckpoint}}` renders the `(size, root)` + proof links; `{{else}}` renders the no-checkpoint state.
-  `TestBrowserNoAcceptedCheckpoint` asserts the literal string `No accepted checkpoint yet` — preserve it
-  exactly. Never fabricate a `(0,"")` checkpoint as a guarantee.
-- **The five-status badge partial is already wired** via `{{template "hubStatusBadge" .}}` over
-  `browserData` (carries `.Status` + precomputed `.Label`); keep that invocation in BOTH branches
-  (`HasCheckpoint` and the no-checkpoint state both invoke it today — see browser.html lines 16 and 37).
-  Do NOT re-derive the label or inline the SVG — the partial owns rendering (badge.md single-source rule).
-- **Proof-surface links stay relative and stay present.** The existing `<ul>` of relative links
-  (`entries?index=0`, `inclusion?iscc_id=…`, `consistency?from=0`, `verify?iscc_id=…`, `checkpoint`) is
-  what `TestBrowserExposesAcceptedCheckpoint` asserts — keep all of them, relative, in the
-  `HasCheckpoint` branch. Re-style them (a list inside the card) but do not drop or absolutise them.
-- **CDN-free invariant (web.md trap).** The body must contain no `http://`, `https://`, `cdn.`, or
-  `jsdelivr`. `browserData` carries no `base_url`, so this holds today — do NOT introduce a logo URL,
-  external link, or font CDN. Same-origin/relative hrefs only.
-- **`--status-error-bg` has no token** — if you reuse the dashboard's frozen-row/exhibit tint, use it
-  WITH the literal fallback `var(--status-error-bg, rgba(245, 97, 105, 0.06))`, exactly as
-  `dashboard.html` does (dashboard.md rule; ADR-0010 inv.4 — hue is never the sole status signal, the
-  badge silhouette+label carries it grayscale-safe).
-- **Render-into-buffer is unchanged** (`serveBrowser` already buffers then writes 200, then post-200
-  write-drop), so a template parse/exec error is still a 500 before any 200 — do not touch that path.
-- **Test additions (`browser_test.go`), mirror `TestDashboardLinksTokensNoCDN`:** assert the rendered
-  body contains `href="/_ds/tokens.css"`, `href="/_ds/fonts.css"`, `var(--font-sans)`, `var(--font-mono)`;
-  assert it contains NO `<table>`; assert it bans `jsdelivr`/`http://`/`https://`/`cdn.`. Do NOT weaken
-  the existing `TestBrowserExposesAcceptedCheckpoint` / `TestBrowserRendersInMemoryStatus` /
-  `TestBrowserNonGET` / `TestBrowserNoAcceptedCheckpoint` — they must still pass against the redress.
-- **Mutation check (non-vacuity, advance must perform).** Temporarily mutate the redressed template
-  (e.g. `var(--font-sans)` → a literal, or delete a `<link>` href) and confirm the new assertion FAILS;
-  then revert byte-identical and leave the tree clean. Record this in the review handoff.
-- Oracle/conformance gate is **N/A** for this step: pure HTML rendering of persisted store rows — no
-  signature / RFC-6962 / Merkle / did:web / fsck / proof path is touched. go.mod/go.sum/schema must stay
-  byte-identical.
+- **Route / mux.** Add `Domain string` to `hubRoute` (main.go:48-50) and set it from `e.Domain` in
+  `registerHubs` alongside the existing `HubID`/`Origin`. In `mirrorHandler`'s per-route loop, ALSO
+  mount `mux.Handle("/"+r.Domain, dossier.Handler(st, r.HubID, m))` — the bare-domain path
+  (e.g. `/sb0.iscc.id`) is a distinct EXACT pattern, more-specific than and disjoint from the existing
+  `/<domain>/log/` subtree (`"/" + r.Origin + "/"`), so `http.ServeMux` keeps both. Because the mount is
+  an exact pattern (no trailing slash), the mux routes ONLY that path here — so the handler needs NO
+  in-handler path guard (unlike `dashboard`, which owns the catch-all `/`). Still guard
+  `r.Method != GET → 405`.
+- **Handler.** Mirror `dashboard.Handler` but for ONE hub: signature `Handler(st *store.Store, hubID
+  int64, statuses StatusSource) http.Handler`. On GET, call `st.ListHubs(ctx)`, find the `HubSummary`
+  whose `.HubID == hubID`. The binary always registers the hub before mounting, so a not-found is a real
+  store inconsistency → 500 (NOT a 404). Build a single view-model: status via `overlayStatus`, label via
+  `badge.Label` with the `!ok → label = status` fallback, coverage via the `coverageTime` helper. Render
+  into a `bytes.Buffer`, then `WriteHeader(200)` + `buf.WriteTo(w)` (post-200 write-drop). Use
+  `html/template` (auto-escape); parse page + `badge.Source` once at init via the
+  `template.Must(template.New("dossier").Parse(pageTemplate))` then `template.Must(t.Parse(badge.Source))`
+  idiom dashboard uses.
+- **Template.** Port `dossier.html` from `dashboard.html`'s `<head>` (the two `/_ds/tokens.css` +
+  `/_ds/fonts.css` `<link>`s as literals — templates can't read Go consts — the page-scoped `<style>`
+  over `var(--*)` tokens, the `.chrome` masthead) and `browser.html`'s single-card body: a
+  bordered/shadowed `.ledger` card with definition rows — Domain, Origin, Status
+  (`{{template "hubStatusBadge" .}}`), Coverage (the honest "size N at <RFC3339>" / "no coverage yet"
+  split), Observed size — plus a relative link to that hub's log browser (`/{{.Origin}}/`). No
+  `<table>`; no `http://`/`https://`/`cdn.`/`jsdelivr` in the body.
+- **CSS-literal trap (learnings/http-surface.md).** If the test asserts a NEGATIVE `data-status="X"` to
+  prove the overlay won, the badge color/tint selectors in the `<style>` MUST use the UNQUOTED CSS
+  attribute form (`[data-status=verified]`), not `dashboard.html`'s QUOTED `[data-status="verified"]` —
+  the quoted form emits that literal into the rendered `<style>` and falsely fails the negative assert.
+  Copy `browser.html`'s unquoted selectors. (If your test does not include a negative `data-status`
+  assert, either form is safe — but prefer the unquoted form for consistency with `browser.html`.)
+- **Coverage honesty (Correctness rule, ADR-0001).** Never render the observed `last_size` as a coverage
+  guarantee. `HasCoverage` false → literal "no coverage yet"; true → "size N at <RFC3339>". Copy
+  `coverageTime` verbatim ("" when `!c.Set || c.Since.IsZero()`).
+- **Purity / closure.** Depend on `internal/store` + `internal/badge` + the `StatusSource` *interface*
+  (NOT `internal/metrics`) — `*metrics.Registry` satisfies it structurally, exactly like dashboard.
+  Keep `net/http`/`internal/dossier` out of `store`/`badge` (they are leaves; do not introduce a cycle).
+- **`--status-error-bg` token caveat.** If you reuse the frozen-row tint, use it WITH the literal
+  fallback `var(--status-error-bg, rgba(245, 97, 105, 0.06))`, exactly as `dashboard.html` does — that
+  token is not defined in `internal/web/tokens.css` (dashboard.md rule; the badge silhouette+label carry
+  status grayscale-safe, hue is decorative).
+- **Oracle/conformance gate is N/A** here: pure HTML render of persisted store rows + the in-memory
+  overlay — no signature/RFC-6962/Merkle/did:web/fsck/proof path. go.mod/go.sum/schema must stay
+  byte-identical. State this in the advance.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass, `gofmt -l .` empty).
-- `go test -count=1 -run TestBrowser ./internal/proofserve` passes (all four existing browser tests plus
-  the new DS-shell / no-CDN assertion).
-- The rendered `GET /` log-browser body contains `href="/_ds/tokens.css"`, `href="/_ds/fonts.css"`,
-  `var(--font-sans)`, and `var(--font-mono)` — asserted at the HTTP seam.
-- The rendered body contains NO `<table>` substring and contains NO `http://` / `https://` / `cdn.` /
-  `jsdelivr` substring — asserted at the HTTP seam.
-- `TestBrowserExposesAcceptedCheckpoint` still passes: the redressed body still contains the accepted
-  size, the base64 accepted root, and every relative proof link.
-- `TestBrowserNoAcceptedCheckpoint` still passes: the followed-but-unpolled hub renders the literal
-  "No accepted checkpoint yet" state (200, not a fabricated checkpoint).
-- New DS-shell assertion is mutation-proven non-vacuous (mutating the template fails it; revert leaves
-  the tree byte-identical).
-- `GOOS=js GOARCH=wasm go build ./internal/badge ./internal/web` still exit 0 (the shared leaves the
-  template depends on stay WASM-green; proofserve itself is not WASM-built).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
+- `go test -count=1 ./internal/dossier` passes (new package).
+- A new `internal/dossier/handler_test.go` HTTP-seam test (httptest, no socket) asserts, for a fixture
+  store with the hub registered: `GET /<domain>` returns `200` + `Content-Type: text/html`; the body
+  contains `href="/_ds/tokens.css"`, `href="/_ds/fonts.css"`, `var(--font-sans)`; the body contains the
+  hub's `Domain` and its `hubStatusBadge` markup (`class="hub-status-badge"` + the rendered label); the
+  body contains NO `<table>` and NO `http://`/`https://`/`cdn.`/`jsdelivr`.
+- Coverage-honesty assertion: a hub WITHOUT coverage renders "no coverage yet" (no fabricated
+  size+time); a hub WITH coverage renders its `size N at <RFC3339>` (mirror the dashboard fixture split).
+- A non-GET (`POST /<domain>`) returns `405`.
+- The new DS-shell / coverage assertion is mutation-proven non-vacuous (advance: temporarily break a
+  `<link>` href or the coverage branch → the assert FAILS; revert byte-identical, tree clean).
+- `go list -deps ./internal/store ./internal/badge | grep -E 'net/http|internal/dossier'` is empty
+  (store/badge stay leaves; no import cycle introduced).
+- `go test -count=1 ./cmd/iscc-monitor` passes — the new `hubRoute.Domain` + `/<domain>` mount does not
+  break `buildMux` routing (the `/<domain>/log/` subtree AND the `/<domain>` exact path both resolve).
 
 ## Done When
-The log browser at `GET /<domain>/log/` renders the Evidence-Ledger card screen wired to the DS token +
-self-hosted-font shell with no external CDN URL in the body, all existing browser tests plus the new
-DS-shell/no-CDN HTTP-seam assertion pass, and `mise run check` is green.
+`GET /<domain>` serves a `200 text/html` Evidence-Ledger dossier page for the registered hub — DS tokens
++ self-hosted fonts linked, no CDN URL in the body, no-JS, the five-status badge via the overlay, and an
+honest coverage window — with all Verification criteria passing and `mise run check` green.
