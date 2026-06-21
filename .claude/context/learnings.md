@@ -1120,3 +1120,41 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   ./internal/store | grep -E 'proofserve|net/http'` and `go list -deps ./internal/logclient | grep
   proofserve` both empty, so `net/http` stays out of the store/logclient closures. Proof is built from
   the LOCAL mirror only (`f.ReadTile`), never re-hitting the hub.
+
+## Computed consistency proof HTTP surface (`internal/proofserve` + `CheckpointAt ORDER BY rowid`)
+
+- **`GET /consistency?from=<n>` is the second proof route; the inner `Handler` is now a `switch
+  r.URL.Path { /inclusion, /consistency, default 404 }` after the one shared 405 method-gate.** The
+  per-hub mount in `cmd/iscc-monitor/main.go` `hubHandler` mounts ONE `proofserve.Handler(st,hubID)` at
+  BOTH exact paths (`mux.Handle("/inclusion", proofs)` + `mux.Handle("/consistency", proofs)`); the
+  handler's internal path switch dispatches. Both exact mounts beat the `/` → tilesserve subtree via
+  `http.ServeMux` most-specific match — verified green by `TestMirror*` + the proofserve route tests.
+- **Oracle gate APPLIES (RFC-6962 consistency crypto) and is reviewer-mutation-proven non-vacuous.**
+  `TestConsistencyServedProofVerifies` reuses the inclusion `buildMirror` 300-leaf `testonly.Tree`
+  fixture (records a prior checkpoint at each tested `from` via `recordPriorCheckpoint`) and for
+  `from ∈ {1,200,255,256,299}` (straddling the 256-leaf tile boundary, `larger=300`) asserts the served
+  proof byte-equals `tree.ConsistencyProof(from,300)` AND `proof.VerifyConsistency` ACCEPTS, with a
+  sharp wrong-prior-root negative. Reviewer corrupted `encoded[0]` in `writeConsistency` → FAILS BOTH
+  the byte-equal assert and `VerifyConsistency` ("calculated root does not match expected root"), then
+  reverted → green. Arg-order gotcha (reconfirmed): `VerifyConsistency(hasher, size1, size2, proof,
+  root1, root2)` — `proof` precedes the two roots, UNLIKE `VerifyInclusion` where `leafHash` precedes
+  `proof`. `notecheck`/`derive_vkey.py` correctly N/A — the consistency response carries no checkpoint
+  and re-parses no signature (the client refetches `/checkpoint`; `AcceptCheckpoint` owns sig/root).
+- **The degenerate `from == 0` and `from == LastSize` cases are a 200 with an empty `consistencyProof`
+  array, not a 400** — `ConsistencyProofFromTiles` returns a nil proof without touching the fetcher.
+  `from == 0` SKIPS the `CheckpointAt(from)` row requirement (there is no checkpoint at size 0 by
+  construction); `from == LastSize` still REQUIRES the accepted-size row (`buildMirror` records it). The
+  literal `next.md` status table ("unknown `from` → 404") and the degenerate note conflicted only at
+  `from == 0`; the `from > 0` guard around `CheckpointAt` resolves it. `TestConsistencyDegenerateBoundaries`
+  pins both. Status mapping (all pinned): missing/non-numeric → 400; `LastSize==0` → 404; `from>LastSize`
+  → 400 (RFC-6962 `M ≤ N`); unrecorded `from` → 404; non-GET → 405; tile-miss `os.ErrNotExist` → 404.
+- **`CheckpointAt`'s `ORDER BY rowid LIMIT 1` fix is correct because `id INTEGER PRIMARY KEY` aliases
+  `rowid` in SQLite — so rowid is monotonic by insertion and the first-recorded (prior accepted) row is
+  returned over a later same-`tree_size` contradicting-evidence row.** `RecordCheckpoint` dedupes on
+  `UNIQUE(hub_id, tree_size, root)`, so two DIFFERENT roots at one size are two rows (the fork-evidence
+  case); the prior accepted root was recorded first → lowest rowid. Reviewer reversed the order to `DESC`
+  → `TestCheckpointAtDeterministicOnFork` FAILS (returns the contradicting row), then reverted → green.
+  Store stays a leaf (returns `[]byte`, no `logclient` type). **Knock-on:** the follower-test comment at
+  `follower_test.go:280` claiming the query is "unordered … non-deterministic" is now STALE; rewiring
+  `TestPollHubFork` to re-detect via a second `PollHub` (not a direct `freeze`) is the remaining
+  follow-up — tracked in issues.md, out of scope for the store-only slice.

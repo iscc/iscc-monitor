@@ -18,22 +18,22 @@ filed it and does **not** affect priority.
 
 ---
 
-## `CheckpointAt` uses an unordered `LIMIT 1` — fork re-detection compares against an undefined row
+## `TestPollHubFork` re-detection still bypasses `PollHub` (store `CheckpointAt` ordering now fixed)
 - **Priority:** normal
 - **Source:** [review]
-- **What / where / how to verify:** `internal/store/checkpoints.go:155` `CheckpointAt` is
-  `SELECT root, raw FROM checkpoints WHERE hub_id=? AND tree_size=? LIMIT 1` with **no `ORDER BY`**.
-  After a fork freeze two checkpoint rows share the same `tree_size` (the prior/seed root + the
-  contradictory evidence root), so a re-poll's `checkConsistency` compares `info.Root` against a
-  data-dependent/undefined row — fork re-detection may or may not re-fire depending on which row the
-  unordered `LIMIT 1` returns. This already forced `TestPollHubFork` to drive fork *re-detection*
-  through `freeze` directly instead of a second `PollHub` (the first detection still goes through
-  `PollHub`; shrink re-detection via `PollHub`/`Tick` stays covered by `TestTickFrozenUnaffected`,
-  which is size-only so it is immune). The equivocation/serving slice that revisits prior-root
-  selection should add `ORDER BY rowid` (or, better, select the *prior accepted* root explicitly —
-  never the contradicting-evidence row). Verify fixed: `CheckpointAt` deterministically returns the
-  prior accepted row, and `TestPollHubFork` can drive re-detection through `PollHub` again. Touches
-  `internal/store`, so it was correctly out of scope for the fsck slice.
+- **What / where / how to verify:** The store-level root cause is **RESOLVED** as of the consistency
+  slice: `internal/store/checkpoints.go` `CheckpointAt` is now `… ORDER BY rowid LIMIT 1`, so the prior
+  accepted root (lowest rowid) is returned deterministically over the later contradicting-evidence row
+  at the same `tree_size` — verified by `TestCheckpointAtDeterministicOnFork` and reviewer-reproduced
+  by reversing the order to `DESC` (test FAILS) then reverting. What **remains**: `internal/follower/
+  follower_test.go:276-282` `TestPollHubFork` still drives fork *re-detection* through `freeze` directly
+  with a now-**stale** comment claiming "`CheckpointAt`'s unordered LIMIT 1 makes a re-poll's fork
+  re-comparison non-deterministic." Since the query is deterministic now, that test should drive
+  re-detection through a second `PollHub` again and the stale comment removed. (Out of scope for the
+  consistency slice, which scoped only `checkpoints.go`'s query + doc — a follower-test behavior change
+  is its own slice.) Verify fixed: `TestPollHubFork` re-detects via a second `PollHub` (not a direct
+  `freeze`) and the `:280` "unordered LIMIT 1 … non-deterministic" comment is gone (`grep -rn
+  "unordered LIMIT 1" internal/` empty).
 - **Spec:** ADR-0006 (freeze evidence discipline — re-detection must compare against the prior
   accepted root, not the contradicting evidence).
 
