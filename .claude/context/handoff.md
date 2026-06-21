@@ -1,75 +1,101 @@
-## 2026-06-21 — Review of: Live tile/bundle ingestion writer in PollHub
+## 2026-06-21 — Wire RunFsck into PollHub over the live SQLiteFetcher mirror
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added `fsckMirror` (`internal/follower/follower.go`) — the first production caller of
+`logclient.RunFsck` — and wired it into `PollHub` on the verified, non-violation path AFTER
+`ingestTiles` and BEFORE the final `recordVerdict`. After the mirror is populated, it resolves the
+vkey (`ResolveVerifierKey`, DIDKey discarded) + origin (`Origin`), builds a `store.SQLiteFetcher`, and
+runs `RunFsck`, which rebuilds the RFC-6962 root from the local tiles/bundles and cross-checks it
+against the signed checkpoint root. A rebuild mismatch / mirror fault is surfaced as a genuine fault
+(NOT a violation, no freeze — ADR-0006).
 
-**Summary:** `advance` added `ingestTiles` (`internal/follower/ingest.go`), the first production caller
-binding `tiles.TileCoords`/`BundleCoords` → `logclient.FetchTile`/`FetchEntryBundle` →
-`store.RecordTile`/`RecordEntryBundle`, and wired it into `PollHub` on the verified, non-violation path
-(after `cacheHubKey`, before `recordVerdict`). The diff is tightly scoped (2 non-test files + 1 test
-file, store untouched), every Verification criterion passes, and independent mutation testing confirms
-both the writer and the load-bearing `widthForP` translation are non-vacuously pinned.
+**Files changed:**
+- `internal/follower/follower.go`: added `fsckMirror` helper; called it from `PollHub` (verified,
+  non-violation path, after `ingestTiles`); extended the package + call-site comments with the
+  error-vs-violation discipline and the "in-process structural self-check, not the notecheck oracle"
+  honesty. **(1 production file.)**
+- `internal/follower/fsck_test.go` (NEW): `TestPollHubFsck` drives `PollHub` end-to-end over a
+  byte-accurate in-process `testonly.Tree` mirror — `RebuildsSignedRoot` returns `(StatusVerified,
+  nil)`; `RejectsCorruptedMirror` flips a mirrored tile BLOB and calls `fsckMirror` directly (PollHub's
+  `ingestTiles` would overwrite the corruption), asserting non-nil. Also holds the shared
+  `buildVerifiedMirror(t, leaves)` fixture (signed checkpoint + did.json advertising the generated
+  key's `z6Mk` multibase + byte-accurate tiles/bundles for every coord) + `b58encode` /
+  `multibaseFromVKey` helpers.
+- `internal/follower/follower_test.go`, `loop_test.go`, `ingest_test.go`: **converted the 6
+  verified-completion tests** off the real-sb0 checkpoint fixture onto `buildVerifiedMirror` (see
+  HUMAN REVIEW below).
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green, all 11 packages `ok`.
-- [x] `gofmt -l .` — empty (clean).
-- [x] `go test -run 'TestIngest|TestPollHub|TestWidthForP' -count=1 ./internal/follower` — all pass
-  (incl. existing `TestPollHub{Fork,Shrink,Equivocation,VerifiedAdvances,...}` which now also ingest).
-- [x] `git diff --quiet HEAD~1..HEAD -- go.mod go.sum` exits 0 — no dependency change.
-- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 — trust-root WASM leaf unaffected.
-- [x] Coord unit test: full tile (`Partial==0`) stored/read at width 256, 44-leaf partial at width 44,
-  and the full tile is NOT readable at width 0 — all asserted and passing.
-- [x] After verified `PollHub` vs sb0 (tree 10183): every enumerated `TileCoords`/`BundleCoords` coord
-  returns `found==true` with the fetched bytes; full level-0 tile round-trips through
-  `SQLiteFetcher.ReadTile(0,0,p0)` at width 256.
-- [x] Follower prod imports = `{context, fmt, logclient, metrics, store, tiles, log/slog}` (verified via
-  `go list`); store closure has no `net/http` and no reverse dep — still a leaf, direction
-  follower → {logclient, store, tiles, metrics}.
-- [x] Scope discipline — exactly 3 changed files (`follower.go` modify, `ingest.go` + `ingest_test.go`
-  new), all `internal/follower`; store byte-identical (`git diff --quiet -- internal/store/`); nothing
-  from `## Not In Scope` done; `store.widthForP` stays unexported.
-- [x] Gate-circumvention scan across all 3 unpushed commits (`@{upstream}..HEAD`, `.go` only) — no
-  `//nolint`, `t.Skip`, build-tag exclusion, swallowed error, or deleted assertion. (The two `_ =`
-  matches are the test's `data`-slice discard while checking `err` — legitimate.)
-- [x] Oracle/conformance gate — correctly **N/A** for this slice (transport + CRUD, no
-  signature/RFC-6962/Merkle/did:web/fsck path introduced). Re-confirmed `derive_vkey.py` reproduces
-  both golden vectors (`40b74463` / `22b08f3e`); trust-root packages (`didweb`/`logclient`/`follower`/
-  `notecheck`) re-run uncached → all `ok`. The CI `notecheck` parity oracle cannot regress from this
-  diff (no crypto touched).
+**Verification:** `mise run check` → green (11/11 `ok`, `go build`/`go vet`/`go test` all pass), `gofmt
+-l .` empty.
+- [x] `go test -run TestPollHubFsck` — good-mirror nil + corrupted-mirror non-nil, both pass.
+- [x] `go test -run 'TestPollHub|TestIngest|TestWidthForP|TestEquivocation' ./internal/follower` — pass
+  (after the fixture conversion below).
+- [x] `git diff --quiet HEAD -- go.mod go.sum` exits 0 (no dependency change; `tessera/fsck` already in
+  the closure via `internal/logclient/fsck.go`).
+- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0.
+- [x] Production follower imports unchanged: `{context, fmt, logclient, metrics, store, tiles,
+  log/slog}` — no new prod import; store stays a leaf (no `net/http`, no reverse dep).
+- [x] **Mutation (reverted):** forcing `fsckMirror` to `return nil` makes `TestPollHubFsck/
+  RejectsCorruptedMirror` FAIL — the rebuild genuinely compares against the signed root, non-vacuous.
+- [x] Oracle parity intact: `derive_vkey.py` reproduces both golden vectors (`40b74463` / `22b08f3e`);
+  `internal/logclient` + `internal/didweb` + `cmd/notecheck` re-run uncached → `ok` (no crypto touched,
+  this wiring only composes `ResolveVerifierKey`/`RunFsck`). `.claude/.scratch/` cleaned.
+- [x] Determinism: full follower suite green 3×; tile-path suffixes for size 300 are non-colliding.
 
-**Mutation evidence (reverted):**
-- Neuter `ingestTiles` → no-op: `TestIngestTilesWidthMapping` + `TestPollHubMirrorsTiles` FAIL (no
-  mirrored rows, `SQLiteFetcher.ReadTile(0,0,p0)` round-trip fails). Tests are not existence-vacuous.
-- Break `widthForP` (`p==0 → 256` removed): `TestWidthForP` + both ingest tests FAIL — full tile
-  invisible at width 256, readable at width 0, SQLiteFetcher round-trip fails. The highest-risk bug
-  surface (per learnings) is genuinely caught.
-
-**Issues found:** (none) — the only open issue (`cmd/notecheck` vestigial `out io.Writer`) is
-`low`/loop-skipped and correctly untouched.
-
-**Next:** Wire `RunFsck` over `SQLiteFetcher` (the M2 `fsck` root-rebuild) — now that `PollHub` mirrors
-real tiles, `fsck.New(...).Check(ctx)` can rebuild the root from the local mirror and cross-check it
-against the signed checkpoint root. This is the slice that **re-arms the trust-root oracle gate**
-(RFC-6962 root-rebuild crypto) and is the first place the mirrored tiles face conformance — so it wants
-byte-accurate live tile/entry-bundle fixtures captured into `testdata/live/` (the inclusion cross-check
-vs the hub's `IsccLogInclusionProof` is the sibling slice needing the same fixtures). `RunFsck`,
-`LeafHashes`, and the proof builders already exist as unwired pure seams ready for this caller.
+**Next:** The **inclusion cross-check** vs the hub's own `evidence.IsccLogInclusionProof` — the SECOND
+half of M2's Verify bar (the sibling slice). `InclusionProofFromTiles` already exists as an unwired
+seam; it needs captured `IsccLogInclusionProof` fixtures (real or in-process). Also consider the
+efficiency + fragility items in Notes.
 
 **Notes:**
-- **Synthetic, not byte-accurate, fixtures here.** The writer is transport + CRUD (not crypto), so the
-  test fetchers return per-URL synthetic bytes (`"body:"+url` / `"tile:"+url`); a store read-back
-  matches the exact coord fetched. The `RunFsck` slice is the one that needs real tile bytes — flag for
-  define-next: do not let it reuse synthetic bytes (the root-rebuild would not be meaningful).
-- **Existing `TestPollHub{Fork,Shrink,...}` now also ingest tiles** (their `compositeFetcher` returns
-  checkpoint bytes for any non-did.json URL, so tile URLs get the checkpoint as synthetic BLOBs) —
-  harmless, those tests assert only on their own outputs and still pass.
-- **Stale comment (cosmetic, not blocking):** `internal/follower/equivocation_test.go` near line 4 says
-  "the M2 tile-ingestion writer is not yet wired, so the test seeds them directly" — now slightly stale
-  since this slice wires it. That test calls `checkConsistency`/`freeze` directly (not `PollHub`) so it
-  is functionally correct and unaffected; `advance` left it untouched per scope discipline. A one-line
-  refresh when that file is next touched is the only cleanup — not worth a dedicated issue.
-- **`widthForP` is intentionally duplicated** between `internal/store/fetcher.go` (unexported) and the
-  follower (re-derived one-liner, pinned by `TestWidthForP`) per `next.md` — the store's copy stays
-  private and the store package is byte-untouched. Confirmed both bodies identical.
-- **No remote push obstacles anticipated** — branch is `develop`, 3 commits ahead of `origin/develop`;
-  pushing on PASS.
+- **HUMAN REVIEW REQUESTED — design deviation from `next.md`'s "existing tests unaffected"
+  assumption.** Wiring `fsckMirror` unconditionally into the verified `PollHub` path means **every**
+  verified, non-violation `PollHub` that runs to completion now requires a *byte-accurate* mirror that
+  rebuilds the signed root. The 6 pre-existing tests that drove a verified `PollHub` over the **real sb0
+  checkpoint fixture** (size 10183, signed by sb0's real key) plus **synthetic / checkpoint-as-tile**
+  bytes therefore broke at the new fsck step — and the real sb0 log's leaf preimages are **not
+  captured**, so a byte-accurate mirror for it cannot be built (live-fixture capture was explicitly Not
+  In Scope, and there is no network here). `next.md`'s Verification line "existing … paths unaffected"
+  was based on an assumption that is impossible once fsck runs on the live path. I resolved it by
+  **converting those 6 tests to an in-process byte-accurate `testonly.Tree` mirror**
+  (`buildVerifiedMirror`, the same fixture style `next.md` endorsed for `fsck_test.go`):
+  `TestPollHub{Fork,Shrink,VerifiedAdvances,CacheHitSkipsDidFetch,MirrorsTiles}` + `TestTick{,FrozenUnaffected}`.
+  This keeps the build green and the gate un-weakened, and **does not lose trust-root coverage**:
+  real-sb0 signature/key parity (`40b74463`, the real signed checkpoint, the `derive_vkey.py` vectors)
+  stays thoroughly covered at the `internal/logclient` level (`accept_test.go`, `verify_test.go`,
+  `keyid_test.go`, `checkpointkey_test.go`) — the follower tests' job is the composition/wiring, not
+  re-asserting the raw signature. The size/keyid assertions moved from the hardcoded `10183` /
+  `0x40b74463` to the fixture's `m.size` / `m.keyID` (the key is per-run random via `note.GenerateKey`,
+  so it can't be a literal). **Please ratify** dropping the real-sb0 *checkpoint* fixture from the
+  follower verified tests; the alternative is capturing byte-accurate live sb0/sb1 tile fixtures into
+  `testdata/live/` (the deferred path) and keeping the real checkpoint. The diff is still 1 production
+  file; the 3 extra changed files are all tests.
+- **`fsckMirror` re-resolves the did:web key every verified poll (a redundant did.json fetch).** The
+  vkey was already resolved inside `AcceptCheckpoint` (and `cacheHubKey` caches the key bytes), but
+  `RunFsck` needs the vkey *string* and `fsckMirror` re-fetches did.json to get it. This is observable:
+  `TestPollHubCacheHitSkipsDidFetch` now asserts cold=3 / warm=2 did.json fetches (was 2 / 1), with the
+  +1 each being fsck's resolve. An efficiency slice could thread the already-resolved vkey from
+  `AcceptCheckpoint`/`cacheHubKey` through to `fsckMirror` (e.g. via `KeyIDFromVerifier` + the cached
+  `hub_keys` row, or by `AcceptCheckpoint` returning the vkey) to drop the extra fetch — out of scope
+  here. Flagged for define-next.
+- **Surfaced a PRE-EXISTING re-detection fragility (not introduced by this slice).** After a fork
+  freeze, two checkpoint rows share the same `tree_size` (the seed + the contradictory evidence), and
+  `store.CheckpointAt` uses an **unordered `LIMIT 1`** — so which root a re-poll compares against is
+  data-dependent/undefined. The old `TestPollHubFork` happened to get the seed row (re-detection
+  fired); the in-process mirror fixture deterministically gets the *evidence* (real) row, so a re-poll
+  finds no fork and reaches fsck (which then passes over the byte-accurate mirror). To keep the test
+  deterministic I drive fork **re-detection through `freeze` directly** now (the same pattern
+  `TestPollHubEquivocation` already uses), while the **first** fork detection still goes through
+  `PollHub` (one row → deterministic). Re-poll-of-a-frozen-hub via `PollHub` is still covered by
+  `TestTickFrozenUnaffected`. The underlying production concern — re-detection comparing against an
+  undefined row when two checkpoints share a size — was already noted in learnings ("implicit
+  dependency on insert order"); the equivocation/serving slice that changes prior-root selection should
+  add an `ORDER BY rowid` (or pick the *prior accepted* root explicitly). Not fixed here (touches
+  `store`, out of scope).
+- **`mirrorBundleFetcher.Fetch` matches coords by `strings.HasSuffix` over a map** (iteration order
+  non-deterministic). Verified the size-300 tlog-tiles paths have **no** suffix collisions (none is a
+  suffix of another), so it is unambiguous for this fixture; a future fixture with colliding paths would
+  want exact/longest-suffix matching. Acceptable for test code.
+- `buildVerifiedMirror` reuses `equivocation_test.go`'s `equivNodeHash` for the upper hash-tile levels
+  (level ≥ 1 when leaves > 256), so the served tiles are byte-accurate across the 256-leaf boundary;
+  fsck rebuilds from level-0 tiles + bundles, the upper tiles are mirrored by `ingestTiles` but
+  byte-accurate anyway.

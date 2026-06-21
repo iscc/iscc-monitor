@@ -10,11 +10,22 @@
 // advances the follow cursor — but only a StatusVerified observation may advance
 // accepted state (ADR-0009). On that verified, non-violation path it also records
 // the hub's coverage start once (ADR-0001, set-once), caches the resolved
-// did:web signing key (ADR-0009, hub_keys), and mirrors the hub's hash tiles and
-// entry bundles into the local store (ADR-0005, ingestTiles). The merkle-backed
+// did:web signing key (ADR-0009, hub_keys), mirrors the hub's hash tiles and
+// entry bundles into the local store (ADR-0005, ingestTiles), and then rebuilds the
+// accepted root from that mirror and cross-checks it against the signed checkpoint
+// root (ADR-0005, fsckMirror -> logclient.RunFsck). The merkle-backed
 // equivocation trigger sources its consistency proof from that local mirror (a
 // store.SQLiteFetcher), never re-hitting the hub. The poll loop is its own later
 // step; PollHub does exactly one observation per call and returns.
+//
+// Mirror root-rebuild (ADR-0005): after the tiles are mirrored, fsckMirror runs
+// RunFsck over the SQLiteFetcher to re-derive the RFC-6962 root from the local
+// tiles/bundles and compare it to the signed checkpoint root. This is an in-process
+// structural self-check (it shares the monitor's own LeafHashes / RFC-6962 code), not
+// the fully-independent notecheck oracle. A rebuild mismatch or mirror fault is a
+// genuine fault returned to the caller — NOT a self-consistency violation, so it does
+// NOT freeze the hub; the checkpoint is already recorded/advanced, so a transient
+// fault is re-attempted next poll.
 //
 // Record-only-on-verified: only a StatusVerified observation is persisted, since
 // the non-verified verdicts carry a zero CheckpointInfo and therefore no
@@ -186,6 +197,15 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	if err := ingestTiles(ctx, st, fetcher, hubID, baseURL, info.TreeSize, observedAt); err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: ingest tiles: %w", hubID, err)
 	}
+	// Rebuild the accepted root from the freshly-mirrored tiles and cross-check it
+	// against the signed checkpoint root (ADR-0005, RFC-6962 root-rebuild). This must
+	// run AFTER ingestTiles so the SQLiteFetcher has tiles to read. A mismatch is a
+	// genuine mirror/rebuild fault (NOT a self-consistency violation): it is surfaced
+	// without freezing the hub — the checkpoint is already recorded/advanced above, so
+	// a transient fault is re-attempted next poll.
+	if err := fsckMirror(ctx, st, fetcher, hubID, baseURL); err != nil {
+		return status, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err)
+	}
 	recordVerdict(m, hubID, status, false, observedAt)
 	return status, nil
 }
@@ -299,6 +319,37 @@ func cacheHubKeyResolve(ctx context.Context, st *store.Store, fetcher logclient.
 		Revoked:    didKey.Revoked,
 		ResolvedAt: observedAt,
 	})
+}
+
+// fsckMirror rebuilds the hub's accepted root from the local mirror and verifies it
+// against the signed checkpoint root (ADR-0005). It resolves the verifier key
+// (ResolveVerifierKey — its validity was already checked by AcceptCheckpoint, so the
+// DIDKey is discarded) and the signed-note origin (Origin, <domain>/log), builds a
+// read-only store.SQLiteFetcher over the just-ingested tiles/bundles, and runs
+// logclient.RunFsck, which re-hashes each entry bundle, re-derives the lower hash
+// tiles, and compares the rebuilt RFC-6962 root to the checkpoint's claimed root.
+//
+// RunFsck is an in-process STRUCTURAL self-check: it shares the monitor's own
+// LeafHashes / RFC-6962 code, so it catches mirror corruption and rebuild bugs but is
+// NOT the fully-independent oracle (notecheck, run in CI, is that). A non-nil return
+// is a root-rebuild mismatch or a mirror fault — NOT a self-consistency violation
+// (freezing is reserved for the three checkConsistency triggers). PollHub surfaces it
+// to the caller without freezing the hub; since the checkpoint is already
+// recorded/advanced, a transient mirror fault is simply re-attempted next poll. Each
+// step's error is wrapped with %w.
+func fsckMirror(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string) error {
+	vkey, _, err := logclient.ResolveVerifierKey(ctx, fetcher, baseURL)
+	if err != nil {
+		return fmt.Errorf("fsck: resolve verifier key: %w", err)
+	}
+	origin, err := logclient.Origin(baseURL)
+	if err != nil {
+		return fmt.Errorf("fsck: origin: %w", err)
+	}
+	if err := logclient.RunFsck(ctx, vkey, origin, store.SQLiteFetcher{Store: st, HubID: hubID}); err != nil {
+		return fmt.Errorf("fsck: %w", err)
+	}
+	return nil
 }
 
 // checkConsistency runs the three RFC-6962 self-consistency triggers against the

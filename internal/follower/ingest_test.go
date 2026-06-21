@@ -1,20 +1,21 @@
 // Tests for the live tile/entry-bundle mirror writer (ingestTiles) and its
-// PollHub-level integration. The unit test drives ingestTiles directly over a
-// boundary tree size (300) through a recording fetcher and asserts the exact
-// (level, index, width) BLOBs land in the store — pinning the load-bearing
-// widthForP translation (a full coord, Partial == 0, stored at width 256; a
-// 44-leaf partial at width 44). The integration test extends compositeFetcher to
-// serve synthetic tile/bundle bytes, drives a verified PollHub against the sb0
-// fixture, and asserts the enumerated coords are mirrored — all on observable
-// store outputs (ReadTileBlob / ReadEntryBundleBlob), never follower internals.
+// PollHub-level integration. The unit test (TestIngestTilesWidthMapping) drives
+// ingestTiles directly over a boundary tree size (300) through a recording fetcher
+// and asserts the exact (level, index, width) BLOBs land in the store — pinning the
+// load-bearing widthForP translation (a full coord, Partial == 0, stored at width
+// 256; a 44-leaf partial at width 44). The integration test (TestPollHubMirrorsTiles)
+// drives a verified PollHub over the in-process byte-accurate mirror
+// (buildVerifiedMirror) and asserts the enumerated coords are mirrored — all on
+// observable store outputs (ReadTileBlob / ReadEntryBundleBlob), never follower
+// internals.
 //
-// The writer is transport + CRUD only (no crypto), so the synthetic per-URL bytes
-// suffice; byte-accurate live tile fixtures arrive with the inclusion cross-check.
+// The width-mapping unit test uses synthetic per-URL bytes (the writer is transport +
+// CRUD, no crypto). The PollHub integration test must use byte-accurate bytes because
+// PollHub now fscks the mirror against the signed root after ingest.
 package follower
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -147,34 +148,14 @@ func TestWidthForP(t *testing.T) {
 	}
 }
 
-// mirrorFetcher extends the routing pattern of compositeFetcher: it serves the sb0
-// did.json and checkpoint like compositeFetcher, and additionally serves synthetic
-// per-URL bytes for tile/bundle URLs ("tile:" + url) so a verified PollHub can
-// ingest a real mirror without live network or byte-accurate tile fixtures.
-type mirrorFetcher struct {
-	checkpoint []byte
-	didDoc     []byte
-}
-
-// Fetch routes did.json -> didDoc, tile/ URLs -> synthetic tile bytes, everything
-// else (the checkpoint) -> checkpoint. The tile branch precedes the checkpoint
-// fallback so a "/log/tile/..." URL never receives the checkpoint bytes.
-func (f mirrorFetcher) Fetch(_ context.Context, url string) ([]byte, error) {
-	switch {
-	case strings.HasSuffix(url, "did.json"):
-		return f.didDoc, nil
-	case strings.Contains(url, "/tile/"):
-		return []byte("tile:" + url), nil
-	default:
-		return f.checkpoint, nil
-	}
-}
-
-// TestPollHubMirrorsTiles drives a verified PollHub against the sb0 checkpoint
-// fixture (tree size 10183) through a fetcher that also serves synthetic tile and
-// bundle bytes, then asserts the enumerated coords are mirrored in the store. The
-// assertion is on observable store outputs (ReadTileBlob / ReadEntryBundleBlob
-// returning found == true with the fetched bytes), never on follower internals.
+// TestPollHubMirrorsTiles drives a verified PollHub over the in-process byte-accurate
+// mirror (a 300-leaf tree, crossing the 256-leaf tile boundary), then asserts each
+// enumerated coord is mirrored in the store with the exact byte-accurate bytes the
+// fetcher served for that coord. The assertion is on observable store outputs
+// (ReadTileBlob / ReadEntryBundleBlob returning found == true with the served bytes),
+// never on follower internals. Byte-accurate bytes are required because PollHub now
+// fscks the mirror against the signed root after ingest — synthetic per-URL bytes
+// would fail that rebuild.
 func TestPollHubMirrorsTiles(t *testing.T) {
 	ctx := context.Background()
 	s, _ := openTemp(t)
@@ -183,12 +164,9 @@ func TestPollHubMirrorsTiles(t *testing.T) {
 		t.Fatalf("UpsertHub: %v", err)
 	}
 
-	fetcher := mirrorFetcher{
-		checkpoint: readCheckpoint(t, "sb0.iscc.id_checkpoint"),
-		didDoc:     readFixture(t, "sb0.iscc.id_did.json"),
-	}
+	m := buildVerifiedMirror(t, mirrorLeaves)
 
-	status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", sb0ObservedAt(), noopAlert, nil)
+	status, err := PollHub(ctx, s, m.fetcher, hubID, "https://sb0.iscc.id", time.Unix(1, 0), noopAlert, nil)
 	if err != nil {
 		t.Fatalf("PollHub: %v", err)
 	}
@@ -196,13 +174,11 @@ func TestPollHubMirrorsTiles(t *testing.T) {
 		t.Fatalf("status = %s, want verified", status)
 	}
 
-	const treeSize = 10183 // the sb0 fixture's signed tree size.
-
-	// Every enumerated hash tile is mirrored at its widthForP width, with the bytes
-	// the fetcher served for that exact tile URL.
-	for _, c := range tiles.TileCoords(treeSize) {
+	// Every enumerated hash tile is mirrored at its widthForP width, with the exact
+	// byte-accurate bytes the fetcher served for that coord's canonical path.
+	for _, c := range tiles.TileCoords(m.size) {
 		width := widthForP(c.Partial)
-		wantURL := "https://sb0.iscc.id/log/" + tiles.TilePath(c.Level, c.Index, c.Partial)
+		want := m.fetcher.byPath[tiles.TilePath(c.Level, c.Index, c.Partial)]
 		data, found, err := s.ReadTileBlob(ctx, hubID, c.Level, c.Index, width)
 		if err != nil {
 			t.Fatalf("ReadTileBlob L%d I%d W%d: %v", c.Level, c.Index, width, err)
@@ -211,15 +187,15 @@ func TestPollHubMirrorsTiles(t *testing.T) {
 			t.Errorf("tile L%d I%d not mirrored at width %d", c.Level, c.Index, width)
 			continue
 		}
-		if string(data) != "tile:"+wantURL {
-			t.Errorf("tile L%d I%d W%d bytes = %q, want tile body for %q", c.Level, c.Index, width, data, wantURL)
+		if string(data) != string(want) {
+			t.Errorf("tile L%d I%d W%d bytes differ from the served bytes", c.Level, c.Index, width)
 		}
 	}
 
 	// Every enumerated entry bundle is mirrored at its widthForP width.
-	for _, c := range tiles.BundleCoords(treeSize) {
+	for _, c := range tiles.BundleCoords(m.size) {
 		width := widthForP(c.Partial)
-		wantURL := "https://sb0.iscc.id/log/" + tiles.EntriesPath(c.Index, c.Partial)
+		want := m.fetcher.byPath[tiles.EntriesPath(c.Index, c.Partial)]
 		data, found, err := s.ReadEntryBundleBlob(ctx, hubID, c.Index, width)
 		if err != nil {
 			t.Fatalf("ReadEntryBundleBlob I%d W%d: %v", c.Index, width, err)
@@ -228,12 +204,12 @@ func TestPollHubMirrorsTiles(t *testing.T) {
 			t.Errorf("bundle I%d not mirrored at width %d", c.Index, width)
 			continue
 		}
-		if string(data) != "tile:"+wantURL {
-			t.Errorf("bundle I%d W%d bytes = %q, want tile body for %q", c.Index, width, data, wantURL)
+		if string(data) != string(want) {
+			t.Errorf("bundle I%d W%d bytes differ from the served bytes", c.Index, width)
 		}
 	}
 
-	// The first level-0 tile of the 10183-leaf tree is full and must be readable at
+	// The first level-0 tile of the 300-leaf tree is full and must be readable at
 	// width 256 — the SQLiteFetcher's full-tile read path.
 	var fetcher2 = store.SQLiteFetcher{Store: s, HubID: hubID}
 	if _, err := fetcher2.ReadTile(ctx, 0, 0, 0); err != nil {

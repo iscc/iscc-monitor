@@ -1,10 +1,10 @@
 // Tests for the poll-loop wrapper (Loop.Tick / due). They drive Tick and the pure
 // due() predicate directly with an injected now — never a wall-clock sleep and
 // never Loop.Run's ticker — so the cadence is fully deterministic. The store seam
-// and the offline composite fetcher are reused verbatim from follower_test.go
-// (sb0VerifiedFetcher, openTemp, countRows, assertViolation, sb0ObservedAt,
-// noopAlert), so the loop is tested over the real sb0 fixtures with no live
-// network. Assertions are on observable store outputs (FollowState, row counts)
+// and the offline mirror fixture are reused from follower_test.go / fsck_test.go
+// (buildVerifiedMirror, openTemp, countRows, assertViolation, sb0ObservedAt,
+// noopAlert), so the loop is tested over the in-process byte-accurate mirror with no
+// live network. Assertions are on observable store outputs (FollowState, row counts)
 // only, never on Loop internals.
 package follower
 
@@ -78,9 +78,10 @@ func TestTick(t *testing.T) {
 		t.Fatalf("UpsertHub B: %v", err)
 	}
 
+	m := buildVerifiedMirror(t, mirrorLeaves)
 	loop := &Loop{
 		Store:   s,
-		Fetcher: sb0VerifiedFetcher(t),
+		Fetcher: m.fetcher,
 		Targets: []HubTarget{
 			{HubID: hubA, BaseURL: "https://sb0.iscc.id"},
 			{HubID: hubB, BaseURL: "https://sb0.iscc.id"},
@@ -90,7 +91,7 @@ func TestTick(t *testing.T) {
 		Alert:  noopAlert,
 	}
 
-	now := sb0ObservedAt()
+	now := time.Unix(1, 0)
 	if err := loop.Tick(ctx, now); err != nil {
 		t.Fatalf("first Tick: %v", err)
 	}
@@ -99,8 +100,8 @@ func TestTick(t *testing.T) {
 		if err != nil {
 			t.Fatalf("FollowState hub %d: %v", hubID, err)
 		}
-		if fs.LastSize != 10183 {
-			t.Errorf("hub %d LastSize = %d, want 10183 (advanced by Tick)", hubID, fs.LastSize)
+		if fs.LastSize != m.size {
+			t.Errorf("hub %d LastSize = %d, want %d (advanced by Tick)", hubID, fs.LastSize, m.size)
 		}
 	}
 	rowsAfterFirst := countRows(t, path, "checkpoints")
@@ -118,8 +119,8 @@ func TestTick(t *testing.T) {
 		if err != nil {
 			t.Fatalf("FollowState hub %d after re-Tick: %v", hubID, err)
 		}
-		if fs.LastSize != 10183 {
-			t.Errorf("hub %d LastSize = %d after re-Tick, want 10183 (unchanged)", hubID, fs.LastSize)
+		if fs.LastSize != m.size {
+			t.Errorf("hub %d LastSize = %d after re-Tick, want %d (unchanged)", hubID, fs.LastSize, m.size)
 		}
 	}
 }
@@ -165,10 +166,11 @@ func TestTickFrozenUnaffected(t *testing.T) {
 		t.Fatalf("seed AdvanceFollowState: %v", err)
 	}
 
+	m := buildVerifiedMirror(t, mirrorLeaves)
 	var alerts int
 	loop := &Loop{
 		Store:   s,
-		Fetcher: sb0VerifiedFetcher(t),
+		Fetcher: m.fetcher,
 		Targets: []HubTarget{
 			{HubID: hubA, BaseURL: "https://sb0.iscc.id"},
 			{HubID: hubB, BaseURL: "https://sb0.iscc.id"},
@@ -178,7 +180,7 @@ func TestTickFrozenUnaffected(t *testing.T) {
 		Alert:  func(int64, string) { alerts++ },
 	}
 
-	t0 := sb0ObservedAt()
+	t0 := time.Unix(1, 0)
 
 	// First Tick: hub A freezes (shrink), hub B advances cleanly.
 	if err := loop.Tick(ctx, t0); err != nil {
@@ -201,7 +203,7 @@ func TestTickFrozenUnaffected(t *testing.T) {
 	if fsA.LastSize != 20000 {
 		t.Errorf("hub A LastSize = %d, want 20000 (frozen hub does not advance)", fsA.LastSize)
 	}
-	assertCleanAdvance(t, ctx, s, hubB)
+	assertCleanAdvance(t, ctx, s, hubB, m.size)
 
 	// Tick past Normal but before Frozen: the frozen hub A is NOT due (back-off), so
 	// no new violation is recorded. Hub B (unfrozen) IS due and re-polls cleanly.
@@ -214,7 +216,7 @@ func TestTickFrozenUnaffected(t *testing.T) {
 	if alerts != 1 {
 		t.Errorf("alerts during back-off = %d, want 1 (no new alert)", alerts)
 	}
-	assertCleanAdvance(t, ctx, s, hubB)
+	assertCleanAdvance(t, ctx, s, hubB, m.size)
 
 	// Tick at the Frozen interval: hub A is now due on the backed-off cadence and is
 	// re-polled, recording a second violation as evidence — but no new alert — and
@@ -238,7 +240,7 @@ func TestTickFrozenUnaffected(t *testing.T) {
 	if fsA.LastSize != 20000 {
 		t.Errorf("hub A LastSize = %d after re-poll, want 20000 (still no advance)", fsA.LastSize)
 	}
-	assertCleanAdvance(t, ctx, s, hubB)
+	assertCleanAdvance(t, ctx, s, hubB, m.size)
 }
 
 // TestTickMetricsPollFailure proves the Tick-level poll-failure counter: a hub
@@ -273,9 +275,9 @@ func TestTickMetricsPollFailure(t *testing.T) {
 	assertMetric(t, reg, `iscc_monitor_poll_failures_total{hub_id="1"} 1`)
 }
 
-// assertCleanAdvance confirms a hub advanced to the sb0 fixture size and stayed
+// assertCleanAdvance confirms a hub advanced to the mirror fixture size and stayed
 // unfrozen — the "other hubs unaffected" half of the freeze contract.
-func assertCleanAdvance(t *testing.T, ctx context.Context, s *store.Store, hubID int64) {
+func assertCleanAdvance(t *testing.T, ctx context.Context, s *store.Store, hubID int64, wantSize uint64) {
 	t.Helper()
 	fs, err := s.FollowState(ctx, hubID)
 	if err != nil {
@@ -284,7 +286,7 @@ func assertCleanAdvance(t *testing.T, ctx context.Context, s *store.Store, hubID
 	if fs.Frozen {
 		t.Errorf("hub %d frozen, want unaffected by another hub's freeze", hubID)
 	}
-	if fs.LastSize != 10183 {
-		t.Errorf("hub %d LastSize = %d, want 10183 (clean advance)", hubID, fs.LastSize)
+	if fs.LastSize != wantSize {
+		t.Errorf("hub %d LastSize = %d, want %d (clean advance)", hubID, fs.LastSize, wantSize)
 	}
 }
