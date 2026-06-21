@@ -1,97 +1,102 @@
 # Next Work Package
 
-## Step: Transport primitives to fetch a tile / entry bundle over the Fetcher seam (`logclient.FetchTile` / `FetchEntryBundle`)
+## Step: Live tile/bundle ingestion writer in PollHub
 
 ## Goal
-Add the two missing pure transport primitives that fetch one hash tile and one entry bundle from a
-hub at their canonical tlog-tiles paths — the seam between the existing `tiles.TileCoords` /
-`tiles.BundleCoords` enumerations and the existing `store.RecordTile` / `RecordEntryBundle` writers.
-This is the smallest unblocking slice of the M2 live tile-ingestion writer: with it, the next step
-can wire a `PollHub` fetch loop that walks the coords, fetches via these, and writes to the mirror.
+On a verified, growing checkpoint, make `PollHub` mirror the hub's hash tiles and entry bundles into
+the local store — walking the pure coordinate enumerations, fetching each over the existing transport
+primitives, and writing via the store CRUD. This is the first production caller of `TileCoords`,
+`BundleCoords`, `FetchTile`, and `FetchEntryBundle`; it un-dormants the wired equivocation branch on
+the live path (which today always hits the missing-tile skip) and feeds `SQLiteFetcher`, unblocking
+the M2 `fsck` root-rebuild and inclusion cross-check.
 
 ## Scope
-- **Create**: `internal/logclient/tilefetch.go` — `FetchTile(ctx, fetcher Fetcher, baseURL string,
-  level, index uint64, p uint8) ([]byte, error)` and `FetchEntryBundle(ctx, fetcher Fetcher,
-  baseURL string, index uint64, p uint8) ([]byte, error)`.
-- **Create**: `internal/logclient/tilefetch_test.go` — offline table tests with a fake `Fetcher`.
-- **Modify**: (none — purely additive; no existing non-test file changes)
+- **Create**: `internal/follower/ingest.go` — the `ingestTiles` helper (one new non-test file).
+- **Modify**: `internal/follower/follower.go` — call `ingestTiles` from `PollHub` on the verified,
+  non-violation path. (2 non-test files total.)
+- **Create (test)**: `internal/follower/ingest_test.go` — table-driven coordinate + width-translation
+  unit test plus a `PollHub`-level integration test that asserts mirrored rows in the store.
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/logclient/checkpoint.go` — the primitive to port from (same
-    `origin()` → `"https://"+name+"/<path>"` → `fetcher.Fetch` → verbatim-bytes shape, same `%w` wrapping).
-  - `/workspace/iscc-monitor/internal/logclient/didresolve.go` — the `Fetcher` 1-method seam
-    (`Fetch(ctx, url) ([]byte, error)`) and its 404→`os.ErrNotExist` contract these must preserve.
-  - `/workspace/iscc-monitor/internal/tiles/layout.go` — `tiles.TilePath(level, index, p)` /
-    `tiles.EntriesPath(index, p)`, the canonical path producers to call (do not hand-build paths).
-  - `/workspace/iscc-monitor/internal/tiles/layout_test.go` — golden path strings (`tile/1/000`,
-    `tile/0/000.p/255`, `tile/entries/000.p/8`, `tile/entries/255`) to anchor the expected URLs.
-  - `/workspace/iscc-monitor/cauldron/tessera/client/fetcher.go` (lines 97-111) — the reference
-    `HTTPFetcher.ReadTile`/`ReadEntryBundle`: each is `fetch(ctx, layout.TilePath(...))` /
-    `fetch(ctx, layout.EntriesPath(...))`. Port the URL-construction shape (root + path), NOT the
-    `PartialOrFullResource` fallback.
+  - `/workspace/iscc-monitor/internal/tiles/coords.go` — `TileCoords`/`BundleCoords` return order +
+    the `Partial` ("0 == full") convention the writer consumes.
+  - `/workspace/iscc-monitor/internal/logclient/tilefetch.go` — `FetchTile(ctx, fetcher, baseURL,
+    level, index uint64, p uint8)` / `FetchEntryBundle(ctx, fetcher, baseURL, index uint64, p uint8)`
+    signatures + the `%w`-wrapped `os.ErrNotExist` contract.
+  - `/workspace/iscc-monitor/internal/store/tiles.go` — `RecordTile(ctx, hubID, level, index uint64,
+    width int, data, observedAt)` / `RecordEntryBundle(ctx, hubID, bundleIndex uint64, width int,
+    data, observedAt)` signatures; `is_full` is set internally by `tiles.IsFull(width)`.
+  - `/workspace/iscc-monitor/internal/store/fetcher.go` lines 109-118 — the canonical `widthForP`
+    translation (`p==0 → tiles.TileWidth (256)`, else `int(p)`) that this writer must replicate (the
+    store's copy is unexported; do NOT export it — re-derive the one-liner in the follower).
+  - `/workspace/iscc-monitor/internal/follower/follower_test.go` lines 32-88 — the `compositeFetcher`
+    URL-routing pattern + fixture loaders the new test extends to serve tile/bundle URLs.
 
 ## Not In Scope
-- Wiring these into `PollHub` / a tile-ingestion loop that walks `TileCoords`/`BundleCoords` and
-  writes via `RecordTile`/`RecordEntryBundle` — that is the **next** step (it touches `follower.go`
-  and is its own ≤3-file unit). This step delivers only the fetch primitives + their tests.
-- The `PartialOrFullResource` partial→full fallback (tessera's `fetcher.PartialOrFullResource`). The
-  store's `SQLiteFetcher` already owns that fallback on the read side; the ingestion fetch fetches
-  exactly the `p` the coord enumeration names. Do not replicate it here.
-- Any `p`↔`width` translation, `RecordTile`/`RecordEntryBundle` calls, `is_full` logic, or
-  `widthForP` — all downstream of this step, in the store/follower layers.
-- `fsck` root-rebuild wiring, the inclusion cross-check, `iscc_index`, or capturing real tile/bundle
-  fixtures in `testdata/live/` — later M2 slices.
-- Touching the open `low` `cmd/notecheck` `out io.Writer` issue (loop-skipped).
+- Wiring `RunFsck` over `SQLiteFetcher` (the M2 `fsck` root-rebuild) — its own next slice; this step
+  only makes the tiles exist in the store for it to read.
+- The inclusion cross-check vs the hub's `evidence.IsccLogInclusionProof` — needs captured
+  `IsccLogInclusionProof` + real tile/bundle fixtures, a later slice.
+- Capturing real on-disk tile/entry-bundle fixtures into `testdata/live/` — the test synthesizes
+  tile/bundle bytes in-process (the writer is transport+CRUD, not crypto, so synthetic BLOBs suffice;
+  byte-accurate live fixtures arrive with the inclusion cross-check).
+- The `iscc_index` projection writer (schema-aware fold) — a distinct M2 slice.
+- Exporting `store.widthForP` or otherwise touching the store package.
+- Re-fetch/backoff policy tuning or a partial-only optimization — fetch every named coord each verified
+  growing poll (ADR-0005: re-fetch partials, overwrite in place; a full tile re-write is idempotent).
 
 ## Implementation Notes
-- **Port `FetchCheckpoint` verbatim in shape.** It is the exact template: `origin(baseURL)` (the
-  private helper, reused — NOT a second parser) → `"https://" + name + "/" + path` → `fetcher.Fetch(ctx,
-  url)` → return body verbatim. `name` is already `<domain>/log` (e.g. `sb0.iscc.id/log`), so the URL
-  is `https://sb0.iscc.id/log/tile/1/000`. Note `FetchCheckpoint` writes `"https://" + name +
-  "/checkpoint"` (leading slash on a literal); here append `"/" + tiles.TilePath(...)` since
-  `TilePath`/`EntriesPath` return slash-less paths like `tile/1/000`.
-- **Path producers:** call `tiles.TilePath(level, index, p)` and `tiles.EntriesPath(index, p)` — never
-  hand-format the `tile/<l>/<i>` / `tile/entries/<i>` / `.p/<w>` strings. This keeps the package
-  delegating to tessera's layout math (target Stack rule: reuse, never reimplement).
-- **Import note:** `internal/logclient` does not yet import `internal/tiles`. Adding that import edge
-  is correct and clean (`tiles` is a pure `api/layout`-only leaf; no `net`/`sqlite` enters the
-  closure — `logclient` already imports `net/http` via `didresolve.go`, so the package's non-WASM
-  status is unchanged). `go.mod`/`go.sum` stay byte-identical (`tessera/api/layout` is already in the
-  closure via `proofbuilder.go`).
-- **Error wrapping (404-transparency rule):** wrap both the `origin()` error and the `fetcher.Fetch`
-  error with `%w`, exactly as `FetchCheckpoint` does, so a 404's `errors.Is(err, os.ErrNotExist)`
-  survives — the ingestion loop will need to tell "tile not served yet" from a hard transport fault.
-  Include the constructed `url` in the Fetch-error wrap (mirror `fetch checkpoint %q`).
-- **No `os.ErrNotExist` synthesis here.** Do NOT map a missing tile to a sentinel yourself; that is
-  the `Fetcher` implementation's contract (`httpFetcher.Fetch` already maps 404→`os.ErrNotExist`).
-  These primitives only propagate it via `%w`.
-- **Pure-transport, no parsing.** Return the raw bytes verbatim — do not `UnmarshalText` the tile or
-  bundle (that belongs to `LeafHashes` / the proof builders / fsck). Mirror `FetchCheckpoint`'s
-  "body verbatim" doc.
-- **Test seam:** use a fake `Fetcher` (a struct with a `Fetch` func field, or a `map[url]→bytes`, in
-  the spirit of the existing `compositeFetcher`/`countingFetcher` in `follower_test.go`) that records
-  the URL it was asked for and returns canned bytes. Assert the **exact URL** the primitive constructed
-  for representative coords (full + partial, both tile and bundle), and assert a fetcher error /
-  `os.ErrNotExist` propagates with `errors.Is`. The oracle/conformance gate is correctly **N/A** here
-  (pure URL construction + transport; no signature/RFC-6962/Merkle/did:web/`fsck` path), same as
-  `FetchCheckpoint` and the `tiles` layout slice.
+- **Placement.** Call `ingestTiles(ctx, st, fetcher, hubID, baseURL, info.TreeSize, observedAt)` inside
+  `PollHub` on the verified, non-violation path, AFTER `RecordCheckpoint`/`SetCoverage`/
+  `AdvanceFollowState`/`cacheHubKey` succeed and BEFORE the final `recordVerdict`/`return`. Wrap its
+  error as `fmt.Errorf("follower.PollHub: hub %d: ingest tiles: %w", hubID, err)`. Do NOT ingest on the
+  freeze path (a frozen hub does not advance accepted state) nor on non-verified verdicts.
+- **The writer (`ingest.go`).** `ingestTiles` walks `tiles.TileCoords(treeSize)` then
+  `tiles.BundleCoords(treeSize)` in order. For each `TileCoord{Level, Index, Partial}`:
+  `logclient.FetchTile(ctx, fetcher, baseURL, c.Level, c.Index, c.Partial)` →
+  `st.RecordTile(ctx, hubID, c.Level, c.Index, widthForP(c.Partial), raw, observedAt)`. For each
+  `BundleCoord{Index, Partial}`: `logclient.FetchEntryBundle(...)` → `st.RecordEntryBundle(ctx, hubID,
+  c.Index, widthForP(c.Partial), raw, observedAt)`. Keep the two loops as short, separate, pure-ish
+  helpers if it reads cleaner, but ≤3 non-test files total.
+- **Width translation (load-bearing, learnings "p↔width translation is the load-bearing bug surface").**
+  Define an unexported `widthForP(p uint8) int` in the follower (`p==0 → tiles.TileWidth`, else
+  `int(p)`) — re-deriving the store's one-liner, NOT exporting the store's. A full coord has `Partial==0`
+  and must be stored at width 256; storing width 0 would make it unreadable by `SQLiteFetcher`. The test
+  must pin this: a full `TileCoord{Partial:0}` round-trips at width 256.
+- **Imports.** `follower.go`/`ingest.go` add `internal/tiles` to the existing `{context, fmt, logclient,
+  metrics, store, time}` set. `internal/tiles` is a pure leaf (stdlib-only closure) — store stays a leaf,
+  direction stays follower → {logclient, store, tiles}. go.mod/go.sum stay byte-identical (`tessera/api/
+  layout` already in the closure via `internal/tiles`). Confirm with `git diff --quiet HEAD -- go.mod
+  go.sum`.
+- **Error contract (ADR-0006 + learnings).** A tile/bundle fetch fault is a genuine transport error here
+  (NOT a violation): return it up so `PollHub` surfaces it and accepted state for the NEXT poll is
+  unaffected — but note the checkpoint was already recorded/advanced above, so a mid-ingest fault leaves
+  a partial mirror that the next poll re-fetches (idempotent upsert). Do NOT swallow the fetch error and
+  do NOT freeze on it. (The "missing tile = skip equivocation" swallow lives in `checkConsistency`, a
+  different concern — leave it untouched.)
+- **Oracle gate is N/A for this slice** — transport + CRUD only, no signature/RFC-6962/Merkle/did:web/
+  fsck path is introduced (the equivocation branch it un-dormants is already golden-tested; this slice
+  does not change crypto code). The trust-root re-arms at the `fsck`-over-`SQLiteFetcher` slice.
+- **Test (`ingest_test.go`).** Two parts: (1) a table-driven unit test of the coordinate→width mapping
+  over a boundary tree size (e.g. 300 → tile level 0 full at width 256 + a 44-leaf partial at index 1;
+  bundle index 0 full + index 1 partial 44), asserting the exact `(level, index, width)` writes via a
+  fake/recording fetcher + store read-back (`ReadTileBlob`/`ReadEntryBundleBlob`). (2) Extend the
+  `compositeFetcher` to also serve synthetic tile/bundle bytes for `tile/` URLs, drive `PollHub`
+  end-to-end against the sb0 checkpoint fixture (tree size 10183), and assert that after a verified poll
+  the store holds mirrored tile + bundle rows for the enumerated coords (assert on
+  `ReadTileBlob`/`ReadEntryBundleBlob` returning `found==true`, never on follower internals — PRD
+  "assert on observable outputs"). Keep test functions small and focused (no test classes).
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass; `gofmt -l .`
-  empty).
-- `go test -run 'TestFetchTile|TestFetchEntryBundle' -count=1 ./internal/logclient` passes.
-- Asserted in the test: `FetchTile(ctx, fake, "https://sb0.iscc.id", 1, 0, 0, …)` requests URL
-  `https://sb0.iscc.id/log/tile/1/000` and returns the fake's bytes verbatim.
-- Asserted in the test: `FetchTile(ctx, fake, "https://sb0.iscc.id", 0, 0, 255, …)` requests
-  `https://sb0.iscc.id/log/tile/0/000.p/255` (partial suffix via `TilePath`).
-- Asserted in the test: `FetchEntryBundle(ctx, fake, "https://sb0.iscc.id", 255, 0, …)` requests
-  `https://sb0.iscc.id/log/tile/entries/255`; and a width-8 partial requests
-  `https://sb0.iscc.id/log/tile/entries/000.p/8`.
-- Asserted in the test: a `Fetcher` returning a `%w`-wrapped `os.ErrNotExist` makes both primitives
-  return an error for which `errors.Is(err, os.ErrNotExist)` is true.
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass) and
+  `gofmt -l .` is empty.
+- `go test -run 'TestIngest|TestPollHub' -count=1 ./internal/follower` passes.
 - `git diff --quiet HEAD -- go.mod go.sum` exits 0 (no dependency change).
-- `GOOS=js GOARCH=wasm go build ./internal/tiles` still exits 0 (the WASM-shared leaf is untouched).
+- `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (trust-root WASM-shared leaf unaffected).
+- The coordinate unit test asserts a full tile (`Partial==0`) is stored at width `256` and a 44-leaf
+  partial at width `44` — read back via `ReadTileBlob` at the matching width.
+- After a verified `PollHub` against the sb0 fixture, `ReadEntryBundleBlob`/`ReadTileBlob` for at least
+  one enumerated coord return `found==true` with the fetched bytes (store-observable assertion).
 
 ## Done When
-`internal/logclient` exports `FetchTile` and `FetchEntryBundle` as pure transport primitives that
-build the canonical tlog-tiles URL via `tiles.TilePath`/`tiles.EntriesPath` and propagate
-`os.ErrNotExist`, with all Verification criteria passing.
+`PollHub`, on a verified growing checkpoint, mirrors every `TileCoords`/`BundleCoords`-named tile and
+bundle into the store at the correct `widthForP`-translated width, and all Verification criteria pass.
