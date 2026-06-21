@@ -33,6 +33,13 @@ touch it. Everything package-local stays in the detail file. See `README.md` for
   mirroring). A signature matching no listed key → `unverified`. Domain-compromise is out of scope.
 - **`proof/verify` is pure** (no `net`/`os`/`sqlite` imports) — it is shared by the server,
   `verify-for-me`, and the WASM build. Keep it import-clean or the WASM build breaks.
+- **On a self-verifiable surface, gate a rendered `✓`/Merkle assertion on a re-VERIFICATION, not a
+  status flag.** A built proof is not a verified proof. Any surface that renders a ✓ a reader trusts
+  (certificate, proof-bundle assembler, the in-browser verifier) must re-run `proof.VerifyInclusion`
+  against the accepted root before asserting validity — never gate on a flag (`hub.Frozen`, etc.) read
+  from a separate, concurrently-updated row, which leaves a TOCTOU window (the HTTP server runs beside
+  the follower; a fork poll overwrites mirror tiles before the freeze commits). Fail-closed re-verify
+  subsumes the flag and catches both steady-state and the race.
 
 ## Go / tooling conventions (durable)
 

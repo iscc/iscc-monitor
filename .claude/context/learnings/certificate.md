@@ -66,35 +66,39 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   the testnet fixture sb0=0/sb1=1). KISS interim; documented TODO. `registry.go` and
   `internal/config` stay untouched. The `Hub` literal needs `*uint16` HubIDs.
 
-- **§3 INCLUSION PROOF recomputes the RFC-6962 proof from the mirror — a proof BUILT
-  is not a proof VERIFIED, and the `!hub.Frozen` gate is necessary but NOT sufficient.**
+- **§3 INCLUSION PROOF is gated on a fail-closed re-VERIFICATION, not a status flag.**
   `buildData` calls `logclient.InclusionProofFromTiles(f.ReadTile, data.Position,
-  hub.LastSize)` over a `store.SQLiteFetcher` and base64-Std encodes each sibling,
-  exactly as proofserve's `serveInclusion` does (the same oracle-gated builder — never
-  hand-roll Merkle math). `os.ErrNotExist` → honest §3-omitted gap (the page keeps
-  §1/§2); any other err → 500. `InclusionProofFromTiles` is a pure *builder* — it folds
-  whatever tile bytes the fetcher returns and NEVER checks the proof rebuilds the
-  accepted root. `a687f5e` gated the §3 RENDER on `data.HasClause2 && !hub.Frozen`
-  (handler.go:369), closing the STEADY-STATE frozen-after-fork case (mutation-proven by
-  `TestCertificateInclusionProofFrozen`: mirror tree A, accept tree B's root, freeze →
-  §1+§2 render, §3 absent; reverting the guard FAILS). **Still open (issues.md,
-  critical):** the gate reads the `ListHubs` `hub.Frozen` flag, but the HTTP server runs
-  CONCURRENTLY with the follower; in a fork poll `ingestTiles` (follower.go:174)
-  overwrites same-size tiles in per-tile transactions BEFORE `freeze`→`st.Freeze`
-  (follower.go:194, its last write; the freeze records evidence, never advances, so
-  `CheckpointAt(LastSize)` keeps the old root). A request landing in that TOCTOU window
-  reads `Frozen==false`, builds §3 from the fork's tiles, and renders them under the old
-  root's `✓` — the same self-contradictory cert via a race. The durable fix is the
-  fail-closed one the plan deferred: before `HasClause3 = true`, verify the built proof
-  rebuilds `data.CheckpointRoot` via `proof.VerifyInclusion` (subsumes the frozen gate;
-  catches race + steady state alike). §1/§2 are immune (they read the irreplaceable
-  accepted-checkpoint *record* via `CheckpointAt`; only §3 reads the corruptible
-  *mirror*). **Durable rule: on a self-verifiable surface, gate a rendered Merkle/`✓`
-  assertion on a re-VERIFICATION against the accepted root, not on a status FLAG read
-  from a separate, racily-updated row.** `TestCertificateInclusionProof` is
-  mutation-proven non-vacuous against `testonly.Tree.InclusionProof` but only exercises
-  the CLEAN tree; the fail-closed fix's test must assert §3 absent on a NON-frozen
-  contradictory-tile fixture.
+  hub.LastSize)` over a `store.SQLiteFetcher`, then ports proofserve's `serveVerify`
+  path verbatim: `bundleIndex/offset/p` → `f.ReadEntryBundle` →
+  `logclient.RecordBytesFromBundle(bundle, offset)` → `rfc6962.DefaultHasher.HashLeaf`
+  → `proof.VerifyInclusion(hasher, data.Position, hub.LastSize, leafHash, builtProof,
+  root) == nil`, and sets `HasClause3` ONLY on the nil verdict (siblings base64-Std
+  encoded — never hand-roll Merkle math). `root` is the `[]byte` from §2's
+  `CheckpointAt`, reused in place (meaningful only inside the `data.HasClause2` branch
+  guard, so no re-decode). Fail-closed error split: `os.ErrNotExist` (missing
+  tile/bundle) and `logclient.ErrLeafOutOfBundle` are honest gaps → §3 omitted, page
+  keeps §1/§2; a non-nil `VerifyInclusion` result is a SILENT §3 decline (the proof did
+  not rebuild the accepted root), never a 500; any other read/build fault → 500
+  (buffered before any 200). This subsumes and REPLACED the `!hub.Frozen` gate: it fails
+  closed against the steady-state frozen-after-fork case AND the fork-poll TOCTOU race
+  (no flag read), closing the trust-root critical. The durable cross-cutting rule (re-
+  verify, don't trust a flag) is promoted to the index.
+  - **`fixtureStoreTiled` must seed entry bundles, not just hash tiles**, or
+    `RecordBytesFromBundle` misses and §3 never gets a leaf hash. Copy `encodeBundle`
+    (manual `binary.BigEndian.PutUint16` framing) from `logclient/fsck_test.go`; for each
+    `tiles.BundleCoords(size)` write the `leaf-i` preimages so
+    `HashLeaf(record) == tree.LeafHash(seq)` (a <256-leaf tree is one partial bundle at
+    index 0). That equality is what makes the clean §3 test pass THROUGH the verification.
+  - **Mutation-proven non-vacuous (reviewer reproduced):** replacing the
+    `proof.VerifyInclusion(...) == nil` guard with `... == nil || true` makes
+    `TestCertificateInclusionProofContradictory` (mirror tree A, accept tree B's root,
+    `freeze=false`) FAIL while the clean `TestCertificateInclusionProof` stays PASS. (The
+    bare `if true` from next.md won't compile — unused `proof`/`leafHash`; the `|| true`
+    variant is the same logical mutation and keeps the build valid.)
+  - settled: §3 history — `d95bea8` built the proof but rendered it unconditionally
+    (self-contradictory for frozen-after-fork); `a687f5e` added `!hub.Frozen` (steady-
+    state only, TOCTOU race remained); `681a2c6` replaced it with this re-verification.
+    git history keeps the detail.
 
 - **`html/template` entity-escapes base64 `+`/`/` in text nodes (`+`→`&#43;`).** Only
   the execution-path contextual escaper does this — `html.EscapeString` does not — so

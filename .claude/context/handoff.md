@@ -1,59 +1,58 @@
-## 2026-06-21 — Fail-close certificate §3: verify the built proof rebuilds the accepted root (close the TOCTOU critical)
+## 2026-06-21 — Review of: Fail-close certificate §3 — verify the built proof rebuilds the accepted root (close the TOCTOU critical)
 
-**Done:** Replaced the §3 status-flag gate (`data.HasClause2 && !hub.Frozen`) with a fail-closed
-Merkle re-verification: `buildData` now reads the subject leaf's entry bundle from the mirror,
-derives its RFC-6962 leaf hash, and sets `HasClause3` only when `proof.VerifyInclusion` proves the
-built proof rebuilds the §2 accepted root. This subsumes the freeze gate (the `hub.Frozen` reference
-is gone) and fails closed against ANY tile↔root divergence — the fork-poll TOCTOU race AND the
-steady-state frozen case — making the rendered ✓ true by construction. Closes the open `critical`.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/certificate/handler.go`: rewrote the §3 branch in `buildData` — capture the raw `root`
-  bytes from §2's `CheckpointAt`, build the proof, then `ReadEntryBundle` →
-  `RecordBytesFromBundle` → `rfc6962.DefaultHasher.HashLeaf` → `proof.VerifyInclusion(hasher,
-  Position, LastSize, leafHash, builtProof, root) == nil`. Added imports
-  `merkle/proof`, `merkle/rfc6962`, `internal/tiles`; removed the `hub.Frozen` reference; rewrote the
-  file / `buildData` / `certData` docstrings + the §3 block comment to describe the rebuild
-  verification (the "rebuild gate") instead of the freeze flag.
-- `internal/certificate/handler_test.go`: added an `encodeBundle` helper (copied from
-  `logclient/fsck_test.go`) + `encoding/binary` import; `fixtureStoreTiled` now seeds byte-accurate
-  entry bundles (the `leaf-i` preimages, framed) for every `BundleCoords(size)` so the §3
-  verification can derive a leaf hash equal to `tree.LeafHash(seq)`. Converted
-  `TestCertificateInclusionProofFrozen` → `TestCertificateInclusionProofContradictory`: same
-  contradictory-tile fixture (mirror tree A, accept tree B's root) but `freeze=false`, asserting
-  §1+§2 render while §3 is absent **even though the hub is not frozen**.
+**Summary:** The §3 INCLUSION PROOF clause now gates `HasClause3` on a fail-closed
+`proof.VerifyInclusion` against the §2 accepted root — a faithful port of proofserve's `serveVerify`
+crypto path — replacing the racily-read `!hub.Frozen` flag entirely. This closes the open `critical`
+(fork-poll TOCTOU window) by construction: the rendered ✓ is now true iff the proof it shows rebuilds
+the root it shows. Scope is tight (1 non-test source file), the mutation is reproducible and
+non-vacuous, and Codex independently found no bugs.
 
-**Verification:** `mise run check` → green (all 21 packages `ok`, `go build`/`go vet`/`go test`).
-Per-criterion:
-- `go test -count=1 -run TestCertificate ./internal/certificate` → PASS uncached (clean §3 proof,
+**Verification:**
+- [x] `mise run check` green — all 21 packages `ok` (build + vet + test).
+- [x] `go test -count=1 -run TestCertificate ./internal/certificate` — PASS uncached (clean §3 proof,
   tile-gap honest-decline, and the new non-frozen contradictory test).
-- Oracle/conformance gate: `go test -count=1 ./internal/logclient ./internal/proofserve
-  ./cmd/notecheck` → all `ok`.
-- Mutation (non-vacuity): replacing the §3 `proof.VerifyInclusion(...) == nil` guard with
-  `... == nil || true` (keeps `proof`/`leafHash` referenced so it still compiles) makes
-  `TestCertificateInclusionProofContradictory` FAIL while the clean `TestCertificateInclusionProof`
-  stays PASS; restored, tree clean. (The bare `if true` mutation in `next.md` won't compile — unused
-  `proof` import + unused `leafHash` — so I used the `|| true` variant, which is the same logical
-  mutation and keeps the build valid; review can reproduce it identically.)
-- `gofmt -l .` empty; `git diff --stat go.mod go.sum` empty; `GOOS=js GOARCH=wasm go build
-  ./internal/index ./internal/didweb` → exit 0; `git diff --stat internal/certificate/cert.html`
-  empty; no `hub.Frozen`/`Frozen` reference left in `handler.go`.
+- [x] Oracle/conformance gate (crypto path touched): `go test -count=1 ./internal/logclient
+  ./internal/proofserve ./cmd/notecheck` — all `ok`.
+- [x] Mutation (non-vacuity): replacing the §3 `proof.VerifyInclusion(...) == nil` guard with
+  `... == nil || true` makes `TestCertificateInclusionProofContradictory` FAIL while the clean
+  `TestCertificateInclusionProof` stays PASS. Reproduced by reviewer; reverted, tree clean. (The bare
+  `if true` from next.md won't compile — unused `proof`/`leafHash`; `|| true` is the same logical
+  mutation.)
+- [x] `gofmt -l .` empty.
+- [x] `git diff --stat go.mod go.sum` empty (byte-unchanged).
+- [x] `GOOS=js GOARCH=wasm go build ./internal/index ./internal/didweb` exit 0 (purity/WASM intact).
+- [x] `git diff --stat HEAD~1..HEAD -- internal/certificate/cert.html` empty (template untouched).
+- [x] Scope discipline — exactly 1 non-test source file (`handler.go`); no `## Not In Scope` work done.
+- [x] No gate circumvention across unpushed Go commits (no `nolint`/`t.Skip`/build-tag/swallowed-error;
+  the `else`/`case` branches that decline a clause are legitimate fail-closed, not error-swallowing).
+- [x] Port fidelity — §3 mirrors `serveVerify` (handler.go:535-575): same
+  `bundleIndex/offset/p` → `ReadEntryBundle` → `RecordBytesFromBundle` → `HashLeaf` → `VerifyInclusion`
+  arg order. `root` reused from §2's `CheckpointAt` (meaningful only inside the `HasClause2` guard).
 
-**Next:** Resume the §3-plan continuation now that the critical is closed and this can push: §4
-SIGNING KEY → §5 Bitcoin anchor → §6 record history, then the downloadable proof-bundle assembler
-(which shares this same build+verify crypto path and must keep the oracle/conformance gate green).
-The clean caps already proven here (`LastSize > 0`, `Position < LastSize`, entry-bundle seeding in
-`fixtureStoreTiled`) carry forward.
+**Issues found:** (none) — critical `Certificate §3 ... TOCTOU` deleted as verified-fixed. Backlog
+unchanged: `hubDomain` ForceQuery (`normal`), ADR-0011 Go 1.26/iscc-lib (`normal`), four `low` items.
+
+**Codex second opinion:** "No actionable bugs were found in the HEAD diff. The new certificate §3
+verification follows the existing inclusion-verification pattern and the relevant tests pass." No
+findings to triage — matches the reviewer's independent conclusion.
+
+**Next:** Resume the §3-plan continuation now that the critical is closed and this can push: §4 SIGNING
+KEY → §5 Bitcoin anchor → §6 record history, then the downloadable proof-bundle assembler (which shares
+this same build+verify crypto path and must keep the oracle/conformance gate green). The clean caps
+already proven (`LastSize > 0`, `Position < LastSize`, entry-bundle seeding in `fixtureStoreTiled`)
+carry forward.
 
 **Notes:**
-- Reused the `root []byte` returned by §2's `CheckpointAt` for `VerifyInclusion` rather than
-  re-decoding `data.CheckpointRoot` (cleaner; `root` is only meaningful when `data.HasClause2`, which
-  is exactly the branch guard). `root` was already in scope from the §2 block.
-- `ErrLeafOutOfBundle` from `RecordBytesFromBundle` and `os.ErrNotExist` from `ReadEntryBundle` are
-  honest gaps → §3 declined (NOT 500), mirroring §2's split and proofserve's `serveVerify`. A
-  non-nil `VerifyInclusion` result is a silent §3 decline, never a 500.
-- **Out-of-scope working-tree changes were present and NOT committed by me:** `.claude/agents/review.md`,
-  `.claude/context/target.md`, `.devcontainer/Dockerfile`, and untracked
-  `.claude/adr/0012-agent-browser-visual-verification.md` + `.claude/skills/agent-browser/`. These
-  appeared in the tree independently of this work package (not mine to touch); I committed only
-  `handler.go`, `handler_test.go`, and this handoff. Flagging for review/loop hygiene.
+- The unpushed range is 11 commits (CI was green only at `17c4957`); this PASS pushes the whole §3
+  effort (build → freeze-gate → fail-closed) to `develop` in one go. CI on `develop` is the gate.
+- Out-of-scope working-tree changes are present and were correctly left uncommitted by advance:
+  modified `.claude/agents/review.md`, `.claude/context/target.md`, `.devcontainer/Dockerfile`, and
+  untracked `.claude/adr/0012-agent-browser-visual-verification.md` + `.claude/skills/agent-browser/`.
+  These are a separate human-driven agent-browser workstream, not this work package. The reviewer did
+  NOT commit them (not loop-owned); flagging for human/loop hygiene. They do not affect the verdict.
+- Durable rule promoted to the index: "on a self-verifiable surface, gate a rendered ✓/Merkle assertion
+  on a re-VERIFICATION, not a status flag." Applies forward to the proof-bundle assembler and the
+  in-browser verifier.
