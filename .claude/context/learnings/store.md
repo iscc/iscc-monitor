@@ -8,38 +8,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## SQLiteFetcher / mirror read-back (`internal/store/tiles.go` + `fetcher.go`)
 
-- **`next.md`'s "`var _ fsck.Fetcher = SQLiteFetcher{}` AND byte-identical go.mod" was a contradiction
-  — advance correctly resolved it by copying the interface, not importing it.** Reviewer reconfirmed
-  from source: `go list -deps github.com/transparency-dev/tessera/fsck` pulls `net/http`, `otel`, and
-  `klog` (via `fsck` → `tessera/client` + `errgroup`), so importing `fsck` even in a `_test.go` would
-  break store's leaf purity AND force `go mod tidy` to add indirect requires. The test instead declares
-  a local `fsckFetcher` interface that is **byte-for-byte identical** to `fsck.Fetcher@v1.0.2`
-  (`ReadCheckpoint`/`ReadTile(ctx,l,i uint64,p uint8)`/`ReadEntryBundle(ctx,i uint64,p uint8)` — names,
-  params, types, returns all match; diffed against `fsck/fsck.go:38-42`) and pins it with `var _
-  fsckFetcher = SQLiteFetcher{}`. Equivalent drift-detection guarantee, no dep-closure leak,
-  go.mod/go.sum byte-identical, store stays a leaf (`.Imports` = `context crypto/sha256 database/sql
-  embed errors fmt internal/tiles modernc.org/sqlite os time`, no `net/http`). Not a gate dodge.
-- **The p↔width translation is the load-bearing bug surface and is pinned correctly.** `widthForP(p)`:
-  `p==0 → tiles.TileWidth (256)`, else `int(p)`; a full-tile request (`p==0`) must look up width 256,
-  not 0. `RecordTile`/`RecordEntryBundle` set `is_full=1` only when `tiles.IsFull(width)` (width==256)
-  via `boolToInt`; partials overwrite in place through the composite-PK `ON CONFLICT … DO UPDATE`
-  (TestRecordTilePartialOverwrite asserts row count stays 1). `LatestCheckpointRaw` is the
-  size-agnostic `ORDER BY tree_size DESC LIMIT 1` read (distinct from size-keyed `CheckpointAt`).
-- **`widthForP` is now the SINGLE `p→width` authority (`fetcher.go:113`) — the write API speaks `p`,
-  the follower's duplicate is deleted (RESOLVED the last `normal` issue).** `RecordTile`/
-  `RecordEntryBundle` take `p uint8` and compute `width := widthForP(p)` at the top (error strings still
-  print the *translated* `width`, so a full-tile error reads `width 256`). `grep -rn "func widthForP"
-  internal/` returns exactly one hit. The read API (`ReadTileBlob`/`ReadEntryBundleBlob`, deliberately
-  Not-In-Scope) keeps `width int` — they are keyed by the stored column, not the public ingest surface.
-  **Full coords MUST be written as the literal `0`, never `uint8(256)` (wraps to 0 only by luck);** test
-  sites with a runtime `width` use an explicit `if width == tiles.TileWidth { p = 0 }` guard. The
-  deleted `TestWidthForP` (which tested the now-gone follower duplicate's arithmetic) is correctly
-  superseded by `TestIngestTilesWidthMapping`, which drives the invariant through the PUBLIC
-  `RecordTile`/`ReadTileBlob` surface — both the positive (full readable at 256) AND the negative (full
-  NOT readable at 0). Reviewer mutation-proved it non-vacuous: `widthForP` full-mapping → `tiles.TileWidth
-  - 1` makes `TestIngestTilesWidthMapping` + `TestRecordTileRoundTrip` FAIL ("full tile not found"),
-  reverted → green. Not a gate dodge. Oracle gate correctly N/A (pure arithmetic), but the four
-  mirror-consuming pkgs (`follower`/`logclient`/`proofserve`/`tilesserve`) re-ran uncached green.
+- **settled (landed):** `SQLiteFetcher` satisfies `fsck.Fetcher` via a *byte-identical copied*
+  `fsckFetcher` interface (pinned `var _ fsckFetcher = SQLiteFetcher{}`), never by importing `fsck`
+  (that pulls `net/http`/`otel`/`klog` and breaks leaf purity). `widthForP` is the SINGLE `p→width`
+  authority (`fetcher.go`): `p==0 → tiles.TileWidth (256)`, else `int(p)`; the write API speaks `p` and
+  **full coords MUST be written as the literal `0`, never `uint8(256)`** (wraps to 0 only by luck) —
+  runtime-`width` test sites guard `if width == tiles.TileWidth { p = 0 }`. `is_full=1` only at
+  width==256; partials overwrite in place via composite-PK `ON CONFLICT … DO UPDATE`. Both invariants
+  are mutation-proven and covered by `TestIngestTilesWidthMapping`/`TestRecordTilePartialOverwrite`.
 - **The partial→full fallback wraps `os.ErrNotExist` on BOTH legs, so `errors.Is` survives a double
   miss.** `ReadTile`/`ReadEntryBundle` retry at width 256 only when `p>0 && errors.Is(err,
   os.ErrNotExist)`; if the full leg also misses it returns *that* wrapped `os.ErrNotExist`
@@ -120,6 +96,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   no `ON CONFLICT`), so re-detection yields distinct ids/rows (re-detection is itself evidence). The
   `Kind` string rides on the `Violation` struct exactly as `Status` rides on `CheckpointRecord`, keeping
   store import-free of `logclient`.
+- **`ListViolations(ctx, hubID)` is the read side of the freeze evidence — a leaf read scoped to one
+  hub, newest-first (`ORDER BY detected_at DESC, id DESC`), reading back only `hub_id, kind,
+  detected_at` (raw_a/raw_b/proof_json deliberately left zero — they belong with the future
+  proof-bundle surface).** `detected_at` reads through `sql.NullInt64` (the `unixOrNil` inverse) → zero
+  `time.Time` on NULL, mirroring the other NULL-time reads; a hub with none returns an empty slice +
+  nil err. SQLite quirk to know: a NULL `detected_at` sorts LAST under `DESC` (so a time-unknown
+  violation lands at the bottom of the newest-first list) — acceptable for the Exhibit. Reviewer
+  mutation-proved non-vacuous (reverted): `DESC → ASC` flips `TestListViolations`'s newest-first order.
 - **The `net`/`net/netip`/`net/url` in `go list -deps ./internal/store` are from `modernc.org/sqlite`,
   NOT iscc-monitor code.** The load-bearing invariant is "no `net/http` in the store closure" — verify
   with `go list -deps ./internal/store | grep '^net/http'` (empty) and that the package's own `.Imports`

@@ -65,6 +65,17 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   min-content width and the ellipsis never engages — a long domain pushes the coverage/status columns out of
   view. Fixed by `.hub-cell { min-width: 0 }` on the wrapping div (Codex P2, confirmed + fixed in review). Any
   future ledger cell that intends to ellipsize must carry `min-width: 0` on the grid item, not just the children.
+- **The frozen dossier (`internal/dossier`) adds an Exhibit panel ON TOP OF the badge — markup-distinct
+  per ADR-0010, gated `{{if .Frozen}}` where `Frozen = status == "frozen"`.** It is a full bordered
+  `<section class="exhibit">` (loud heading "Exhibit — self-consistency violation" + literal "Do not
+  trust new state from this hub." + a per-violation `kind`/`detected_at` list), NOT a recolored chip.
+  Non-dismissable by construction: no `<button>`, no `<script>`, no `hidden` attr (tests ban ` hidden>`/
+  ` hidden=` specifically, NOT the CSS `overflow: hidden`). The `ListViolations` read stays off the hot
+  path — only a frozen hub queries it (safe because `overlayStatus` never downgrades `frozen`, only
+  promotes `verified`); a frozen-with-zero-rows hub still renders the panel header via an `{{else}}`
+  fallback, never a broken `{{range}}`. Empty-list and NULL-detected-at ("detected at an unknown time")
+  branches are coverage-honesty discipline applied to evidence timestamps. Both the ordering and the
+  Frozen gate are mutation-proven non-vacuous (reviewer reconfirmed independently).
 - **The status cell renders through the `hubStatusBadge` partial, not the bare word.** The partial is
   associated into the page set once at init (`template.Must(template.New("dashboard").Parse(pageTemplate))`
   then `template.Must(t.Parse(badge.Source))`, wrapped in an init closure since `template.Must` returns
