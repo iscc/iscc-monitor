@@ -15,13 +15,14 @@
 // left an unaccepted projection) or a hub with no accepted checkpoint yet renders
 // an honest cannot-certify state, never an affirmative claim.
 //
-// The certificate grows clause by clause: §1 Subject and §2 Checkpoint (the
-// accepted (size, root) the subject position falls within) are real for a
-// certifiable id, alongside the documented honesty states. Clauses §3-§6
-// (inclusion proof, signing key, Bitcoin anchor, record history) and the
-// downloadable proof bundle are gated placeholders that render nothing yet — later
-// sub-steps grow the template without rework. The Download-proof-bundle action
-// renders as a disabled placeholder.
+// The certificate grows clause by clause: §1 Subject, §2 Checkpoint (the accepted
+// (size, root) the subject position falls within), and §3 Inclusion Proof (the
+// RFC-6962 leaf→siblings→root chain recomputed from the hub's mirrored tiles) are
+// real for a certifiable id, alongside the documented honesty states. Clauses §4-§6
+// (signing key, Bitcoin anchor, record history) and the downloadable proof bundle
+// are gated placeholders that render nothing yet — later sub-steps grow the template
+// without rework. The Download-proof-bundle action renders as a disabled
+// placeholder.
 //
 // Fail-closed / coverage-honesty discipline (ADR-0001): every "cannot certify"
 // branch — a malformed id, an id resolving to no listed slot, a resolved domain
@@ -31,22 +32,26 @@
 // error or a template render error) is a 500, and the page is rendered into a
 // buffer first so such a fault is a 500 BEFORE any 200 is committed.
 //
-// The oracle/conformance gate is N/A for this skeleton: it is a pure HTML render
-// of a decode + a registry resolve + a store SeqsForISCCID lookup, touching no
-// signature, RFC-6962, Merkle, did:web, fsck, or proof path. The gate APPLIES to
-// the later proof-bundle sub-step (the served bundle's inclusion proof must be
-// mutation-proven non-vacuous), not here.
+// The oracle/conformance gate APPLIES from §3 onward: the §3 inclusion proof is the
+// real RFC-6962 path recomputed from the mirror (logclient.InclusionProofFromTiles
+// over store.SQLiteFetcher), so its test is mutation-proven non-vacuous against
+// testonly.Tree.InclusionProof (the independent prover). The earlier §1 subject and
+// §2 checkpoint clauses touch no crypto path (a decode + a registry resolve + store
+// reads), so the gate was N/A there.
 package certificate
 
 import (
 	"bytes"
 	_ "embed"
 	"encoding/base64"
+	"errors"
 	"html/template"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/iscc/iscc-monitor/internal/index"
+	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/registry"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
@@ -82,11 +87,12 @@ type StatusSource interface {
 
 // certData is the certificate template view-model. For a certifiable id it
 // populates the §1 SUBJECT clause + subject banner (subject id, resolved hub
-// domain, subject position) and the §2 CHECKPOINT clause (the accepted (size,
-// root)). It carries the honest "cannot certify" state with a human-readable
-// Reason; the subject id is echoed back even on a not-found so the page names what
-// was looked up. The §3-§6 HasClauseX flags are all false so the template's gated
-// clause placeholders render nothing yet.
+// domain, subject position), the §2 CHECKPOINT clause (the accepted (size, root)),
+// and the §3 INCLUSION PROOF clause (the RFC-6962 sibling-hash chain that rebuilds
+// the accepted root from the subject leaf). It carries the honest "cannot certify"
+// state with a human-readable Reason; the subject id is echoed back even on a
+// not-found so the page names what was looked up. The §4-§6 HasClauseX flags are all
+// false so the template's gated clause placeholders render nothing yet.
 type certData struct {
 	// IsccID is the subject id as supplied by the caller (echoed verbatim, never
 	// interpreted beyond the decode). It is shown even on a not-found.
@@ -114,14 +120,24 @@ type certData struct {
 	// CheckpointRoot is the accepted checkpoint's RFC-6962 tree head at
 	// CheckpointSize, base64-Std encoded (matching the log browser and verify-for-me
 	// so the root string is byte-identical across surfaces). Read back via
-	// store.CheckpointAt; meaningful only when HasClause2.
+	// store.CheckpointAt; meaningful only when HasClause2. It doubles as the §3 root
+	// chip — the chain the inclusion proof rebuilds is the same accepted root.
 	CheckpointRoot string
+	// ProofHashes is the §3 INCLUSION PROOF sibling chain: the RFC-6962 inclusion
+	// proof of the subject leaf (Position) against the accepted tree (CheckpointSize),
+	// recomputed from the hub's mirrored tiles via
+	// logclient.InclusionProofFromTiles. Each hash is base64-Std encoded (matching
+	// CheckpointRoot and verify-for-me's writeEvidence so the strings are
+	// byte-identical across surfaces). Meaningful only when HasClause3; it may be
+	// empty (a single-leaf tree has an empty-but-valid proof), so HasClause3 gates on
+	// the proof building, not on len(ProofHashes) > 0.
+	ProofHashes []string
 
 	// HasClause2..6 gate the later clauses (checkpoint, inclusion proof, signing
 	// key, Bitcoin anchor, record history). HasClause2 is set when the accepted
-	// checkpoint's (size, root) is read for a certifiable id; the rest are false in
-	// this skeleton so their gated placeholders render nothing; later sub-steps set
-	// them.
+	// checkpoint's (size, root) is read for a certifiable id; HasClause3 when the
+	// inclusion proof builds from the mirror; the rest are false so their gated
+	// placeholders render nothing; later sub-steps set them.
 	HasClause2 bool
 	HasClause3 bool
 	HasClause4 bool
@@ -195,6 +211,13 @@ func Handler(hubList *registry.HubList, st *store.Store, statuses StatusSource) 
 //     CheckpointAt(hub.LastSize) and populate the §2 CHECKPOINT clause with the
 //     accepted (size, root). A DB error here is a 500; an absent row leaves §2
 //     unrendered (no fabricated checkpoint).
+//  7. For a certifiable id, recompute the RFC-6962 inclusion proof of the subject
+//     leaf (seqs[0]) against the accepted tree (hub.LastSize) from the hub's
+//     mirrored tiles (InclusionProofFromTiles over a SQLiteFetcher) and populate the
+//     §3 INCLUSION PROOF clause. A tile not yet mirrored (os.ErrNotExist) leaves §3
+//     unrendered (an honest gap, NOT a 500 — the certificate can decline a clause,
+//     unlike verify-for-me which has committed to serving a proof); any other build
+//     error is a 500 (buffered before any 200).
 func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawID string) (certData, int) {
 	if rawID == "" {
 		return certData{Reason: "no ISCC-ID supplied"}, http.StatusOK
@@ -287,6 +310,37 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 		data.CheckpointSize = hub.LastSize
 		data.CheckpointRoot = base64.StdEncoding.EncodeToString(root)
 		data.HasClause2 = true
+	}
+
+	// §3 INCLUSION PROOF: recompute the RFC-6962 inclusion proof of the subject leaf
+	// (data.Position == seqs[0]) against the accepted tree (hub.LastSize) from the
+	// hub's mirrored tiles. This is the first certificate clause on the Merkle path;
+	// it reuses the same oracle-gated builder verify-for-me uses (serveInclusion), so
+	// the certificate never hand-rolls Merkle math — it only encodes the result. The
+	// cap above already proved hub.LastSize > 0 and seqs[0] < hub.LastSize, so the
+	// leaf is in range. A valid proof can be empty (a single-leaf tree), so HasClause3
+	// gates on the build SUCCEEDING, not on the proof length. §3 also renders the
+	// accepted root chip (data.CheckpointRoot), so it is meaningful only alongside §2.
+	f := store.SQLiteFetcher{Store: st, HubID: hub.HubID}
+	proof, err := logclient.InclusionProofFromTiles(r.Context(), f.ReadTile, data.Position, hub.LastSize)
+	if err != nil {
+		// A tile not yet mirrored is an honest gap, not a fault: leave §3 unrendered
+		// (the page still shows §1 + §2) rather than fabricating a proof or 500ing.
+		// proofserve maps this to a 404 because it has committed to serving a proof;
+		// the clause-by-clause certificate can decline a clause honestly (as §2 does
+		// on a missing checkpoint row). Any non-os.ErrNotExist build error is a real
+		// fault → 500 (buffered before any 200), matching §2's split.
+		if !errors.Is(err, os.ErrNotExist) {
+			return certData{}, http.StatusInternalServerError
+		}
+	} else if data.HasClause2 {
+		// §3's root chip is the accepted root from §2, so render §3 only when §2 holds.
+		hashes := make([]string, len(proof))
+		for i, h := range proof {
+			hashes[i] = base64.StdEncoding.EncodeToString(h)
+		}
+		data.ProofHashes = hashes
+		data.HasClause3 = true
 	}
 	return data, http.StatusOK
 }

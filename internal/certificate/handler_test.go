@@ -19,14 +19,23 @@ package certificate
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/transparency-dev/merkle/compact"
+	"github.com/transparency-dev/merkle/rfc6962"
+	"github.com/transparency-dev/merkle/testonly"
+	"github.com/transparency-dev/tessera/api"
 
 	"github.com/iscc/iscc-monitor/internal/registry"
 	"github.com/iscc/iscc-monitor/internal/store"
+	"github.com/iscc/iscc-monitor/internal/tiles"
 )
 
 // goldenID is the realm-0 golden ISCC-IDv1 (internal/index): it decodes to
@@ -420,5 +429,195 @@ func TestCertificateNonGET(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, PathPrefix+goldenID, nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
+	}
+}
+
+// treeNodeHash recomputes the tree-node hash at (treeLevel, treeIndex) by folding
+// the leaf hashes that node covers through a compact range — the same recompute the
+// proof builder does, so the tiles ingested below are byte-consistent with the tree
+// (ported from logclient/proofbuilder_test.go's nodeHash and follower/fsck_test.go's
+// equivNodeHash). The node covers leaves [treeIndex<<treeLevel, (treeIndex+1)<<treeLevel)
+// within size.
+func treeNodeHash(t *testing.T, tree *testonly.Tree, treeLevel, treeIndex, size uint64) []byte {
+	t.Helper()
+	first := treeIndex << treeLevel
+	last := (treeIndex + 1) << treeLevel
+	if last > size {
+		last = size
+	}
+	rf := compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}
+	r := rf.NewEmptyRange(0)
+	for i := first; i < last; i++ {
+		if err := r.Append(tree.LeafHash(i), nil); err != nil {
+			t.Fatalf("Append leaf %d: %v", i, err)
+		}
+	}
+	h, err := r.GetRootHash(nil)
+	if err != nil {
+		t.Fatalf("GetRootHash for node (%d, %d): %v", treeLevel, treeIndex, err)
+	}
+	return h
+}
+
+// fixtureStoreTiled is fixtureStore with a REAL mirrored tile backing, so the §3
+// inclusion-proof clause has genuine tiles to rebuild the proof from. It builds an
+// internally-consistent RFC-6962 tree of `leaves` records (merkle's testonly.Tree
+// as the single source of truth), ingests every hash tile a complete mirror of that
+// tree needs (the level-0 leaf-hash rows plus any upper levels, each node recomputed
+// from the tree so the served tiles are byte-accurate), seeds the accepted
+// checkpoint with the tree's REAL root at that size (AdvanceAccepted sets LastSize),
+// and indexes the golden leaf at `seq` under the production ISCC:-prefixed form. The
+// returned tree is the independent prover the §3 test cross-checks against. Pick a
+// `leaves`/`seq` that yields a multi-hash proof (e.g. a 5-leaf tree, leaf 0) so the
+// proof is substantive, never empty.
+func fixtureStoreTiled(t *testing.T, indexDomain, indexedID string, seq uint64, leaves int) (*store.Store, *testonly.Tree) {
+	t.Helper()
+	ctx := context.Background()
+
+	tree := testonly.New(rfc6962.DefaultHasher)
+	for i := range leaves {
+		tree.AppendData([]byte(fmt.Sprintf("leaf-%d", i)))
+	}
+	size := tree.Size()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "certificate-tiled.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	id0, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub sb0: %v", err)
+	}
+	id1, err := st.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub sb1: %v", err)
+	}
+	target := id0
+	if indexDomain == "sb1.amlet.id" {
+		target = id1
+	}
+
+	// Ingest every hash tile the mirror needs, byte-accurate against the tree. Each
+	// tile's bottom row spans tree nodes at tree-level (tileLevel*TileHeight); a node
+	// off the right edge (its leaves all >= size) is omitted, so a partial tile holds
+	// exactly its live nodes (store.md widthForP: the partial qualifier is its width).
+	for _, c := range tiles.TileCoords(size) {
+		treeLevel := c.Level * uint64(tiles.TileHeight)
+		first := c.Index * tiles.TileWidth
+		var nodes [][]byte
+		for n := uint64(0); n < tiles.TileWidth; n++ {
+			treeIndex := first + n
+			if (treeIndex << treeLevel) >= size {
+				break
+			}
+			nodes = append(nodes, treeNodeHash(t, tree, treeLevel, treeIndex, size))
+		}
+		raw, err := api.HashTile{Nodes: nodes}.MarshalText()
+		if err != nil {
+			t.Fatalf("HashTile.MarshalText (level %d index %d): %v", c.Level, c.Index, err)
+		}
+		if err := st.RecordTile(ctx, target, c.Level, c.Index, c.Partial, raw, time.Unix(0, 0)); err != nil {
+			t.Fatalf("RecordTile (level %d index %d): %v", c.Level, c.Index, err)
+		}
+	}
+
+	if err := st.RecordProjections(ctx, []store.ProjectionRecord{
+		{HubID: target, Seq: seq, IsccID: "ISCC:" + indexedID, NoteSchema: "iscc-note-0.8.0.json"},
+	}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+	// Accept the checkpoint at the tree's REAL root (the same root the §3 proof must
+	// rebuild to), so the accepted-tree cap certifies the leaf and §2 renders the root.
+	if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+		HubID:    target,
+		TreeSize: size,
+		Root:     tree.Hash(),
+		Raw:      []byte("raw"),
+	}); err != nil {
+		t.Fatalf("AdvanceAccepted: %v", err)
+	}
+	return st, tree
+}
+
+// TestCertificateInclusionProof is the §3 oracle-gated test: with a real mirrored
+// tile backing, the certificate recomputes the RFC-6962 inclusion proof of the
+// subject leaf from the mirror and renders the leaf→siblings→root chain. The proof
+// is mutation-proven non-vacuous against testonly.Tree.InclusionProof (the
+// independent prover): the rendered hash chips must equal base64-Std of each hash in
+// tree.InclusionProof(seq, size). A 5-leaf tree with the leaf at seq 0 yields a
+// multi-hash proof, so the byte-match is substantive, not an empty-vs-empty pass.
+func TestCertificateInclusionProof(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+	st, tree := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves)
+	h := Handler(testnetHubList(), st, nil)
+
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	// html/template HTML-escapes the rendered base64 chips ('+' -> "&#43;"), so
+	// assert on the unescaped body — the semantic content is the base64-Std the
+	// view-model carries, byte-identical to verify-for-me's writeEvidence.
+	body := html.UnescapeString(rec.Body.String())
+
+	for _, want := range []string{
+		"§3 INCLUSION PROOF",
+		fmt.Sprintf("leaf · seq %d", seq),
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing §3 marker %q\n%s", want, body)
+		}
+	}
+
+	// The independent prover: the tree's own inclusion proof. Each rendered hash chip
+	// must be the base64-Std of one of these hashes — a wrong/corrupt rendered hash
+	// fails this assert, proving §3 is the real proof, not a literal.
+	want, err := tree.InclusionProof(seq, tree.Size())
+	if err != nil {
+		t.Fatalf("tree.InclusionProof: %v", err)
+	}
+	if len(want) < 2 {
+		t.Fatalf("proof has %d hashes; want a multi-hash (substantive) proof", len(want))
+	}
+	for i, hsh := range want {
+		enc := base64.StdEncoding.EncodeToString(hsh)
+		if !strings.Contains(body, enc) {
+			t.Errorf("body missing §3 inclusion-proof hash %d %q\n%s", i, enc, body)
+		}
+	}
+	// §3's root chip is the accepted root (the chain rebuilds it); it must be the
+	// tree's REAL root, base64-Std, the same value §2 renders.
+	if root := base64.StdEncoding.EncodeToString(tree.Hash()); !strings.Contains(body, root) {
+		t.Errorf("body missing §3 accepted-root chip %q\n%s", root, body)
+	}
+	// The §3 note states the proof length (the actual count, not a literal "Five").
+	if want := fmt.Sprintf("%d sibling hashes", len(want)); !strings.Contains(body, want) {
+		t.Errorf("body missing §3 proof-length note %q\n%s", want, body)
+	}
+}
+
+// TestCertificateInclusionProofTileGap asserts the honest-gap path: a certifiable id
+// whose tiles are NOT mirrored (the synthetic §1/§2 fixture, no RecordTile) renders
+// §1 and §2 but NO §3 clause — the os.ErrNotExist tile miss leaves §3 unrendered
+// rather than 500ing or fabricating a proof.
+func TestCertificateInclusionProofTileGap(t *testing.T) {
+	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815) // no tiles mirrored
+	h := Handler(testnetHubList(), st, nil)
+
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// §1 + §2 still render (the certifiable subject + accepted checkpoint).
+	if !strings.Contains(body, "§2 CHECKPOINT") {
+		t.Errorf("tile-less fixture lost its §2 CHECKPOINT clause\n%s", body)
+	}
+	// §3 must be ABSENT — the tile gap is honest, not a fabricated proof.
+	if strings.Contains(body, "§3 INCLUSION PROOF") {
+		t.Errorf("a tile-less fixture rendered a §3 INCLUSION PROOF clause\n%s", body)
 	}
 }

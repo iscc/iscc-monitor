@@ -345,7 +345,12 @@
       {{if .HasClause3}}
       <div class="clause">
         <div class="clause-marker">§3 INCLUSION PROOF</div>
-        <div class="clause-value"></div>
+        <div class="clause-value">
+          <div class="clause-mono">leaf · seq {{.Position}}</div>
+          {{range .ProofHashes}}<div class="clause-mono">sibling {{.}}</div>
+          {{end}}<div class="clause-mono">root {{.CheckpointRoot}} ✓</div>
+          <div class="clause-note">{{len .ProofHashes}} sibling hashes rebuild the accepted root from this record.</div>
+        </div>
       </div>
       {{end}}
       {{if .HasClause4}}
