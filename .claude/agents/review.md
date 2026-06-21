@@ -36,7 +36,8 @@ record honest learnings, set the **verdict**, and push on PASS.
 
 1. **Read the handoff** — understand what `advance` claims to have done.
 2. **Inspect the diff** — `git diff HEAD~1..HEAD` (HEAD = advance commit). Read the modified files in
-   full. Compare against what `next.md` asked for.
+   full. Compare against what `next.md` asked for. Read the learnings detail file(s) for the changed
+   packages (resolve via the `learnings.md` index pointer table) so you review against known pitfalls.
 3. **Run verification** — run `mise run check` (build + vet + test). Then run each specific check from
    `next.md`'s **Verification** section individually and record pass/fail for each. Run `gofmt -l .`
    and treat **any** listed file as a formatting failure (the gate cannot catch this via exit code).
@@ -65,8 +66,21 @@ record honest learnings, set the **verdict**, and push on PASS.
    back to `HEAD~1..HEAD`) for gate circumvention: `//nolint`, `t.Skip`/`t.SkipNow`, swallowed errors
    to dodge a check, build-tag exclusions, deleted assertions/tests, or loosened gates. Any of these
    (without a justifying comment) → verdict **NEEDS_WORK**; the fix is always the root cause.
-6. **Update learnings** — append genuinely useful, specific findings to `learnings.md` (max ~5 bullets
-   per review; remove duplicates). Prune if it drifts past signal.
+6. **Update learnings** — write findings to the **detail file** for the package(s) you reviewed
+   (`.claude/context/learnings/<name>.md`; create it + add a pointer row to the `learnings.md` index
+   if the area is new). Enforce these rules — an unbounded, never-pruned learnings file is itself a
+   gate failure of this step:
+   - **Promote to the `learnings.md` index ONLY a durable, cross-cutting rule** — one that stays true
+     even if that package were deleted *and* is needed even when a step does not touch it. Everything
+     package-local stays in the detail file.
+   - **Record the forward-looking pitfall, not the verification ceremony.** Keep the trap a future
+     implementer would hit; the proof you ran this iteration (mutation reverted, `go.sum`
+     byte-identical, oracle gate N/A, WASM-green) belongs in this handoff + the commit message, NOT in
+     cross-iteration memory.
+   - **Max ~5 bullets per review; remove duplicates and notes a later slice has superseded.**
+   - **Rotation budget (hard):** if a detail file exceeds ~40 bullets / ~150 lines, you MUST net-reduce
+     it this iteration — collapse settled/landed-seam notes into a one-line `settled:` summary (git
+     history keeps the detail). Keep the `learnings.md` index under ~120 lines.
 7. **Manage issues** — delete any `issues.md` entry this iteration resolved (after verifying the fix);
    sweep stale entries already satisfied by `state.md`; add new `[review]` issues for real problems
    found (`normal`, or `critical` if it blocks progress). Do not file style nits.
@@ -76,7 +90,7 @@ record honest learnings, set the **verdict**, and push on PASS.
    **Loop** signal honestly.
 10. **Commit** learnings, handoff, issues, and any minor fixes:
     ```
-    git add .claude/context/learnings.md .claude/context/handoff.md .claude/context/issues.md <fixed files>
+    git add .claude/context/learnings.md .claude/context/learnings/ .claude/context/handoff.md .claude/context/issues.md <fixed files>
     git commit -m "cid(review): <summary of findings>"
     ```
 11. **Push (fully autonomous — on PASS / PASS_WITH_NOTES only).** The loop runs on `develop`; **never

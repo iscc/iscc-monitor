@@ -42,7 +42,10 @@ that advances iscc-monitor toward `target.md`. One step — not a plan, not a mi
 3. **Check issues.** Any `critical` issue preempts everything. Weigh `normal` issues against the
    state→target gap (prefer finishing a coherent feature before switching). **Skip `low` entirely** —
    it is reserved for human-directed work.
-4. **Consult learnings.** Respect the seeded correctness rules and any pitfalls recorded there.
+4. **Consult learnings.** Respect the seeded correctness rules in the always-loaded `learnings.md`
+   index. For the package(s) this step will touch, look them up in the index's pointer table and
+   **Read `.claude/context/learnings/<name>.md`** for prior pitfalls before writing Implementation
+   Notes; list that detail file under Scope → Reference so `advance` reads it too.
 5. **Choose ONE step** that:
    - advances toward the target;
    - modifies **at most 3 files** (excluding tests and docs);

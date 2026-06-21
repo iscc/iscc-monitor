@@ -32,7 +32,9 @@ less.
 1. **Understand the work package.** Read `next.md` — scope, implementation notes, verification.
 2. **Read reference material** — ONLY the files listed under `next.md` → Reference (e.g. paths under
    `cauldron/`, `.claude/derive_vkey.py`). Port from them; **never `import` `cauldron/`** (it is
-   gitignored reference, not a module dependency). Do not explore broadly.
+   gitignored reference, not a module dependency). Do not explore broadly. **Also Read the learnings
+   detail file(s)** for the package you are changing — find them via the `learnings.md` index pointer
+   table (or the Reference list) — so you do not re-trip a recorded pitfall.
 3. **Read before editing.** Always read a file before modifying it.
 4. **Implement.** Follow these principles:
    - Match existing Go style and the layout in `.claude/plans/cosmic-baking-octopus.md`.
@@ -96,5 +98,5 @@ less.
 - If a backward-incompatible change to a public API or a design deviation from the plan/ADRs is
   genuinely required, do **not** proceed silently — flag `**HUMAN REVIEW REQUESTED:**` in the handoff
   with the reason, and commit what you have.
-- Do not modify `state.md`, `target.md`, `next.md`, `learnings.md`, or `issues.md`. You write only
-  `handoff.md` and source/test files.
+- Do not modify `state.md`, `target.md`, `next.md`, `learnings.md`, `learnings/`, or `issues.md`. You
+  write only `handoff.md` and source/test files.

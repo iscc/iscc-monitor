@@ -163,4 +163,6 @@ properties on purpose — named here so each is a choice, not an oversight:
   "stop when only low-priority issues remain" clause to your `/goal` condition.
 - **Structured iteration log, `meta-improve` self-tuning, Codex cross-review, per-agent memory.** Git
   history + the Claude transcript replace the JSONL log; the other three are out of this simplified
-  scope. Cross-iteration knowledge lives in `.claude/context/learnings.md`.
+  scope. Cross-iteration knowledge lives in `.claude/context/learnings.md` (a slim, always-loaded
+  index of durable rules) plus `.claude/context/learnings/<name>.md` (per-package detail a role Reads
+  on demand) — see `.claude/context/README.md` for the promotion + rotation rules that keep it bounded.
