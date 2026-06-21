@@ -77,5 +77,6 @@ touch it. Everything package-local stays in the detail file. See `README.md` for
 | `.github/workflows/ci.yml` | `learnings/ci.md` | one CGO_ENABLED=0 job inlining mise check + the notecheck oracle shell-out; pipefail/SIGPIPE caveat |
 | `internal/metrics, internal/metricshttp` | `learnings/metrics.md` | stdlib-only Prometheus renderer; glossaryStatus mapping (rotated→unverified, frozen override); recordVerdict single mutation point |
 | `internal/dashboard` + `store.ListHubs` | `learnings/dashboard.md` | server-rendered `GET /` hub list; `/`-mount-vs-exact-path-guard; store-provable status subset (inactive>frozen>verified); coverage-honesty render; ListHubs leaf read |
+| `internal/badge` | `learnings/badge.md` | five-status `HubStatusBadge` SSR partial; silhouettes ported verbatim from the `.dc.html`; fail-closed label-from-fixed-table; `Render`+`Source`+`PartialName` surface; pure WASM-shareable leaf; only 3/5 store-provable |
 | `internal/registry` | `learnings/registry.md` | domains-only ADR-0009 parser; fails closed on URL-shaped lines; preserves order, no dedupe |
 | `internal/config` | `learnings/config.md` | pure env-value leaf; DB/REALM required; Frozen>=Normal cross-check ties to the back-off |
