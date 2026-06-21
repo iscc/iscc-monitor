@@ -1,212 +1,176 @@
-<!-- assessed-at: 173f718e9d8429ab3d97cc5bf3bb8efb817aacb0 -->
+<!-- assessed-at: dbc14499362fa54cc3cb3a4260e508e1bdb46d97 -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: M-UI (Evidence Ledger frontend, ADR-0010) in progress — the shared DS v2 shell (token CSS + self-hosted webfonts under `/_ds/`) is complete, and the first TWO screens are now dressed: `GET /` (realm index, CSS-grid) and `GET /<domain>/log/` (log browser, Evidence-Ledger card).
+## Phase: M-UI (Evidence Ledger frontend, ADR-0010) in progress. The shared DS v2 shell (token CSS + self-hosted webfonts under `/_ds/`) and two dressed screens (`/` realm index, `/<domain>/log/` log browser) are met. The hub-dossier screen (`GET /<domain>`) has LANDED but is NOT verified — the latest `review` verdict is **NEEDS_WORK**: the new bare-domain mount introduces a startup-panic crash surface (open `normal` issue).
 
-This iteration redressed the **log browser** (`GET /<domain>/log/`) from a bare `<table>` into the
-Evidence-Ledger card screen — `/_ds/tokens.css` + `/_ds/fonts.css` `<link>`s, a page-scoped `<style>`
-over the embedded DS `var(--*)` tokens, the masthead/ledger-card definition rows + proof-surface link
-list — with a new `TestBrowserLinksTokensNoCDN` HTTP-seam assert. Zero Go source files changed. M1/M2/M3
-remain fully met. Remaining v1 work: the rest of M-UI (hub dossier, record list, single record,
-certificate + proof-bundle, anchor panels), then the WASM verifier and OTS anchoring.
+The monitor's read-only/aggregator/trust-API core (M1, M2, M3) is fully met and CI-green. M-UI is mid-flight: the badge, DS shell, index, and log browser are dressed and verified; the hub dossier was added this iteration but its advance introduced a `normal`-priority defect (reserved-domain mount panic) and was returned NEEDS_WORK — it must be fixed before the dossier counts as met. The dossier commits are NOT pushed, so CI still reflects the previous PASS at `173f718`.
 
 ## Convergence
 - **Remaining Verify criteria:**
   - **M1: 0 open (met). M2: 0 open (met). M3: 0 open (met, 4/4).**
-  - **M-UI (Evidence Ledger frontend): ~5 still open** (in progress). **Landed:** (a) the
-    `HubStatusBadge` leaf (`internal/badge`, all five statuses, distinct label + inline-SVG
-    silhouette, golden + mutation + fail-closed) wired with five-status overlay on BOTH `/` and
-    `/<domain>/log/`; (b) the DS v2 shared shell — token CSS (`/_ds/tokens.css`) + self-hosted Readex
-    Pro / JetBrains Mono webfonts (`/_ds/fonts.css` + 8 woff2 subsets), CDN-free, `no-cache`+ETag+304;
-    (c) the `/` realm index redressed into the Evidence-Ledger CSS-grid screen (no `<table>`,
-    `display: grid`, DS token classes, CDN-free, no-JS, coverage-honesty footnote); (d) **this
-    iteration** — the **log browser** (`/<domain>/log/`) redressed into the Evidence-Ledger card
-    screen (token/font CSS linked, no `<table>`, no CDN, no-JS, coverage-honesty no-checkpoint state).
-    **Still open:** **hub dossier** (`/<domain>`, + categorically-distinct frozen **Exhibit**);
-    **paginated record list** (`?from=…[&n=…]`, no-JS, newest-first) + **single-record page**
-    (declaration / deletion / unknown schema); **certificate of inclusion** at `/inclusion/{iscc_id}`
-    (numbered evidence clauses) + **downloadable proof-bundle assembler** (`{checkpoint,
-    inclusion/consistency proof, record bytes, hub key, ots?}` — re-engages the oracle/conformance
-    gate; `serveVerify` discards the raw checkpoint bytes + resolved hub key the bundle needs);
-    **separate Bitcoin-anchor vs comparison-anchor panels** + tier-1/tier-2 affordance.
+  - **M-UI (Evidence Ledger frontend): ~5 still open.** **Met:** five-status `HubStatusBadge`
+    (`internal/badge`, all five statuses, distinct label + inline-SVG silhouette, golden + mutation +
+    fail-closed) wired into `/` and `/<domain>/log/`; the DS v2 shared shell (`/_ds/tokens.css` +
+    self-hosted Readex Pro / JetBrains Mono webfonts, CDN-free, `no-cache`+ETag+304); the `/` realm
+    index Evidence-Ledger CSS-grid redress; the `/<domain>/log/` log-browser Evidence-Ledger card
+    redress. **Landed-but-NOT-met (NEEDS_WORK):** the **hub dossier** (`GET /<domain>`,
+    `internal/dossier`) — the page itself passed all its Verify criteria (coverage honesty, badge
+    overlay, no-JS/no-CDN DS shell), but the advance introduced a startup-panic crash surface (a realm
+    `Domain` colliding with `/metrics`/`/healthz` panics `buildMux`); review returned NEEDS_WORK and
+    filed it as a `normal` issue. The dossier's frozen **Exhibit** sub-step (needs a new
+    `store.ListViolations` read) is not yet built. **Still open:** dossier fix + Exhibit; **paginated
+    record list** (`?from=…[&n=…]`, no-JS, newest-first) + **single-record page** (declaration /
+    deletion / unknown schema); **certificate of inclusion** at `/inclusion/{iscc_id}` (numbered
+    evidence clauses) + **downloadable proof-bundle assembler** (re-engages the oracle/conformance gate;
+    `serveVerify` discards the raw checkpoint bytes + resolved hub key the bundle needs); separate
+    **Bitcoin-anchor vs comparison-anchor** panels + tier-1/tier-2 affordance.
   - **WASM verifier: 1/1 open** (not started — no `internal/proof`, no `syscall/js`, re-verified).
-  - **OTS anchoring: 1/1 open** (not started — `nbd-wtf/opentimestamps` not imported, re-verified).
-- **Last ~10 iterations: ~6 milestone-Verify / ~4 refactor·polish·shell.** Healthy and on the Verify
-  bar. The recent arc closed all four M3 criteria (verify-for-me → `/` dashboard → log browser), then
-  opened M-UI leaf-first: `HubStatusBadge` → wired into `/` → five-status overlay on `/` → same
-  overlay into the log browser → DS token CSS → self-hosted webfonts → the `/` Evidence-Ledger grid
-  redress → and this iteration the **log-browser** Evidence-Ledger redress (the second dressed screen).
-  **No polish-streak drift** — each leaf/screen is wired into an observable HTTP-seam assertion.
-  Watch-item: M-UI is the largest remaining slice. The shared shell (tokens + fonts) is complete and
-  two screens (index + log browser) are now dressed; the next iterations must build the REMAINING
-  *screens* as wired no-JS HTTP-seam Verify criteria (dossier, record list, single record,
-  certificate) — the proof-bundle assembler being the one that re-engages the crypto/oracle gate.
+  - **OTS anchoring: 1/1 open** (not started — `nbd-wtf/opentimestamps` not in `go.mod` or source,
+    re-verified: grep rc=1 across `go.mod` + `cmd/` + `internal/`).
+- **Last ~10 iterations: ~6 milestone-Verify / ~4 refactor·polish·shell, then the most recent advance
+  returned NEEDS_WORK.** The arc closed all four M3 criteria, then opened M-UI leaf-first (badge → DS
+  token CSS → webfonts → `/` grid redress → log-browser redress → hub dossier). No polish-streak drift;
+  each step targets a named M-UI Verify criterion. **Watch-item:** the dossier advance shipped a
+  startup-panic regression (caught by review, not by the gate — it is a misconfig crash, not a test
+  failure), so the immediate next advance is the fix, not new screen work. M-UI remains the largest
+  remaining slice; the proof-bundle assembler is the one screen that re-engages the crypto/oracle gate.
 
 ## M1 — Read-only Monitor
-**Status**: met — carried forward; no production change since the last assessment. The
-`56ebead..HEAD` diff touched only `internal/proofserve/browser.html` + `browser_test.go` (the
-log-browser redress) and context/loop docs — zero Go source files. All M1 Verify criteria remain
+**Status**: **met** — carried forward; no production change since the last assessment. The
+`173f718..HEAD` diff touched only the new `internal/dossier` package + `cmd/iscc-monitor/main.go`
+(dossier mount) + `main_test.go` + context/learnings docs — no M1 source. All M1 Verify criteria remain
 satisfied: `origin`/`vkey` golden, all three triggers (fork/shrink/equivocation) golden-tested
 end-to-end with freeze + alert-once + restart survival, coverage tracked, structured logs, `/metrics`
-served over HTTP. **CI-gated & green.**
-
-- **Test totals at HEAD**: **243 `func Test`** across `cmd/` + `internal/`, **53** `_test.go` files
-  (one new test function this iteration — `TestBrowserLinksTokensNoCDN` in
-  `internal/proofserve/browser_test.go`; no new package, no new test file). Package count unchanged at
-  16 internal + 2 cmd.
-- **Packages present (re-verified)**: `cmd/{iscc-monitor,notecheck}`; **16 internal packages** —
-  `badge, config, corsmw, dashboard, didweb, follower, healthz, logclient, metrics, metricshttp,
-  proofserve, registry, store, tiles, tilesserve, web`. Module `github.com/iscc/iscc-monitor`,
-  `go 1.24.0` (no `toolchain` line).
-- **All three triggers WIRED + golden-tested**: shrink → fork → equivocation, evaluated inside
-  `logclient.CheckConsistency`; growing-pair equivocation builds the RFC-6962 consistency proof from
-  the LOCAL mirror → freeze on `true` (ADR-0006). Frozen hubs are evidence-only on clean re-polls.
-- **`AcceptCheckpoint` 4-way verdict** (`logclient/accept.go`) returns `(Status, CheckpointInfo,
-  VerifiedContext{VKey,Key}, error)`, context populated only on `StatusVerified`; `PollHub` threads
-  it into the hub-key cache upsert + `fsckMirror`. Reuse is per-poll only (ADR-0009).
-- **`cmd/notecheck`** — fully-independent signature-parity oracle, shelled out in CI against the real
-  sb0 checkpoint.
-- `store/*.go` — `modernc.org/sqlite`, ADR-0005/0007 single-writer discipline (WAL,
-  `busy_timeout=5000`, `foreign_keys=ON`, `SetMaxOpenConns(1)`), embedded nine-table `schema.sql`.
-  `store.ListHubs` is a pure read LEFT JOINing `hubs` with `follow_state`; store stays a leaf.
-- **Missing (M1 connective tissue, outside the Verify bar):** real alert transport — `alertFunc` is a
-  WARN `slog` emit; `AlertFunc func(int64,string)` seam unchanged. The warm-path's second `did.json`
-  resolve is a larger design change, not on the Verify bar.
+served over HTTP.
+- **Test totals at HEAD**: **250 `func Test`** across `cmd/` + `internal/`, **54** `_test.go` files
+  (+7 in the new `internal/dossier/handler_test.go`). Package count now **17 internal + 2 cmd**.
+- **Packages present (re-verified)**: `cmd/{iscc-monitor,notecheck}`; **17 internal packages** —
+  `badge, config, corsmw, dashboard, didweb, dossier, follower, healthz, logclient, metrics,
+  metricshttp, proofserve, registry, store, tiles, tilesserve, web`. Module
+  `github.com/iscc/iscc-monitor`, `go 1.24.0` (no `toolchain` line).
+- All three triggers WIRED + golden-tested inside `logclient.CheckConsistency`; `AcceptCheckpoint`
+  4-way verdict (`logclient/accept.go`) threads `VerifiedContext` into the hub-key cache upsert +
+  `fsckMirror`. `cmd/notecheck` is the fully-independent signature-parity oracle, shelled out in CI.
+  `store/*.go` uses `modernc.org/sqlite` with ADR-0005/0007 single-writer discipline.
+- **Missing (M1 connective tissue, off the Verify bar):** real alert transport (`alertFunc` is a WARN
+  `slog` emit); warm-path second `did.json` resolve (a larger design change).
 - **Fixtures**: `testdata/live/` (repo root) still holds **only the two checkpoints**
-  (`sb0.iscc.id_checkpoint`, `sb1.amlet.id_checkpoint`) — **no tiles, entry bundles, or did.json**.
-  All proof/dashboard/browser/badge/web tests run against in-process fixtures. Stale `sb1.amlet.id`
+  (`sb0.iscc.id_checkpoint`, `sb1.amlet.id_checkpoint`) — no tiles, entry bundles, or did.json. All
+  proof/dashboard/browser/badge/web/dossier tests run against in-process fixtures. Stale `sb1.amlet.id`
   did.json drift (pre-rotation key) captured in tests; not refreshed.
 - **Reuse imports wired** (carried forward): `golang.org/x/mod/sumdb/note`, `modernc.org/sqlite`,
   `transparency-dev/merkle` (`rfc6962`, `proof.Inclusion`+`proof.Consistency`),
-  `transparency-dev/tessera` (`api`, `api/layout`, both proof builders, `leafhasher`, `fsck` via
-  `fsckMirror`, `client` re-export), `transparency-dev/formats` (`cmd/notecheck`). **Not wired:**
-  `nbd-wtf/opentimestamps` (re-verified: no hits in `cmd/`+`internal/`+`go.mod`).
+  `transparency-dev/tessera` (`api`, `api/layout`, both proof builders, `leafhasher`, `fsck`,
+  `client`), `transparency-dev/formats` (`cmd/notecheck`). **Not wired:** `nbd-wtf/opentimestamps`.
 
 ## M2 — Aggregator
-**Status**: **met** — carried forward; no production change. Both Verify criteria are exercised (fsck
-root-rebuild WIRED on every verified non-frozen poll via `fsckMirror` → `logclient.RunFsck` over the
-read-only `store.SQLiteFetcher`; inclusion cross-check conformance-tested over the real verified
-mirror in `internal/follower/inclusion_test.go`). The served proof surface is complete: all three
-computed proofs — `inclusion`, `consistency`, `entries` — served from the local mirror, never
-re-hitting the hub. **Nothing remains on the M2 Verify bar.**
+**Status**: **met** — carried forward; no production change. Both Verify criteria exercised: fsck
+root-rebuild WIRED on every verified non-frozen poll (`fsckMirror` → `logclient.RunFsck` over the
+read-only `store.SQLiteFetcher`); inclusion cross-check conformance-tested over the real verified mirror
+(`internal/follower/inclusion_test.go`). All three computed proofs — `inclusion`, `consistency`,
+`entries` — served from the local mirror, never re-hitting the hub. Nothing remains on the M2 Verify bar.
 
 ## M3 — Trust API + dashboard
-**Status**: **met (4/4 Verify criteria)** — carried forward; the `/<domain>/log/` log-browser
-criterion was re-verified this iteration against the redressed Evidence-Ledger card (functional
-content meaning-equivalent — accepted `(size, root)`, badge, all five relative proof links, no-checkpoint
-state).
+**Status**: **met (4/4 Verify criteria)** — carried forward.
 - **CORS** — `Access-Control-Allow-Origin: *` on every public GET via the single `corsmw.Handler` wrap.
 - **verify-for-me** — `GET /<domain>/log/verify?iscc_id=<id>` returns store-provable `hub_status`,
-  accepted `(size, root)`, and a REAL RFC-6962 inclusion result recomputed from the mirror and
-  Merkle-verified against the accepted root. Every id-shaped fault → 200 non-verified. Golden +
-  mutation non-vacuous.
-- **`GET /` dashboard** — `200 text/html` listing **every** realm hub with its status + ADR-0001
-  coverage window, status cell rendering all five glossary statuses through `hubStatusBadge` via the
-  `overlayStatus` overlay. Now an Evidence-Ledger CSS-grid (no `<table>`, `display: grid`, DS token
-  classes), links BOTH `/_ds/tokens.css` and `/_ds/fonts.css`, no `https://` in the body. Golden +
-  mutation-tested.
-- **`GET /<domain>/log/` log browser** — `200 text/html` exposing accepted checkpoint `(size, root)` +
-  relative links into `entries`/`inclusion`/`consistency`/`verify`/`checkpoint`. Its status cell
-  renders through `hubStatusBadge` overlaid with the in-memory verdict. `POST /` → 405; unpolled hub
-  → 200. **This iteration**: redressed into the Evidence-Ledger card (links both token/font CSS, no
-  `<table>`, no CDN URL, page-scoped `<style>` over DS tokens). Golden + mutation + e2e-proven;
-  `TestBrowserLinksTokensNoCDN` added, mutation-confirmed non-vacuous.
+  accepted `(size, root)`, and a real RFC-6962 inclusion result recomputed from the mirror and
+  Merkle-verified against the accepted root. Every id-shaped fault → 200 non-verified. Golden + mutation.
+- **`GET /` dashboard** — `200 text/html` listing every realm hub with status + coverage window, all
+  five glossary statuses via `hubStatusBadge`, Evidence-Ledger CSS-grid (no `<table>`), links both
+  `/_ds/tokens.css` and `/_ds/fonts.css`, no CDN URL. Golden + mutation.
+- **`GET /<domain>/log/` log browser** — `200 text/html` exposing accepted `(size, root)` + relative
+  links into `entries`/`inclusion`/`consistency`/`verify`/`checkpoint`, status via badge overlay,
+  Evidence-Ledger card redress. Golden + mutation + e2e.
 
-**Known limitations (carried forward, off the M3 Verify bar — these become M-UI work):**
-- The dossier / certificate / record surfaces don't exist yet (M-UI).
-- `inactive` is unreachable through the public store API (no `SetActive`/deactivation writer), so the
-  `/` golden covers it via a fixture-deactivated hub at the store seam, but no registry-deactivation
-  end-to-end path exists yet.
-- No ETag/Cache-Control/conditional-GET on the size-dependent proof surfaces or on `/`/`/verify` —
-  not a Verify criterion. (The `/_ds/` static assets DO carry `no-cache` + strong ETag + 304.)
+**Known limitations (off the M3 Verify bar):** `inactive` is unreachable through the public store API
+(no `SetActive`/deactivation writer); no ETag/Cache-Control on the size-dependent proof surfaces (the
+`/_ds/` static assets DO carry `no-cache` + strong ETag + 304).
 
 ## M-UI — Evidence Ledger frontend
-**Status**: **in progress — the five-status badge render is met on `/` and the log browser, the DS v2
-shared shell (token CSS + self-hosted webfonts under `/_ds/`) is complete, and the first TWO screens
-(`/` realm index + `/<domain>/log/` log browser) are now dressed into the Evidence-Ledger design. The
-remaining screens are open.**
-- **Landed so far:**
-  - `internal/badge` — a pure, stdlib-only, WASM-shareable `HubStatusBadge` partial (`Render`,
-    `Label`, embedded `badge.html`, `PartialName = "hubStatusBadge"`, `Source`) rendering all five
-    statuses each with a distinct text label + inline-SVG silhouette, failing closed on unknown/empty
-    status. Wired into both `/` and `/<domain>/log/`, each with its own local `StatusSource` interface
-    + `overlayStatus` precedence (store `inactive`/`frozen` win; the in-memory verdict
-    `unresolvable`/`unverified` overlays a store-`verified` hub). Both surfaces golden-assert
-    `data-status`/labels/per-status SVG markers at the HTTP seam, mutation-proven.
-  - `internal/web` — a pure stdlib leaf (WASM-green) serving the whole `/_ds/` static-asset subtree
-    via one `web.Handler` at `web.Prefix`: token CSS (`/_ds/tokens.css`), self-hosted webfonts
-    (8 latin woff2 subsets + `@font-face` `/_ds/fonts.css`, traversal-guarded), all CDN-free with
-    `Cache-Control: no-cache` + strong content-ETag + 304; non-GET → 405; unknown `/_ds/` path → 404.
-  - **`/` realm index redress** — the dashboard `<table>` replaced by the Evidence-Ledger CSS-grid
-    screen (masthead, bordered/shadowed ledger card, mono uppercase column-header row, per-hub grid
-    rows with two-line Domain/Origin, coverage-since + observed-size cells, five-status badge,
-    frozen-row tint, coverage-honesty footnote), styled via a page-scoped `<style>` over embedded DS
-    `var(--*)` tokens. No `<table>`, `display: grid`, CDN-free, `.hub-cell { min-width: 0 }` ellipsis
-    fix applied (Codex P2). Mutation-confirmed non-vacuous.
-  - **`/<domain>/log/` log-browser redress (this iteration, review `173f718` PASS / CONTINUE)** — the
-    `<table>` in `internal/proofserve/browser.html` replaced by the Evidence-Ledger card screen: the
-    two `/_ds/tokens.css` + `/_ds/fonts.css` `<link>`s, a page-scoped `<style>` over embedded DS
-    `var(--*)` tokens, the `.chrome` masthead, a bordered/shadowed `.ledger` card with definition rows
-    (Status / Accepted size / Accepted root) + the proof-surface link list. No `<table>`, no
-    `http://`/`https://`/CDN in the body, no-JS. New `TestBrowserLinksTokensNoCDN` HTTP-seam assert,
-    mutation-confirmed non-vacuous. Functional content meaning-equivalent (accepted `(size, root)`,
-    five-status badge, all five relative proof links, coverage-honesty no-checkpoint state).
-- **Still open on the M-UI Verify bar:** **hub dossier** (`/<domain>`, + categorically-distinct frozen
-  **Exhibit** — non-dismissable violation kind + detected-at); **paginated record list** (`?from=…[&n=…]`,
-  no-JS, newest-first) + **single-record page** (declaration / deletion / unknown schema); **certificate
-  of inclusion** at `/inclusion/{iscc_id}` (numbered evidence clauses) + **downloadable proof-bundle
-  assembler** (re-engages the oracle/conformance gate; `serveVerify` discards the raw checkpoint bytes +
-  resolved hub key the bundle needs); separate **Bitcoin-anchor vs comparison-anchor** panels;
-  tier-1/tier-2 affordance.
+**Status**: **in progress.** The badge render is met on `/` and the log browser; the DS v2 shared shell
+is complete; the `/` realm index and `/<domain>/log/` log browser are dressed and verified. The **hub
+dossier landed this iteration but is NOT met** — review returned **NEEDS_WORK** for a startup-panic
+regression in the new mount.
+- **Met:**
+  - `internal/badge` — pure stdlib-only `HubStatusBadge` partial (all five statuses, distinct label +
+    inline-SVG silhouette, fail-closed), wired into `/` and `/<domain>/log/` with per-surface
+    `overlayStatus` precedence; golden + mutation at the HTTP seam.
+  - `internal/web` — `/_ds/` static-asset subtree (token CSS + 8 self-hosted woff2 subsets +
+    `@font-face`), CDN-free, `no-cache` + strong content-ETag + 304, traversal-guarded; non-GET → 405,
+    unknown `/_ds/` → 404.
+  - `/` realm index — Evidence-Ledger CSS-grid redress (no `<table>`, DS tokens, coverage-honesty
+    footnote, `min-width:0` ellipsis fix). Mutation-confirmed non-vacuous.
+  - `/<domain>/log/` log browser — Evidence-Ledger card redress (token/font CSS linked, no `<table>`,
+    no CDN, no-JS, no-checkpoint state). `TestBrowserLinksTokensNoCDN` added, mutation-confirmed.
+- **Landed-but-NOT-met (`internal/dossier`, review verdict NEEDS_WORK):**
+  - `internal/dossier` — `Handler(st, hubID, statuses)` serving `GET /<domain>`: a per-hub
+    Evidence-Ledger page (masthead + ledger card, coverage window with ADR-0001 honesty, five-status
+    badge overlay, no-JS/no-CDN DS shell). 7 tests; the page's own Verify criteria all pass and
+    `mise run check` was green at the advance.
+  - **BLOCKING DEFECT (open `normal` issue):** the dossier mounts `mux.Handle("/"+r.Domain, …)` inside
+    `mirrorHandler` (`cmd/iscc-monitor/main.go:205`), which `buildMux` runs BEFORE registering the
+    built-in exact routes `/metrics` (172) / `/healthz` (173) / `web.Prefix` (174). `registry.Parse`
+    accepts any non-URL bare token as a `Domain`, so a realm line `metrics`/`healthz` makes the dossier
+    register that exact path first → the later built-in `mux.Handle("/metrics", …)` panics
+    (`pattern "/metrics" … conflicts`) and the monitor fails to start. Re-verified: NO reserved-name
+    guard exists in `main.go` or `internal/registry/registry.go`. Root-cause fix (reject/reserve the
+    name before mounting, covering the empty/`/`-colliding case too) is the immediate next advance.
+- **Still open on the M-UI Verify bar:** the dossier fix + the frozen **Exhibit** (needs a new
+  `store.ListViolations(hubID)` read over the `violations` table — only `RecordViolation` exists today —
+  + non-dismissable Exhibit markup, ADR-0006); **paginated record list** (`?from=…[&n=…]`, no-JS,
+  newest-first over `iscc_index`) + **single-record page** (declaration / deletion / unknown schema);
+  **certificate of inclusion** at `/inclusion/{iscc_id}` (numbered evidence clauses) + **downloadable
+  proof-bundle assembler** (re-engages the oracle/conformance gate — `serveVerify` discards the raw
+  checkpoint bytes + resolved hub key the bundle needs); separate **Bitcoin-anchor vs comparison-anchor**
+  panels + tier-1/tier-2 affordance.
 - Build source of truth: `.claude/design/ISCC Monitor - Developer Handoff.dc.html` + the `_ds/` token
-  bundle (subordinate to ADR/PRD). woff2 binaries are committed/build-pinned; served bytes are never
-  re-fetched at runtime.
+  bundle (subordinate to ADR/PRD). woff2 binaries are committed/build-pinned; never re-fetched at runtime.
 
 ## WASM verifier · OTS anchoring
-**Status**: **not started** (re-verified). `nbd-wtf/opentimestamps` not imported (grep → no hits in
-`cmd/`+`internal/`+`go.mod`); no `internal/proof` package (`ls` → no such directory); no WASM build
-target (`syscall/js` not in source — grep clean). The `internal/badge`, `internal/web`, and
+**Status**: **not started** (re-verified). `nbd-wtf/opentimestamps` not in `go.mod` or source (grep
+rc=1 across `go.mod` + `cmd/` + `internal/`); no `internal/proof` package (`ls` → no such directory); no
+WASM build target (`syscall/js` not in source — grep rc=1). The `internal/badge`, `internal/web`, and
 `internal/metrics` leaves are WASM-shareable primitives the verifier app will reuse, but the verifier
 itself does not exist.
 
 ## Quality gates
-**Status**: **green** — enforced in CI.
-- `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.24.0`, no `toolchain` line); `mise
-  run check` runnable.
-- **CI configured and passing.** `.github/workflows/ci.yml` runs the inlined `mise run check` gate
-  (`go build`/`go vet`/`go test ./...`) + the `cmd/notecheck` oracle shell-out on push/PR to
-  `develop`/`main`. Remote `origin` = `github.com/iscc/iscc-monitor.git`. **Latest run on `develop`:
-  `conclusion: success`** (run 27911659777, headSha `173f718` = HEAD).
-- Latest `review` handoff (2026-06-21, **PASS / CONTINUE**, for the log-browser Evidence-Ledger
-  redress) records `mise run check` green (all 18 packages `ok`, `go vet`/`gofmt -l .` clean), the
-  scope held to the HTML asset + its test (zero Go source files changed; go.mod/go.sum untouched), the
-  new assertion mutation-confirmed non-vacuous, `GOOS=js GOARCH=wasm` build of the shared leaves green,
-  token resolution checked, gate-integrity scan clean. Oracle gate correctly N/A (pure HTML rendering
-  of persisted store rows — no crypto path touched). Codex second opinion: clean, no findings.
-- **No open `critical` or `normal` issue.** **4 open `low`** remain (all loop-skipped, none block
-  DONE): `cmd/notecheck` vestigial `out io.Writer` param; hub-status overlay precedence duplicated
-  across dashboard/proofserve; mirror write-path leaks tile coordinates into the follower; proofserve
-  repeats the `os.ErrNotExist`→404 mapping `tilesserve` already centralised.
+**Status**: **green at the last PASS (`173f718`), but the dossier commits at HEAD are NOT pushed and NOT
+CI-confirmed; the latest `review` verdict is NEEDS_WORK with one open `normal` issue.**
+- `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.24.0`, no `toolchain` line); `mise run
+  check` runnable.
+- **CI**: `.github/workflows/ci.yml` runs the inlined `mise run check` gate + the `cmd/notecheck`
+  oracle shell-out on push/PR to `develop`/`main`. Remote `origin` = `github.com/iscc/iscc-monitor.git`.
+  **Latest run on `develop`: `conclusion: success` at headSha `173f718`** (run 27911659777) — this is
+  NOT HEAD (`dbc1449`). The four dossier-related commits (`e547d6d`, `a0da700`, `dbc1449`, and the
+  prior `update-state`) are unpushed because the last review was NEEDS_WORK; CI has not seen them.
+- The dossier *advance* reported `mise run check` green at the advance (review independently re-ran:
+  all 19 packages `ok`, `go vet`/`gofmt -l .` clean, oracle gate correctly N/A for pure HTML render),
+  but the **review verdict is NEEDS_WORK** because of the runtime startup-panic crash surface (a class
+  of failure the gate does not catch — valid Go that crashes on a specific realm config).
+- **Open issues: 1 `normal`, 4 `low`.** The `normal` (reserved-domain mount panic) BLOCKS DONE and is
+  the next advance's target. The 4 `low` are loop-skipped (notecheck `out` param; overlay precedence
+  now duplicated 3x across dashboard/proofserve/dossier; mirror write-path tile-coord leak; proofserve
+  `os.ErrNotExist`→404 duplication).
 
 ## Next Milestone
-**M1/M2/M3 all met. The next v1 milestone is M-UI (Evidence Ledger frontend, ADR-0010), in progress.**
-CI green, no `critical`/`normal` open, so feature work proceeds.
+**M1/M2/M3 met. The active milestone is M-UI (Evidence Ledger frontend, ADR-0010). The immediate next
+step is the dossier fix — NOT new screen work.**
 
-Convergence-driven order (the shared DS shell is complete and the index + log-browser screens are now
-dressed; the next iterations must build the REMAINING screens, which need NEW handlers + store reads):
-1. **Hub dossier** (`/<domain>`) — the next lowest-risk new screen: per-hub page with the coverage
-   window (ADR-0001 honesty), status badge, and the categorically-distinct frozen **Exhibit**
-   (non-dismissable violation kind + detected-at), dressed in the same Evidence-Ledger card pattern.
-   Carry the scoped-`<style>`-over-shared-tokens approach + the CSS-Grid `min-width:0` ellipsis rule.
-2. **Paginated record list + single record** (`?from=…[&n=…]`, no-JS, newest-first over `iscc_index`;
-   declaration / deletion / unknown schema) and the **certificate of inclusion** at
-   `/inclusion/{iscc_id}` + **downloadable proof-bundle assembler** (the slice that re-engages the
-   oracle/conformance gate — `serveVerify` currently discards the raw checkpoint bytes + resolved hub
-   key the bundle needs). Add the separate Bitcoin-anchor vs comparison-anchor panels + tier-1/tier-2
-   affordance.
-3. **WASM verifier → OTS anchoring** remain the last v1 milestones (each 1/1 Verify open).
-4. **Off the Verify bar:** sb1 fixture refresh (stale did.json key), real alert transport, and an
+1. **Fix the reserved/empty-domain mount panic** (open `normal` issue, review-blocking). Reject or skip
+   a `Domain` equal to a reserved mount name (`metrics`, `healthz`, the `web.Prefix` segment) and the
+   empty/`/`-colliding case — prefer failing `registerHubs`/`registry.Parse` loudly over a silent skip —
+   with a `buildMux` test driving a reserved name. This unblocks the dossier as a met M-UI screen.
+2. **Frozen Exhibit** on the dossier — add `store.ListViolations(hubID)` (read over the `violations`
+   table) + the categorically-distinct, non-dismissable Exhibit markup (violation kind + detected-at,
+   ADR-0006).
+3. **Remaining M-UI SSR screens** — paginated record list + single record (declaration / deletion /
+   unknown schema), then the **certificate of inclusion** + **downloadable proof-bundle assembler** (the
+   slice that re-engages the oracle/conformance gate), plus the separate Bitcoin-anchor vs
+   comparison-anchor panels + tier-1/tier-2 affordance.
+4. **WASM verifier → OTS anchoring** remain the last two v1 milestones (each 1/1 Verify open).
+5. **Off the Verify bar:** sb1 fixture refresh (stale did.json key), real alert transport, and an
    end-to-end registry-deactivation `inactive` path once a public `SetActive` lands.
