@@ -951,3 +951,26 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   through `freeze` directly (first detection still via `PollHub`); shrink re-detection via `Tick` stays
   covered by `TestTickFrozenUnaffected` (size-only, immune). The fix (`ORDER BY rowid` / pick the prior
   accepted root explicitly) belongs to the store-touching equivocation/serving slice, not this one.
+
+## Entry-bundle projection fold (`internal/logclient/projection.go`)
+
+- **`BundleProjections(bundle []byte, baseSeq uint64) ([]Projection, error)` is the pure, schema-agnostic
+  iscc_index fold — sibling of `LeafHashes`, same `api.EntryBundle{}.UnmarshalText` decode + import
+  posture.** It reads the TOP-LEVEL `iscc_id` and the INNER `note.$schema` (verified against iscc-log.md
+  §5.1: envelope is `{$schema, iscc_id, note}`, deletion discriminator is `note.$schema`) and the
+  record-content `sha256.Sum256(e)`. The content hash is NOT the RFC-6962 leaf hash — **no `0x00`
+  prefix** (that is `LeafHashes`' job); a `0x00`-prefix mutation FAILS the golden (reviewer reproduced).
+  Imports are exactly `crypto/sha256`+`encoding/json`+`fmt`+`tessera/api`; file-level WASM build green
+  even though the package pulls `net/http`/`net/url`/`os` via `didresolve.go` (pre-existing, not this
+  file). go.mod/go.sum/schema.sql byte-identical, store/database/sql un-imported by logclient.
+- **`Seq == baseSeq + i` is the absolute leaf index = the spec sequence number** (iscc-log.md §5.2: the
+  record committed at tree size N gets seq N). The caller supplies `baseSeq = bundleIndex*256`; this fold
+  never computes it. Schema-agnostic per ADR-0008: empty `iscc_id` / unmodeled `note.$schema` indexed
+  verbatim, never rejected; only a JSON *parse* failure (or a malformed/truncated bundle frame) is a
+  wrapped error naming the absolute seq. Intentional unwired-until-M2 export seam (the store writer +
+  `iscc_id→leafIndex` lookup are later slices) — `go vet` clean, not dead code.
+- **The golden is non-vacuous, mutation-proven two ways (reverted).** It pins BOTH a declaration and a
+  deletion record so the deletion-vs-declaration assertion forces reading the *inner* schema: a mutation
+  reading a constant/outer schema FAILS both that test and the schema-agnostic case. Oracle gate
+  correctly N/A — pure JSON + content-SHA-256 fold, no signature/RFC-6962/Merkle/did:web/fsck path;
+  `notecheck`/`derive_vkey.py` untouched, re-arm at the fsck/inclusion-cross-check wiring slice.
