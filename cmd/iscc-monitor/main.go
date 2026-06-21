@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/iscc/iscc-monitor/internal/config"
@@ -52,6 +53,34 @@ type hubRoute struct {
 	HubID  int64
 	Domain string
 	Origin string
+}
+
+// reservedMountNames is the set of single-label tokens that, used as a realm
+// domain, would mount the dossier at a path that collides with a built-in exact
+// route (metrics, healthz) or the web.Prefix subtree segment (_ds). The _ds entry
+// is derived from web.Prefix (not hardcoded) so it tracks the const if it changes.
+// registerHubs rejects any realm Domain in this set before mounting so a
+// misconfigured realm fails loudly at startup instead of panicking http.ServeMux.
+var reservedMountNames = map[string]struct{}{
+	"metrics":                     {},
+	"healthz":                     {},
+	strings.Trim(web.Prefix, "/"): {},
+}
+
+// reservedDomain reports whether a realm domain cannot be safely mounted: it is
+// empty/whitespace (the dossier would mount the exact "/", colliding with the
+// dashboard) or a reserved mount name (its exact "/"+domain dossier mount would
+// collide with a built-in route — metrics / healthz / the web.Prefix segment —
+// and panic http.ServeMux). registerHubs rejects such a domain loudly at startup;
+// mirrorHandler uses the same predicate as defense-in-depth so building the mux
+// from a route slice can never panic even if a reserved route is constructed
+// directly.
+func reservedDomain(domain string) bool {
+	if strings.TrimSpace(domain) == "" {
+		return true
+	}
+	_, reserved := reservedMountNames[domain]
+	return reserved
 }
 
 func main() {
@@ -196,13 +225,23 @@ func buildMux(st *store.Store, routes []hubRoute, m *metrics.Registry) http.Hand
 // "/" + Origin + "/" mirror subtree, so http.ServeMux keeps both and routes only that
 // exact path to the dossier. The same metrics registry m is the dossier's in-memory
 // status overlay, so its five-status badge matches the dashboard and log browser.
+//
+// The dossier mount is skipped for a reservedDomain (empty or a reserved mount
+// name) so building the mux can never panic on a duplicate pattern with a built-in
+// exact route. registerHubs already rejects such a domain loudly at startup, so in
+// production this branch is never taken; it is defense-in-depth keeping buildMux
+// total over any route slice. The mirror subtree mount stays — "/"+Origin+"/" is a
+// subtree (e.g. /metrics/log/), which never collides with the built-in exact
+// /metrics, so only the exact dossier mount is conditional.
 func mirrorHandler(st *store.Store, routes []hubRoute, m *metrics.Registry) *http.ServeMux {
 	mux := http.NewServeMux()
 	for _, r := range routes {
 		prefix := "/" + r.Origin + "/"
 		strip := "/" + r.Origin // leave the leading slash on the suffix
 		mux.Handle(prefix, http.StripPrefix(strip, hubHandler(st, r.HubID, m)))
-		mux.Handle("/"+r.Domain, dossier.Handler(st, r.HubID, m))
+		if !reservedDomain(r.Domain) {
+			mux.Handle("/"+r.Domain, dossier.Handler(st, r.HubID, m))
+		}
 	}
 	return mux
 }
@@ -263,10 +302,20 @@ func hubHandler(st *store.Store, hubID int64, m *metrics.Registry) http.Handler 
 // naming the offending domain. The targets and routes are index-aligned and
 // derive from the same upsert, so the poll set and the served mirror set never
 // diverge.
+//
+// It fails loudly before mounting on an empty/whitespace domain (which would
+// mount the dossier at "/" and collide with the dashboard) or a reserved mount
+// name (metrics, healthz, the web.Prefix segment _ds — whose exact dossier mount
+// would collide with the built-in route and panic http.ServeMux). A
+// misconfigured realm therefore surfaces at startup with the bad domain named,
+// rather than crashing later in buildMux.
 func registerHubs(ctx context.Context, st *store.Store, entries []registry.Entry) ([]follower.HubTarget, []hubRoute, error) {
 	targets := make([]follower.HubTarget, 0, len(entries))
 	routes := make([]hubRoute, 0, len(entries))
 	for _, e := range entries {
+		if reservedDomain(e.Domain) {
+			return nil, nil, fmt.Errorf("register hub %q: domain is empty or a reserved mount name", e.Domain)
+		}
 		org, err := logclient.Origin(e.BaseURL)
 		if err != nil {
 			return nil, nil, fmt.Errorf("derive origin for %q: %w", e.Domain, err)

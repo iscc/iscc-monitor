@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/iscc/iscc-monitor/internal/metrics"
 	"github.com/iscc/iscc-monitor/internal/registry"
 	"github.com/iscc/iscc-monitor/internal/store"
+	"github.com/iscc/iscc-monitor/internal/web"
 )
 
 func TestRegisterHubs(t *testing.T) {
@@ -101,6 +103,67 @@ func TestRegisterHubs(t *testing.T) {
 		if again[i].BaseURL != targets[i].BaseURL {
 			t.Errorf("target %d BaseURL changed: first %q, second %q", i, targets[i].BaseURL, again[i].BaseURL)
 		}
+	}
+}
+
+// TestRegisterHubsRejectsReserved proves registerHubs fails loudly (a non-nil
+// error naming the offending domain) on a realm Domain that would collide with a
+// built-in exact mount — the reserved mount names metrics / healthz / the
+// web.Prefix segment _ds — or that is empty/whitespace (which would mount the
+// dossier at "/" and collide with the dashboard). Each bad domain must be rejected
+// at registration so a misconfigured realm surfaces at startup instead of
+// panicking http.ServeMux inside buildMux.
+func TestRegisterHubsRejectsReserved(t *testing.T) {
+	reserved := strings.Trim(web.Prefix, "/")
+	cases := []struct {
+		name   string
+		domain string
+	}{
+		{"metrics", "metrics"},
+		{"healthz", "healthz"},
+		{"web prefix segment", reserved},
+		{"empty", ""},
+		{"whitespace", "   "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := store.Open(filepath.Join(t.TempDir(), "reserved.db"))
+			if err != nil {
+				t.Fatalf("store.Open: %v", err)
+			}
+			defer func() { _ = st.Close() }()
+
+			entries := []registry.Entry{{Domain: tc.domain, BaseURL: "https://" + tc.domain}}
+			if _, _, err := registerHubs(context.Background(), st, entries); err == nil {
+				t.Fatalf("registerHubs accepted reserved/empty domain %q, want a non-nil error", tc.domain)
+			}
+		})
+	}
+}
+
+// TestBuildMuxReservedDomainNoPanic proves buildMux no longer panics for a route
+// whose Domain collides with a built-in exact mount. The dossier mounts at
+// "/"+Domain, which for Domain "metrics" is the exact "/metrics" already mounted by
+// buildMux — http.ServeMux.Handle panics on the duplicate pattern. registerHubs is
+// the guard that keeps such a route from ever being built; this asserts the lower
+// layer is also robust by constructing the route directly and requiring buildMux to
+// return without panicking. (Before the guard the equivalent realm config reached
+// buildMux and panicked with `pattern "/metrics" … conflicts`.)
+func TestBuildMuxReservedDomainNoPanic(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "nopanic.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("buildMux panicked for a reserved-domain route: %v", r)
+		}
+	}()
+	routes := []hubRoute{{HubID: 1, Domain: "metrics", Origin: "metrics/log"}}
+	if mux := buildMux(st, routes, metrics.New()); mux == nil {
+		t.Fatal("buildMux returned nil")
 	}
 }
 
