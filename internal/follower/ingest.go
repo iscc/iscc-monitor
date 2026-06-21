@@ -6,7 +6,10 @@
 // into the local store (store.RecordTile / RecordEntryBundle). It is the first
 // production caller of those four seams: it feeds the SQLiteFetcher so the M2 fsck
 // root-rebuild and the equivocation consistency-proof path read real mirrored
-// tiles instead of always hitting the missing-tile skip.
+// tiles instead of always hitting the missing-tile skip. As it mirrors each entry
+// bundle it also folds the bundle into the schema-agnostic iscc_index projection
+// (logclient.BundleProjections -> store.RecordProjections), so a verified poll
+// populates iscc_index for the later iscc_id -> leafIndex inclusion cross-check.
 //
 // The writer is transport + CRUD only — no signature, RFC-6962, or Merkle math —
 // so a fetch fault is a genuine transport error returned up to PollHub (NOT a
@@ -63,7 +66,10 @@ func ingestHashTiles(ctx context.Context, st *store.Store, fetcher logclient.Fet
 
 // ingestEntryBundles fetches every entry bundle named by
 // tiles.BundleCoords(treeSize) and records it in the store at the widthForP width,
-// mirroring ingestHashTiles for the entry-bundle table.
+// mirroring ingestHashTiles for the entry-bundle table. After mirroring each bundle
+// it folds the same raw bytes into the schema-agnostic iscc_index projection
+// (ADR-0008) via projectEntryBundle, so a verified poll populates iscc_index for the
+// later iscc_id -> leafIndex inclusion cross-check.
 func ingestEntryBundles(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string, treeSize uint64, observedAt time.Time) error {
 	for _, c := range tiles.BundleCoords(treeSize) {
 		raw, err := logclient.FetchEntryBundle(ctx, fetcher, baseURL, c.Index, c.Partial)
@@ -73,6 +79,39 @@ func ingestEntryBundles(ctx context.Context, st *store.Store, fetcher logclient.
 		if err := st.RecordEntryBundle(ctx, hubID, c.Index, widthForP(c.Partial), raw, observedAt); err != nil {
 			return fmt.Errorf("record entry bundle index %d: %w", c.Index, err)
 		}
+		if err := projectEntryBundle(ctx, st, hubID, c.Index, raw); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// projectEntryBundle decodes one mirrored entry bundle into per-leaf projection
+// records and upserts them into iscc_index. baseSeq is the bundle's first absolute
+// leaf index (c.Index * tiles.TileWidth, 256 leaves per bundle), so each leaf's Seq
+// is absolute. logclient.Projection is copied field-by-field into
+// store.ProjectionRecord at the call site (the store stays a leaf, never importing
+// logclient). A malformed record or a store fault is a genuine decode/store fault
+// (ADR-0008 + ADR-0006): it is wrapped and returned up through ingestTiles -> PollHub
+// to abort the poll before accepted state advances — it is NOT a self-consistency
+// violation and must never freeze the hub.
+func projectEntryBundle(ctx context.Context, st *store.Store, hubID int64, bundleIndex uint64, raw []byte) error {
+	projections, err := logclient.BundleProjections(raw, bundleIndex*tiles.TileWidth)
+	if err != nil {
+		return fmt.Errorf("project entry bundle index %d: %w", bundleIndex, err)
+	}
+	recs := make([]store.ProjectionRecord, len(projections))
+	for i, p := range projections {
+		recs[i] = store.ProjectionRecord{
+			HubID:        hubID,
+			Seq:          p.Seq,
+			IsccID:       p.IsccID,
+			NoteSchema:   p.NoteSchema,
+			RecordSHA256: p.RecordSHA256,
+		}
+	}
+	if err := st.RecordProjections(ctx, recs); err != nil {
+		return fmt.Errorf("project entry bundle index %d: %w", bundleIndex, err)
 	}
 	return nil
 }

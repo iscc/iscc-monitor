@@ -16,6 +16,7 @@ package follower
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,19 +25,35 @@ import (
 	"github.com/iscc/iscc-monitor/internal/tiles"
 )
 
-// recordingFetcher returns deterministic, URL-unique synthetic bytes for every
-// fetch and records each requested URL, so a test can assert both the bytes that
-// round-tripped into the store and which coords were fetched. It serves any URL
-// (tile, bundle, or otherwise) — the writer under test fetches only tile/bundle
-// URLs.
+// recordingFetcher returns deterministic, URL-unique bytes for every fetch and
+// records each requested URL, so a test can assert both the bytes that round-tripped
+// into the store and which coords were fetched. It serves any URL (tile, bundle, or
+// otherwise) — the writer under test fetches only tile/bundle URLs. Entry-bundle
+// URLs (the entries path) must return a VALID tlog-tiles frame because ingestTiles
+// now folds each mirrored bundle into the iscc_index projection, so for those URLs it
+// frames a single valid JSON record embedding the URL (still URL-unique); every other
+// URL keeps the opaque "body:" + url synthetic byte form.
 type recordingFetcher struct {
 	urls []string
 }
 
-// Fetch records the URL and returns synthetic bytes unique to it ("body:" +
-// url), so a store read-back can be matched back to the exact coord fetched.
+// recordingBundleBody is the byte-accurate body recordingFetcher serves for an entry
+// bundle: one valid log-entry envelope (its iscc_id embeds the URL so the bytes stay
+// URL-unique) framed as a one-record tlog-tiles entry bundle, so the projection fold
+// decodes it cleanly. A store read-back compares against this same body.
+func recordingBundleBody(url string) []byte {
+	record := []byte(`{"iscc_id":"ISCC:` + url + `","note":{"$schema":"log-entry"}}`)
+	return encodeBundle([][]byte{record})
+}
+
+// Fetch records the URL and returns deterministic URL-unique bytes: a valid framed
+// entry bundle for the entries path (so the projection fold decodes it), otherwise
+// the opaque "body:" + url synthetic form a store read-back can match to the coord.
 func (f *recordingFetcher) Fetch(_ context.Context, url string) ([]byte, error) {
 	f.urls = append(f.urls, url)
+	if strings.Contains(url, "/tile/entries/") {
+		return recordingBundleBody(url), nil
+	}
 	return []byte("body:" + url), nil
 }
 
@@ -115,7 +132,7 @@ func TestIngestTilesWidthMapping(t *testing.T) {
 			t.Errorf("bundle I%d not found at width %d (widthForP(%d) mismatch?)", bc.index, bc.wantWidth, bc.partial)
 			continue
 		}
-		if string(data) != "body:"+wantURL {
+		if string(data) != string(recordingBundleBody(wantURL)) {
 			t.Errorf("bundle I%d W%d bytes = %q, want body for %q", bc.index, bc.wantWidth, data, wantURL)
 		}
 	}
@@ -214,5 +231,54 @@ func TestPollHubMirrorsTiles(t *testing.T) {
 	var fetcher2 = store.SQLiteFetcher{Store: s, HubID: hubID}
 	if _, err := fetcher2.ReadTile(ctx, 0, 0, 0); err != nil {
 		t.Errorf("SQLiteFetcher.ReadTile(0,0,p0) over mirrored store: %v (full tile must round-trip at width 256)", err)
+	}
+}
+
+// TestPollHubRecordsProjections drives a verified PollHub over the in-process
+// byte-accurate 300-leaf mirror and asserts, via the store read seam, that the
+// iscc_index projection was persisted for every mirrored entry bundle. For a known
+// fixture leaf's iscc_id, SeqsForISCCID returns exactly [seq] (a clean one-seq-per-id
+// lookup because leafPreimages gives every leaf a distinct id). It checks a leaf in
+// bundle 0 (seq < 256) and a leaf in bundle 1 (seq >= 256) so the bundle baseSeq
+// (c.Index * tiles.TileWidth) is exercised across the 256-leaf boundary. The
+// assertion is on observable store output (SeqsForISCCID), never follower internals.
+func TestPollHubRecordsProjections(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	m := buildVerifiedMirror(t, mirrorLeaves)
+
+	status, err := PollHub(ctx, s, m.fetcher, hubID, "https://sb0.iscc.id", time.Unix(1, 0), noopAlert, nil)
+	if err != nil {
+		t.Fatalf("PollHub: %v", err)
+	}
+	if status != logclient.StatusVerified {
+		t.Fatalf("status = %s, want verified", status)
+	}
+
+	// Each leaf's absolute seq is its preimage index, so SeqsForISCCID(id) for the
+	// distinct per-leaf id returns exactly that one seq. Leaf 0 lives in bundle 0
+	// (baseSeq 0); leaf 260 in bundle 1 (baseSeq 256), proving the bundle baseSeq math.
+	for _, seq := range []uint64{0, 5, 255, 256, 260, mirrorLeaves - 1} {
+		id := leafISCCID(int(seq))
+		seqs, err := s.SeqsForISCCID(ctx, hubID, id)
+		if err != nil {
+			t.Fatalf("SeqsForISCCID(%q): %v", id, err)
+		}
+		if len(seqs) != 1 || seqs[0] != seq {
+			t.Errorf("SeqsForISCCID(%q) = %v, want [%d] (projection persisted at the absolute leaf seq)", id, seqs, seq)
+		}
+	}
+
+	// A non-indexed id returns a nil slice, never a spurious match — proving the
+	// read-back above is not vacuously matching everything.
+	if seqs, err := s.SeqsForISCCID(ctx, hubID, leafISCCID(mirrorLeaves+1)); err != nil {
+		t.Fatalf("SeqsForISCCID(absent): %v", err)
+	} else if len(seqs) != 0 {
+		t.Errorf("SeqsForISCCID(absent id) = %v, want empty", seqs)
 	}
 }

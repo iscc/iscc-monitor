@@ -112,13 +112,32 @@ func multibaseFromVKey(t *testing.T, vkey string) string {
 	return "z" + b58encode(multicodec)
 }
 
-// leafPreimages returns n distinct raw leaf preimages. fsck runs
-// rfc6962.DefaultHasher.HashLeaf over each, so the tree must be built from these SAME
-// bytes (tree.AppendData) for the rebuilt root to match tree.Hash().
+// leafDeclSchema is the declaration inner note.$schema the leaf preimages carry
+// (the same URI projection_test.go uses), so a poll over buildVerifiedMirror folds a
+// known schema into the iscc_index projection. The fold is schema-agnostic (ADR-0008)
+// — this is just a real-shaped value, never validated.
+const leafDeclSchema = "http://purl.org/iscc/schema/iscc-note-0.8.0.json"
+
+// leafISCCID returns the distinct iscc_id the leaf at index i carries — a synthetic
+// ISCC:-prefixed string unique per leaf so the projection read-back is a clean
+// one-seq-per-id lookup (SeqsForISCCID returns exactly [seq]).
+func leafISCCID(i int) string {
+	return fmt.Sprintf("ISCC:LEAF%08d", i)
+}
+
+// leafPreimages returns n distinct raw leaf preimages, each a valid canonical
+// log-entry envelope {iscc_id, note:{$schema}} with a per-leaf iscc_id so
+// logclient.BundleProjections decodes every entry bundle of buildVerifiedMirror
+// (plaintext would make the projection fold error on every verified-path poll). fsck
+// runs rfc6962.DefaultHasher.HashLeaf over each, so the tree is built from these SAME
+// bytes (tree.AppendData) and the bundles frame the SAME bytes — the signed root
+// stays self-consistent and fsck still rebuilds it.
 func leafPreimages(n int) [][]byte {
 	out := make([][]byte, n)
 	for i := range out {
-		out[i] = []byte(fmt.Sprintf("leaf-%d", i))
+		out[i] = []byte(fmt.Sprintf(
+			`{"$schema":"log-entry","iscc_id":%q,"note":{"$schema":%q}}`,
+			leafISCCID(i), leafDeclSchema))
 	}
 	return out
 }
