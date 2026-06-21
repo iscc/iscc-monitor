@@ -85,6 +85,25 @@ filed it and does **not** affect priority.
 - **Spec:** ADR-0009 did:web is the only key source; W3C did:web method (port `%3A` encoding);
   `internal/didweb/url.go` DocumentURL contract; `internal/registry` `host:port` support.
 
+## Certificate §6 RECORD HISTORY omits the per-record `· at` timestamp the mockup shows
+- **Priority:** normal
+- **Source:** [review] (visual pass vs the §6 mockup region)
+- **What / where / how to verify:** The certificate mockup `.claude/design/ISCC Monitor -
+  Certificate.dc.html:68` renders each §6 row as `label` + `seq N · at` — a per-record
+  timestamp. The landed §6 (`internal/certificate/handler.go:591-613`, `cert.html:376-378`)
+  renders only `{{.Label}} · seq {{.Seq}}` with no time, because the projection it reads
+  (`store.RecordRow` = `Seq`/`IsccID`/`NoteSchema`, `iscc_index.go:80-84`) carries no
+  per-record timestamp column. The named-region's primary affordance (kind + seq +
+  deletion note) is complete and correct; the missing `· at` is cosmetic and does not
+  affect certification correctness. Surfacing it cleanly needs a store change: add a
+  timestamp to the `iscc_index` projection (written by `RecordProjections`) and surface it
+  via `RecordAt`, then render it in the §6 row — a schema change touching store + follower
+  ingest, larger than this clause. Fix when §6 (or a step that adds a record timestamp to
+  the projection) is next touched. Verify fixed: a §6 row renders `label · seq N · <time>`
+  and a test asserts the time component is present for a seeded record.
+- **Spec:** target.md M-UI certificate Verify criterion (record history); `.dc.html` §6
+  region line 68; CLAUDE.md "Projection" (a derived view — adding a column is additive).
+
 ## Single-record label test is vacuous on the kind-label constant value
 - **Priority:** low
 - **Source:** [review] (mutation-found in the constant-fix review)

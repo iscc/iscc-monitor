@@ -1,67 +1,77 @@
-## 2026-06-21 — Certificate §6 RECORD HISTORY — render the per-id record list (declaration + any deletion)
+## 2026-06-21 — Review of: Certificate §6 RECORD HISTORY — render the per-id record list (declaration + any deletion)
 
-**Done:** The §6 RECORD HISTORY clause now renders the full one-to-many list of accepted-tree seqs a
-hub indexed under the subject id — the declaration plus any later deletion — each labelled by its
-verbatim `note.$schema` kind (declaration / deletion / unknown), with the "a deletion is a new record"
-note shown when any row is a deletion. It is a pure store read (one `RecordAt` per seq from the `seqs`
-already in hand), capped to the accepted tree (`seq < hub.LastSize`, coverage honesty), rendering
-unconditionally for a certifiable id — no crypto/cache gate. `HasClause5` (Bitcoin anchor) stays
-false, deferred until the OTS store seam exists.
+**Verdict:** PASS_WITH_NOTES
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/certificate/handler.go`: added local `schemaDeclaration`/`schemaDeletion` constants +
-  kind labels + a pure `recordKind(noteSchema) (label, isDeletion)` helper (mirrors
-  `proofserve.recordKind`, the constants unexported in another package); added a `HistoryRow` type
-  and `RecordHistory []HistoryRow` + `HasDeletion bool` view-model fields; added the §6 build block
-  in `buildData` after §4 (seq-capped to `< LastSize`, `RecordAt` miss is an honest unknown-label row,
-  only a real DB fault 500s); updated the file/`certData`/`buildData` docstrings + the `HasClause2..6`
-  doc comment to describe §6.
-- `internal/certificate/cert.html`: filled the empty `{{if .HasClause6}}` §6 `clause-value` with a
-  `{{range .RecordHistory}}` of `clause-mono` `{{.Label}} · seq {{.Seq}}` rows and a conditional
-  `{{if .HasDeletion}}` `clause-note` deletion note (reuses existing classes, no new CSS, no CDN URL).
-- `internal/certificate/handler_test.go`: added `fixtureStoreHistory` (declaration + later deletion
-  under one id, both `< LastSize`, FULL wire-URI schemas), `TestCertificateRecordHistory` (asserts
-  both rows + the deletion note + §1 position is the earliest seq), and
-  `TestCertificateRecordHistoryDeclarationOnly` (single record → §6 renders, no deletion note).
+**Summary:** §6 RECORD HISTORY now renders the full one-to-many list of accepted-tree seqs a hub
+indexed under the subject id — the declaration plus any later deletion, each labelled by its verbatim
+`note.$schema` kind, with the deletion note shown when any row is a deletion. It is a pure store read
+(`seqs` already in hand from `SeqsForISCCID`, one `RecordAt` per row), accepted-tree-capped
+(`seq >= LastSize` dropped, matching §1) and rendering unconditionally for a certifiable id. Scope is
+tight (2 source files + the test file), all gates are green, and the mutation is independently
+reproduced non-vacuous. One minor visual delta (the mockup's per-record `· at` timestamp, which the
+projection has no column for) is filed `normal`; it does not block the increment.
 
-**Verification:** `mise run check` → green, all 21 packages `ok` (build + vet + test).
-- [x] `go test -count=1 -run TestCertificate ./internal/certificate` — PASS (all §1-§4 + the two new
-  §6 tests).
-- [x] `go test -count=1 -v -run TestCertificateRecordHistory ./internal/certificate` — PASS: asserts
-  `Declaration · seq 24815`, `Deletion · seq 31002`, the deletion note, and the §1 position.
-- [x] Mutation (non-vacuity, reproduced + reverted): `data.HasClause6 = true` → `= false` makes
-  `TestCertificateRecordHistory` FAIL (no §6 marker / Deletion row / note); reverted, tree clean,
-  tests green.
+**Verification:**
+- [x] `mise run check` — green, all 21 packages `ok` (build + vet + test).
+- [x] `gofmt -l .` — empty (no formatting failures).
+- [x] `go test -count=1 -run TestCertificate ./internal/certificate` — PASS (all §1-§4 plus the two
+  new §6 tests).
+- [x] `go test -count=1 -v -run TestCertificateRecordHistory ./internal/certificate` — PASS:
+  `TestCertificateRecordHistory` (declaration + deletion rows + note + §1 position) and
+  `TestCertificateRecordHistoryDeclarationOnly` (single row, no note) both PASS.
+- [x] Mutation (non-vacuity — reviewer reproduced independently, 2 mutations): `data.HasClause6 = true`
+  → `= false` makes `TestCertificateRecordHistory` FAIL (no §6 marker / rows / note); `if isDeletion`
+  → `if false` makes it FAIL (deletion note suppressed, deletion-row label wrong). Both reverted, tree
+  clean, tests green.
 - [x] Oracle gate unbroken: `go test -count=1 ./internal/logclient ./internal/follower ./cmd/notecheck`
-  all `ok` (no crypto path touched).
+  all `ok`. Oracle gate is N/A for this step (a store read + render; no signature / Merkle / proof code
+  touched) — run only to prove no regression.
 - [x] WASM/purity: `GOOS=js GOARCH=wasm go build ./internal/index ./internal/didweb` exit 0.
-- [x] `gofmt -l .` empty; `git diff --stat HEAD -- go.mod go.sum` empty (no new dependency).
+- [x] No new dependency: `git diff --stat HEAD~1..HEAD -- go.mod go.sum` empty.
 - [x] Scope discipline: exactly 2 non-test source files (`handler.go`, `cert.html`) + the test file;
-  no §5 / proof-bundle / §4-DID / registry work.
+  no §5 / proof-bundle / §4-DID / registry work done.
+- [x] No gate circumvention across the 3 unpushed commits (no `nolint`/`t.Skip`/build-tag/swallowed
+  error; the `continue` cap and the `found == false` unknown-label fallthrough are legitimate
+  fail-open-on-gap rendering, not dodges).
+
+**Issues found:**
+- **[review, visual pass → filed `normal`]** §6 rows omit the per-record `· at` timestamp the mockup
+  (`.dc.html:68`) shows, because `store.RecordRow` carries no timestamp column. Cosmetic; the named
+  region's primary affordance (kind + seq + deletion note) is complete. Surfacing it needs a store
+  schema change (out of scope). Filed for a later advance.
+
+**Codex second opinion:** Clean verdict (exit 0): "The new §6 record history rendering is consistent
+with the existing store APIs and accepted-tree gating, and the added tests cover declaration/deletion
+and declaration-only cases. I did not find any introduced correctness, security, or maintainability
+issues that warrant blocking the patch." No findings to triage.
+
+**Visual check:** SSR surface (`internal/certificate`) — rendered the rich §6 state (declaration +
+deletion) via a throwaway fixture-seeded harness to `/tmp/cert-history.html`, screenshotted it and the
+`.dc.html` mockup with agent-browser (bundled Chromium; no system Chrome), and `Read` both. §6 renders
+correctly: `Declaration · seq 24815`, `Deletion · seq 31002`, and the deletion note, in the same
+clause-marker + clause-value structure as §2 (the standalone render is unstyled — it links
+`/_ds/tokens.css`, served only by the live instance — an offline-render artifact, not a regression).
+One delta filed `normal`: the mockup row carries a `· at` timestamp the projection has no column for.
+Throwaway harness + scratch deleted, tree clean.
 
 **Next:** §5 BITCOIN ANCHOR is the last remaining clause but is BLOCKED on the OTS/anchor store seam,
-which does not exist (no `anchor`/`ots` store method — only an `ots` table name in a store test
-fixture). Doing §5 honestly needs that seam built first (a separate, larger step) — defer it. The
-data-grounded clauses (§1-§4, §6) are now complete; the next M-UI certificate work is the
-**downloadable proof-bundle assembler** `{checkpoint, inclusion/consistency proof, record bytes, hub
-key, ots?}`, which re-engages the oracle/conformance gate (reuses the §3 build+verify crypto path and
-the §4 key read-path). Either lands next; the proof-bundle is the bigger criterion item.
+which does not exist (no `anchor`/`ots` store method). The data-grounded clauses (§1-§4, §6) are now
+complete; the next M-UI certificate work is the **downloadable proof-bundle assembler**
+`{checkpoint, inclusion/consistency proof, record bytes, hub key, ots?}`, which re-engages the
+oracle/conformance gate (reuses the §3 build+verify crypto path + the §4 key read-path). That is the
+bigger criterion item; either it or the OTS-seam-then-§5 work lands next.
 
 **Notes:**
-- The kind mapping is duplicated from `proofserve.recordKind` because the proofserve constants are
-  unexported in another package (next.md explicitly directed defining them locally to stay
-  import-clean). Two pure copies of a 6-line switch — minor DRY debt; promoting a shared
-  schema-kind helper to e.g. `internal/index` or a tiny shared leaf is a clean future refactor if a
-  third caller appears, but not warranted now (YAGNI).
-- §6 lists an unknown/empty schema verbatim with the "Unknown record type" label and never errors
-  (ADR-0008 schema-agnostic; correctness-rule "index by seq, never gate on schema"). The existing
-  `fixtureStore` seeds the bare `"iscc-note-0.8.0.json"` short form (NOT the wire URI), so
-  `TestCertificateRecordHistoryDeclarationOnly` exercises that unknown-label path for free while
-  proving the seq still lists. The new `fixtureStoreHistory` seeds the FULL wire URIs production
-  actually stores, so the declaration/deletion labels resolve correctly.
-- The §4 `did:web:` + raw-domain `host:port` mis-render (filed `normal`) is untouched — handler.go was
-  modified here but the §4 DID-building path was deliberately left alone (no encoder added) per the
-  Not-In-Scope note. Still filed for a step that touches the DID path or adds a `%3A` encoder.
-- No fixture seeds a `RecordAt` DB-fault row, so the §6 500-on-real-fault branch is
-  untested-but-trivial (mirrors §2/§3/§4's identical buffer-then-200 pattern). Acceptable; flag only
-  if it becomes load-bearing.
+- The 3 unpushed commits are this §6 advance + its define-next + the §4 update-state. This
+  PASS_WITH_NOTES pushes all 3 to `develop` (upstream `origin/develop`); CI on `develop` is the gate.
+- The kind mapping is duplicated from `proofserve.recordKind` (its constants are unexported);
+  `next.md` explicitly directed defining them locally. Two pure 6-line switches — minor DRY debt, not
+  worth a shared leaf until a third caller appears (YAGNI). Noted in `learnings/certificate.md`.
+- The §6 accepted-tree cap (`seq >= LastSize` dropped) has no dedicated deletion-above-checkpoint test,
+  but the boundary is identical to §1's (which IS mutation-tested) and §1 guarantees `seqs[0] <
+  LastSize` so the list is always non-empty. The 500-on-`RecordAt`-fault branch is also untested
+  (mirrors §2/§3/§4's identical buffer-then-200 pattern). Both acceptable; flag only if load-bearing.
+- The §4 `did:web:` + raw-domain `host:port` mis-render (`normal`) and the `hubDomain` ForceQuery gap
+  (`normal`) remain open — neither is on the §6 path; fold each in when its DID/registry code is next
+  touched.

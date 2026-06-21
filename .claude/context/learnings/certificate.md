@@ -125,3 +125,26 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   chips must `html.UnescapeString(body)` first (the §3 test does); the view-model
   `ProofHashes` strings stay byte-identical to `writeEvidence`'s, the on-page entity
   escaping is correct/harmless rendering.
+
+- **§6 RECORD HISTORY is a pure store-read clause — renders unconditionally for a
+  certifiable id, no crypto/cache gate.** `buildData` reuses the `seqs` already in hand
+  from `SeqsForISCCID` (ascending), one `RecordAt(hubID, seq)` per row for its verbatim
+  `note.$schema`, mapped to a label by a LOCAL `recordKind` (the two FULL wire URIs +
+  catch-all `kindUnknown`; `proofserve`'s constants are unexported, so they are copied —
+  minor DRY debt, two pure 6-line switches). Two honesty disciplines: (1) cap rows to the
+  accepted tree (`if seq >= hub.LastSize { continue }`, same boundary as §1; §1 already
+  proved `seqs[0] < LastSize`, so the list is non-empty), so a deletion indexed ABOVE the
+  accepted checkpoint is dropped, never implied vouched-for; (2) a `RecordAt` MISS
+  (`found == false`, a projection gap) lists the seq with the empty→`kindUnknown` label,
+  NOT a 500 — only a real `RecordAt` DB fault 500s (buffer-then-200, like every clause).
+  `HasDeletion` ORs the per-row `isDeletion` for the conditional deletion note. Mutation-
+  proven non-vacuous (review reproduced both): `HasClause6 = false` kills the whole clause;
+  `if isDeletion` → `if false` suppresses the note + deletion-row label — each fails
+  `TestCertificateRecordHistory`. The existing `fixtureStore` seeds the BARE
+  `iscc-note-0.8.0.json` short form (not the wire URI), so the declaration-only test lands
+  the `kindUnknown` path for free; `fixtureStoreHistory` seeds the FULL wire URIs.
+- **Mockup §6 row carries a `· at` timestamp the projection has no column for.** The
+  `.dc.html` §6 row is `label` + `seq N · at`; `RecordRow` (Seq/IsccID/NoteSchema) holds
+  no per-record time, so the impl renders `label · seq N` only. Adding the timestamp needs
+  a store schema change (out of scope) — filed `normal` visual-delta. The primary §6
+  affordance (kind + seq + deletion note) is complete; the missing time is cosmetic.
