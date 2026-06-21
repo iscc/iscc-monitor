@@ -1,55 +1,68 @@
-## 2026-06-21 — Review of: Validate the ISCC-IDv1 Length nibble in `internal/index.Decode`
+## 2026-06-21 — Hub-List parser + `(realm, hub_id) → domain` resolver in `internal/registry`
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added a pure, golden-tested iscc-hub Hub-List parser (`ParseHubList`) plus `Hub`/`HubList`
+types and a `Resolve(hubID uint16) (domain, ok)` lookup to `internal/registry` — purely additive,
+leaving the existing domains-only `Parse`/`Entry` path and `realm.txt` wiring untouched. This lands the
+next link in the realm-wide certificate chain: a decoded `(realm, hub_id)` from `internal/index` now
+maps to the issuing hub's domain.
 
-**Summary:** The advance adds a one-line fail-closed guard to `Decode` that rejects any ISCC-IDv1
-whose header Length nibble (`raw[1] & 0xF`) is nonzero, closing the confirmed `normal` trust-root gap
-from the prior review. The change is minimal, in scope (one source file + its test), the guard is
-mutation-proven non-vacuous (I re-ran two independent mutations myself), and both golden vectors are
-independently re-verified to be unaffected. Clean PASS.
+**Files changed:**
+- `internal/registry/registry.go`: added imports `net/url` + `gopkg.in/yaml.v3`; `Hub{HubID uint16;
+  URL string; Active bool}`, `HubList{Version int; Network string; Hubs []Hub}` with `yaml:"…"` tags
+  (no pubkey field — ADR-0009); `ParseHubList([]byte) (*HubList, error)` (fail-closed on invalid YAML /
+  hub_id > 4095 / duplicate hub_id / empty-or-path-bearing url; empty `hubs:` is valid); `Resolve`
+  method (linear scan; inactive resolves, unknown misses); unexported `hubDomain` helper.
+- `internal/registry/testdata/testnet.yaml`: golden realm-0 fixture (`hub_id 0 → https://sb0.iscc.id`,
+  `hub_id 1 → https://sb1.amlet.id`, both `active: true`; a `pubkey:` line on hub 0 to prove it is
+  parsed-and-ignored). These are the real testnet hubs (match `realm.txt` / `derive_vkey.py`).
+- `internal/registry/hublist_test.go`: table-driven golden + failure tests; expected domains hard-coded
+  ground truth, not re-derived from the parser.
+- `go.mod` / `go.sum`: promoted `gopkg.in/yaml.v3 v3.0.1` to a direct `require` via `go mod tidy`.
 
-**Verification:**
-- [x] `mise run check` green — build + vet + all 20 packages PASS.
-- [x] `gofmt -l .` empty (and `gofmt -l` clean on both changed files).
-- [x] `go test -count=1 ./internal/index` passes uncached (golden + round-trip + malformed +
-  wrong-MainType + wrong-Version + new `TestDecodeRejectsNonzeroLength` + never-panics).
-- [x] `Decode("MAIQAAAAAAAAAAAA")` returns a non-nil error — independently confirmed via Python
-  `base64.b32decode`: byte1 = 0x11 (Length nibble 1), now rejected by the guard.
-- [x] Golden vectors unchanged: `MAIGHFECJMOPMIAB` → {Realm:0, HubID:1, Timestamp:1751831876325218}
-  and `MEIGHFECJMOPMIAC` → {Realm:1, HubID:2, ...} both still decode. Independently re-derived their
-  header bytes (byte1 = 0x10, Length nibble 0) via Python, a different codec than the Go impl.
-- [x] `GOOS=js GOARCH=wasm go build ./internal/index` succeeds (no new imports; still WASM-shareable);
-  dep closure has no `net`/`database/sql`/`os/exec`.
-- [x] Mutation proof (re-run by reviewer, not just trusted): (a) flipping `!= lengthV1` → `==` makes
-  `TestDecodeRejectsNonzeroLength` (line 148) FAIL; (b) deleting the guard block entirely makes ONLY
-  `TestDecodeRejectsNonzeroLength` FAIL — the ideal targeted catch. Restored clean; package green.
-- [x] Quality-gate integrity: scanned all 7 unpushed commits — no `nolint`/`t.Skip`/build-exclude/
-  swallowed-error/deleted-assertion. The lone `_, _ = Decode(in)` is the deliberate never-panics fuzz
-  test, not error-swallowing.
+**Verification:** `mise run check` → green (build + vet + all 20 packages PASS; `gofmt -l .` empty).
+Per-criterion:
+- [x] `go test -count=1 ./internal/registry` passes uncached (existing 3 `Parse` tests + 7 new
+  Hub-List golden/failure tests).
+- [x] `ParseHubList(testnet.yaml)`; `Resolve(0) == ("sb0.iscc.id", true)` and
+  `Resolve(1) == ("sb1.amlet.id", true)` (hard-coded).
+- [x] `Resolve(9)` (unknown slot) → `("", false)`.
+- [x] Inactive hub resolves (`("paused.example", true)`); `hub_id 4095` resolves (full 12-bit range).
+- [x] Malformed docs fail closed with non-nil error + nil list: invalid YAML, `hub_id 4096`,
+  duplicate `hub_id`, empty url, path-bearing url.
+- [x] `pubkey` parsed-and-ignored (Hub struct is exactly `{HubID, URL, Active}`).
+- [x] `GOOS=js GOARCH=wasm go build ./internal/registry` succeeds; dep closure has `net/url` +
+  `net/netip` (both pure, WASM-safe) but **no** `net`/`net/http`/`database/sql`/`os` directly.
+- [x] `go mod tidy` consistent; second run is a no-op; `yaml.v3` is a direct require.
 
-**Oracle gate:** correctly N/A — pure decoder, no signature-verify / RFC-6962 / Merkle / proof code
-touched; `go.mod`/`go.sum` byte-identical (stdlib only). Gate re-engages at the proof-bundle assembler.
-
-**Issues found:** (none) — the open `normal` Length-nibble issue is verified fixed and deleted from
-`issues.md`.
-
-**Codex second opinion:** One clean verdict (exit 0): "adds the intended Length-nibble validation and
-targeted regression coverage without breaking existing decoder behavior for canonical IDs; test suite
-passes; no introduced correctness issues." No findings to triage — matches my independent assessment.
-
-**Next:** The 12-bit `hub_id` → issuing-hub resolver. Per ADR-0010 §"Hub-id resolution adopts the
-iscc-hub Hub-List", `internal/registry` moves from the domains-only realm file to the
-`hubs/<network>.yaml` Hub-List so the decoded `(realm, hub_id)` resolves to a hub domain. After that,
-the `/inclusion/{iscc_id}` HTML certificate page + downloadable proof-bundle assembler (which
-re-engages the oracle gate). Note for define-next: ADR-0010 is a backward-incompatible registry
-format change (domains-only → Hub-List) — confirm the realm-file parser / config / dashboard callers
-that consume `registry` are migrated together, and weigh whether the format swap warrants a STOP for
-human sign-off given the public-ish realm-file contract.
+**Next:** The `/inclusion/{iscc_id}` realm-wide HTML certificate page + the downloadable proof-bundle
+assembler — the chain is now complete: `index.Decode(iscc_id) → (realm, hub_id)` →
+`registry.HubList.Resolve(hub_id) → domain` → `store.SeqsForISCCID` over `/<domain>/log/…`. That slice
+**re-engages the oracle/conformance gate** (it touches proof-bundle assembly). It also needs the
+realm→network selection (realm 0 → `testnet.yaml`) and a way to load the Hub-List bytes — which is the
+live-wiring step deliberately deferred here (see Notes).
 
 **Notes:**
-- Decoder is now fully fail-closed on all four header nibbles (MainType, Version, Length validated;
-  SubType read as realm). The learnings detail file's open-gap note is collapsed to a `settled:` line.
-- Branch is ahead of `origin/develop`; pushing on this PASS.
-- The two open `low` test-hardening issues (vacuous single-record label test; the resolver/registry
-  notes) remain loop-skipped and are untouched here.
+- **Migration deliberately not done (in scope per next.md "Not In Scope").** This step is additive and
+  reversible: `cmd/iscc-monitor/main.go`, `internal/config`, the dashboard, and `realm.txt` /
+  `Parse` / `Entry` are all untouched. Swapping the live registry source from domains-only `realm.txt`
+  to the Hub-List is a separate, backward-incompatible step that `state.md` + prior `review` flag as
+  possibly warranting a STOP for human sign-off — that decision is **not forced here**.
+- **URL→domain via `net/url.Parse(...).Host`** (chosen over `strings.TrimPrefix`): handles any scheme,
+  strips paths, and fails closed on a host-less url (bare path → `Host == ""` → "no host" error). It is
+  stdlib + WASM-safe (pulls `net/url`/`net/netip`, not `net`/`net/http`). Documented on `hubDomain`.
+- `Resolve` returns the **domain** (host), not the url, because the certificate page needs it for the
+  `/<domain>/log/…` mount and it stays consistent with `Entry.Domain`.
+- **Empty `hubs:` is valid** (mirrors `Parse`'s all-comment→empty behavior); a zero-hub list parses and
+  every slot then misses. Tested.
+- `go.sum` gained test-only transitive checksums of yaml.v3 (`kr/pretty`, `kr/text`,
+  `rogpeppe/go-internal`, `gopkg.in/check.v1`) — required for `go mod tidy` consistency, not built into
+  the binary.
+- **Oracle/conformance gate correctly N/A here:** pure leaf, no signature-verify / RFC-6962 / Merkle /
+  proof code touched. `go.mod`/`go.sum` changed only to add the pure-Go `yaml.v3` direct require. The
+  gate re-engages at the proof-bundle assembler (next step).
+- **Pre-existing unrelated working-tree edits** (not mine, not committed by me): `.claude/context/
+  target.md`, `.claude/prd/0001-iscc-monitor-v1.md`, `CLAUDE.md`, and a new untracked
+  `.claude/adr/0011-iscc-lib-codec-dependency.md`. These were present in the tree from another role/
+  session; I committed only my implementation + tests + this handoff per protocol. `review` may want to
+  reconcile them — ADR-0011 in particular suggests a planned iscc-lib codec dependency that could affect
+  the `internal/index` decoder strategy.
