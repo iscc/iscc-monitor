@@ -18,6 +18,53 @@ filed it and does **not** affect priority.
 
 ---
 
+## Certificate §1 certifies leaves outside the accepted tree (no LastSize cap)
+- **Priority:** critical
+- **Source:** [review] (Codex P1, reviewer-confirmed)
+- **What / where / how to verify:** `internal/certificate/handler.go` `buildData`
+  (the `len(seqs) == 0` / `data.Certifiable = true` block, ~lines 210-212) sets
+  `Certifiable` and renders the affirmative "is included in the transparency log of
+  <hub> at position N" subject banner + §1 SUBJECT clause whenever the id has ANY
+  indexed `iscc_index` projection — with NO accepted-tree cap. `PollHub` writes
+  projections BEFORE the consistency/freeze checks and `AdvanceAccepted`, so a
+  frozen/equivocated or failed poll leaves unaccepted rows in `iscc_index`, and the
+  monitor would certify a leaf it has not accepted. The skeleton's own golden test
+  certifies with `LastSize == 0` (no checkpoint at all) — the headline inclusion
+  claim is unsound. Every sibling record route gates on this: `serveInclusion`
+  (`leafIndex >= size` → 404, handler.go:262), `serveEntries`/`serveRecord`
+  (`seq >= size` → 404, :404/:530), `serveVerify` (200 `verified:false`). Fix: read
+  `st.FollowState(ctx, hubID)` and only set `Certifiable` when `len(seqs) > 0 &&
+  seqs[0] < fs.LastSize` (else render the cannot-certify "not in accepted tree" /
+  "no accepted checkpoint yet" state). The §2 Checkpoint slice is the natural home
+  (it reads `FollowState`/`CheckpointAt` anyway). Verify fixed: a seam test seeds a
+  projection at a seq `>= LastSize` (or `LastSize == 0`) and asserts the page renders
+  the cannot-certify state, NOT the subject banner; reverting the cap makes it FAIL.
+- **Spec:** ADR-0001 coverage honesty; CLAUDE.md "Coverage" + "Verifiable cache"
+  glossary; learnings/http-surface.md "iscc_index can hold projections ABOVE
+  LastSize" accepted-tree-cap rule.
+
+## Certificate path-suffix id is mismatched against the stored `ISCC:`-prefixed key
+- **Priority:** critical
+- **Source:** [review] (Codex P2, reviewer-confirmed)
+- **What / where / how to verify:** `internal/certificate/handler.go` `buildData`
+  passes the bare path suffix `rawID` (e.g. `MAIGHFECJMOPMIAB`, no prefix) to
+  `st.SeqsForISCCID(ctx, hubID, rawID)`, which is an exact-bytes match. But
+  production stores `iscc_id` VERBATIM and `ISCC:`-PREFIXED
+  (`internal/logclient/projection.go:32` "raw `ISCC:`-prefixed iscc_id string";
+  `projection_test.go:43-44` uses `"ISCC:MAIG..."`). So a request
+  `/inclusion/MAIGHFECJMOPMIAB` against a real store reports "not found in log" for a
+  declaration that IS indexed. The skeleton's tests pass only because the fixture
+  seeds the BARE form (`IsccID: goldenID` = `"MAIGHFECJMOPMIAB"`) — fixture matched
+  to the code, not to ground truth. `proofserve` sidesteps this by taking
+  `?iscc_id=` as a query param the caller supplies prefixed; a PATH route must
+  canonicalize. Fix: after `index.Decode` succeeds, look up the canonical stored form
+  (e.g. `SeqsForISCCID` with `"ISCC:"+bare`, or try both prefixed and bare). Verify
+  fixed: the fixture indexes the leaf under the PREFIXED `"ISCC:MAIG..."` (matching
+  `projection.go`), and `GET /inclusion/MAIGHFECJMOPMIAB` (bare suffix) still
+  certifies it; reverting the normalization makes that test FAIL.
+- **Spec:** ADR-0008 schema-agnostic iscc_id index; CLAUDE.md Testing (ground-truth
+  fixtures, not fixtures matched to the code); learnings/logclient.md projection fold.
+
 ## Adopt the iscc-lib Go codec + bump the toolchain to Go 1.26 (ADR-0011)
 - **Priority:** normal
 - **Source:** [human]
