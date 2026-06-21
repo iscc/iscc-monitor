@@ -1,21 +1,26 @@
-// Package proofserve serves RFC-6962 inclusion proofs over net/http, computed
-// from one hub's mirrored hash tiles via the local store.SQLiteFetcher and
-// logclient.InclusionProofFromTiles — never re-hitting the hub. It is the
-// proof-computing half of M2's Verify bar (the static mirror in tilesserve is
-// the other half): a client fetches GET /inclusion?iscc_id=<id> and checks the
-// returned proof against the hub's own IsccLogInclusionProof.
+// Package proofserve serves RFC-6962 inclusion and consistency proofs over
+// net/http, computed from one hub's mirrored hash tiles via the local
+// store.SQLiteFetcher and logclient.{Inclusion,Consistency}ProofFromTiles — never
+// re-hitting the hub. It is the proof-computing half of M2's Verify bar (the
+// static mirror in tilesserve is the other half): a client fetches GET
+// /inclusion?iscc_id=<id> and checks the returned proof against the hub's own
+// IsccLogInclusionProof, or GET /consistency?from=<n> and checks its own prior
+// (size, root) against the monitor's mirrored tree.
 //
-// The served proof is byte-compatible with the hub's evidence member: it reuses
-// logclient.InclusionEvidence's field names and the base64-Std proof encoding
-// (matching iscc_hub/log_tree.py inclusion_evidence), so the JSON feeds straight
-// into logclient.VerifyInclusionEvidence. The proof is computed against the
-// monitor's accepted tree size (store.FollowState.LastSize), the tree the monitor
-// vouches for, not a size re-parsed from the raw checkpoint.
+// The served inclusion proof is byte-compatible with the hub's evidence member: it
+// reuses logclient.InclusionEvidence's field names and the base64-Std proof
+// encoding (matching iscc_hub/log_tree.py inclusion_evidence), so the JSON feeds
+// straight into logclient.VerifyInclusionEvidence. The consistency proof has no
+// hub-served counterpart (iscc-log §10.2: it is verifier-computed, not served by
+// the hub), so this package defines its own response shape. Both proofs are
+// computed against the monitor's accepted tree size (store.FollowState.LastSize),
+// the tree the monitor vouches for, not a size re-parsed from the raw checkpoint.
 //
 // It is a separate leaf package precisely so net/http stays out of the store and
 // logclient closures: proofserve depends on both, never the reverse. The proof
 // computation itself is RFC-6962 crypto in logclient; this package only resolves
-// the leaf seq (schema-agnostically, ADR-0008) and maps faults to HTTP status.
+// the leaf seq (schema-agnostically, ADR-0008) or the prior size, and maps faults
+// to HTTP status.
 package proofserve
 
 import (
@@ -32,19 +37,19 @@ import (
 // contentType is the media type for the JSON proof response body.
 const contentType = "application/json"
 
-// Handler returns an http.Handler that serves one hub's computed inclusion
-// proofs from the local mirror. It handles GET /inclusion?iscc_id=<id>
-// (optionally &index=<n>): it resolves the leaf seq for the iscc_id, builds the
+// Handler returns an http.Handler that serves one hub's computed inclusion and
+// consistency proofs from the local mirror. It handles GET /inclusion?iscc_id=<id>
+// (optionally &index=<n>) — resolving the leaf seq for the iscc_id, building the
 // RFC-6962 inclusion proof from the hub's mirrored tiles against the monitor's
-// accepted tree size, and returns it as JSON shaped like the hub's
-// IsccLogInclusionProof.
+// accepted tree size, and returning it as JSON shaped like the hub's
+// IsccLogInclusionProof — and GET /consistency?from=<n> — building the RFC-6962
+// consistency proof relating the prior root at size from to the accepted root at
+// LastSize, returning it as JSON.
 //
-// Status mapping: non-GET → 405; an unmatched path → 404; a missing iscc_id
-// param → 400; an index param that is not one of the iscc_id's committed seqs →
-// 400; no accepted checkpoint yet (LastSize == 0), an iscc_id not in the index,
-// or a leaf the accepted tree does not yet cover → 404; a tile not yet mirrored
-// (a wrapped os.ErrNotExist) → 404; any other read/build error → 500. CORS,
-// caching, and conditional GET are intentionally out of scope for this slice.
+// Status mapping: non-GET → 405; an unmatched path → 404. The per-route flow
+// owns the rest (serveInclusion / serveConsistency); see each for its 400/404/500
+// mapping. CORS, caching, and conditional GET are intentionally out of scope for
+// this slice.
 func Handler(st *store.Store, hubID int64) http.Handler {
 	f := store.SQLiteFetcher{Store: st, HubID: hubID}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -53,12 +58,15 @@ func Handler(st *store.Store, hubID int64) http.Handler {
 			return
 		}
 		// THIS handler is mounted at the hub-log root, so it sees the path suffix
-		// of the hub's /log origin; the one proof route is /inclusion.
-		if r.URL.Path != "/inclusion" {
+		// of the hub's /log origin; the proof routes are /inclusion and /consistency.
+		switch r.URL.Path {
+		case "/inclusion":
+			serveInclusion(w, r, st, f, hubID)
+		case "/consistency":
+			serveConsistency(w, r, st, f, hubID)
+		default:
 			http.Error(w, "not found", http.StatusNotFound)
-			return
 		}
-		serveInclusion(w, r, st, f, hubID)
 	})
 }
 
@@ -130,6 +138,95 @@ func serveInclusion(w http.ResponseWriter, r *http.Request, st *store.Store, f s
 	writeEvidence(w, size, leafIndex, proof)
 }
 
+// ConsistencyEvidence is the JSON response shape for a served consistency proof.
+// Unlike inclusion there is no hub-defined IsccLogConsistencyProof member to
+// mirror (iscc-log §10.2: the consistency proof is verifier-computed, not served
+// by the hub), so this is a small local shape: Type tags it, FirstSize is the
+// client's prior trusted tree size (the from query param), SecondSize the
+// monitor's accepted tree size (LastSize), and ConsistencyProof the RFC-6962 proof
+// hashes, each base64-Std encoded (matching the inclusion encoding and the iscc_hub
+// convention). A client verifies it via proof.VerifyConsistency(hasher, FirstSize,
+// SecondSize, decoded, priorRoot, acceptedRoot).
+type ConsistencyEvidence struct {
+	Type             string   `json:"type"`
+	FirstSize        uint64   `json:"firstSize"`
+	SecondSize       uint64   `json:"secondSize"`
+	ConsistencyProof []string `json:"consistencyProof"`
+}
+
+// serveConsistency builds the RFC-6962 consistency proof relating the prior root
+// at size from to the monitor's accepted root at LastSize, sourced entirely from
+// the hub's mirrored tiles, and writes the JSON evidence. It owns the full request
+// flow and status mapping for the /consistency route.
+//
+// Status mapping: a missing or non-numeric from → 400; no accepted checkpoint yet
+// (LastSize == 0) → 404; from > LastSize (a future/over-large prior — RFC-6962
+// requires M ≤ N) → 400; from has no recorded checkpoint row → 404; a tile not yet
+// mirrored (a wrapped os.ErrNotExist) → 404; any other read/build error → 500. The
+// degenerate from == 0 and from == LastSize cases yield an empty (nil) proof
+// without touching the fetcher — a valid degenerate consistency proof — and are
+// served as a 200 with an empty consistencyProof array, never a 400.
+func serveConsistency(w http.ResponseWriter, r *http.Request, st *store.Store, f store.SQLiteFetcher, hubID int64) {
+	ctx := r.Context()
+
+	from, err := parseUint(r.URL.Query().Get("from"))
+	if err != nil {
+		http.Error(w, "missing or non-numeric from", http.StatusBadRequest)
+		return
+	}
+
+	// LastSize is the latest accepted tree size — the tree the monitor vouches
+	// for and the larger size of the proof. A hub with no accepted checkpoint yet
+	// has nothing to relate the prior root to.
+	fs, err := st.FollowState(ctx, hubID)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	size := fs.LastSize
+	if size == 0 {
+		http.Error(w, "no accepted checkpoint", http.StatusNotFound)
+		return
+	}
+
+	// RFC-6962 consistency relates a smaller size to a larger one (M ≤ N); a from
+	// past the accepted tree is a 400, never a 500 from proof.Consistency.
+	if from > size {
+		http.Error(w, "from exceeds accepted tree size", http.StatusBadRequest)
+		return
+	}
+
+	// The prior root must be one the monitor actually recorded a checkpoint for,
+	// so the client's prior (size, root) is checkable against a known accepted
+	// root. An unrecorded from is a 404. CheckpointAt(size) also confirms the
+	// accepted-size row exists for the degenerate from == size roundtrip. from == 0
+	// is the empty-tree prior — there is no checkpoint at size 0 by construction —
+	// so it skips the row requirement and serves the empty degenerate proof.
+	if from > 0 {
+		if _, _, found, err := st.CheckpointAt(ctx, hubID, from); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		} else if !found {
+			http.Error(w, "no checkpoint at from", http.StatusNotFound)
+			return
+		}
+	}
+
+	proof, err := logclient.ConsistencyProofFromTiles(ctx, f.ReadTile, from, size)
+	if err != nil {
+		// A tile not yet mirrored surfaces as a wrapped os.ErrNotExist (the
+		// SQLiteFetcher contract) — a 404, not a 500.
+		if errors.Is(err, os.ErrNotExist) {
+			http.Error(w, "tile not mirrored", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	writeConsistency(w, from, size, proof)
+}
+
 // selectSeq picks the leaf seq to prove. When the index query param is empty it
 // defaults to seqs[0] — the first committed seq is the deterministic default
 // because iscc_id → seq is one-to-many (ADR-0008) and the seqs are ascending.
@@ -194,8 +291,29 @@ func writeEvidence(w http.ResponseWriter, size, leafIndex uint64, proof [][]byte
 	_ = encodeJSON(w, ev)
 }
 
-// encodeJSON marshals v to w. It keeps writeEvidence's single
-// drop-the-write-error site tidy.
+// writeConsistency writes the JSON ConsistencyEvidence body for a served
+// consistency proof. Each proof hash is base64-Std encoded (matching the inclusion
+// encoding and the iscc_hub convention); a nil/empty proof (the degenerate from ==
+// 0 or from == LastSize case) serializes as an empty consistencyProof array, a
+// valid degenerate proof. It keeps writeEvidence's drop-the-write-error-after-200
+// posture: a marshal of a fixed-shape struct of strings/uints cannot fail for
+// content reasons, and a mid-write fault cannot un-send the 200.
+func writeConsistency(w http.ResponseWriter, from, size uint64, proof [][]byte) {
+	encoded := make([]string, len(proof))
+	for i, h := range proof {
+		encoded[i] = base64.StdEncoding.EncodeToString(h)
+	}
+	ev := ConsistencyEvidence{
+		Type:             "IsccLogConsistencyProof",
+		FirstSize:        from,
+		SecondSize:       size,
+		ConsistencyProof: encoded,
+	}
+	w.Header().Set("Content-Type", contentType)
+	_ = encodeJSON(w, ev)
+}
+
+// encodeJSON marshals v to w. It keeps the single drop-the-write-error site tidy.
 func encodeJSON(w http.ResponseWriter, v any) error {
 	return json.NewEncoder(w).Encode(v)
 }

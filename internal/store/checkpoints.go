@@ -148,13 +148,15 @@ func (s *Store) RecordCheckpoint(ctx context.Context, c CheckpointRecord) (int64
 // An absent (hubID, treeSize) returns found=false with a nil error (not an
 // error), mirroring FollowState's "absent row is not an error" convention. store
 // stays a leaf: it returns []byte, never a logclient type — the follower copies
-// the root into a fixed-size array at the call site. The query is LIMIT 1, so a
-// hub that recorded two different roots at one size (a fork's evidence) returns
-// the first row deterministically; the caller has already detected the violation
-// from the size/root mismatch.
+// the root into a fixed-size array at the call site. The query is ORDER BY rowid
+// LIMIT 1, so a hub that recorded two different roots at one size (a fork's
+// evidence) returns the row recorded first — the prior accepted root, which has
+// the lowest rowid — deterministically, never the later contradicting-evidence
+// row; both this prior-root read and the follower's fork re-detection stay
+// deterministic.
 func (s *Store) CheckpointAt(ctx context.Context, hubID int64, treeSize uint64) (root []byte, raw []byte, found bool, err error) {
 	err = s.db.QueryRowContext(ctx,
-		"SELECT root, raw FROM checkpoints WHERE hub_id = ? AND tree_size = ? LIMIT 1",
+		"SELECT root, raw FROM checkpoints WHERE hub_id = ? AND tree_size = ? ORDER BY rowid LIMIT 1",
 		hubID, int64(treeSize),
 	).Scan(&root, &raw)
 	switch {

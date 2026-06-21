@@ -169,17 +169,22 @@ func mirrorHandler(st *store.Store, routes []hubRoute) *http.ServeMux {
 }
 
 // hubHandler combines one hub's computed-proof and static-mirror surfaces behind a
-// single per-hub mux: GET /inclusion reaches proofserve.Handler (the inclusion proof
-// computed from the local mirror), and every other path falls through to
-// tilesserve.Handler (the static BLOB mirror — /checkpoint, /tile/..., /tile/entries/
-// ...). It receives leading-slash paths (mirrorHandler strips only down to the
+// single per-hub mux: GET /inclusion AND GET /consistency reach proofserve.Handler
+// (the inclusion and consistency proofs computed from the local mirror), and every
+// other path falls through to tilesserve.Handler (the static BLOB mirror —
+// /checkpoint, /tile/..., /tile/entries/...). Both proof routes are mounted at their
+// exact paths so http.ServeMux's most-specific match wins over the "/" subtree;
+// proofserve.Handler internally switches on the path, so the same handler serves
+// both. It receives leading-slash paths (mirrorHandler strips only down to the
 // leading slash), which both inner handlers and this inner ServeMux require. Both
 // read that hub's BLOBs through the store's single open connection, so the proof
-// endpoint never re-hits the hub.
+// endpoints never re-hit the hub.
 func hubHandler(st *store.Store, hubID int64) http.Handler {
 	mux := http.NewServeMux()
+	proofs := proofserve.Handler(st, hubID)
 	mux.Handle("/", tilesserve.Handler(store.SQLiteFetcher{Store: st, HubID: hubID}))
-	mux.Handle("/inclusion", proofserve.Handler(st, hubID))
+	mux.Handle("/inclusion", proofs)
+	mux.Handle("/consistency", proofs)
 	return mux
 }
 

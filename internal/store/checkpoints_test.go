@@ -239,6 +239,61 @@ func TestCheckpointAt(t *testing.T) {
 	}
 }
 
+// TestCheckpointAtDeterministicOnFork confirms that when a hub recorded two
+// different roots at one tree_size (a fork's evidence: the prior accepted root
+// first, then the contradicting-evidence row), CheckpointAt returns the
+// first-recorded (lowest-rowid) row deterministically — the prior accepted root,
+// never the later contradicting row — so both the prior-root read and the
+// follower's fork re-detection stay deterministic (ORDER BY rowid).
+func TestCheckpointAtDeterministicOnFork(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	priorRoot := []byte("prior-accepted-root-padding-32by")
+	priorRaw := []byte("sb0.iscc.id/log\n42\nprior\n")
+	contradictRoot := []byte("contradicting-evidence-root-32by")
+	contradictRaw := []byte("sb0.iscc.id/log\n42\ncontradict\n")
+	// Non-vacuous: the two roots must differ for the ordering to mean anything.
+	if string(priorRoot) == string(contradictRoot) {
+		t.Fatal("test fixture broken: the two roots are equal")
+	}
+
+	// Record the prior accepted root first (lowest rowid), then the later
+	// contradicting-evidence row at the SAME tree_size.
+	if _, _, err := s.RecordCheckpoint(ctx, CheckpointRecord{
+		HubID: hubID, TreeSize: 42, Root: priorRoot, Raw: priorRaw, ObservedAt: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint prior: %v", err)
+	}
+	if _, _, err := s.RecordCheckpoint(ctx, CheckpointRecord{
+		HubID: hubID, TreeSize: 42, Root: contradictRoot, Raw: contradictRaw, ObservedAt: time.Unix(1_700_000_001, 0),
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint contradicting: %v", err)
+	}
+	if n := countRows(t, s, "checkpoints"); n != 2 {
+		t.Fatalf("checkpoints row count = %d, want 2 (two roots at one size)", n)
+	}
+
+	root, raw, found, err := s.CheckpointAt(ctx, hubID, 42)
+	if err != nil {
+		t.Fatalf("CheckpointAt: %v", err)
+	}
+	if !found {
+		t.Fatalf("found = false, want true")
+	}
+	if string(root) != string(priorRoot) {
+		t.Errorf("root = %q, want %q (the first-recorded prior accepted root)", root, priorRoot)
+	}
+	if string(raw) != string(priorRaw) {
+		t.Errorf("raw = %q, want %q (the first-recorded prior accepted row)", raw, priorRaw)
+	}
+}
+
 // TestFollowStateUnknownHub confirms an unknown hub returns the zero FollowState
 // and a nil error, not an error.
 func TestFollowStateUnknownHub(t *testing.T) {
