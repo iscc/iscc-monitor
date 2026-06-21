@@ -1,113 +1,106 @@
 # Next Work Package
 
-## Step: Serve GET /entries (computed record bytes) from the local mirror
+## Step: CORS middleware on every public GET (M3 cross-cutting HTTP slice — part 1)
 
 ## Goal
-Complete M2's third and final computed-proof surface: serve a single log leaf's raw
-record bytes (`?index=<seq>`) extracted from the hub's mirrored entry bundles, never
-re-hitting the hub. This is the `record_bytes` member every self-contained proof bundle
-needs (PRD §"API contracts" line 194, user stories 2 & 4) and the last item on M2's
-Verify bar per `state.md` (inclusion + consistency are served; `entries` is unstarted).
+Add a single CORS middleware leaf that wraps the monitor's one public mux, so every served
+surface (`/metrics`, `/healthz`, `/inclusion`, `/consistency`, `/entries`, and the raw tlog-tiles
+mirror) answers cross-origin browser GETs uniformly. This is the first piece of M3's
+"CORS on every public GET" requirement (target.md M3) and the prerequisite for the in-browser
+verifier app (`monitor.iscc.codes`) and the dashboard fetching a monitor instance's data client-side.
 
 ## Scope
-- **Create**: `internal/logclient/entries.go` — one pure function
-  `RecordBytesFromBundle(bundle []byte, offset uint64) ([]byte, error)` that decodes a
-  tlog-tiles entry bundle and returns the record bytes of the leaf at `offset` within it,
-  plus a `var ErrLeafOutOfBundle = errors.New(...)` sentinel for an out-of-range offset.
-- **Modify**: `internal/proofserve/handler.go` — add a `serveEntries` route and a
-  `case "/entries"` arm in `Handler`'s switch (mirrors the `serveInclusion` flow).
-- **Modify**: `cmd/iscc-monitor/main.go` — mount the `/entries` exact path on the per-hub
-  mux in `hubHandler` (one `mux.Handle("/entries", proofs)` line next to `/inclusion`).
+- **Create**: `internal/corsmw/corsmw.go` — a `Handler(next http.Handler) http.Handler` middleware
+  that sets `Access-Control-Allow-Origin: *` on every response and answers `OPTIONS` preflights with
+  `204 No Content`.
+- **Modify**: `cmd/iscc-monitor/main.go` — wrap the assembled mux in `buildMux` (the single place all
+  public routes converge) with `corsmw.Handler(...)` so the wrap applies once, uniformly. Add the
+  `internal/corsmw` import.
+- **Create (test, not counted toward the 3-file limit)**: `internal/corsmw/corsmw_test.go`.
 - **Reference**:
-  - `/workspace/iscc-monitor/cauldron/iscc-hub/iscc_hub/log_tree.py` (`get_entry_bundle`,
-    lines 137-157) — the hub's bundle-by-(index,width) shape; ground the bundle-index math.
-  - `/workspace/iscc-monitor/internal/logclient/leafhasher.go` and
-    `/workspace/iscc-monitor/internal/logclient/projection.go` — the
-    `api.EntryBundle{}.UnmarshalText` → `eb.Entries[i]` decode pattern to port verbatim,
-    incl. the file-level WASM-purity comment to copy.
-  - `/workspace/iscc-monitor/internal/proofserve/handler.go` (`serveInclusion`, `parseUint`,
-    `writeEvidence`) — the existing route to mirror for status mapping and the `parseUint` reuse.
-  - `/workspace/iscc-monitor/internal/store/fetcher.go` (`SQLiteFetcher.ReadEntryBundle`) —
-    the mirror read with its partial→full fallback and `os.ErrNotExist` sentinel contract.
-  - `/workspace/iscc-monitor/internal/tiles/layout.go` (`TileWidth = 256`, the entry-bundle width).
+  - `/workspace/iscc-monitor/internal/metricshttp/handler.go` — the canonical tiny-leaf-package shape
+    (package docstring, single exported `Handler`, stdlib-only import) to mirror.
+  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` — `buildMux` (lines 145-150) is the wrap point;
+    `serveMetrics` (line 123) hands `buildMux(...)` straight to `http.Server.Handler`, so one wrap
+    covers the single listener and every mounted subtree.
+  - `/workspace/iscc-monitor/internal/proofserve/handler.go` and
+    `/workspace/iscc-monitor/internal/tilesserve/handler.go` — both already document
+    "CORS … intentionally out of scope for this slice"; this step is what those notes defer to. Do NOT
+    change those handlers — CORS belongs in the one middleware, never duplicated per handler.
+  - `/workspace/iscc-monitor/.claude/context/target.md` — M3 line "REST surface (CORS on every public GET)".
+  - `/workspace/iscc-monitor/cmd/iscc-monitor/main_test.go` — `TestMirrorRouter` /
+    `TestMirrorInclusionRoute` / `TestMirrorEntriesRoute` exercise the mux; they must stay green
+    through the wrapped mux.
 
 ## Not In Scope
-- **Do NOT touch `tilesserve`.** The raw `/tile/entries/<bundleindex>` *whole-bundle* BLOB
-  stays as is; this new `/entries?index=<seq>` is the *computed single-leaf* `record_bytes`
-  surface (a distinct route + distinct shape). The two are not duplicates — the raw BLOB is
-  256 framed leaves a client must still parse; this returns exactly one leaf's bytes.
-- CORS / caching / conditional-GET (ETag) headers — still deferred; a later cross-cutting
-  slice owns all three across the mirror + proof surfaces at once.
-- Range fetch (multiple leaves in one response) — PRD mentions "entry/range fetch" but the
-  single-leaf `record_bytes` is what the proof bundle needs; range is a later additive slice.
-- Assembling the full proof-bundle JSON (`{checkpoint, inclusionProof, record_bytes,
-  hub_didweb_key, …}`) — that is M3 proof-bundle assembly / verify-for-me, not M2.
-- The open `normal` issues (`TestPollHubFork` cleanup, frozen-advance, `AcceptCheckpoint`
-  context reuse, tile-writer `p` vocab, `AdvanceAccepted`, `CheckConsistency` collapse) —
-  weighed and deferred to finish M2's coherent proof surface first.
+- Caching / `Cache-Control` / conditional-GET (`ETag` / `If-None-Match` / `Last-Modified`) headers —
+  those are the SECOND M3 cross-cutting slice, deliberately separated to keep this ≤2 production files
+  and one concern.
+- The `verify-for-me` verdict surface, the `/` landing page, the server-rendered dashboard, or the log
+  browser — later M3 feature slices.
+- Per-origin allow-listing, `Access-Control-Allow-Credentials`, or `Vary: Origin` — the monitor serves
+  public, credential-free, read-only data, so wildcard `*` is the correct and simplest policy. Do NOT
+  combine `Allow-Credentials: true` with `*` (the browser rejects that pairing).
+- Touching `proofserve` / `tilesserve` / `metricshttp` / `healthz` handlers or their "out of scope"
+  doc comments — the middleware wraps them; it does not edit them.
+- Draining any open `normal` issue (`TestPollHubFork` cleanup, frozen-advance, `AcceptCheckpoint`
+  context reuse, tile-writer `p` vocab, `AdvanceAccepted`, `CheckConsistency` collapse) — weighed and
+  deferred to land the coherent M3 HTTP-plumbing arc first.
 
 ## Implementation Notes
-- **`RecordBytesFromBundle` is the `leafhasher.go`/`projection.go` sibling — same decode,
-  different projection.** Port the decode verbatim: `eb := &api.EntryBundle{}` then
-  `eb.UnmarshalText(bundle)` (`%w`-wrap the error with a `logclient.RecordBytesFromBundle:`
-  prefix). Then bound-check `offset >= uint64(len(eb.Entries))` → return `ErrLeafOutOfBundle`
-  (a package sentinel, mirroring how `ErrInclusionMismatch` is a `logclient` sentinel the
-  handler maps via `errors.Is`). On success return `eb.Entries[offset]` — the RAW record
-  bytes (the JCS-canonical envelope), NOT re-hashed; this is the `record_bytes`, not a leaf
-  hash. Keep the file WASM-pure: imports exactly `errors` + `fmt` + `tessera/api` (no
-  `net`/`os`/`database/sql`), matching `leafhasher.go`'s purity comment. `go.mod`/`go.sum`
-  must stay byte-identical (`tessera/api` is already in the closure).
-- **`serveEntries` mirrors `serveInclusion`'s flow.** Steps: (1) `parseUint(query "index")`
-  → 400 on missing/non-numeric (REUSE the existing `parseUint`; do NOT hand-roll). (2) read
-  `fs.LastSize` via `st.FollowState` — a `LastSize == 0` hub → 404 "no accepted checkpoint";
-  a `seq >= LastSize` → 404 "leaf not covered by accepted checkpoint" (same guard shape as
-  `serveInclusion`'s `leafIndex >= size`: the leaf is not yet in the monitor's accepted tree).
-  (3) compute `bundleIndex := seq / tiles.TileWidth` and `offset := seq % tiles.TileWidth`.
-  (4) `f.ReadEntryBundle(ctx, bundleIndex, 0)` (full-bundle request; `SQLiteFetcher` already
-  does the partial→full fallback). (5) `errors.Is(err, os.ErrNotExist)` → 404 "bundle not
-  mirrored"; any other read error → 500. (6) `logclient.RecordBytesFromBundle(bundle, offset)`
-  → `errors.Is(err, logclient.ErrLeafOutOfBundle)` → 404 (bundle is mirrored but only partial
-  and does not yet contain this leaf); any other → 500. (7) write the raw record bytes.
-- **Content type:** serve the record bytes verbatim as `application/octet-stream` (a fresh
-  local `const` or inline literal) — they are opaque canonical-envelope BLOBs, NOT the JSON
-  proof shape; do NOT wrap them in a JSON struct. Keep the documented post-status write-drop
-  convention (`_, _ = w.Write(data)`), matching `tilesserve.writeBlob`.
-- **Correctness rule (learnings.md "iscc_id → seq is one-to-many, schema-agnostic, ADR-0008"):**
-  this surface interprets nothing — it returns the leaf's raw bytes by absolute index. No
-  ISCC-ID codec, no `note.$schema` parsing. The `index` here is the absolute leaf **seq**,
-  consistent with `serveInclusion`'s `selectSeq` which resolves an `iscc_id` to a seq.
-- **Routing (learnings.md "monitor binary"):** `/entries` mounts as an EXACT path on the
-  per-hub inner `http.ServeMux` in `hubHandler`, so the most-specific match beats the `"/"`
-  subtree (same posture as `/inclusion` and `/consistency`). `proofserve.Handler` switches on
-  `r.URL.Path` internally, so the single `proofs` handler already in `hubHandler` serves it
-  once the `case "/entries"` arm is added — just add `mux.Handle("/entries", proofs)`.
-- **Oracle / conformance gate is correctly N/A for this slice** (learnings.md pattern): the
-  record-bytes extractor is a pure decode + index — no signature / RFC-6962 / Merkle /
-  did:web / fsck path is introduced (it does NOT re-hash or verify; `serveInclusion` already
-  owns the proof crypto). State this in the advance notes; do NOT weaken any gate to pass.
+- **Single middleware, applied once.** Mirror `metricshttp`'s package shape: a file-level docstring
+  explaining why CORS lives in its own leaf (the policy is defined in exactly one place and rides
+  every route from `buildMux`, never duplicated per handler), and one exported function
+  `func Handler(next http.Handler) http.Handler`. It imports only `net/http`.
+- **Behavior:**
+  - On EVERY request, set `Access-Control-Allow-Origin: *` BEFORE delegating, so the header is present
+    on 200, 404, 405, and 500 alike.
+  - If `r.Method == http.MethodOptions`: treat as a preflight — also set
+    `Access-Control-Allow-Methods: "GET, OPTIONS"` and `Access-Control-Allow-Headers: "*"`, then
+    `w.WriteHeader(http.StatusNoContent)` and RETURN without calling `next` (the inner handlers only
+    speak GET and would 405 an `OPTIONS`; the preflight must succeed so the browser proceeds to the
+    real GET).
+  - Otherwise delegate to `next.ServeHTTP(w, r)` unchanged — GET/HEAD/POST flow through to the
+    existing 405/404/200 logic untouched. Only `OPTIONS` is short-circuited; a non-GET non-OPTIONS
+    request still reaches the inner handler and gets the existing 405.
+- **Header order matters with `http.Error`.** Set `Access-Control-Allow-Origin` BEFORE `next.ServeHTTP`:
+  the inner handlers call `w.WriteHeader` (via `http.Error` or the first body write), after which header
+  mutations are ignored. Setting it in the middleware first guarantees it lands on every response,
+  including error bodies.
+- **Wire point.** In `main.go`'s `buildMux`, return `corsmw.Handler(mux)` instead of the bare `mux`
+  (keep `buildMux`'s return type `http.Handler` — it already is). This is the lone convergence point:
+  `serveMetrics` feeds `buildMux(...)`'s result directly to `http.Server.Handler`, so one wrap covers
+  the single listener and every mounted subtree (metrics, healthz, and all per-hub mirror/proof routes).
+- **Relevant Correctness rule (learnings.md, "HTTP leaf" pattern + `proof/verify` purity rule):** keep
+  new leaf packages import-clean — `corsmw` must import only `net/http` (no `store`, no `logclient`),
+  preserving the one-directional dependency graph the other HTTP leaves (`metricshttp`, `healthz`,
+  `tilesserve`) maintain. It is NOT on the WASM-shared verifier path (that rides `internal/didweb`), but
+  staying stdlib-only keeps it trivially correct.
+- **No new dependency:** `net/http` is already in the closure, so `go.mod` / `go.sum` / `schema.sql`
+  stay byte-unchanged. The oracle/conformance gate is correctly N/A here (pure HTTP header wiring; no
+  signature / RFC-6962 / Merkle / did:web / fsck / proof path) — the same posture the `tilesserve` and
+  `metricshttp` wiring slices took.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass,
-  `gofmt -l .` empty).
-- `go test -run TestRecordBytesFromBundle ./internal/logclient` passes: a bundle of N known
-  records returns `eb.Entries[offset]` byte-for-byte for in-range offsets, returns
-  `ErrLeafOutOfBundle` for `offset >= len(Entries)` (assert via `errors.Is`), and `%w`-wraps a
-  truncated-bundle frame error — using a `leafhasher_test.go`-style manual uint16 bundle
-  encoder as the independent third path.
-- `go test -run 'TestServeEntries|TestEntries' ./internal/proofserve` passes: an `httptest`
-  request to `/entries?index=<seq>` over a seeded `SQLiteFetcher` returns 200 + the exact
-  record bytes for an in-tree leaf; missing/non-numeric `index` → 400; `seq >= LastSize` →
-  404; an un-mirrored bundle → 404; a non-GET method → 405.
-- `go test -run TestMirror ./cmd/iscc-monitor` passes, with a new sub-test asserting
-  `/<origin>/entries?index=<seq>` routes through the shared mux and returns the record bytes
-  (the existing `/inclusion` route sub-test stays green).
-- `entries.go`'s own imports are exactly `errors`+`fmt`+`tessera/api`, and
-  `GOOS=js GOARCH=wasm go build ./internal/logclient` still exits 0.
-- `git diff --quiet HEAD -- go.mod go.sum internal/store/schema.sql` exits 0 (no dependency
-  or schema change).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass; `gofmt -l .`
+  empty).
+- `go test ./internal/corsmw` passes with table cases asserting:
+  - a GET response carries `Access-Control-Allow-Origin: *` and the inner handler's status/body are
+    delegated through unchanged;
+  - an `OPTIONS` request returns `204 No Content` with `Access-Control-Allow-Origin: *` and an
+    `Access-Control-Allow-Methods` containing `GET`, and the inner handler is NOT invoked (assert via a
+    sentinel handler that records whether it ran);
+  - the `Access-Control-Allow-Origin: *` header is present even when the inner handler writes a
+    non-200 (an inner `http.Error(w, ..., 404)` still carries the CORS header).
+- `go test -run TestMirror ./cmd/iscc-monitor` passes — the existing router tests still go green through
+  the now-wrapped mux (proves the wrap did not break routing or change GET responses).
+- `grep -rn "Access-Control" internal/proofserve internal/tilesserve internal/metricshttp internal/healthz`
+  is empty (no per-handler duplication; the header is set only in `internal/corsmw`).
+- `git diff --quiet HEAD -- go.mod go.sum internal/store/schema.sql` exits 0 (no dependency/schema change).
+- `go list -deps ./internal/corsmw | grep -E 'iscc-monitor/internal/(store|logclient)'` is empty (leaf
+  stays import-clean).
 
 ## Done When
-`/entries?index=<seq>` serves a single accepted leaf's raw record bytes from the local mirror
-(404 outside the accepted tree / un-mirrored bundle, 400 on a bad index, 405 non-GET), all
-Verification checks pass, and M2's three computed-proof surfaces (inclusion, consistency,
-entries) are complete.
+`corsmw.Handler` wraps the public mux once via `buildMux`, every public GET (and error) response
+carries `Access-Control-Allow-Origin: *`, `OPTIONS` preflights succeed with `204`, and all
+Verification checks above pass with `mise run check` green.
