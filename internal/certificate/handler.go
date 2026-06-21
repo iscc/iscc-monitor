@@ -36,9 +36,20 @@
 // accepted-tree seqs the hub indexed under the subject id (the declaration and any
 // later deletion), each labelled by its verbatim note.$schema kind — a store read
 // with no crypto path, so it renders unconditionally for a certifiable id. §5 (the
-// Bitcoin anchor) and the downloadable proof bundle are gated placeholders that
-// render nothing yet — later sub-steps grow the template without rework. The
-// Download-proof-bundle action renders as a disabled placeholder.
+// Bitcoin anchor) is a gated placeholder that renders nothing yet (the OTS store seam
+// does not exist).
+//
+// The downloadable proof bundle is served at GET /inclusion/{iscc_id}.bundle: a
+// self-contained JSON artifact {checkpoint (verbatim signed-note text), inclusion
+// proof (IsccLogInclusionProof-shaped), record bytes, hub key} a client verifies on
+// its own (the Proof-bundle / Verifiable-cache contract — removing the monitor from
+// the trust path). It is offered ONLY when the §3 re-verification succeeded (the same
+// fail-closed gate as the §3 ✓): the certificate's "Download proof bundle" action is
+// an enabled link to .bundle when HasBundle, the disabled placeholder otherwise, and a
+// .bundle request for a non-certifiable id is an honest 200 {error:…}, never a
+// fabricated bundle. The OTS member (§5) is omitted until the OTS store seam exists.
+// The bundle reuses buildData's §3 crypto path verbatim (the verified proof + record
+// bytes it already computed), so it never re-derives Merkle.
 //
 // Fail-closed / coverage-honesty discipline (ADR-0001): every "cannot certify"
 // branch — a malformed id, an id resolving to no listed slot, a resolved domain
@@ -60,6 +71,7 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -264,13 +276,102 @@ type certData struct {
 	HasClause4 bool
 	HasClause5 bool
 	HasClause6 bool
+
+	// HasBundle is set to HasClause3 (the §3 re-verification gate): the downloadable
+	// proof bundle is offered ONLY when the built inclusion proof actually rebuilt the
+	// accepted root, the same fail-closed gate that renders the §3 ✓. The template shows
+	// the enabled "Download proof bundle" link when true and the disabled placeholder
+	// otherwise, so the page never offers a bundle the monitor cannot assemble.
+	HasBundle bool
 }
+
+// bundleArtifacts carries the raw, in-hand artifacts buildData computes on the §3
+// crypto path so serveBundle can assemble the downloadable proof bundle without
+// re-deriving any Merkle. The fields are meaningful only when the certData's
+// HasClause3 is set (the §3 re-verification succeeded); on any honest decline they
+// stay zero and serveBundle declines to offer a bundle. The HTML path ignores this
+// value entirely — the page renders from certData alone.
+type bundleArtifacts struct {
+	// raw is the verbatim signed-note checkpoint text (CheckpointAt's raw), the body a
+	// client checks the hub signature on. Carried as text (not base64), matching
+	// InclusionEvidence.Checkpoint.
+	raw []byte
+	// record is the subject leaf's raw record bytes (RecordBytesFromBundle), base64-Std
+	// encoded by serveBundle.
+	record []byte
+	// builtProof is the verified RFC-6962 inclusion proof of the subject leaf against
+	// the accepted tree — the same [][]byte §3 base64-encoded into ProofHashes. It fed
+	// the proof.VerifyInclusion gate, so it rebuilds the accepted root by construction.
+	builtProof [][]byte
+	// keyID is the BE-uint32 signed-note keyhash of the key that signed the accepted
+	// checkpoint (KeyIDFromCheckpoint), set only when §4 found the cached key. zero when
+	// the key is not cached (the bundle then omits the key member, never fabricates one).
+	keyID uint32
+	// key is the cached did:web key the accepted checkpoint was signed with
+	// (store.LookupHubKey). hasKey reports whether it was found; when false the bundle
+	// omits the key member rather than emit an empty one.
+	key    store.HubKey
+	hasKey bool
+}
+
+// bundleKey is the proof bundle's signing-key member: the BE-uint32 key id (hex), the
+// z6Mk… multibase Ed25519 public key, and the cached revocation instant (RFC-3339,
+// omitted when not revoked). A client resolves the hub's did:web document and checks
+// this is the key that signed the checkpoint (ADR-0009: did:web is the only key
+// source); the bundle carries the cached resolution, never an independent claim.
+type bundleKey struct {
+	ID        string `json:"id"`
+	Multibase string `json:"multibase,omitempty"`
+	Revoked   string `json:"revoked,omitempty"`
+}
+
+// bundleHub is the proof bundle's hub member: the resolved domain and its did:web
+// identifier ("did:web:" + domain). A client uses the DID to resolve the signing key.
+type bundleHub struct {
+	Domain string `json:"domain"`
+	DID    string `json:"did"`
+}
+
+// proofBundle is the self-contained, machine-readable proof bundle served at GET
+// /inclusion/{iscc_id}.bundle for a certifiable id whose §3 inclusion proof rebuilt
+// the accepted root. It is the Proof-bundle / Verifiable-cache contract artifact: a
+// client verifies it on its own — checking the checkpoint signature, re-running the
+// RFC-6962 inclusion proof, and hashing the record — removing the monitor from the
+// trust path. The bundle is offered ONLY when the §3 re-verification succeeded (the
+// same fail-closed gate as the §3 ✓), never on a flag.
+//
+// The Inclusion member is shaped exactly like logclient.InclusionEvidence (the hub's
+// IsccLogInclusionProof VC evidence member), so it feeds straight into
+// logclient.VerifyInclusionEvidence — the external-oracle cross-check. The OTS /
+// Bitcoin-anchor member (§5) is omitted until the OTS store seam exists; it is never
+// fabricated.
+type proofBundle struct {
+	IsccID     string                      `json:"iscc_id"`
+	Hub        bundleHub                   `json:"hub"`
+	Checkpoint string                      `json:"checkpoint"`
+	Inclusion  logclient.InclusionEvidence `json:"inclusion"`
+	Record     string                      `json:"record"`
+	Key        *bundleKey                  `json:"key,omitempty"`
+}
+
+// bundleSuffix marks a bundle request: GET /inclusion/<id>.bundle returns the
+// downloadable proof bundle (JSON), everything else the HTML certificate page. The
+// suffix (over a ?format= query) gives the download a clean filename and a distinct
+// path while keeping the whole /inclusion/ subtree inside this one handler.
+const bundleSuffix = ".bundle"
 
 // Handler returns an http.Handler that serves the realm-wide Certificate of
 // Inclusion at the /inclusion/ subtree. It decodes the id from the path suffix,
 // resolves the issuing hub via the Hub-List, finds that hub's store row, and looks
 // up the id's indexed leaf seqs, then renders the §1 SUBJECT clause + subject
 // banner for a certifiable id or an honest 200 "cannot certify" state otherwise.
+//
+// A trailing .bundle on the id (GET /inclusion/<id>.bundle) instead serves the
+// downloadable proof bundle as JSON — the self-contained {checkpoint, inclusion
+// proof, record bytes, hub key} artifact a client verifies on its own. The suffix is
+// detected and stripped before the id is decoded, so the two surfaces share the same
+// decode→resolve→build chain; the bundle is offered only when the §3 re-verification
+// succeeded (serveBundle), otherwise an honest 200 "no proof bundle available".
 //
 // Only GET is served (any other method is 405, mirroring dossier). A bare
 // /inclusion/ (empty id) is the honest "no id supplied" 200 state. Every
@@ -290,7 +391,19 @@ func Handler(hubList *registry.HubList, st *store.Store, statuses StatusSource) 
 			return
 		}
 		rawID := strings.TrimPrefix(r.URL.Path, PathPrefix)
-		data, status := buildData(r, hubList, st, rawID)
+		// Detect+strip the .bundle suffix BEFORE decoding the id (the suffix is not
+		// part of the id), so /inclusion/<id> and /inclusion/<id>.bundle share the same
+		// decode→resolve→build chain.
+		if id, ok := strings.CutSuffix(rawID, bundleSuffix); ok {
+			data, arts, status := buildData(r, hubList, st, id)
+			if status != http.StatusOK {
+				http.Error(w, "internal server error", status)
+				return
+			}
+			serveBundle(w, data, arts)
+			return
+		}
+		data, _, status := buildData(r, hubList, st, rawID)
 		if status != http.StatusOK {
 			http.Error(w, "internal server error", status)
 			return
@@ -309,13 +422,81 @@ func Handler(hubList *registry.HubList, st *store.Store, statuses StatusSource) 
 	})
 }
 
+// serveBundle writes the downloadable proof bundle for the certificate built into
+// data. It is offered ONLY when data.HasBundle (== HasClause3, the §3
+// re-verification gate): the built inclusion proof actually rebuilt the accepted
+// root. When the §3 re-verification declined (a tile/bundle gap, ErrLeafOutOfBundle,
+// or a proof that did not rebuild the root), the bundle request is an honest 200
+// {error:…} "no proof bundle available", never a fabricated bundle and never a 5xx
+// for a coverage gap (a genuine DB fault was already a 500 from buildData). The
+// bundle's inclusion member is shaped like logclient.InclusionEvidence so a client
+// (or VerifyInclusionEvidence) re-verifies it against the mirrored tiles.
+//
+// It keeps proofserve.writeEvidence's drop-the-write-error-after-200 posture: a
+// marshal of a fixed-shape struct of strings/uints/[]string cannot fail for content
+// reasons, so a mid-write fault cannot un-send the 200.
+func serveBundle(w http.ResponseWriter, data certData, arts bundleArtifacts) {
+	w.Header().Set("Content-Type", "application/json")
+	if !data.HasBundle {
+		// Honest "not available": the §3 re-verification declined (or the id is not
+		// certifiable), so there is no verified proof to package. A 200 verdict, never a
+		// fabricated bundle, never a 5xx for a coverage gap (ADR-0001 fail-closed).
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"iscc_id": data.IsccID,
+			"error":   "no proof bundle available for this id",
+		})
+		return
+	}
+
+	encoded := make([]string, len(arts.builtProof))
+	for i, h := range arts.builtProof {
+		encoded[i] = base64.StdEncoding.EncodeToString(h)
+	}
+	bundle := proofBundle{
+		IsccID: data.IsccID,
+		Hub: bundleHub{
+			Domain: data.Domain,
+			DID:    "did:web:" + data.Domain,
+		},
+		Checkpoint: string(arts.raw),
+		Inclusion: logclient.InclusionEvidence{
+			Type:           "IsccLogInclusionProof",
+			Checkpoint:     string(arts.raw),
+			TreeSize:       data.CheckpointSize,
+			LeafIndex:      data.Position,
+			InclusionProof: encoded,
+		},
+		Record: base64.StdEncoding.EncodeToString(arts.record),
+	}
+	if arts.hasKey {
+		key := &bundleKey{
+			ID:        fmt.Sprintf("%08x", arts.keyID),
+			Multibase: arts.key.PubkeyZ,
+		}
+		if !arts.key.Revoked.IsZero() {
+			key.Revoked = arts.key.Revoked.Format(time.RFC3339)
+		}
+		bundle.Key = key
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="`+data.IsccID+`.bundle.json"`)
+	w.WriteHeader(http.StatusOK)
+	// Drop-the-write-error-after-200 (matching proofserve.writeEvidence): the fixed
+	// shape cannot fail to marshal for content reasons, and a mid-write fault cannot
+	// un-send the 200.
+	_ = json.NewEncoder(w).Encode(bundle)
+}
+
 // buildData runs the decode→resolve→store-lookup chain for rawID and returns the
-// certificate view-model plus the HTTP status to use. The status is http.StatusOK
-// for every certifiable id AND every cannot-certify verdict (ADR-0001 fail-closed:
-// a decode/resolve/not-in-log miss is a verdict, not a fault), and only
-// http.StatusInternalServerError for a genuine store fault (a ListHubs /
-// SeqsForISCCID DB error). The caller renders the returned data on a 200 status
-// and writes a plain 500 otherwise.
+// certificate view-model, the raw artifacts the downloadable proof bundle reuses, and
+// the HTTP status to use. The status is http.StatusOK for every certifiable id AND
+// every cannot-certify verdict (ADR-0001 fail-closed: a decode/resolve/not-in-log
+// miss is a verdict, not a fault), and only http.StatusInternalServerError for a
+// genuine store fault (a ListHubs / SeqsForISCCID DB error). The HTML caller renders
+// the returned data on a 200 status and writes a plain 500 otherwise; the bundle
+// caller reads the artifacts. The artifacts are meaningful only when data.HasBundle
+// (== HasClause3) is set — the same §3 re-verification gate as the page ✓, so the
+// bundle reuses the §3 crypto path verbatim instead of re-deriving Merkle.
 //
 // The chain, each step's miss being an honest 200 verdict:
 //  1. Decode the id — a decode error → "not a valid ISCC-ID".
@@ -354,36 +535,37 @@ func Handler(hubList *registry.HubList, st *store.Store, statuses StatusSource) 
 //     note.$schema and labelled by recordKind (declaration / deletion / unknown). It
 //     renders unconditionally (a store read, no crypto gate); a RecordAt miss is an
 //     honest gap (the seq lists with the unknown label), only a real DB fault is a 500.
-func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawID string) (certData, int) {
+func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawID string) (certData, bundleArtifacts, int) {
+	var arts bundleArtifacts
 	if rawID == "" {
-		return certData{Reason: "no ISCC-ID supplied"}, http.StatusOK
+		return certData{Reason: "no ISCC-ID supplied"}, arts, http.StatusOK
 	}
 	data := certData{IsccID: rawID}
 
 	id, err := index.Decode(rawID)
 	if err != nil {
 		data.Reason = "not a valid ISCC-ID"
-		return data, http.StatusOK
+		return data, arts, http.StatusOK
 	}
 
 	if hubList == nil {
 		data.Reason = "not found in this realm"
-		return data, http.StatusOK
+		return data, arts, http.StatusOK
 	}
 	domain, ok := hubList.Resolve(id.HubID)
 	if !ok {
 		data.Reason = "not found in this realm"
-		return data, http.StatusOK
+		return data, arts, http.StatusOK
 	}
 
 	hub, ok, err := followedHub(r, st, domain)
 	if err != nil {
-		return certData{}, http.StatusInternalServerError
+		return certData{}, arts, http.StatusInternalServerError
 	}
 	if !ok {
 		data.Domain = domain
 		data.Reason = "hub not followed by this monitor"
-		return data, http.StatusOK
+		return data, arts, http.StatusOK
 	}
 	data.Domain = domain
 
@@ -396,11 +578,11 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 	lookupID := "ISCC:" + strings.TrimPrefix(rawID, "ISCC:")
 	seqs, err := st.SeqsForISCCID(r.Context(), hub.HubID, lookupID)
 	if err != nil {
-		return certData{}, http.StatusInternalServerError
+		return certData{}, arts, http.StatusInternalServerError
 	}
 	if len(seqs) == 0 {
 		data.Reason = "not found in log"
-		return data, http.StatusOK
+		return data, arts, http.StatusOK
 	}
 
 	// Accepted-tree cap (Correctness rule: coverage honesty, ADR-0001). PollHub
@@ -413,13 +595,13 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 	// ADR-0006), so the same cap correctly caps a frozen hub at its accepted window.
 	if hub.LastSize == 0 {
 		data.Reason = "no accepted checkpoint yet"
-		return data, http.StatusOK
+		return data, arts, http.StatusOK
 	}
 	// seqs is ascending (SeqsForISCCID ORDER BY seq), so seqs[0] is the earliest
 	// indexed candidate — the right one to gate on.
 	if seqs[0] >= hub.LastSize {
 		data.Reason = "not in accepted tree"
-		return data, http.StatusOK
+		return data, arts, http.StatusOK
 	}
 
 	// iscc_id → seq is one-to-many and schema-agnostic (ADR-0008): the subject
@@ -440,12 +622,15 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 	// base64-Std encoded to match the log browser and verify-for-me.
 	root, raw, found, err := st.CheckpointAt(r.Context(), hub.HubID, hub.LastSize)
 	if err != nil {
-		return certData{}, http.StatusInternalServerError
+		return certData{}, arts, http.StatusInternalServerError
 	}
 	if found {
 		data.CheckpointSize = hub.LastSize
 		data.CheckpointRoot = base64.StdEncoding.EncodeToString(root)
 		data.HasClause2 = true
+		// Carry the verbatim signed-note checkpoint text for the proof bundle (the body
+		// a client checks the hub signature on). Meaningful only once HasBundle is set.
+		arts.raw = raw
 	}
 
 	// §3 INCLUSION PROOF: recompute the RFC-6962 inclusion proof of the subject leaf
@@ -490,7 +675,7 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 		// on a missing checkpoint row). Any non-os.ErrNotExist build error is a real
 		// fault → 500 (buffered before any 200), matching §2's split.
 		if !errors.Is(err, os.ErrNotExist) {
-			return certData{}, http.StatusInternalServerError
+			return certData{}, arts, http.StatusInternalServerError
 		}
 	} else if data.HasClause2 {
 		// Read the subject leaf's raw record bytes from the mirrored entry bundle (the
@@ -506,7 +691,7 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 			// A bundle not yet mirrored is the same honest gap as a missing tile: leave
 			// §3 unrendered. Any other read fault → 500 (buffered before any 200).
 			if !errors.Is(err, os.ErrNotExist) {
-				return certData{}, http.StatusInternalServerError
+				return certData{}, arts, http.StatusInternalServerError
 			}
 		} else {
 			record, err := logclient.RecordBytesFromBundle(bundle, offset)
@@ -515,7 +700,7 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 				// The leaf's bundle is mirrored but does not yet cover it — an honest gap,
 				// not a fault. Leave §3 unrendered.
 			case err != nil:
-				return certData{}, http.StatusInternalServerError
+				return certData{}, arts, http.StatusInternalServerError
 			default:
 				// Arg-order gotcha (learnings): VerifyInclusion(hasher, index, size,
 				// leafHash, proof, root) — leafHash precedes proof, unlike
@@ -530,6 +715,14 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 					}
 					data.ProofHashes = hashes
 					data.HasClause3 = true
+					// The §3 re-verification succeeded, so a verified proof bundle exists.
+					// Offer it (HasBundle) and carry the in-hand artifacts (the verified
+					// proof + the record bytes) so serveBundle reuses this crypto path
+					// verbatim instead of re-deriving Merkle. This is the SINGLE gate for
+					// both the page ✓ and the bundle (the load-bearing fail-closed rule).
+					data.HasBundle = true
+					arts.builtProof = builtProof
+					arts.record = record
 				}
 			}
 		}
@@ -554,7 +747,7 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 		if _, keyID, err := logclient.KeyIDFromCheckpoint(raw); err == nil {
 			key, found4, err := st.LookupHubKey(r.Context(), hub.HubID, keyID)
 			if err != nil {
-				return certData{}, http.StatusInternalServerError
+				return certData{}, arts, http.StatusInternalServerError
 			}
 			if found4 {
 				data.SigningKeyDID = "did:web:" + data.Domain
@@ -564,6 +757,13 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 					data.SigningKeyRevoked = key.Revoked.Format(time.RFC3339)
 				}
 				data.HasClause4 = true
+				// Carry the cached key for the proof bundle's key member (the same
+				// cache hit §4 renders). When no key is cached the bundle omits the
+				// member rather than fabricate one (ADR-0009: did:web is the only key
+				// source), so the bundle's key clause mirrors the §4 honest decline.
+				arts.keyID = keyID
+				arts.key = key
+				arts.hasKey = true
 			}
 		}
 	}
@@ -596,7 +796,7 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 		}
 		row, found, err := st.RecordAt(r.Context(), hub.HubID, seq)
 		if err != nil {
-			return certData{}, http.StatusInternalServerError
+			return certData{}, arts, http.StatusInternalServerError
 		}
 		schema := ""
 		if found {
@@ -612,7 +812,7 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 	data.HasDeletion = deletion
 	data.HasClause6 = true
 
-	return data, http.StatusOK
+	return data, arts, http.StatusOK
 }
 
 // followedHub maps a resolved hub domain to the monitor's store hub summary,
