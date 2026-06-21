@@ -1,179 +1,139 @@
 # Next Work Package
 
-## Step: Certificate-of-inclusion skeleton — realm-wide `/inclusion/{iscc_id}` page (§1 Subject clause + decode→resolve chain)
+## Step: Make the certificate §1 inclusion claim sound — accepted-tree cap + ISCC:-prefixed lookup
 
 ## Advances
-M-UI (Evidence Ledger frontend) — the one remaining open Verify criterion:
+Closes the two open `critical` issues that block the M-UI certificate Verify criterion. Per the
+`review` handoff (**Next:** "Fix the two `critical` defects — they belong together in ONE slice") and
+`state.md` "Next Milestone" step 1, these preempt all other work: the headline §1 SUBJECT clause
+currently makes an affirmative inclusion claim it cannot back. The criterion advanced toward is
+target.md M-UI:
 
-> "the **realm-wide certificate** (`/inclusion/{iscc_id}`, keyed by the self-describing ISCC-IDv1 —
-> decode realm + 12-bit `hub_id`, resolve the issuing hub via the registry) for a known id renders the
-> numbered evidence clauses (subject + position; checkpoint `(size, root)`; inclusion proof; signing
-> key; anchor state; full per-id record history incl. any deletion) and offers a **downloadable proof
-> bundle** … while an unknown id renders the documented 'not found in log' state (200, never 5xx) …"
+> "the **realm-wide certificate** (`/inclusion/{iscc_id}` …) for a known id renders the numbered
+> evidence clauses (subject + position; …) … while an unknown id renders the documented 'not found in
+> log' state (200, never 5xx)"
 
-This is the **largest** remaining M-UI slice and the only one that re-engages the oracle/conformance
-gate (the proof-bundle assembler). Per the skeleton-first rule it cannot land in one ≤3-file step, so
-this step lays the **verifiable skeleton**: the realm-wide route + the decode→resolve→store-lookup
-chain + the **§1 Subject** clause + the documented invalid-id / unknown-id 200 states. It closes the
-"decode realm + hub_id, resolve the issuing hub via the registry … unknown id renders the documented
-'not found in log' state (200, never 5xx)" portion of the criterion and **wires the already-built
-`index.Decode` + `registry.Resolve`** (state.md: both built, resolver "not yet wired into any caller").
-The §2–§6 clauses and the proof-bundle assembler are explicit `## Not In Scope` sub-steps for later
-iterations so the loop continues the same arc rather than switching to an unrelated refactor.
-
-This is milestone work (not a self-filed backlog drain): the two iterations before this were
-trust-root-adjacent resolver hardening with no Verify-closing surface; state.md's Convergence note
-explicitly warns against a third consecutive resolver-polish iteration on an unwired leaf, so we push
-onto the certificate page proper.
+The skeleton landed NEEDS_WORK because §1 certifies leaves *outside the accepted tree* and looks up a
+*bare* id that never matches the stored `ISCC:`-prefixed key. This step makes the §1 claim honest so
+the criterion can progress (its §2–§6 clauses follow in later steps, see `## Not In Scope`).
 
 ## Goal
-Stand up a new `internal/certificate` package serving `GET /inclusion/{iscc_id}`: decode the
-self-describing ISCC-IDv1, resolve the issuing hub's domain via the Hub-List, look up that hub's store
-row, and render an Evidence-Ledger certificate page whose **§1 Subject** clause + subject banner are
-real. A malformed id, an id that resolves to no listed slot / no followed hub, or an id with no indexed
-leaf renders the documented "not found in log" / "cannot certify" state at **200**, never 5xx. This
-wires the decoder and resolver into their first real caller and lays the package the remaining clauses +
-proof-bundle assembler extend.
+Gate the certificate's affirmative inclusion claim on the accepted-tree cap (`seqs[0] < LastSize`,
+like every sibling record route) and canonicalize the lookup id to the stored `ISCC:`-prefixed form,
+so a real declaration in an accepted checkpoint certifies while an unaccepted / unindexed / pre-coverage
+id renders the honest cannot-certify state — with fixtures re-grounded to production's storage format.
 
 ## Scope
-- **Create**: `internal/certificate/handler.go` — the realm-wide certificate handler (§1 Subject
-  skeleton).
-- **Create**: `internal/certificate/cert.html` — the embedded Evidence-Ledger certificate template
-  (document chrome + `← Realm index` back-link + certificate head + subject banner + §1 Subject clause +
-  the two-tier honesty panel; §2–§6 are `{{if}}`-gated placeholders that render nothing yet).
-- **Modify**: `cmd/iscc-monitor/main.go` — mount `certificate.Handler` at the realm-wide subtree
-  `/inclusion/` in `buildMux`, building the `*registry.HubList` once at startup (see Implementation
-  Notes for the minimal interim wiring that avoids a config change this step).
-- **Modify (docs)**: `CLAUDE.md` — add the `GET /inclusion/{iscc_id}` route to the HTTP-surface bullet
-  list (near line 83, the `GET /<domain>/log/verify` entry).
-- **Create (test)**: `internal/certificate/handler_test.go` — golden HTTP-seam tests (see Verification).
+- **Modify**: `internal/certificate/handler.go` (`buildData` + `followedHub`) — the only non-test source
+  file. (1 of ≤3.)
+- **Modify (tests, not counted)**: `internal/certificate/handler_test.go` — re-ground `fixtureStore`
+  to index the leaf under the `ISCC:`-prefixed id and seed an accepted checkpoint covering it; add the
+  two cannot-certify seam tests below.
 - **Reference**:
-  - `/workspace/iscc-monitor/.claude/design/ISCC Monitor - Certificate.dc.html` — the authoritative
-    mockup (landmark regions: document chrome, `← Realm index` back-link, certificate head, subject
-    banner, numbered clauses §1–§6, two-tier honesty panel, Download-proof-bundle + "Verify
-    independently →" actions, "Cite as / verifiable cache" footer).
-  - `/workspace/iscc-monitor/internal/dossier/handler.go` +
-    `/workspace/iscc-monitor/internal/dossier/dossier.html` — the established new-page pattern (embed +
-    `template.Must` + `badge.Source` association, buffer-then-200, StatusSource overlay, the
-    DS-token/font shell). Copy its shell + the coverage-honesty discipline.
-  - `/workspace/iscc-monitor/internal/proofserve/handler.go` `serveRecord` / `serveVerify` — the
-    `iscc_id → seqs` lookup (`SeqsForISCCID`, ADR-0008 one-to-many) and the accepted-tree (`LastSize`)
-    guards the later clauses reuse; the skeleton needs only subject + position, but read these so the
-    view-model is forward-compatible.
-  - `/workspace/iscc-monitor/internal/index/iscc.go` +
-    `/workspace/iscc-monitor/internal/index/iscc_test.go` — `Decode`; the golden vector
-    `MAIGHFECJMOPMIAB` decodes to `{Realm:0, HubID:1}`.
-  - `/workspace/iscc-monitor/internal/registry/registry.go` — `ParseHubList` /
-    `HubList.Resolve(hubID uint16) (domain, ok)`;
-    `/workspace/iscc-monitor/internal/registry/testdata/testnet.yaml` (slot 0 → `sb0.iscc.id`, slot 1 →
-    `sb1.amlet.id`).
-  - `/workspace/iscc-monitor/internal/store/hubs.go` — `HubSummary` (`HubID/Domain/Origin/LastSize/...`)
-    + `ListHubs` for the domain→hubID lookup (same read dossier uses).
-  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` — `buildMux` / `registerHubs` (where the route
-    mounts and where the realm entries already live).
-  - `/workspace/iscc-monitor/.claude/context/learnings/registry.md`,
-    `/workspace/iscc-monitor/.claude/context/learnings/index.md`,
-    `/workspace/iscc-monitor/.claude/context/learnings/http-surface.md` — package pitfalls (resolver
-    `ForceQuery` fail-open; decoder fail-closed nibbles; the `iscc_id`/seq/accepted-tree contract; the
-    mux-mount + CSS-literal + buffer-then-200 SSR traps).
+  - `/workspace/iscc-monitor/.claude/context/learnings/certificate.md` — both OPEN traps documented
+    verbatim (the accepted-tree cap + the prefixed-key mismatch); read before editing.
+  - `/workspace/iscc-monitor/.claude/context/learnings/store.md` — `AdvanceAccepted` tx,
+    `ListHubs`/`FollowState` leaf reads, the iscc_index contract.
+  - `/workspace/iscc-monitor/.claude/context/learnings/http-surface.md` — the documented
+    "iscc_index can hold projections ABOVE LastSize" trap + every sibling route's `>= size` cap.
+  - `/workspace/iscc-monitor/.claude/context/issues.md` — the two `critical` entries carry the exact fix
+    + verify recipe.
+  - `/workspace/iscc-monitor/internal/store/hubs.go` (line 23: `HubSummary` carries `.LastSize` +
+    `.Frozen`) and `/workspace/iscc-monitor/internal/store/iscc_index.go` (line 201: `SeqsForISCCID`,
+    ORDER BY seq ascending).
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — the accept path (`AdvanceAccepted` /
+    `FollowState`) the fixture uses to set `LastSize`; confirm the exact signature there.
+  - `/workspace/iscc-monitor/internal/logclient/projection.go` (lines 31-32) — ground truth: `iscc_id`
+    is stored **`ISCC:`-prefixed, verbatim**.
+  - `/workspace/iscc-monitor/internal/certificate/cert.html` (lines 324, 378-391) — the
+    `{{if .Certifiable}} … {{else}}` not-found branch already renders any `.Reason`; **no template
+    change is needed** for the new cannot-certify states.
 
 ## Not In Scope
-- **The proof-bundle assembler** (`{checkpoint, inclusion/consistency proof, record bytes, hub key,
-  ots?}`) and the **Download proof bundle** action wiring — this is the oracle-gated half; it is its own
-  later step (the reviewer must mutation-prove the served bundle's inclusion proof non-vacuous +
-  `notecheck`/golden-vector parity). The skeleton's button renders as a disabled/placeholder element.
-- **Clauses §2 Checkpoint, §3 Inclusion proof, §4 Signing key, §5 Bitcoin anchor, §6 Record history** —
-  later sub-steps. Render them as `{{if .HasClauseX}}`-gated placeholders that emit nothing this step,
-  so the template grows without rework. (§5 Bitcoin anchor in particular waits on the OTS milestone — a
-  not-yet-anchored root must render the "pending" state, never an error.)
-- **The `ForceQuery` fail-open fix** in `registry.go` (`hubDomain`, line 188) — the open `normal` issue.
-  Folding it would push to 4 non-test/doc files. It rides the **next** certificate slice (§2/§3, which
-  also touch the resolved domain), exactly as the review/state recommend; the testnet fixture uses clean
-  `https://host` urls so resolution is correct for this skeleton.
-- **The ADR-0011 Go 1.26 + iscc-lib bump** — toolchain-gated (local is go1.24.13; mise cannot provision
-  Go 1.26 this iteration; confirmed via `go version`). Do NOT flip `go.mod`'s `go` directive.
-- **The WASM tier-2 "verify in your browser" result** — lands in the WASM milestone; the tier-1/tier-2
-  honesty panel + the static "Verify independently →" link must be present and visually distinct, but the
-  tier-2 *result* is not computed here.
-- **A new `internal/config` field / env var** — keep the Hub-List wiring interim (see Notes); a config
-  change is its own decision, not this skeleton's.
+- The §2–§6 clauses (checkpoint, inclusion proof, signing key, Bitcoin anchor, record history) and the
+  downloadable **proof-bundle assembler** — those re-engage the oracle/conformance gate and are their
+  own later slices. Leave `HasClause2..6` false and the download button disabled.
+- The separate Bitcoin-anchor vs comparison-anchor panels.
+- The deferred `internal/registry` `hubDomain` `ForceQuery` fail-open (`normal`) — do NOT touch
+  `registry.go` this step; it rides the slice that next edits `hubDomain`.
+- The ADR-0011 Go 1.26 + iscc-lib bump (`normal`, human-sequenced, needs a Go 1.26 toolchain).
+- Any new store query: the cap reads `LastSize` from the `HubSummary` that `followedHub` already fetches
+  via `ListHubs` — do **not** add a second `FollowState` call.
+- Editing `cert.html` — the existing `{{else}}` not-found branch covers both new states via `.Reason`.
 
 ## Implementation Notes
-- **Route shape: realm-wide subtree, not per-hub.** Mount `certificate.Handler` at the exact subtree
-  `"/inclusion/"` in `buildMux` (alongside `/`, `/metrics`, `/healthz`, `/_ds/`). `http.ServeMux`
-  subtree matching gives the handler paths like `/inclusion/MAIGHFECJMOPMIAB`; extract the id with
-  `strings.TrimPrefix(r.URL.Path, "/inclusion/")`. A bare `/inclusion/` (empty id) → the documented
-  "no id / not found" 200 state. Non-GET → 405 (mirror dossier). This subtree is disjoint from every
-  `/<domain>/log/` mirror subtree and every `/<domain>` dossier exact mount, so it never shadows them —
-  the per-hub JSON proof route stays `/<domain>/log/inclusion` (a DIFFERENT mount; do not touch it).
-- **Decode→resolve→lookup chain (the trust root of this path):**
-  1. `id, err := index.Decode(rawID)` — a decode error → the documented invalid-id 200 state (never 5xx).
-  2. `domain, ok := hubList.Resolve(id.HubID)` — `!ok` (unknown slot) → 200 "not found in this realm".
-     (`Resolve` resolves on `HubID`; the skeleton may surface `id.Realm` in §1 copy but resolves on the
-     slot.)
-  3. Find the store row for `domain` via `st.ListHubs(ctx)` (same read dossier uses) → its `HubID`. A
-     resolved domain with no followed hub → 200 "hub not followed by this monitor".
-  4. `seqs, err := st.SeqsForISCCID(ctx, hubID, rawID)` (ADR-0008 one-to-many); `len(seqs)==0` → the
-     documented "not found in log" 200 state. The subject position is `seqs[0]` (ascending; the
-     deterministic default, matching `serveVerify`).
-- **Fail-closed / coverage-honesty discipline (ADR-0001):** every "cannot certify" branch is a **200**
-  with an honest explanation, never a 5xx and never a fabricated proof. A genuine infra fault (a
-  `ListHubs` / `SeqsForISCCID` DB error) is the only 500. Render into a `bytes.Buffer` first so a
-  template/store error is a 500 BEFORE any 200 is committed (copy the dossier/proofserve pattern).
-- **Hub-List wiring without a config change (KISS, interim):** production has no Hub-List document path
-  yet, and `realm.txt` is line-based domains (a DIFFERENT format — do NOT conflate it with the YAML
-  Hub-List). For THIS skeleton, build the `*registry.HubList` in `cmd/iscc-monitor` from the parsed
-  realm entries by assigning slot i = entry i in `realm.txt` order — this matches the testnet fixture
-  (sb0=slot0, sb1=slot1) and needs no new env var. Pass it into
-  `certificate.Handler(hubList *registry.HubList, st *store.Store, statuses certificate.StatusSource)`
-  so swapping in a real Hub-List source later is a one-line change. Document this interim mapping with a
-  clear TODO and flag it so `review` weighs it. If hand-constructing a `*registry.HubList` in `cmd/` is
-  awkward (the `Hubs` slice needs `*uint16` HubIDs), prefer a tiny exported `registry` constructor over
-  a config change — but keep both `registry.go`'s and config's existing surface untouched if at all
-  possible (the route mount + handler are the load-bearing change).
-- **Template / DS shell:** copy the dossier shell verbatim (DS `<link>`s to `/_ds/...`, self-hosted
-  fonts, NO external CDN URL in the body — the `noExternalCDN` ban is asserted at the seam). Use the
-  **UNQUOTED** `[data-status=verified]` CSS attribute form if you inline any badge color block (the
-  http-surface CSS-literal trap). Render the mockup's landmark regions: document chrome header (ISCC
-  logo + "Trust & Transparency Monitor" mark + instance-identity block + `verify ↗ monitor.iscc.codes`
-  tier-2 link), `← Realm index` back-link, certificate head (ref + issued + instance), subject banner
-  ("<id> is included in the transparency log of <hub> at position N"), **§1 Subject** clause, the
-  two-tier honesty panel, the "Cite as / verifiable cache" footer. §2–§6 are gated placeholders.
-- **html/template, not text/template** — the id, domain, and seq auto-escape. Associate `badge.Source`
-  into the set if you render the hub's status badge (mirror dossier's
-  `template.Must(t.Parse(badge.Source))`).
-- **Oracle/conformance gate is N/A for THIS step** (pure HTML render of decode + resolve + a store
-  `SeqsForISCCID` lookup; no signature / RFC-6962 / Merkle / proof / did:web path, no new crypto). It
-  APPLIES to the later proof-bundle sub-step — call that out so the next `define-next` re-engages it.
-- **Correctness rules in play (learnings index):** "Origin = `<domain>/log`" (the certificate links into
-  `/<domain>/log/...` for later clauses — derive, never hardcode the bare domain); "`iscc_id → seq` is
-  one-to-many, verification is schema-agnostic (ADR-0008)" (subject defaults to `seqs[0]`, interpret
-  nothing); "Coverage honesty (ADR-0001)" (every cannot-certify branch is an honest 200).
+Both fixes live in `buildData` (+ a small `followedHub` return-type change). The template needs no
+edit — the cannot-certify states route through the existing `{{else}}` branch by setting `data.Reason`.
+
+1. **Carry `LastSize` out of the hub lookup (no extra query).** `followedHub` already calls
+   `st.ListHubs` and returns the matching `HubSummary.HubID`. `HubSummary` also carries `.LastSize`
+   and `.Frozen` (`internal/store/hubs.go:23`). Change `followedHub` to return the matched
+   `store.HubSummary` (or at minimum `(hubID int64, lastSize uint64, ok bool, err error)`) so
+   `buildData` has `LastSize` in hand without a second store round-trip. Keep it one linear scan.
+
+2. **Accepted-tree cap (Correctness rule: coverage honesty, ADR-0001).** After
+   `seqs, err := st.SeqsForISCCID(...)`, keep the current `len(seqs) == 0 → "not found in log"`. Then
+   add the cap **before** setting `Certifiable`:
+   - if `LastSize == 0` → `data.Reason = "no accepted checkpoint yet"`, return 200 (not certifiable);
+   - else if `seqs[0] >= LastSize` → `data.Reason = "not in accepted tree"`, return 200 (the leaf is
+     indexed but above the accepted checkpoint — a frozen/failed poll left an unaccepted projection;
+     see learnings/http-surface.md "iscc_index can hold projections ABOVE LastSize").
+   Only `len(seqs) > 0 && seqs[0] < LastSize` sets `data.Certifiable = true`. This mirrors
+   `serveInclusion` / `serveEntries` / `serveRecord` (`leafIndex/seq >= size → not served`).
+   `seqs` is ascending (`SeqsForISCCID` ORDER BY seq), so `seqs[0]` is the earliest indexed candidate —
+   the right one to gate on. Set `data.Domain = domain` on these branches too, so the page names the hub.
+
+3. **Canonicalize the lookup id to the stored prefixed form (ADR-0008 schema-agnostic index).**
+   Production stores `iscc_id` `ISCC:`-prefixed and verbatim (`projection.go:31-32`). The handler
+   currently passes the bare path suffix `rawID`. After `index.Decode(rawID)` succeeds (so we know it
+   is a valid ISCC-IDv1), build the canonical key once:
+   `lookupID := "ISCC:" + strings.TrimPrefix(rawID, "ISCC:")` — this accepts either `/inclusion/MAIG…`
+   or `/inclusion/ISCC:MAIG…` and always queries the single stored prefixed form (do NOT double-prefix).
+   Pass `lookupID` (not `rawID`) to `SeqsForISCCID`. Keep echoing `rawID` as `data.IsccID` for display.
+   `index.iscPrefix` is unexported, so use the literal `"ISCC:"` here (matching how `cert.html` carries
+   literal `/_ds/` paths).
+
+4. **Re-ground the fixtures to ground truth, not to the code.** In `handler_test.go` `fixtureStore`:
+   - index the leaf under the **prefixed** id: `IsccID: "ISCC:" + indexedID` in the `ProjectionRecord`
+     (currently it seeds the bare form), matching `projection_test.go`'s `"ISCC:MAIG…"`. Keep the
+     `indexedID` argument the bare golden id and prefix it inside `fixtureStore`.
+   - seed an **accepted checkpoint** covering the leaf so `LastSize > seq`. Use the store's accept path
+     (`AdvanceAccepted` — the same call `checkpoints_test.go` uses to set `LastSize`); confirm the API
+     in `internal/store/checkpoints.go`. For the golden seq `24815`, set `LastSize` to e.g. `24816`+.
+   `TestCertificateKnownID` then proves the real production path (prefixed key + accepted tree), and the
+   bare-suffix request `/inclusion/MAIGHFECJMOPMIAB` still certifies (proving the canonicalization).
+   The existing not-in-log / malformed / unresolvable / not-followed / empty / nil-HubList tests stay
+   green (none of them assert `Certifiable`); fix any that now need an accepted checkpoint to certify.
+
+5. **Add two cannot-certify seam tests** (mutation-provable, ground-truthed):
+   - `TestCertificateUnacceptedLeaf`: index the prefixed leaf at a seq `>= LastSize` (or with
+     `LastSize == 0` — no accepted checkpoint) and assert the body renders the cannot-certify state
+     ("not in accepted tree" / "no accepted checkpoint yet") and **not** the "is included in the
+     transparency log" banner. Reverting the cap makes this FAIL.
+   - `TestCertificatePrefixedLookup` (or fold into the known-id test): with the leaf indexed under the
+     prefixed id, the bare-suffix request still certifies; reverting the canonicalization makes it FAIL.
+
+Edge cases: a frozen hub's `LastSize` is its last *accepted* size (freeze stops advance, ADR-0006), so
+the same `seqs[0] < LastSize` cap correctly caps a frozen hub at its accepted window — no separate
+frozen branch needed. Keep all branches 200 (fail-closed); a store error stays the only 500
+(buffer-then-200, unchanged).
 
 ## Verification
-- `mise run check` is green (`go build ./... && go vet ./... && go test ./...`; `gofmt -l .` empty).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
 - `go test -count=1 ./internal/certificate` passes uncached.
-- `go build ./...` (the server build) passes — the new package compiles and mounts.
-- **Known-id golden chain (seam test):** with a fixture store holding the testnet hubs and at least one
-  indexed leaf for a known id under the hub at slot 1 (`sb1.amlet.id`), `GET
-  /inclusion/MAIGHFECJMOPMIAB` returns `200 text/html`, and the body contains: the subject id
-  (`MAIGHFECJMOPMIAB` or `ISCC:MAIGHFECJMOPMIAB`), the **resolved** hub domain `sb1.amlet.id`, the
-  position (`seqs[0]`), the **§1 SUBJECT** clause marker, the `← Realm index` back-link, the
-  `verify ↗ monitor.iscc.codes` tier-2 link, and the two-tier honesty panel — and contains **no**
-  external CDN URL outside the same-origin `/_ds/` links (a `noExternalCDN`-style assert over the body).
-- **Unknown-id (resolves but not in log):** `GET /inclusion/<known-realm-id-with-no-indexed-leaf>`
-  returns `200 text/html` with the documented "not found in log" state, never 4xx/5xx.
-- **Malformed-id:** `GET /inclusion/NOTANISCCID` returns `200 text/html` with the documented invalid-id
-  state, never 4xx/5xx (a decode error is a verdict, not a fault).
-- **Unresolvable slot:** an id whose `hub_id` slot is not in the Hub-List returns the documented "not in
-  this realm" 200 state.
-- **Method guard:** a non-GET to `/inclusion/...` returns 405.
-- **Non-vacuity (reviewer-reproducible):** the known-id test must FAIL if `Resolve` is stubbed to return
-  the wrong domain or `Decode` is bypassed — assert on the *resolved* `sb1.amlet.id` (derived from the
-  real decode→resolve chain), not on a literal the template could carry unconditionally.
+- `go test -count=1 -run TestCertificateKnownID ./internal/certificate` passes with the leaf indexed
+  under `"ISCC:"+goldenID` and an accepted checkpoint with `LastSize > 24815`, asserting the certifiable
+  subject banner + position `24815` for the bare-suffix request `/inclusion/MAIGHFECJMOPMIAB`.
+- `go test -count=1 -run TestCertificateUnacceptedLeaf ./internal/certificate` passes: a prefixed leaf
+  at seq `>= LastSize` (or `LastSize == 0`) renders the cannot-certify state, not the subject banner.
+- Mutation check (reviewer reproduces): (a) removing the `seqs[0] < LastSize` cap →
+  `TestCertificateUnacceptedLeaf` FAILS; (b) reverting the lookup to bare `rawID` →
+  `TestCertificateKnownID` FAILS (declaration reports "not found in log").
+- `GET /inclusion/MAIGHFECJMOPMIAB` and `GET /inclusion/ISCC:MAIGHFECJMOPMIAB` both certify the same
+  leaf (canonicalization accepts either input form).
 
 ## Done When
-`internal/certificate` serves `GET /inclusion/{iscc_id}` mounted in `buildMux`, the decode→resolve→
-store-lookup chain renders a real §1 Subject clause + subject banner for the known golden id and an
-honest 200 state for every malformed / unresolvable / not-in-log id, CLAUDE.md lists the new route, and
-all Verification checks pass.
+`buildData` gates `Certifiable` on `len(seqs) > 0 && seqs[0] < LastSize` and looks up the
+`ISCC:`-prefixed id, the fixtures are re-grounded to the prefixed form + an accepted checkpoint, both
+new tests pass and are mutation-proven non-vacuous, and `mise run check` is green — closing the two
+open `critical` issues so the certificate §1 claim is sound.
