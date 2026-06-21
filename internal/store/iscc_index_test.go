@@ -229,6 +229,138 @@ func TestRecordProjectionsSchemaAgnostic(t *testing.T) {
 	}
 }
 
+// seqsOf extracts the seqs from a RecordRow page, so an order assertion reads as a
+// plain []uint64 comparison.
+func seqsOf(rows []RecordRow) []uint64 {
+	out := make([]uint64, len(rows))
+	for i, r := range rows {
+		out[i] = r.Seq
+	}
+	return out
+}
+
+// TestListRecords confirms the record-list read is newest-first (seq DESC), respects
+// the page window (n / from cursor), reports the correct total, and reads id / schema
+// back verbatim — the load-bearing behaviour the log-browser record list renders.
+func TestListRecords(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hub := newHub(t, s)
+
+	// Five contiguous leaves (seq 0..4) with distinct ids and schemas.
+	recs := make([]ProjectionRecord, 5)
+	for i := range recs {
+		recs[i] = ProjectionRecord{
+			HubID:      hub,
+			Seq:        uint64(i),
+			IsccID:     leafID(i),
+			NoteSchema: "iscc-note-0.8.0.json",
+		}
+	}
+	if err := s.RecordProjections(ctx, recs); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+
+	// A full page from the newest record is newest-first and reports the right total.
+	rows, total, err := s.ListRecords(ctx, hub, 0, 10)
+	if err != nil {
+		t.Fatalf("ListRecords full page: %v", err)
+	}
+	if total != 5 {
+		t.Errorf("total = %d, want 5", total)
+	}
+	if got := seqsOf(rows); !reflect.DeepEqual(got, []uint64{4, 3, 2, 1, 0}) {
+		t.Errorf("newest-first seqs = %v, want [4 3 2 1 0]", got)
+	}
+	// id / schema round-trip verbatim on the newest row.
+	if rows[0].IsccID != leafID(4) {
+		t.Errorf("newest IsccID = %q, want %q", rows[0].IsccID, leafID(4))
+	}
+	if rows[0].NoteSchema != "iscc-note-0.8.0.json" {
+		t.Errorf("newest NoteSchema = %q, want iscc-note-0.8.0.json", rows[0].NoteSchema)
+	}
+
+	// A page size of 2 from the newest yields exactly the two newest, total unchanged.
+	rows, total, err = s.ListRecords(ctx, hub, 0, 2)
+	if err != nil {
+		t.Fatalf("ListRecords first page n=2: %v", err)
+	}
+	if total != 5 {
+		t.Errorf("total on small page = %d, want 5", total)
+	}
+	if got := seqsOf(rows); !reflect.DeepEqual(got, []uint64{4, 3}) {
+		t.Errorf("first page (n=2) seqs = %v, want [4 3]", got)
+	}
+
+	// The next page via the from cursor (one below the page's smallest seq, 3-1=2)
+	// continues newest-first from seq 2.
+	rows, _, err = s.ListRecords(ctx, hub, 2, 2)
+	if err != nil {
+		t.Fatalf("ListRecords second page: %v", err)
+	}
+	if got := seqsOf(rows); !reflect.DeepEqual(got, []uint64{2, 1}) {
+		t.Errorf("second page (from=2, n=2) seqs = %v, want [2 1]", got)
+	}
+}
+
+// TestListRecordsScopedByHub confirms the page is hub-scoped: a second hub's records
+// never appear in the first hub's list, and the total counts only the first hub.
+func TestListRecordsScopedByHub(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hubA := newHub(t, s)
+	hubB, err := s.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub hubB: %v", err)
+	}
+
+	// seq is the global PRIMARY KEY, so the two hubs use disjoint seq ranges (a real
+	// network never reuses a leaf index across hubs); the scope assertion is that
+	// hubB's seqs never bleed into hubA's page or count.
+	if err := s.RecordProjections(ctx, []ProjectionRecord{
+		{HubID: hubA, Seq: 10, IsccID: leafID(0), NoteSchema: "iscc-note-0.8.0.json"},
+		{HubID: hubA, Seq: 11, IsccID: leafID(1), NoteSchema: "iscc-note-0.8.0.json"},
+		{HubID: hubB, Seq: 20, IsccID: leafID(99), NoteSchema: "iscc-note-0.8.0.json"},
+	}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+
+	rows, total, err := s.ListRecords(ctx, hubA, 0, 10)
+	if err != nil {
+		t.Fatalf("ListRecords hubA: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("hubA total = %d, want 2 (hub-scoped count)", total)
+	}
+	if got := seqsOf(rows); !reflect.DeepEqual(got, []uint64{11, 10}) {
+		t.Errorf("hubA seqs = %v, want [11 10] (hub-scoped)", got)
+	}
+}
+
+// TestListRecordsEmpty confirms a hub with no indexed records returns an empty slice,
+// a zero total, and a nil error — the empty-log case the record list must render.
+func TestListRecordsEmpty(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hub := newHub(t, s)
+
+	rows, total, err := s.ListRecords(ctx, hub, 0, 10)
+	if err != nil {
+		t.Fatalf("ListRecords empty: unexpected error %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("empty hub rows = %v, want empty slice", rows)
+	}
+	if total != 0 {
+		t.Errorf("empty hub total = %d, want 0", total)
+	}
+}
+
+// leafID returns a synthetic ISCC:-prefixed id unique per leaf index.
+func leafID(i int) string {
+	return "ISCC:LEAF" + string(rune('A'+i%26)) + string(rune('0'+i%10))
+}
+
 // TestSeqsForISCCIDScopedByHub confirms the lookup is hub-scoped: two hubs indexing
 // the same iscc_id do not bleed into each other's result.
 func TestSeqsForISCCIDScopedByHub(t *testing.T) {

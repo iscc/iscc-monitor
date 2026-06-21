@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ISCC Monitor — Record List</title>
+  <!-- Shared ISCC Design System v2 token stylesheet (CDN-free, self-hosted).
+       The path is a literal because templates cannot read Go consts; keep it in
+       sync with web.TokensPath. -->
+  <link rel="stylesheet" href="/_ds/tokens.css">
+  <!-- Self-hosted @font-face shell (Readex Pro / JetBrains Mono woff2 under
+       /_ds/fonts/, no runtime CDN). The path is a literal; keep it in sync with
+       web.FontsCSSPath. -->
+  <link rel="stylesheet" href="/_ds/fonts.css">
+  <!-- Page-scoped layout for the Evidence-Ledger record list. Every rule is
+       expressed through the embedded DS tokens (var(--*)) so the type resolves to
+       the self-hosted Readex Pro / JetBrains Mono and the surfaces use the DS
+       palette. Kept local to this page (not in the shared tokens.css) so it can
+       never regress another surface. No external/CDN URL appears here. -->
+  <style>
+    body {
+      font-family: var(--font-sans);
+      color: var(--text-body);
+      background: var(--surface-page);
+    }
+
+    /* Document chrome: the masthead identifying this monitor instance. */
+    .chrome {
+      display: flex;
+      align-items: center;
+      gap: var(--space-4);
+      flex-wrap: wrap;
+      padding: var(--space-4) var(--space-8);
+      background: var(--surface-card);
+      border-bottom: var(--border-width) solid var(--border-default);
+    }
+    .chrome-mark {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      letter-spacing: var(--tracking-widest);
+      text-transform: uppercase;
+      color: var(--text-heading);
+      font-weight: var(--weight-semibold);
+    }
+    .chrome-sub {
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+      font-weight: var(--weight-light);
+    }
+
+    .page {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: var(--space-10) var(--space-8) var(--space-14);
+    }
+
+    /* Ledger heading row. */
+    .ledger-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: var(--space-2);
+      margin-bottom: var(--space-3);
+    }
+    .ledger-title {
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--text-heading);
+      font-weight: var(--weight-bold);
+      margin: 0;
+    }
+    .ledger-count {
+      font-size: var(--text-sm);
+      color: var(--text-muted);
+      font-weight: var(--weight-light);
+    }
+
+    /* The ledger card: a bordered, shadowed surface holding the record rows. */
+    .ledger {
+      background: var(--surface-card);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-xs);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+    /* Frozen-card tint: decorative only. The status is already conveyed
+       grayscale-safe by the badge (icon + label + silhouette), so this hue is
+       never the sole status signal (ADR-0010 invariant 4). The attribute value
+       is intentionally unquoted (valid CSS for an identifier) so the rendered
+       body carries no `data-status="..."` literal in the stylesheet — only the
+       elements the partial emits do, keeping the overlay-precedence test honest. */
+    .ledger[data-status=frozen] {
+      background: var(--status-error-bg, rgba(245, 97, 105, 0.06));
+    }
+
+    /* The status row pairs a mono label with the hub-status badge. */
+    .ledger-status {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: var(--space-4);
+      align-items: baseline;
+      padding: var(--space-3) var(--space-5);
+      border-bottom: var(--border-width) solid var(--border-subtle);
+    }
+    .row-label {
+      font-family: var(--font-mono);
+      font-size: var(--text-2xs);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    /* The record list itself: each row is a seq + id + schema triple, newest
+       first, linking to the record's per-record view. Laid out as a CSS grid (no
+       <table>) so the whole page renders complete with JavaScript disabled. */
+    .records {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .record-row {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: var(--space-4);
+      align-items: baseline;
+      padding: var(--space-3) var(--space-5);
+      border-bottom: var(--border-width) solid var(--border-subtle);
+    }
+    .record-row:last-child {
+      border-bottom: 0;
+    }
+    .record-seq {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-link);
+    }
+    /* The record cell must be allowed to shrink below the id's min-content width
+       (grid items default to min-width:auto) so a long id wraps in the cell
+       rather than pushing the seq column out of view. */
+    .record-cell {
+      min-width: 0;
+    }
+    .record-id {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-body);
+      word-break: break-all;
+      overflow-wrap: anywhere;
+    }
+    .record-schema {
+      font-family: var(--font-mono);
+      font-size: var(--text-2xs);
+      color: var(--text-muted);
+    }
+
+    /* Pagination: plain links, no JavaScript. */
+    .pager {
+      display: flex;
+      gap: var(--space-4);
+      padding: var(--space-4) var(--space-5);
+      border-top: var(--border-width) solid var(--border-subtle);
+    }
+    .pager a {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-link);
+    }
+    .pager span {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-faint);
+    }
+
+    .empty {
+      padding: var(--space-6) var(--space-5);
+      color: var(--text-muted);
+    }
+
+    .footnote {
+      font-size: var(--text-xs);
+      font-weight: var(--weight-light);
+      color: var(--text-faint);
+      line-height: var(--leading-normal);
+      margin: var(--space-4) var(--space-1) 0;
+    }
+
+    /* The status badge partial (icon + label). Coloring is decorative and keyed
+       on data-status; the silhouette + label remain the load-bearing,
+       grayscale-safe status signal. */
+    .hub-status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-family: var(--font-sans);
+      font-size: var(--text-xs);
+      font-weight: var(--weight-bold);
+      line-height: 1.1;
+      white-space: nowrap;
+      color: var(--text-body);
+    }
+    .hub-status-badge svg {
+      flex: none;
+    }
+    .hub-status-badge[data-status=verified] {
+      color: var(--status-success-text);
+    }
+    .hub-status-badge[data-status=unresolvable] {
+      color: var(--status-warning-text);
+    }
+    .hub-status-badge[data-status=unverified] {
+      color: var(--status-error-text);
+    }
+    .hub-status-badge[data-status=frozen] {
+      color: var(--status-error-text);
+    }
+    .hub-status-badge[data-status=inactive] {
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <header class="chrome">
+    <div>
+      <div class="chrome-mark">Trust &amp; Transparency Monitor</div>
+      <div class="chrome-sub">Evidence of record · ISCC-Hub network</div>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="ledger-head">
+      <h1 class="ledger-title">Records</h1>
+      <span class="ledger-count">The monitor's mirrored, accepted records for this hub, newest first.</span>
+    </div>
+
+    <div class="ledger" data-status="{{.Status}}">
+      <div class="ledger-status">
+        <span class="row-label">Status</span>
+        <span>{{template "hubStatusBadge" .}}</span>
+      </div>
+      {{- if .Records}}
+      <ul class="records">
+        {{- range .Records}}
+        <li class="record-row">
+          <a class="record-seq" href="entries?index={{.Seq}}">seq {{.Seq}}</a>
+          <span class="record-cell">
+            <code class="record-id">{{if .IsccID}}{{.IsccID}}{{else}}(no iscc_id){{end}}</code>
+            <span class="record-schema">{{if .NoteSchema}}{{.NoteSchema}}{{else}}(no schema){{end}}</span>
+          </span>
+        </li>
+        {{- end}}
+      </ul>
+      <div class="pager">
+        {{- if .HasNewer}}
+        <a href="records?from={{.NewerFrom}}&amp;n={{.PageSize}}">&larr; newer</a>
+        {{- else}}
+        <span>&larr; newer</span>
+        {{- end}}
+        <span>showing {{len .Records}} of {{.Total}}</span>
+        {{- if .HasOlder}}
+        <a href="records?from={{.OlderFrom}}&amp;n={{.PageSize}}">older &rarr;</a>
+        {{- else}}
+        <span>older &rarr;</span>
+        {{- end}}
+      </div>
+      {{- else}}
+      <div class="empty">
+        <p>No records yet — this hub is followed and mirrored, but the monitor has not yet indexed any accepted records for it. Records appear here once a verified checkpoint covers them.</p>
+      </div>
+      {{- end}}
+    </div>
+
+    <p class="footnote">Every record is listed verbatim — the monitor interprets neither the ISCC-ID nor the note schema. Each row links to that leaf's raw record bytes; guarantees hold only from coverage start, so records committed before the monitor began watching are mirrored but not vouched for.</p>
+  </main>
+</body>
+</html>

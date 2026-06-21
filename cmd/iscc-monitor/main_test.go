@@ -430,6 +430,72 @@ func TestMirrorEntriesRoute(t *testing.T) {
 	})
 }
 
+// TestMirrorRecordsRoute proves the /records HTML record-list route is mounted per hub
+// on the same combined mux as the static mirror and the other proof routes: it seeds a
+// verified mirror with indexed projections and an accepted checkpoint, then asserts GET
+// /<origin>/log/records routes through the shared mux to the HTML list (200 text/html
+// containing a per-record entries link), while /<origin>/log/checkpoint still reaches
+// the static mirror. This is the binary-level routing proof the new /records mount does
+// not break the existing routing (the exact mount beats the "/" subtree dispatch).
+func TestMirrorRecordsRoute(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "records.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	hub, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	const leaves = 5
+	recs := make([]store.ProjectionRecord, leaves)
+	for i := range recs {
+		recs[i] = store.ProjectionRecord{HubID: hub, Seq: uint64(i), IsccID: fmt.Sprintf("ISCC:LEAF%d", i)}
+	}
+	if err := st.RecordProjections(ctx, recs); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+	at := time.Unix(1700000000, 0)
+	if _, _, err := st.RecordCheckpoint(ctx, store.CheckpointRecord{
+		HubID: hub, TreeSize: leaves, Root: []byte("root"), Raw: []byte("checkpoint"), ObservedAt: at,
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint: %v", err)
+	}
+	if err := st.AdvanceFollowState(ctx, hub, leaves); err != nil {
+		t.Fatalf("AdvanceFollowState: %v", err)
+	}
+
+	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
+	mux := buildMux(st, routes, metrics.New())
+
+	// GET /sb0.iscc.id/log/records -> 200 HTML listing the indexed records.
+	t.Run("records at origin prefix returns the HTML list", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id/log/records", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+			t.Errorf("Content-Type = %q, want text/html; charset=utf-8", ct)
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("entries?index=4")) {
+			t.Errorf("record list missing per-record link entries?index=4\n%s", rec.Body.String())
+		}
+	})
+
+	// GET /sb0.iscc.id/log/checkpoint -> 200: the static mirror still routes.
+	t.Run("checkpoint still reaches the static mirror", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id/log/checkpoint", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200", rec.Code)
+		}
+	})
+}
+
 // frameEntryBundle frames raw records into a tlog-tiles entry bundle (big-endian
 // uint16 length prefix + data per record), the encoding api.EntryBundle.UnmarshalText
 // decodes — the test's independent encode path.

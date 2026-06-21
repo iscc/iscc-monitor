@@ -272,9 +272,13 @@ func mirrorHandler(st *store.Store, routes []hubRoute, m *metrics.Registry) *htt
 // client must still parse — different routes, different shapes, not duplicates.
 //
 // The metrics registry m is the in-memory status overlay (the StatusSource) the log
-// browser uses to render the live unresolvable / unverified verdicts the store cannot
-// prove — the same overlay source the dashboard receives, so the five-status badge
-// taxonomy is consistent across both surfaces.
+// browser and record list use to render the live unresolvable / unverified verdicts
+// the store cannot prove — the same overlay source the dashboard receives, so the
+// five-status badge taxonomy is consistent across both surfaces.
+//
+// /records (the no-JS paginated HTML record list) is an exact mount like the other
+// proof routes so it beats the "/" subtree dispatch; an unmounted /records would fall
+// through to tilesserve and 404.
 func hubHandler(st *store.Store, hubID int64, m *metrics.Registry) http.Handler {
 	mux := http.NewServeMux()
 	proofs := proofserve.Handler(st, hubID, m)
@@ -286,6 +290,7 @@ func hubHandler(st *store.Store, hubID int64, m *metrics.Registry) http.Handler 
 		}
 		tiles.ServeHTTP(w, r)
 	}))
+	mux.Handle("/records", proofs)
 	mux.Handle("/inclusion", proofs)
 	mux.Handle("/consistency", proofs)
 	mux.Handle("/entries", proofs)

@@ -64,6 +64,29 @@ var browserTmpl = func() *template.Template {
 	return template.Must(t.Parse(badge.Source))
 }()
 
+// recordsSource is the embedded HTML record-list template, parsed once at package
+// init so a malformed template fails the build, not a request.
+//
+//go:embed records.html
+var recordsSource string
+
+// recordsTmpl is the parsed record-list template with the HubStatusBadge partial
+// associated into the same set, so the page invokes {{template "hubStatusBadge" .}}
+// over the recordsData view (which exposes .Status and .Label), the same wiring
+// browserTmpl uses. template.Must panics at init if either source fails to parse. It
+// is html/template (NOT text/template) so the id / schema strings auto-escape.
+var recordsTmpl = func() *template.Template {
+	t := template.Must(template.New("records").Parse(recordsSource))
+	return template.Must(t.Parse(badge.Source))
+}()
+
+// defaultPageSize is the record-list page size used when n is absent or non-numeric;
+// maxPageSize clamps a hostile n so it can never scan the whole index.
+const (
+	defaultPageSize = 50
+	maxPageSize     = 200
+)
+
 // octetStreamType is the media type for the raw record bytes /entries serves: the
 // JCS-canonical log-entry envelope is an opaque BLOB, not the JSON proof shape.
 const octetStreamType = "application/octet-stream"
@@ -98,15 +121,20 @@ type StatusSource interface {
 // accepted checkpoint (size, root), and a real RFC-6962 inclusion result recomputed
 // from the mirror and Merkle-verified against the accepted root.
 //
-// Finally it handles GET / (the hub-log root) — a server-rendered HTML log browser
+// It also handles GET / (the hub-log root) — a server-rendered HTML log browser
 // exposing the monitor's accepted checkpoint (size, root) for this hub plus
 // relative links into the entries and proof routes, so a human can browse the
 // mirror and a client can discover the proof surface.
 //
+// Finally it handles GET /records (optionally ?from=<seq>&n=<size>) — a no-JS,
+// newest-first, plain-link-paginated HTML list of the hub's indexed records, each
+// row linking to that leaf's per-record bytes (entries?index=<seq>), with an
+// informative 200 empty state for a hub with no indexed records.
+//
 // Status mapping: non-GET → 405; an unmatched path → 404. The per-route flow
-// owns the rest (serveBrowser / serveInclusion / serveConsistency / serveEntries /
-// serveVerify); see each for its 400/404/500 mapping. CORS, caching, and
-// conditional GET are intentionally out of scope for this slice.
+// owns the rest (serveBrowser / serveRecords / serveInclusion / serveConsistency /
+// serveEntries / serveVerify); see each for its 400/404/500 mapping. CORS, caching,
+// and conditional GET are intentionally out of scope for this slice.
 //
 // statuses is the in-memory status overlay (the metrics registry) the log browser
 // uses to render the richer unresolvable / unverified verdicts the store cannot
@@ -124,6 +152,8 @@ func Handler(st *store.Store, hubID int64, statuses StatusSource) http.Handler {
 		switch r.URL.Path {
 		case "/":
 			serveBrowser(w, r, st, hubID, statuses)
+		case "/records":
+			serveRecords(w, r, st, hubID, statuses)
 		case "/inclusion":
 			serveInclusion(w, r, st, f, hubID)
 		case "/consistency":
@@ -594,6 +624,123 @@ func serveBrowser(w http.ResponseWriter, r *http.Request, st *store.Store, hubID
 	// Post-200 write-drop: the status is already committed, so a copy error can
 	// only signal a broken client connection, which a second status cannot fix
 	// (matching the dashboard and the package's other write helpers).
+	_, _ = buf.WriteTo(w)
+}
+
+// recordsData is the record-list template view-model: the overlaid hub status and
+// its fixed-table badge label (rendered through the hubStatusBadge partial, the same
+// way browserData does), the newest-first page of indexed records, the hub's total
+// indexed-record count for the honest "showing N of TOTAL" line, the page size echoed
+// into the pagination links, and the precomputed older/newer cursors plus their
+// liveness flags so the template renders plain no-JS pagination links without doing
+// any arithmetic itself. Records carry the verbatim id / schema (ADR-0008: nothing is
+// interpreted). When Records is empty the page renders the informative empty state.
+type recordsData struct {
+	Status    string
+	Label     string
+	Records   []store.RecordRow
+	Total     int
+	PageSize  int
+	HasNewer  bool
+	NewerFrom uint64
+	HasOlder  bool
+	OlderFrom uint64
+}
+
+// serveRecords renders the HTML record list for the hub-log /records route: a
+// newest-first (seq DESC), plain-link-paginated window over the hub's iscc_index,
+// each row linking to that leaf's per-record bytes view (entries?index=<seq>). It
+// reads only persisted store rows (FollowState for the overlay status + ListRecords)
+// — no signature, RFC-6962, Merkle, or proof computation. The displayed hub status
+// overlays the store-provable subset with the in-memory live verdict (overlayStatus),
+// the same five-status hubStatusBadge partial the browser and dashboard use.
+//
+// Pagination is a seq cursor, not OFFSET, so paging stays stable under concurrent
+// ingest. from / n are parsed via parseUint, so an empty or non-numeric value falls
+// back to the default (bare /records works, never a 400). n is clamped to maxPageSize
+// so a hostile n cannot scan the whole index. The older link starts at one below the
+// last (smallest) seq on the page and is live only while more records remain below it;
+// the newer link starts at one above the first (largest) seq and is live only while
+// this page does not already begin at the newest record.
+//
+// Status mapping: a FollowState / ListRecords DB error → 500; an empty index (or a
+// hub with no accepted checkpoint) → 200 with the informative empty state (NEVER a
+// 404 — coverage honesty, ADR-0001, mirroring serveBrowser's LastSize==0 → 200 empty
+// page). The page is rendered into a buffer first so a template/store error is a 500
+// BEFORE any 200.
+func serveRecords(w http.ResponseWriter, r *http.Request, st *store.Store, hubID int64, statuses StatusSource) {
+	ctx := r.Context()
+
+	fs, err := st.FollowState(ctx, hubID)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	status := overlayStatus(fs, hubID, statuses)
+	// The hubStatusBadge partial reads .Label directly; precompute it from the badge
+	// package's single source of truth. The !ok fallback is defensive-only —
+	// overlayStatus only ever yields valid labels keys.
+	label, ok := badge.Label(status)
+	if !ok {
+		label = status
+	}
+
+	// from is the inclusive upper-bound seq the newest-first page starts at; absent or
+	// non-numeric falls back to 0 (the newest record), never a 400. n is the page size,
+	// defaulted and clamped so a hostile value cannot scan the whole index.
+	from, _ := parseUint(r.URL.Query().Get("from"))
+	pageSize := defaultPageSize
+	if n, err := parseUint(r.URL.Query().Get("n")); err == nil && n > 0 {
+		pageSize = int(n)
+		if pageSize > maxPageSize {
+			pageSize = maxPageSize
+		}
+	}
+
+	records, total, err := st.ListRecords(ctx, hubID, from, pageSize)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	data := recordsData{
+		Status:   status,
+		Label:    label,
+		Records:  records,
+		Total:    total,
+		PageSize: pageSize,
+	}
+	if len(records) > 0 {
+		oldest := records[len(records)-1].Seq // smallest seq on the page
+		// A newer page exists only once we have paged down at all (from > 0; the
+		// initial from == 0 page always starts at the newest record). Its cursor is a
+		// full page above the page's top seq; ListRecords clamps seq <= cursor with
+		// LIMIT pageSize, so an over-large cursor simply lands on the newest page —
+		// the newer link can never error or skip the newest run.
+		if from > 0 {
+			data.HasNewer = true
+			data.NewerFrom = records[0].Seq + uint64(pageSize)
+		}
+		// An older page exists when a record sits below the smallest seq shown; its
+		// cursor is one below that smallest seq. oldest == 0 means the page already
+		// reached seq 0 (the first record), so there is nothing older. This is a
+		// conservative live/dead signal under contiguous leaf seqs (the projection
+		// writer indexes one row per accepted leaf), and never produces a broken link.
+		if oldest > 0 {
+			data.HasOlder = true
+			data.OlderFrom = oldest - 1
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := recordsTmpl.Execute(&buf, data); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	// Post-200 write-drop: the status is already committed, so a copy error can only
+	// signal a broken client connection (matching serveBrowser and the dashboard).
 	_, _ = buf.WriteTo(w)
 }
 

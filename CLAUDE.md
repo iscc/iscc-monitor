@@ -65,6 +65,9 @@ After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSO
   The hub status renders via the five-status `HubStatusBadge` partial — the store-provable subset
   (frozen / verified) overlaid with the in-memory live verdict (unresolvable / unverified) — matching
   the `GET /` line.
+- `GET /<domain>/log/records?from=…[&n=…]` — server-rendered HTML record list: a no-JS,
+  newest-first, plain-link-paginated window over the hub's indexed records, each row linking to that
+  leaf's per-record bytes (`entries?index=<seq>`); an empty index renders an informative 200 empty state.
 - `GET /<domain>/log/checkpoint` — mirrored signed checkpoint (e.g. `/sb0.iscc.id/log/checkpoint`).
 - `GET /<domain>/log/tile/...` — raw mirrored tlog-tiles BLOBs.
 - `GET /<domain>/log/entries?index=<seq>` — single-leaf record bytes from the local mirror.

@@ -23,6 +23,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -66,6 +67,77 @@ func (s *Store) RecordProjections(ctx context.Context, recs []ProjectionRecord) 
 		}
 	}
 	return nil
+}
+
+// RecordRow is one indexed leaf for the log-browser record list — a store-owned
+// plain value the HTML record-list page renders. Seq is the leaf's absolute index;
+// IsccID is the verbatim ISCC:-prefixed string (read from iscc_id_str, the empty
+// string for a NULL/empty column); NoteSchema is the verbatim inner note.$schema
+// discriminator. Both strings are listed verbatim and never interpreted (ADR-0008):
+// the record list decodes nothing about the id or the schema.
+type RecordRow struct {
+	Seq        uint64
+	IsccID     string
+	NoteSchema string
+}
+
+// ListRecords reads a newest-first (ORDER BY seq DESC) window of a hub's indexed
+// leaves for the log-browser record list, plus the hub's total indexed-record count
+// so the page can render an honest "showing N of TOTAL" and decide which pagination
+// links are live. It is a leaf read returning plain []RecordRow (store stays a leaf).
+//
+// Pagination uses a seq cursor, not OFFSET, so paging stays stable under concurrent
+// ingest: when from > 0 the page starts at the (inclusive) upper-bound seq from and
+// walks down; when from == 0 it starts at the newest leaf. n bounds the page size and
+// must be > 0 (the handler clamps it before calling). iscc_id_str / note_schema are
+// read through sql.NullString so a NULL column degrades to "" rather than an error,
+// and seq is scanned as int64 then uint64(seq) (symmetric with RecordProjections'
+// int64(r.Seq) write). A hub with no indexed records returns an empty slice, total 0,
+// and a nil error (an empty index is not an error — the empty-log case the record list
+// must render). The id and schema are listed verbatim and never interpreted (ADR-0008).
+func (s *Store) ListRecords(ctx context.Context, hubID int64, from uint64, n int) ([]RecordRow, int, error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM iscc_index WHERE hub_id = ?", hubID,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("store.ListRecords: count hub %d: %w", hubID, err)
+	}
+
+	query := "SELECT seq, iscc_id_str, note_schema FROM iscc_index WHERE hub_id = ? "
+	args := []any{hubID}
+	if from > 0 {
+		query += "AND seq <= ? "
+		args = append(args, int64(from))
+	}
+	query += "ORDER BY seq DESC LIMIT ?"
+	args = append(args, n)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("store.ListRecords: hub %d: %w", hubID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var records []RecordRow
+	for rows.Next() {
+		var (
+			seq        int64
+			isccID     sql.NullString
+			noteSchema sql.NullString
+		)
+		if err := rows.Scan(&seq, &isccID, &noteSchema); err != nil {
+			return nil, 0, fmt.Errorf("store.ListRecords: scan: %w", err)
+		}
+		records = append(records, RecordRow{
+			Seq:        uint64(seq),
+			IsccID:     isccID.String,
+			NoteSchema: noteSchema.String,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("store.ListRecords: rows: %w", err)
+	}
+	return records, total, nil
 }
 
 // SeqsForISCCID is the one-to-many reader: it returns every seq a hub indexed under
