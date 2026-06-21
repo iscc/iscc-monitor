@@ -1,91 +1,104 @@
 # Next Work Package
 
-## Step: Carry the resolved did:web context out of `AcceptCheckpoint` and reuse it in `PollHub`
+## Step: Collapse the self-consistency decision into `logclient.CheckConsistency`
 
 ## Goal
-Stop a verified poll from fetching the same `did.json` two or three times. Widen
-`AcceptCheckpoint` to return the verifier-key context it already resolved (`vkey` + `didweb.DIDKey`)
-so the follower's `fsckMirror` and cold-cache `cacheHubKey` paths reuse it instead of re-running
-`ResolveVerifierKey`, while preserving ADR-0009's per-poll validity-window check.
+Move the load-bearing shrink/fork/equivocation branch order, proof construction, and missing-tile
+handling out of the follower and into one deep, table-testable
+`logclient.CheckConsistency(...) -> (violated, kind, err)`. This closes the ADR-0006 `normal` issue
+"self-consistency policy is split across follower orchestration and logclient helpers": the verdict
+gets a single home that can be table-tested in `logclient` (shrink, same-size split view, growing
+split view, clean growth, missing-tile), leaving the follower to only look up prior accepted evidence
+and act on the returned verdict.
 
 ## Scope
-- **Modify**:
-  - `internal/logclient/accept.go` — change `AcceptCheckpoint`'s return to also yield the resolved
-    `vkey string` and `didweb.DIDKey` (the per-poll verified key context).
-  - `internal/follower/follower.go` — thread that context from the `AcceptCheckpoint` call site into
-    `fsckMirror` and `cacheHubKey`/`cacheHubKeyResolve`, dropping their own `ResolveVerifierKey` calls.
-- **Modify (tests/docs — not counted against the ≤3 budget)**:
-  - `internal/logclient/accept_test.go` — update the `AcceptCheckpoint` call to the wider return and
-    assert the returned `vkey`/`DIDKey` is populated on `StatusVerified` and zero/empty otherwise.
-  - `internal/follower/follower_test.go` — update `TestPollHubCacheHitSkipsDidFetch`: cold poll now
-    fetches `did.json` exactly **1** time (was 3), warm poll **0** more (was 2). Adjust its comment
-    and the `want` literals/messages accordingly.
+- **Create**: `internal/logclient/checkconsistency.go` — the deep `CheckConsistency` entry point that
+  composes `CheckShrink` → `CheckFork` → (build proof from tiles) → `CheckEquivocation`.
+- **Modify**: `internal/follower/follower.go` — replace the body of `checkConsistency` (currently
+  follower.go:416-457) so it does only the prior-checkpoint store lookup (`CheckpointAt(prevSize)`)
+  and delegates the pure decision to `logclient.CheckConsistency`, returning the same
+  `(violated, kind, prevRaw, err)` tuple `PollHub` already consumes (PollHub call site at
+  follower.go:180 is unchanged).
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/logclient/accept.go` (current 3-value return, lines 84-105).
-  - `/workspace/iscc-monitor/internal/logclient/didresolve.go` (`ResolveVerifierKey` returns
-    `(string, didweb.DIDKey, error)`, lines 93-116 — this is the context to surface).
-  - `/workspace/iscc-monitor/internal/follower/follower.go` (`fsckMirror` lines 375-388,
-    `cacheHubKeyResolve` lines 340-357, the `AcceptCheckpoint` call site line 142).
-  - `/workspace/iscc-monitor/internal/didweb/resolve.go` (`DIDKey` fields: `Multibase`, `PublicKey`,
-    `Revoked` at lines 54-60 — used by `cacheHubKeyResolve` to build `store.HubKey`).
-  - `/workspace/iscc-monitor/internal/logclient/keyid.go` (`KeyIDFromVerifier(vkey string)` line 26 —
-    still derives the key id from the reused `vkey`, no fetch).
+  - `/workspace/iscc-monitor/internal/logclient/consistency.go` — the three pure triggers
+    (`CheckShrink`/`CheckFork`/`CheckEquivocation`, `ViolationKind` constants) to compose.
+  - `/workspace/iscc-monitor/internal/logclient/proofbuilder.go` — `ConsistencyProofFromTiles(ctx,
+    fetch TileFetcher, smaller, larger)` and the `TileFetcher` type (lines 33-40) to accept.
+  - `/workspace/iscc-monitor/internal/logclient/accept.go` — `CheckpointInfo{Origin, TreeSize, Root}`
+    shape (lines 64-68); `Root` is `[rootBytes]byte` (= `[32]byte`, `rootBytes` const in verify.go:35).
+  - `/workspace/iscc-monitor/internal/follower/follower.go` — current `checkConsistency` (lines
+    386-457) is the exact logic to port; preserve its doc-comment intent (error-vs-violation
+    discipline, the narrow missing-tile swallow).
+  - `/workspace/iscc-monitor/internal/logclient/consistency_test.go` — the existing
+    `testonly.New(rfc6962.DefaultHasher)` / `ConsistencyProof` golden pattern to reuse for the table
+    tests.
 
 ## Not In Scope
-- Do NOT change the warm-path fast cache (`cacheHubKeyFast` / `KeyIDFromCheckpoint`) — it already
-  avoids a fetch; this step only removes the *cold* `cacheHubKeyResolve` resolve and the `fsckMirror`
-  resolve.
-- Do NOT touch the size-varying proof-surface ETag/Cache-Control arc, the dashboard, verify-for-me,
-  or any other open `normal` issue (tile-writer `p`-vocabulary, deep `AdvanceAccepted`,
-  `CheckConsistency` collapse). One issue per step.
-- Do NOT change `ResolveVerifierKey`'s own signature or behavior — `AcceptCheckpoint` already calls
-  it; just stop discarding its result.
+- The store-owned `AdvanceAccepted` single-transaction write (a separate `normal` issue) — leave the
+  three sequenced `RecordCheckpoint`/`SetCoverage`/`AdvanceFollowState` writes in `PollHub` untouched.
+- The tile-writer `p`-vocabulary unification (`widthForP`) — separate `normal` issue.
+- Changing any of the three pure trigger functions (`CheckShrink`/`CheckFork`/`CheckEquivocation`) or
+  their semantics — `CheckConsistency` only *composes* them; their bodies stay byte-identical.
+- Adding an "explicit indeterminate result" return type — keep the existing missing-tile = clean-pass
+  behavior (`violated=false, err=nil`) so `PollHub`'s contract is unchanged; richer indeterminate
+  modeling is a later step if ever needed.
+- Touching `freeze`, `recordVerdict`, `cacheHubKey`, `fsckMirror`, the `PollHub` body, or the `store`
+  package.
 
 ## Implementation Notes
-- `AcceptCheckpoint` (accept.go:85) already binds `vkey, key, err := ResolveVerifierKey(...)` and then
-  throws `vkey`/`key` away. Surface them. Recommended shape: add an exported result struct, e.g.
-  `type VerifiedContext struct { VKey string; Key didweb.DIDKey }` (carrying the per-poll resolved
-  key + CID 1.0 validity window), and return `(Status, CheckpointInfo, VerifiedContext, error)`.
-  Populate the context **only on `StatusVerified`**; return the zero `VerifiedContext{}` on every
-  non-verified verdict (mirroring how `CheckpointInfo` is zero off the verified path — keep that
-  invariant symmetric and testable). Update the package docstring lines describing the return tuple.
-- The validity check stays exactly where it is: `if !key.ValidAt(observedAt) { return StatusRotated,
-  ... }` runs before the verified return, so the per-poll ADR-0009 window check is preserved — the
-  reused context is the *same* key that just passed validity. Do not move or weaken it.
-- In `follower.go`, the `AcceptCheckpoint` call site (line 142) becomes
-  `status, info, vctx, err := logclient.AcceptCheckpoint(...)`. Thread `vctx` down only on the
-  verified, non-violation path:
-  - `fsckMirror` currently re-resolves to get `vkey` (line 376). Change its signature to accept the
-    `vkey` directly (origin is already `info.Origin`, `<domain>/log`; prefer passing `info.Origin`
-    over a second `logclient.Origin` derive). Drop the `ResolveVerifierKey` call inside `fsckMirror`.
-  - `cacheHubKey` → `cacheHubKeyResolve` (line 340) currently re-resolves to map `DIDKey` into
-    `store.HubKey`. Pass `vctx.VKey` + `vctx.Key` in so it uses `KeyIDFromVerifier(vctx.VKey)` and
-    `vctx.Key.{PublicKey,Multibase,Revoked}` without re-fetching. `cacheHubKeyFast` is unchanged.
-- Correctness rule (learnings.md, ADR-0009): "did:web is the only key source … reuse only within one
-  verified poll." The context you reuse is resolved *this poll* and already validity-checked, so
-  reuse is in-bounds; do **not** cache it across polls (the `hub_keys` cache, refreshed each poll, is
-  the cross-poll story and is untouched here).
-- Correctness rule (learnings.md): `AcceptCheckpoint`'s "callers must check `err` before the status,
-  and `CheckpointInfo` is the zero value on every non-verified verdict." Keep both invariants and
-  extend the second to the new `VerifiedContext` (zero off the verified path).
-- Oracle gate: this slice does not change signature/RFC-6962/Merkle/did:web-derivation logic — it
-  only stops discarding an already-resolved value. The gate is N/A *by content*, but
-  `derive_vkey.py` must still reproduce both golden vectors (`40b74463`/`22b08f3e`) since `vkey` now
-  flows further; re-run it and `rm -rf .claude/.scratch` after.
+- **Signature (pure decision lives in `logclient`).** `func CheckConsistency(ctx context.Context,
+  fetch TileFetcher, prevSize uint64, prevRoot [rootBytes]byte, prevFound bool, info CheckpointInfo)
+  (violated bool, kind ViolationKind, err error)`. The follower keeps owning the
+  `CheckpointAt(prevSize)` store read and the `prevRaw` evidence bytes (persistence concerns, not pure
+  policy), then calls `CheckConsistency` and pairs its verdict with `prevRaw`.
+- **Port, don't rewrite.** The body is the existing `follower.checkConsistency` logic (follower.go:
+  416-457) minus the `st.CheckpointAt` call: the `prevSize == 0` early return, the `shrink`/`fork`
+  precompute (keep the `prevFound &&` guard on `CheckFork`), the `switch` over shrink → fork →
+  default(equivocation), the `!prevFound || info.TreeSize <= prevSize` equivocation guard, the
+  `ConsistencyProofFromTiles(ctx, fetch, prevSize, info.TreeSize)` build, the **narrow missing-tile
+  swallow** (`perr != nil → return false, "", nil`), and the `CheckEquivocation` call whose `eerr`
+  surfaces as a wrapped Go error. Keep the exact branch order.
+- **Correctness rule (learnings.md, ADR-0006): a self-consistency violation freezes, never crashes.**
+  The missing-tile / proof-build error stays swallowed to `(false, "", nil)` — freezing on a missing
+  tile is a false positive, and a non-verifying proof is `CheckEquivocation`'s `(violated=true,
+  err=nil)` verdict, never a Go error. Only a `CheckEquivocation` `err` (today unreachable-by-type,
+  kept for symmetry) wraps as a returned `err`.
+- **TileFetcher seam.** `CheckConsistency` takes the `TileFetcher` closure (matches
+  `store.SQLiteFetcher.ReadTile` exactly), so the follower passes `fetcher.ReadTile` in. This keeps
+  `logclient` free of any `store` import (dependency direction stays follower → logclient).
+- **Follower delegate.** After porting, `follower.checkConsistency` becomes: keep the `prevSize == 0`
+  early return (a store lookup at size 0 is wasteful), call `st.CheckpointAt(ctx, hubID, prevSize)`
+  for `prevRootBytes`/`prevRaw`/`prevFound`, copy into `var prevRoot [32]byte`, then `violated, kind,
+  err := logclient.CheckConsistency(ctx, store.SQLiteFetcher{Store: st, HubID: hubID}.ReadTile,
+  prevSize, prevRoot, prevFound, info)` and return `(violated, kind, prevRaw, err)`. The follower no
+  longer constructs the proof itself (`ConsistencyProofFromTiles` / `CheckEquivocation` calls move out
+  of `follower.go`).
+- **Test ground truth.** Reuse `consistency_test.go`'s `testonly.New(rfc6962.DefaultHasher)` pattern:
+  build an append-only tree, `HashAt(M)`/`HashAt(N)` for roots, `ConsistencyProof(M,N)` for the valid
+  proof, serve tiles through an in-test `TileFetcher`. The prover (`ConsistencyProof`) and the composed
+  verifier (`CheckConsistency`→`CheckEquivocation`→`VerifyConsistency`) are independent merkle paths,
+  so the cross-check is not a tautology. Cover: shrink (`next<prev`), same-size fork (`next==prev`,
+  differing root), growing split view (corrupt the new root so the real proof fails to verify →
+  `equivocation`), clean growth (valid proof → not violated), `prevSize==0` (always clean), and a
+  missing-tile fetcher (`fetch` returns wrapped `os.ErrNotExist` → not violated, no error).
+- **Oracle/conformance gate APPLIES** (this composes RFC-6962 consistency-proof verification): the new
+  table tests must include the `testonly.Tree` merkle ground truth above, and the existing follower
+  `TestPollHub*` conformance tests must stay green with the delegated call. Do not weaken any gate;
+  mutation-check mentally — forcing `violated=false` must fail the growing-split-view case. The
+  fully-independent `notecheck` oracle runs in `mise run check`'s `cmd/notecheck` package.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` pass; `gofmt -l .`
-  empty).
-- `go test -count=1 -run TestAcceptCheckpoint ./internal/logclient` passes, asserting the returned
-  `VerifiedContext` is populated (non-empty `VKey`, non-zero `Key.PublicKey`) on `StatusVerified` and
-  is the zero value (`VerifiedContext{}`) on each non-verified verdict.
-- `go test -count=1 -run TestPollHubCacheHitSkipsDidFetch ./internal/follower` passes with the cold
-  poll asserting **1** `did.json` fetch and the warm poll **0** additional fetches.
-- `go test -count=1 -run 'TestPollHub' ./internal/follower` passes (freeze/fork/equivocation/
-  inclusion/fsck paths all still green with the threaded context).
-- `python3 .claude/derive_vkey.py` reproduces `sb0…+40b74463+…` and `sb1…+22b08f3e+…`; scratch dir
-  removed afterward.
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
+- `go test -count=1 -run TestCheckConsistency ./internal/logclient` passes (table tests: shrink, fork,
+  growing split view, clean growth, prevSize==0, missing-tile).
+- `go test -count=1 -run TestPollHub ./internal/follower` passes (the delegated follower path stays
+  green: freeze/fork/equivocation/inclusion/fsck unchanged).
+- `grep -n "ConsistencyProofFromTiles" internal/follower/follower.go` returns nothing (the proof build
+  moved out of the follower into `logclient.CheckConsistency`).
+- `go list -deps ./internal/logclient | grep "iscc-monitor/internal/store"` is empty (`logclient`
+  gained no `store` import edge).
 
 ## Done When
-`AcceptCheckpoint` returns the resolved verifier context, `PollHub` reuses it so a cold verified poll
-fetches `did.json` exactly once (warm poll zero more), and all Verification criteria pass.
+`logclient.CheckConsistency` owns the pure shrink/fork/equivocation decision (branch order + proof
+build + missing-tile swallow), the follower's `checkConsistency` only looks up prior accepted evidence
+and delegates, and every Verification check passes with `mise run check` green.
