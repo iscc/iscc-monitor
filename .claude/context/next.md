@@ -1,148 +1,130 @@
 # Next Work Package
 
-## Step: Certificate §3 INCLUSION PROOF — render the real RFC-6962 proof from the mirror
+## Step: Gate certificate §3 inclusion proof on `!hub.Frozen` (close the self-contradictory-proof critical)
 
 ## Advances
-M-UI — Evidence Ledger frontend, the **certificate of inclusion** Verify criterion:
+Closes the **open `critical`** that blocks the M-UI milestone (it preempts all feature work per
+issues.md "Certificate §3 renders a self-contradictory proof for a frozen-after-fork hub (built ≠
+verified)"). It restores honesty to the M-UI Verify criterion the §3 advance partially met:
 
-> "the **realm-wide certificate** (`/inclusion/{iscc_id}` …) for a known id renders the numbered
-> evidence clauses (subject + position; checkpoint `(size, root)`; **inclusion proof**; signing key;
-> anchor state; full per-id record history …)"
+> the **realm-wide certificate** (`/inclusion/{iscc_id}`) … renders the numbered evidence clauses
+> (subject + position; checkpoint `(size, root)`; **inclusion proof**; …)
 
-§1 SUBJECT and §2 CHECKPOINT are landed + PASS-verified. This step closes the **§3 inclusion proof**
-clause — the point the state, handoff, and learnings all name as next, and where the
-**oracle/conformance crypto gate RE-ENGAGES** (the served inclusion proof must be mutation-proven
-non-vacuous against the hub's `IsccLogInclusionProof` / golden vectors and rebuilt over the
-`SQLiteFetcher`). It is one clause of a coherent in-flight arc (§1 → §2 → §3 → …), not a switch to
-unrelated work.
+A certificate that renders a sibling chain under a `root … ✓` the siblings do not rebuild violates the
+glossary "Proof bundle" / "Verifiable cache" contract (a client verifies the artifact itself) and
+ADR-0006 (freeze preserves evidence but never advances accepted state). This must close before §4–§6
+resume — the unsound clause sits on the trust-root self-verifiable surface, and the cycle cannot push
+(CI is green only at `17c4957`, the last PASSed state, not at HEAD's unsound §3).
 
 ## Goal
-Make the certificate's §3 INCLUSION PROOF clause real: for a certifiable id, recompute the RFC-6962
-inclusion proof of `seqs[0]` against the accepted tree (`hub.LastSize`) from the hub's mirrored tiles
-via the existing `logclient.InclusionProofFromTiles` + `store.SQLiteFetcher`, and render the
-leaf→siblings→root chain in §3. This is the first certificate clause that touches the Merkle path, so
-its test must prove the proof is genuine (not vacuous), the way the proofbuilder/inclusioncheck tests do.
+For a frozen hub, omit the §3 INCLUSION PROOF clause entirely (the page still renders §1 SUBJECT + §2
+CHECKPOINT from the irreplaceable accepted-checkpoint record), so the certificate never pairs a proof
+built from the contradictory mirror tiles with an accepted root the proof does not rebuild.
 
 ## Scope
 - **Create**: (none)
-- **Modify** (≤3 non-test/doc files — exactly 2 source + 1 test):
-  - `/workspace/iscc-monitor/internal/certificate/handler.go` — in `buildData`'s certifiable branch
-    (after §2, where `hub.LastSize > 0` and `seqs[0] < hub.LastSize` are already proven), build the
-    inclusion proof from the mirror and populate the §3 view-model fields + `HasClause3`.
-  - `/workspace/iscc-monitor/internal/certificate/cert.html` — render the §3 clause inside the existing
-    `{{if .HasClause3}}` block (cert.html:345-350, currently an empty `.clause-value`).
-  - `/workspace/iscc-monitor/internal/certificate/handler_test.go` — add a **tile-backed** fixture + a
-    non-vacuous §3 test (test file, not counted toward the ≤3 budget).
+- **Modify**:
+  - `/workspace/iscc-monitor/internal/certificate/handler.go` — add `&& !hub.Frozen` to the §3 render
+    guard at line 336 (`} else if data.HasClause2 {` → `} else if data.HasClause2 && !hub.Frozen {`),
+    and update the §3 block comment + the file/`buildData`/`certData` docstrings to record the freeze
+    gate and why it is the complete fix. This is the only non-test source file (≤3 budget: 1).
+  - `/workspace/iscc-monitor/internal/certificate/handler_test.go` — add
+    `TestCertificateInclusionProofFrozen`: a frozen hub whose mirrored tiles disagree with the accepted
+    root renders §1+§2 but NO §3 `✓`; mutation-proven (reverting `&& !hub.Frozen` makes it FAIL). Test
+    file, not counted toward the ≤3 budget.
 - **Reference** (read before implementing):
-  - `/workspace/iscc-monitor/.claude/context/learnings/certificate.md` — §1/§2 mechanics, fail-closed
-    buffer-then-200, canonicalized lookup key, the accepted-tree cap; §3 re-engages the oracle gate.
-  - `/workspace/iscc-monitor/.claude/context/learnings/logclient.md` — `InclusionProofFromTiles` (the
-    proof source, its oracle-gate section), `VerifyInclusionEvidence`, and the `TileFetcher` ≡
-    `SQLiteFetcher.ReadTile` signature.
-  - `/workspace/iscc-monitor/.claude/context/learnings/store.md` — `SQLiteFetcher` / `widthForP` /
-    partial-tile read-back; `CheckpointAt` / `AdvanceAccepted` set `last_size`.
-  - `/workspace/iscc-monitor/internal/proofserve/handler.go` `serveInclusion` (lines 218-280) +
-    `writeEvidence` (1049-1068) — the exact precedent: `InclusionProofFromTiles(ctx, f.ReadTile,
-    leafIndex, size)` → base64-Std hashes; the `errors.Is(err, os.ErrNotExist)` tile-miss branch.
-  - `/workspace/iscc-monitor/internal/follower/fsck_test.go` (lines ~217-274) — the canonical way to
-    build a `testonly.Tree`, enumerate `tiles.TileCoords(size)`, `api.HashTile{Nodes}.MarshalText`, and
-    ingest via `store.RecordTile`; reuse this to make the §3 fixture have real mirrored tiles.
-  - `/workspace/iscc-monitor/internal/logclient/proofbuilder_test.go` (lines ~32-105) — `buildTree` /
-    `tileFetcherFor` and the three-independent-paths assertion (`tree.InclusionProof` vs builder vs
-    `proof.VerifyInclusion`).
-  - `/workspace/iscc-monitor/.claude/design/ISCC Monitor - Certificate.dc.html` (lines 60-64) — the §3
-    mockup: `leaf · seq N` chip, the sibling-hash chip list, the `root … ✓` chip, note "Five sibling
-    hashes rebuild the root from your record" (use the actual proof length, not the literal "Five").
+  - `/workspace/iscc-monitor/.claude/context/learnings/certificate.md` — the §3 "built ≠ verified"
+    bullet (the exact defect + the two fix options) and the `html/template` base64-escape note.
+  - `/workspace/iscc-monitor/.claude/context/learnings/follower.md` — freeze / evidence-only re-poll
+    ordering (why the frozen path leaves contradictory tiles in the mirror while the accepted root is
+    the old one).
+  - `/workspace/iscc-monitor/internal/follower/follower.go` lines 174 (ingestTiles before
+    checkConsistency), 204-207 (frozen early return skips AdvanceAccepted/fsckMirror), 221 + 241
+    (verified path advances then `fsckMirror` — this proves a *non-frozen* hub's tiles already match
+    the accepted root, so the freeze gate is the complete fix, not a partial one).
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go` line 339 (`store.Freeze(ctx, hubID)` —
+    sets `frozen=1`, read back into `HubSummary.Frozen` by `ListHubs`) — the fixture's freeze lever.
+  - `/workspace/iscc-monitor/internal/store/hubs.go` (`HubSummary.Frozen`, populated by `ListHubs`
+    line 70) — already carried into `buildData` via `followedHub`, in hand at the §3 branch.
 
 ## Not In Scope
-- Clauses **§4 (signing key)**, **§5 (Bitcoin anchor)**, **§6 (record history)** — later sub-steps.
-  Leave `HasClause4/5/6` false and their template placeholders empty.
-- The **downloadable proof-bundle assembler** `{checkpoint, inclusion/consistency proof, record bytes,
-  hub key, ots?}` — keep the Download button the existing disabled placeholder. §3 renders the proof on
-  the page; bundling it for download is a distinct later step.
-- The separate **Bitcoin-anchor vs comparison-anchor** panels.
-- The **ADR-0011 Go 1.26 / iscc-lib bump** (`normal`, foundational) — a separate sequenced increment;
-  do not touch `go.mod`/`mise.toml`/CI here. (`InclusionProofFromTiles` + `SQLiteFetcher` are already in
-  the closure, so `go.mod`/`go.sum` must stay byte-unchanged.)
-- The `hubDomain` `ForceQuery` registry fail-open (`normal`) — this step does **not** touch
-  `internal/registry/registry.go`, so that fix waits for a step that does (per its issue).
-- Pixel-matching the mockup's chip styling — reuse the existing `.clause-*` / `.subject-mono` CSS;
-  named-region parity (the §3 marker + the rendered hash chain) is the bar, not exact spacing.
+- The heavier `proof.VerifyInclusion`-against-the-accepted-root variant (read the entry bundle, derive
+  the leaf hash, decode the accepted root, verify before `HasClause3 = true`). The verified-advance
+  path already runs `fsckMirror` (follower.go:241), which root-rebuilds every non-frozen hub's mirror
+  against its accepted root and would freeze on divergence, so the *only* path where mirrored tiles can
+  diverge from the accepted root is the frozen path — the freeze gate closes the exact filed defect
+  with no entry-bundle plumbing (KISS / YAGNI; `fixtureStoreTiled` does not even seed entry bundles).
+  Revisit the full proof-verification approach only if a non-frozen divergence is ever demonstrated.
+- §4 SIGNING KEY, §5 Bitcoin anchor, §6 record history, and the downloadable proof-bundle assembler —
+  the next steps once this critical is cleared and pushed.
+- The deferred `normal` registry `hubDomain` `ForceQuery` fix (fold in only when `registry.go` is next
+  touched; this step does not touch it).
+- The ADR-0011 Go 1.26 / iscc-lib stack bump (separate `normal`).
+- Any `cert.html` change — the template already gates §3 on `{{if .HasClause3}}` (cert.html:345), so a
+  false `HasClause3` omits the clause with no markup edit. Keeping `go.mod`/`go.sum` byte-unchanged
+  (no new imports needed — `hub.Frozen` is already in scope).
 
 ## Implementation Notes
-- **Where to wire it (`handler.go`):** at the end of `buildData`'s certifiable branch, after the §2
-  `CheckpointAt` read. The leaf index is `seqs[0]` (already `data.Position`) and the tree size is
-  `hub.LastSize` (already proven `> 0` and `> seqs[0]` by the cap). Construct the fetcher exactly as
-  proofserve does: `f := store.SQLiteFetcher{Store: st, HubID: hub.HubID}`, then
-  `proof, err := logclient.InclusionProofFromTiles(r.Context(), f.ReadTile, data.Position, hub.LastSize)`.
-  (This adds the first `internal/logclient` import to `internal/certificate`; that direction is fine —
-  certificate is an HTTP-surface package, logclient is below it.)
-- **Fail-closed, NOT 500 on a tile miss.** proofserve maps `errors.Is(err, os.ErrNotExist)` to a 404
-  because it has committed to serving a proof. The certificate is a clause-by-clause page that can
-  decline a clause honestly (exactly as §2 does on `found == false`): a **tile-not-mirrored**
-  (`os.ErrNotExist`) miss should leave `HasClause3 = false` (no fabricated proof, no error), so the page
-  still renders §1+§2. A non-`os.ErrNotExist` build error stays a **500** via the existing
-  buffer-then-200 path (`return certData{}, http.StatusInternalServerError`) — match §2's split. Import
-  `errors` + `os` in `handler.go` for the `errors.Is(err, os.ErrNotExist)` check (currently neither is
-  imported; `encoding/base64` already is for §2).
-- **View-model.** Add to `certData`: `ProofHashes []string` (each `base64.StdEncoding.EncodeToString(h)`,
-  matching §2's root + proofserve's `writeEvidence`, so the strings are byte-identical across surfaces)
-  and set `HasClause3 = true` only when the proof built. Reuse `data.Position` (leaf) and
-  `data.CheckpointRoot` (root, already base64-Std from §2) in the template's leaf/root chips — do not
-  re-encode them. Note: a valid inclusion proof can be **empty** (`len(proof) == 0`) when `size == 1`
-  (single-leaf tree); that is a legitimate proof, so gate `HasClause3` on the build *succeeding*
-  (`err == nil`), not on `len(proof) > 0`. (§3 also depends on §2's root, so realistically render §3
-  only when `HasClause2` already holds — `CheckpointRoot` is the root chip.)
-- **Template (`cert.html`).** Inside `{{if .HasClause3}}` replace the empty `.clause-value` with: the
-  §3 marker already present, a `.clause-mono` chain rendering `leaf · seq {{.Position}}`, then
-  `{{range .ProofHashes}}…{{end}}` siblings, then `root {{.CheckpointRoot}} ✓`, and a `.clause-note`
-  like "{{len .ProofHashes}} sibling hashes rebuild the accepted root from this record." Reuse existing
-  `.clause`, `.clause-marker`, `.clause-value`, `.clause-mono`, `.clause-note` CSS — confirm no new CSS
-  is needed (the §2 review confirmed these classes already exist). `html/template` auto-escapes.
-- **Oracle / conformance gate (APPLIES — this is RFC-6962 inclusion crypto).** The §3 test MUST be
-  mutation-proven non-vacuous, the way `proofbuilder_test.go` / `inclusioncheck_test.go` are: build a
-  real `testonly.Tree`, ingest its hash tiles into the fixture store via `store.RecordTile` (port the
-  `fsck_test.go` enumeration over `tiles.TileCoords(size)` — write full tiles as p==0, partials as
-  their width per store.md's `widthForP`), seed the accepted checkpoint with the tree's REAL root
-  (`tree.Hash()` at that size via `AdvanceAccepted`), index a leaf for the golden id at the chosen seq,
-  then assert the body's rendered hash chips equal `base64.StdEncoding.EncodeToString` of each hash in
-  `tree.InclusionProof(seqs[0], size)` (the independent prover path). The proof must be substantive —
-  pick a leaf/size that yields a multi-hash proof (e.g. a small tree of 5–8 leaves so the proof has ≥2
-  hashes, not an empty proof). The advance author should confirm two mutations FAIL the new test (e.g.
-  neuter `HasClause3`; corrupt one rendered hash) and that a tile-less fixture leaves §3 unrendered (the
-  `os.ErrNotExist` honest-gap path) — record them for `review`.
-- **Reuse, do not reimplement (target "Stack (locked)").** `InclusionProofFromTiles` already exists and
-  is itself oracle-gated; do NOT hand-roll Merkle math in the certificate. The certificate only calls it
-  and base64-encodes the result.
-- **Correctness rules (learnings index):** `iscc_id → seq` is one-to-many / schema-agnostic — the proof
-  is for `seqs[0]` (the deterministic default, matching §1/§2/`serveVerify`); do not interpret the id.
-  Coverage honesty (ADR-0001) — the proof is against the **accepted** tree (`hub.LastSize`), already
-  capped by §1; never against an unaccepted projection. `proof/verify` purity is unaffected (the
-  certificate is not WASM-shared; the proof builder it calls is already net-free at file level).
-- **Keep the existing fixture helpers working.** The new tile-backed fixture is **additive** (a new
-  helper). The §1/§2 tests that use the synthetic `Root: []byte("root")` fixture WITHOUT mirrored tiles
-  must keep passing — they will now hit the `os.ErrNotExist` honest-gap path and simply render no §3
-  clause, which is correct. Verify those tests do not newly assert on §3; the §3-presence assertion
-  lives only in the new tile-backed test.
+- **The one-line guard.** In `buildData`'s §3 branch (handler.go:336), change
+  `} else if data.HasClause2 {` to `} else if data.HasClause2 && !hub.Frozen {`. `hub` is the
+  `store.HubSummary` returned by `followedHub`; `hub.Frozen` is already populated by `ListHubs`
+  (hubs.go:70) and is in scope here. Leave the `os.ErrNotExist` honest-gap branch and the
+  non-`os.ErrNotExist` 500 branch unchanged — a frozen hub simply takes neither: the proof may still
+  *build* (the tiles are present), but it is never rendered. No new imports.
+- **Why the freeze gate is complete, not partial (record in the docstring).** ADR-0006 / follower.go:
+  the verified-advance path calls `AdvanceAccepted` (221) then `fsckMirror` (241), which rebuilds the
+  accepted root from the mirror and would freeze on divergence; the frozen path returns early
+  (204-207) BEFORE `AdvanceAccepted`/`fsckMirror`, leaving the contradictory candidate tiles ingested
+  at :174 in the mirror while `CheckpointAt(LastSize)` still returns the old accepted root. So a
+  non-frozen hub's mirror is fsck-consistent with its accepted root by construction; the frozen hub is
+  the sole divergence window. Fail-closed (ADR-0001): when in doubt about the mirror, decline the clause.
+- **§1/§2 are unaffected** — they read the irreplaceable accepted-checkpoint *record* (`CheckpointAt`),
+  which a fork cannot corrupt; the §1 cap reasoning ("a frozen hub's LastSize caps it at its accepted
+  window") already covers them with no frozen branch. Only §3's mirror-tile read is corruptible, so
+  only §3 gets the freeze gate. The frozen Exhibit / status surface is rendered elsewhere; this clause
+  just declines to assert a Merkle proof it cannot honestly pair with the accepted root.
+- **Test fixture (thin variant of the existing `fixtureStoreTiled`, handler_test.go:473).** Build a
+  fixture where the mirrored tiles and the accepted root belong to DIFFERENT trees, then freeze:
+  1. Build tree A (`leaves=5`) and seed its hash tiles via `RecordTile` (reuse the existing
+     `fixtureStoreTiled` tile-ingest loop over `tiles.TileCoords(size)` and the `treeNodeHash` helper).
+  2. `AdvanceAccepted` with `Root:` a DIFFERENT 32-byte root than `treeA.Hash()` — simplest is a second
+     tree B of the same size (`Root: treeB.Hash()`), so the accepted root the §3 proof would have to
+     rebuild does NOT match the mirrored (tree-A) tiles (the contradictory-tile case). Index the golden
+     leaf under `"ISCC:" + goldenID` at a seq `< size`.
+  3. `st.Freeze(ctx, target)` (checkpoints.go:339) so `ListHubs` reports `Frozen == true`.
+     Prefer factoring a small `fixtureStoreFrozenContradictory` helper OR extending `fixtureStoreTiled`
+     with an `acceptedRoot []byte` + `freeze bool` parameter (pass `treeA.Hash()`/`false` from the
+     existing clean caller, divergent values from the new one) — keep it a thin variant, do NOT
+     duplicate the whole tile loop.
+  Assert (HTTP seam, the certificate's only contract): `200 text/html`; body contains `§1 SUBJECT`
+  and `§2 CHECKPOINT` (the page is NOT blank); body does NOT contain `§3 INCLUSION PROOF`. The
+  §3-absence asserts are on plain markers, so no `html.UnescapeString` is needed (it is required only
+  when asserting on base64 chips — cert.html escapes `+`→`&#43;`; see learnings/certificate.md).
+- **Non-vacuity (mandatory — review reproduces it).** Reverting `&& !hub.Frozen` must make the new test
+  FAIL (the frozen hub would then render `§3 INCLUSION PROOF` again). State this in the test docstring
+  and confirm it locally before handing off. Leave `TestCertificateInclusionProof` (clean, non-frozen)
+  and `TestCertificateInclusionProofTileGap` (honest tile gap) untouched and green — together the three
+  cover: clean→§3 renders, tile-gap→§3 omitted, frozen-contradictory→§3 omitted.
+- **Correctness rules in play** (learnings.md index): "A self-consistency violation freezes, never
+  crashes (ADR-0006)" — a frozen hub keeps polling evidence-only and never advances accepted state, so
+  its mirror can hold post-freeze contradictory tiles; "Coverage honesty (ADR-0001)" — never render a
+  guarantee the accepted state does not support.
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -count=1 ./internal/certificate` passes uncached.
-- `go test -count=1 -run TestCertificate ./internal/certificate` passes; the new tile-backed §3 test
-  body contains `§3 INCLUSION PROOF`, `leaf · seq <N>`, and each base64-Std-encoded hash of
-  `tree.InclusionProof(seqs[0], size)` (assert each is `strings.Contains`-present).
-- Mutation (advance author reproduces, then reverts): forcing `HasClause3 = false` (or skipping the
-  proof render) makes the new §3 test FAIL; corrupting one rendered hash makes it FAIL — proving the
-  assertion is grounded in the real proof, not a literal.
-- The §1/§2 synthetic-fixture tests (`TestCertificateKnownID`, etc.) still pass, and a tile-less fixture
-  renders NO `§3 INCLUSION PROOF` (the `os.ErrNotExist` honest-gap path; assert `§3 INCLUSION PROOF`
-  absent there).
-- `GOOS=js GOARCH=wasm go build ./internal/index` still exits 0 (no-regression on the WASM leaf).
-- `go.mod` / `go.sum` are byte-unchanged (`git diff --stat go.mod go.sum` empty).
+- `go test -count=1 -run TestCertificate ./internal/certificate` passes uncached (the full certificate
+  suite, including the new frozen test and the unchanged clean §3 + tile-gap tests).
+- Mutation check: reverting `&& !hub.Frozen` to `} else if data.HasClause2 {` makes
+  `go test -run TestCertificateInclusionProofFrozen ./internal/certificate` FAIL; restoring it passes.
+- The new test asserts the frozen-contradictory fixture's body contains `§1 SUBJECT` and
+  `§2 CHECKPOINT` but NOT `§3 INCLUSION PROOF`, at `200 text/html`.
+- Oracle/conformance gate stays green (no crypto path changed; the §3 builder is unchanged, only its
+  render is gated): `go test -count=1 ./internal/logclient ./cmd/notecheck` passes uncached.
+- `go.mod` / `go.sum` byte-unchanged (`git diff --stat go.mod go.sum` empty);
+  `GOOS=js GOARCH=wasm go build ./internal/index ./internal/didweb` exit 0 (no new imports in
+  `certificate`, purity unregressed).
 
 ## Done When
-`buildData` recomputes the real RFC-6962 inclusion proof of `seqs[0]` against `hub.LastSize` from the
-mirrored tiles via `InclusionProofFromTiles`, the §3 clause renders the leaf→siblings→root chain for a
-tile-backed certifiable id (and honestly omits §3 when tiles are not mirrored), the §3 test is
-mutation-proven non-vacuous against `testonly.Tree.InclusionProof`, and all Verification criteria pass
-with `mise run check` green and `go.mod`/`go.sum` byte-unchanged.
+`mise run check` is green, the new `TestCertificateInclusionProofFrozen` passes and is mutation-proven
+(reverting the `!hub.Frozen` guard fails it), and a frozen-after-fork hub's certificate renders §1+§2
+but never a §3 `✓` — closing the open `critical` so the milestone can resume and the cycle can push.
