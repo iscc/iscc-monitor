@@ -351,6 +351,17 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   triggers) — `go vet` clean, not dead code; the SQLiteFetcher store-key slice is its first caller. The
   oracle/conformance gate is correctly N/A here (pure path strings, no signature/RFC-6962/did:web/fsck
   path); it re-arms at the SQLiteFetcher + `fsck` slice.
+- **`BundleCoords(treeSize)` enumerates the entry bundles a full mirror must hold by iterating
+  `layout.Range(0, treeSize, treeSize)` and projecting `{Index, Partial}`** (`coords.go`). `Range(0,N,N)`
+  IS the complete whole-tree cover, so `ri.First`/`ri.N` (sub-range fields) are correctly ignored.
+  Reviewer re-ran the real `layout.Range(0,size,size)` in a throwaway module over all 7 vectors and it
+  matched byte-for-byte — including the boundary `300 → [{0,0},{1,44}]` (first 256 full at index 0, 44
+  partial at index 1) and `513 → [{0,0},{1,0},{2,1}]` (middle bundle index 1 is full: `Range` only sets
+  `Partial` for the start/end indices, leaving intermediate bundles at the zero=full value). So the
+  goldens are tessera ground truth, not author-asserted. Closure stays `api/layout`-only (pure leaf,
+  WASM-green); go.mod/go.sum byte-identical. Unwired seam — its first caller is the M2 live
+  tile-ingestion fetch loop. **Sibling still deferred:** hash-tile (multi-level) enumeration needs its
+  own per-level loop (no single `Range` call covers all levels), via `PartialTileSize(level,index,size)`.
 
 ## SQLiteFetcher / mirror read-back (`internal/store/tiles.go` + `fetcher.go`)
 
