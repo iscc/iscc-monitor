@@ -1,112 +1,126 @@
 # Next Work Package
 
-## Step: Reject reserved/empty realm domains before mounting the bare-domain dossier
+## Step: Frozen Exhibit on the hub dossier (`store.ListViolations` + non-dismissable markup)
 
 ## Advances
-Preempts the open **`normal` issue** "Bare-domain dossier mount collides with reserved exact routes
-(`/metrics`, `/healthz`) → startup panic" (review-confirmed by Codex P2 reproduction). It is the
-review handoff's explicit **Next:** ("Fix the reserved/empty-domain mount collision at the root
-before adding more dossier surface") and step 1 of state's "Next Milestone". This `normal` defect is
-review-blocking: it must clear before the **M-UI hub dossier** screen counts as met, so it preempts
-the remaining M-UI screen work (frozen Exhibit, record list, certificate). target.md §Done When
-requires "no open `critical` or `normal` issue in `issues.md`", so this issue also blocks DONE.
+Milestone **M-UI — Evidence Ledger frontend** (ADR-0010). Closes the next open M-UI Verify clause —
+quoting `target.md`:
+
+> `HubStatusBadge` renders … with `frozen` rendered as the categorically-distinct **Exhibit**
+> (violation kind + detected-at + "do not trust new state", non-dismissable), visibly different markup
+> from the `unresolvable`/`unverified` caution
+
+The frozen-status five-status badge already renders, but the dossier does **not** yet surface the
+**Exhibit** (the violation `kind` + `detected_at` + the non-dismissable "do not trust new state"
+panel). This step adds the store read + the dossier markup that closes that clause. The handoff
+`**Next:**` from the last `review` PASS names exactly this sub-step.
 
 ## Goal
-Stop the monitor from panicking at startup when a realm-document line is a single-label token that
-collides with a built-in exact mount (`metrics`, `healthz`, the `web.Prefix` segment `_ds`) or is
-empty. Fail loudly at registration with a named error so the operator learns the config is invalid,
-rather than crashing in `http.ServeMux.Handle` inside `buildMux`.
+Render a categorically-distinct, non-dismissable **Exhibit** panel on the per-hub dossier
+(`GET /<domain>`) for a frozen hub, listing each self-consistency violation's `kind` + `detected_at`
+(ADR-0006 irreplaceable evidence), backed by a new leaf read `store.ListViolations(hubID)` over the
+`violations` table (today only `RecordViolation` writes it).
 
 ## Scope
-- **Modify**: `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` (add a reserved/empty-domain guard in
-  `registerHubs`)
-- **Modify (test — uncounted)**: `/workspace/iscc-monitor/cmd/iscc-monitor/main_test.go` (add a
-  reserved-name + empty-domain case driving `registerHubs`, plus a `buildMux`-no-longer-panics
-  assertion)
+- **Create**: (none)
+- **Modify** (≤3 non-test/doc files):
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — add
+    `ListViolations(ctx context.Context, hubID int64) ([]Violation, error)`, a pure read mirroring the
+    existing `ListHubs`/`SeqsForISCCID` query shape. Reuse the existing `Violation` struct
+    (`HubID, Kind, RawA, RawB, ProofJSON, DetectedAt`); read back at minimum `hub_id, kind,
+    detected_at` (the markup needs `kind` + `detected_at`; `raw_a/raw_b/proof_json` are not rendered
+    here — read them or leave them zero, your call, but do not require them). Order newest-first
+    (`ORDER BY detected_at DESC, id DESC`). Read `detected_at` through `sql.NullInt64` → zero
+    `time.Time` when NULL (the `unixOrNil` write inverse).
+  - `/workspace/iscc-monitor/internal/dossier/handler.go` — when the resolved status is `frozen`, call
+    `st.ListViolations(r.Context(), summary.HubID)` and thread the rows into the view-model
+    (`dossierData`) as a slice of a small render struct (e.g. `Kind string`, `DetectedAt string`
+    RFC-3339-or-empty, reusing the `coverageTime` formatting idiom). Add a `Frozen bool` +
+    `Violations []…` field to `dossierData`. Do NOT call `ListViolations` on non-frozen hubs (keep the
+    read off the hot path).
+  - `/workspace/iscc-monitor/internal/dossier/dossier.html` — add the Exhibit block, rendered only
+    `{{if .Frozen}}`, as markup **visibly distinct** from the badge caution: a panel with a clear "do
+    not trust new state" notice and a list of `{{.Kind}}` + `{{.DetectedAt}}` rows. No dismiss/close
+    control (non-dismissable: no JS, no `hidden`, no collapse). Style it with a page-scoped rule over
+    DS tokens (you may reuse the `.ledger[data-status=frozen]` tint conventions); no external/CDN URL.
+- **Modify (tests — uncounted)**:
+  - `/workspace/iscc-monitor/internal/store/checkpoints_test.go` — `TestListViolations`.
+  - `/workspace/iscc-monitor/internal/dossier/handler_test.go` — a frozen-dossier Exhibit assertion.
 - **Reference**:
-  - `/workspace/iscc-monitor/.claude/context/learnings/cmd-monitor.md` — the panic mechanism, mount
-    ordering, and the bullet that already flagged this exact reserved-name class; the
-    `registerHubs` returns index-aligned `([]HubTarget, []hubRoute, error)` contract.
-  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go:169-208` — `buildMux` + `mirrorHandler`:
-    `mirrorHandler` registers `"/"+r.Domain` (205) BEFORE `buildMux` registers `/metrics` (172),
-    `/healthz` (173), and `web.Prefix` (174); the later built-in `mux.Handle("/metrics", …)` is what
-    panics on the duplicate pattern.
-  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go:266-282` — `registerHubs`, the testable choke
-    point that owns the `hubRoute` carrying `Domain`.
-  - `/workspace/iscc-monitor/internal/web/web.go:46-49` — `Prefix = "/_ds/"`, the source of the third
-    reserved name (segment `_ds`).
-  - `/workspace/iscc-monitor/internal/registry/registry.go:49-69` — `Parse` only rejects `://` and
-    `/`, so reserved bare tokens pass through as valid `Domain`s.
-  - `/workspace/iscc-monitor/cmd/iscc-monitor/main_test.go:32-105` — `TestRegisterHubs` (the table to
-    extend) and `:113-133` — `TestMirrorRouter` (the `buildMux` invocation shape to copy).
+  - `/workspace/iscc-monitor/.claude/context/learnings/store.md` — the `RecordViolation`/`Freeze` seam
+    + leaf-purity rules (no `net/http`/`internal/logclient` in the store closure; `unixOrNil`/NULL-time
+    convention).
+  - `/workspace/iscc-monitor/.claude/context/learnings/dashboard.md` +
+    `/workspace/iscc-monitor/.claude/context/learnings/badge.md` — the coverage-honesty render pattern
+    and the badge-partial composition the dossier already uses.
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go:259-292` (the `Violation` struct +
+    `RecordViolation`) and `/workspace/iscc-monitor/internal/store/hubs.go` (the `ListHubs` query/scan
+    shape to mirror).
+  - `/workspace/iscc-monitor/internal/store/schema.sql:58-69` (the `violations` table columns).
+  - `/workspace/iscc-monitor/.claude/adr/0006-*.md` (kinds `fork|shrink|equivocation`; permanent
+    evidence, no auto-unfreeze).
 
 ## Not In Scope
-- Do NOT add the reserved-name guard to `internal/registry.Parse`. The reserved set
-  (`metrics`, `healthz`, `_ds`) is a property of the binary's HTTP mount layer, not of the realm
-  document format; the registry is a pure domain-list leaf (ADR-0009) and must not learn HTTP mount
-  names. Keep the guard in `cmd/iscc-monitor` where the mounts live.
-- Do NOT change the mount ordering in `buildMux`/`mirrorHandler` as the fix. Reordering to register
-  built-ins first would only turn the panic into a different collision (the dossier would then panic
-  on `/metrics`); rejecting the bad domain at the root is the correct fix.
-- Do NOT build the frozen **Exhibit**, `store.ListViolations`, the paginated record list, the
-  single-record page, or the certificate — those are later M-UI steps that resume after the dossier
-  is met.
-- Do NOT touch the dossier handler (`internal/dossier`) — the page passed its own Verify criteria;
-  only the wiring is broken.
-- Do NOT consolidate the 3x `overlayStatus` duplication or any other `low` issue.
+- The paginated **record list**, the **single-record page**, the **certificate of inclusion**, and the
+  **proof-bundle assembler** — later M-UI sub-steps (the certificate is the one that re-engages the
+  oracle/conformance gate; keep that pressure off this pure-render step).
+- Separate **Bitcoin-anchor vs comparison-anchor** panels — a distinct M-UI clause.
+- Consolidating the triplicated `overlayStatus`/`hubStatus` (the `low` issue) — leave the third copy
+  as-is; do not refactor `internal/badge`.
+- Rendering `raw_a`/`raw_b`/`proof_json` bytes or a download — the Exhibit shows `kind` + `detected_at`
+  only; the raw evidence bytes belong with the future proof-bundle surface.
+- Any **unfreeze** affordance — ADR-0006 forbids auto-unfreeze; the panel is informational and
+  non-dismissable.
+- Adding `ListViolations` callers in `internal/dashboard` / `internal/proofserve` / the realm index —
+  this step wires it into the dossier only.
 
 ## Implementation Notes
-- **Where:** add the guard inside the `registerHubs` loop in `main.go` (266-282), before the
-  `UpsertHub` call. `registerHubs` already returns an `error` and is the choke point that builds the
-  `hubRoute{Domain}` the dossier mounts on — it is the right root because both the offending mount
-  (`"/"+r.Domain`) and the collision derive from it. Failing here short-circuits with the offending
-  domain named, matching the existing `fmt.Errorf("register hub %q: %w", e.Domain, err)` style.
-- **Reserved set:** define a small package-level slice/set of reserved mount segments —
-  `"metrics"`, `"healthz"`, and `strings.Trim(web.Prefix, "/")` (which evaluates to `_ds`; derive it
-  from the const, do NOT hardcode `"_ds"`, so it tracks `web.Prefix` if that ever changes). Add a
-  `"strings"` import if not already present.
-- **Empty case:** reject `strings.TrimSpace(e.Domain) == ""` too — an empty Domain mounts the exact
-  `/`, colliding with the dashboard's `/` mount; the handoff and learnings flag empty and reserved as
-  the same class.
-- **Error, not skip:** prefer failing loudly —
-  `return nil, nil, fmt.Errorf("register hub %q: domain is a reserved mount name", e.Domain)` — over a
-  silent skip, so a misconfigured realm surfaces at startup rather than silently dropping a hub.
-  State's Next-Milestone step 1: "prefer failing `registerHubs`/`registry.Parse` loudly over a silent
-  skip".
-- **Origin caveat:** the origin is `<domain>/log`, so a reserved bare domain `metrics` mounts the
-  mirror subtree at `/metrics/log/` (a *subtree*, no collision) but the dossier at `/metrics` (exact,
-  collides). Rejecting the domain covers both mounts uniformly — no need to special-case the mirror.
-- **Learnings rule (cmd-monitor.md):** the existing bullet documents this exact failure
-  (`pattern "/metrics" … conflicts`) and prescribes "reject/skip reserved + empty domains before
-  mounting … and a test must drive a reserved name through `buildMux`". The load-bearing invariant is
-  the single-listener / single-mux model — keep one listener, one mux; the fix lives purely at
-  registration.
-- **Oracle/conformance gate is N/A:** this is pure HTTP-wiring config validation; it touches no
-  signature, RFC-6962, Merkle, did:web, fsck, or proof path. go.mod/go.sum/schema must stay
-  byte-identical. State this in the advance.
-- **Test seam:** extend `TestRegisterHubs` (or add a sibling `TestRegisterHubsRejectsReserved`) to
-  drive `registerHubs(ctx, st, []registry.Entry{{Domain:"metrics", BaseURL:"https://metrics"}})` and
-  assert a non-nil error — table-driven over `metrics`, `healthz`, `_ds`, and an empty/whitespace
-  domain. For the panic-no-longer regression, copy `TestMirrorRouter`'s `buildMux(st, routes,
-  metrics.New())` shape with `routes := []hubRoute{{HubID:1, Domain:"metrics", Origin:"metrics/log"}}`
-  and assert it does NOT panic — a bare call fails the test on panic, or use a `recover`-guarded
-  helper. The `issues.md` repro uses exactly that `hubRoute` shape.
+- **`store` stays a leaf.** `ListViolations` is a plain read on `s.db` using only `context`,
+  `database/sql`, `fmt`, `time` (all already imported in `checkpoints.go`). Do not introduce
+  `net/http` or any `internal/*` import; verify with
+  `go list -deps ./internal/store | grep -E 'net/http|internal/'` staying empty (store.md rule).
+- **NULL-time symmetry.** `detected_at` is written via `unixOrNil` (zero → NULL). Read it back through
+  `sql.NullInt64`; `!Valid` → zero `time.Time`. In the dossier, format with the same
+  `Since.UTC().Format("2006-01-02T15:04:05Z")` idiom `coverageTime` uses, and render an explicit
+  empty-string fallback (the template shows "time unknown" or simply omits the time) rather than a
+  fabricated epoch — coverage-honesty discipline applies to evidence timestamps too.
+- **Frozen-only read.** Gate the `ListViolations` call on the resolved status being `frozen`. `frozen`
+  is store-provable and the overlay never downgrades it, so `hubStatus(summary) == "frozen"` is a safe
+  gate (the overlay only ever promotes `verified`). Non-frozen dossiers must issue no extra query.
+- **Exhibit is markup-distinct, non-dismissable.** ADR-0010 requires the frozen Exhibit be *visibly
+  different markup* from the `unresolvable`/`unverified` caution — not just a recolored badge. Render a
+  dedicated panel (its own class, a heading like "Exhibit — self-consistency violation", the literal
+  copy "do not trust new state", and the per-violation `kind` + `detected_at` list). No `<button>`,
+  no JS toggle, no `hidden` — content present in the served HTML (no-JS baseline).
+- **No-JS / no-CDN baseline** (target.md M-UI Verify): the Exhibit content must be in the served HTML,
+  style only through DS `var(--*)` tokens, and the body must carry no `http://`/`https://`/`cdn.`/
+  `jsdelivr` (the existing dossier test already bans these; keep it true).
+- **Empty-violations edge case:** a hub can be `frozen` with violation rows present (the freeze path
+  always writes a `RecordViolation` before `Freeze`), but defend against zero rows — render the panel
+  header + "do not trust new state" even if the list is empty, never a broken/empty `{{range}}`.
+- **Relevant learnings (Correctness):** "A self-consistency violation freezes, never crashes
+  (ADR-0006). … Persist both raw checkpoints + proof permanently … no auto-unfreeze." The Exhibit is
+  the read-side surfacing of that permanent evidence; it must never imply the freeze can be cleared.
+- Render into the existing `bytes.Buffer` before `WriteHeader(200)` (the dossier's broken-client
+  convention) so a `ListViolations` error is a 500 *before* any 200 is committed.
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass, `gofmt -l .`
   empty).
-- `go test -run TestRegisterHubs ./cmd/iscc-monitor` passes, including the new reserved/empty cases:
-  `registerHubs` returns a non-nil error for a `Domain` of `metrics`, `healthz`, `_ds`, and `""`/`" "`.
-- A new test (e.g. `TestBuildMuxReservedDomainNoPanic`) constructs
-  `hubRoute{Domain:"metrics", Origin:"metrics/log"}` and asserts `buildMux` does NOT panic —
-  `go test -run TestBuildMux ./cmd/iscc-monitor` passes (this would have FAILED with a
-  `pattern "/metrics" … conflicts` panic before the fix; mutation-prove by temporarily removing the
-  guard → the test panics/fails, then restore).
-- `go test -run TestMirrorRouter ./cmd/iscc-monitor` still passes (the legitimate
-  `sb0.iscc.id`/`sb1.amlet.id` routing is unchanged).
-- The reserved-set check derives `_ds` from `web.Prefix` (no hardcoded `"_ds"` literal in the guard).
+- `go test -run TestListViolations ./internal/store` passes — a new test seeds two violations
+  (`fork`, then `shrink` with a later `DetectedAt`) via `RecordViolation`, then asserts
+  `ListViolations(hubID)` returns both newest-first with the correct `Kind` + non-zero `DetectedAt`,
+  and returns an empty result (nil/empty slice, no error) for a hub with none.
+- `go test -run TestDossier ./internal/dossier` passes — a new test freezes a hub
+  (`RecordViolation` + `Freeze`), renders `GET /<domain>`, and asserts the body contains the Exhibit
+  panel markup (the distinct class/heading + "do not trust new state" + the violation `kind` +
+  `detected_at`) AND the `frozen` badge silhouette marker (`M8.2 3.3h7.6`); the existing
+  verified-dossier test still passes and the verified dossier renders **no** Exhibit panel (assert the
+  Exhibit class/"do not trust new state" copy is absent for a non-frozen hub).
+- `go list -deps ./internal/store | grep -E 'net/http|internal/'` stays empty (store leaf purity).
+- `GOOS=js GOARCH=wasm go build ./internal/badge` still green (badge untouched; sanity).
 
 ## Done When
-`registerHubs` rejects a reserved (`metrics`/`healthz`/`_ds`) or empty realm domain with a named
-error, `buildMux` no longer panics for such a config, and all Verification checks pass — clearing the
-open `normal` issue and unblocking the hub dossier as a met M-UI screen.
+`store.ListViolations` reads the `violations` table as a leaf, the frozen dossier renders the
+categorically-distinct non-dismissable Exhibit (violation kind + detected-at + "do not trust new
+state") while non-frozen dossiers do not, and all Verification checks pass with `mise run check` green.
