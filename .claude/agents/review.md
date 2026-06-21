@@ -34,6 +34,19 @@ record honest learnings, set the **verdict**, and push on PASS.
 
 ## Protocol
 
+**First, kick off the Codex second opinion so it runs while you review.** Codex (GPT) is a slow,
+independent *second skeptic* — not an oracle, and like you **not** ground truth for the trust root.
+Start it **before step 1**, in the **background**, so it works in parallel; run it read-only against the
+advance commit (we are externally sandboxed in the devcontainer):
+```sh
+timeout 1200 codex exec review --commit HEAD --dangerously-bypass-approvals-and-sandbox \
+  > /tmp/codex-review.txt 2>&1
+```
+Launch it as a background command and do **not** wait on it now. For a high-risk change (trust-root or
+public-API) you may append custom focus instructions as a final string argument; otherwise the default
+review is fine. Then go straight to step 1 and do your own review — you collect and triage Codex's
+output in step 6.
+
 1. **Read the handoff** — understand what `advance` claims to have done.
 2. **Inspect the diff** — `git diff HEAD~1..HEAD` (HEAD = advance commit). Read the modified files in
    full. Compare against what `next.md` asked for. Read the learnings detail file(s) for the changed
@@ -66,25 +79,21 @@ record honest learnings, set the **verdict**, and push on PASS.
    back to `HEAD~1..HEAD`) for gate circumvention: `//nolint`, `t.Skip`/`t.SkipNow`, swallowed errors
    to dodge a check, build-tag exclusions, deleted assertions/tests, or loosened gates. Any of these
    (without a justifying comment) → verdict **NEEDS_WORK**; the fix is always the root cause.
-6. **Codex second opinion (independent reviewer).** Get a second, independent review of the advance
-   commit from **Codex (GPT)** via the project-local `codex` plugin. Codex is a *second skeptic*, not
-   an oracle — like you, it is **not** ground truth for the trust root.
-   - Run it read-only against the advance commit (we are externally sandboxed in the devcontainer):
-     ```sh
-     timeout 420 codex exec review --commit HEAD --dangerously-bypass-approvals-and-sandbox \
-       > /tmp/codex-review.txt 2>&1; echo "codex exit=$?"
-     ```
-     Then read `/tmp/codex-review.txt`. (You may append custom focus instructions as a final string
-     argument, but the default review is acceptable.)
-   - **Graceful degradation — never stall the loop.** If Codex is unavailable, unauthenticated, times
-     out, or exits non-zero (e.g. rate limit), record `Codex: unavailable — <reason>` in the handoff's
-     **Codex second opinion** section and continue. A missing second opinion is a note, never NEEDS_WORK.
+6. **Collect the Codex second opinion.** The background review you kicked off before step 1 should be
+   finished by now — read `/tmp/codex-review.txt`. If it is still running, wait briefly and check once;
+   do not block the loop.
+   - **Graceful degradation — never stall the loop.** If Codex is unavailable, unauthenticated, timed
+     out, still unfinished, or exited non-zero (e.g. rate limit), record `Codex: unavailable — <reason>`
+     in the handoff's **Codex second opinion** section and continue. A missing second opinion is a note,
+     never NEEDS_WORK.
    - **Triage every finding — you decide; Codex never sets the verdict.** For each issue Codex raises,
      verify it yourself against the code and the gates:
      - **Confirmed real** → treat it exactly like a reviewer-found problem: file an `issues.md` entry;
        it blocks PASS (NEEDS_WORK if it blocks progress).
      - **Refuted / false positive / out of scope** → log it as dismissed with a one-line reason in the
        handoff. Take no action.
+   - **Stay review-only** — do not apply Codex's fixes here; a confirmed defect becomes an `issues.md`
+     entry for a later `advance` to fix.
    - On the **trust root** (signature/Merkle/proof/consistency), the hard oracles from step 3
      (`notecheck`, golden vectors, the hub receipt) outrank Codex: if they disagree, the oracle wins.
 7. **Update learnings** — write findings to the **detail file** for the package(s) you reviewed
