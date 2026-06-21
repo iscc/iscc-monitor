@@ -37,21 +37,20 @@ filed it and does **not** affect priority.
 - **Spec:** ADR-0006 (freeze evidence discipline — re-detection must compare against the prior
   accepted root, not the contradicting evidence).
 
-## `fsckMirror` re-resolves the did:web key every verified poll (a redundant did.json fetch)
+## `AcceptCheckpoint` discards resolved context, so verified polls re-fetch did.json
 - **Priority:** normal
 - **Source:** [review]
-- **What / where / how to verify:** `internal/follower/follower.go` `fsckMirror` calls
-  `ResolveVerifierKey` (a did.json fetch) on every verified, non-violation poll purely to obtain the
-  vkey *string* for `RunFsck` — even though `AcceptCheckpoint` already resolved the vkey and
-  `cacheHubKey` caches the key bytes. Observable: `TestPollHubCacheHitSkipsDidFetch` now asserts
-  cold=3 / warm=2 did.json fetches (was 2/1), the +1 each being fsck's resolve. An efficiency slice
-  could thread the already-resolved vkey from `AcceptCheckpoint`/`cacheHubKey` through to `fsckMirror`
-  (e.g. `AcceptCheckpoint` returning the vkey, or recovering it from the cached `hub_keys` row +
-  `VerifierKey` formatting) to drop the extra fetch. Verify fixed: cold drops to 2, warm to 1, and the
-  cache-hit delta test still pins "warm = cold − 1". Correctness is unaffected today (the resolve
-  yields the same key); this is purely a fetch-count efficiency item.
-- **Spec:** KISS / no spec contract; the second-resolve elimination mirrors the `cacheHubKeyFast`
-  optimization already landed.
+- **What / where / how to verify:** `internal/logclient/accept.go:84-105`
+  `AcceptCheckpoint` resolves the did:web verifier key and origin, then returns only
+  `(Status, CheckpointInfo, error)`. The verified path in `internal/follower/follower.go:187` and
+  `:206` therefore re-fetches the same `did.json`: cold polls resolve in `AcceptCheckpoint`,
+  `cacheHubKeyResolve`, and `fsckMirror`; warm polls still resolve in `AcceptCheckpoint` and
+  `fsckMirror`. Widen the verified result to include the resolved per-poll context needed by cache
+  refresh and fsck (`vkey`, origin, and DID key metadata), while preserving ADR-0009's per-poll
+  validity-window check. Verify fixed by updating `TestPollHubCacheHitSkipsDidFetch`: cold and warm
+  verified polls should each require one did.json fetch, and cache rows / fsck should still use the
+  same verified key context.
+- **Spec:** ADR-0009 (DID document remains the source of truth; reuse only within one verified poll).
 
 ## `cmd/notecheck`'s `run` has a vestigial `out io.Writer` parameter
 - **Priority:** low
@@ -92,3 +91,46 @@ filed it and does **not** affect priority.
   clean-looking larger checkpoint and asserting `last_size` and accepted-state side effects do not
   advance while re-detected violations can still be recorded as evidence.
 - **Spec:** ADR-0006 (frozen hubs are evidence-only until manual unfreeze).
+
+## Tile writers require `width`, duplicating the tlog `p` translation in the follower
+- **Priority:** normal
+- **Source:** [review]
+- **What / where / how to verify:** `internal/store/fetcher.go:61-115` reads tiles and entry bundles
+  through the tlog-tiles `p uint8` vocabulary and privately translates `p == 0` to width 256, while
+  `internal/store/tiles.go:37` and `:56` require callers to pass the already-translated `width`.
+  `internal/follower/ingest.go:57`, `:73`, and `:86-91` therefore carry a second load-bearing
+  `widthForP` copy; if that copy ever stores a full tile at width 0 instead of 256, the
+  `SQLiteFetcher` cannot read the mirror back. Make `RecordTile` and `RecordEntryBundle` accept
+  `p uint8`, keep the `p`→`width` translation private to the store, and delete the follower copy.
+  Verify fixed by moving the full/partial width tests to the store API and ensuring ingest passes
+  `c.Partial` directly while `SQLiteFetcher` round-trips full and partial mirrors.
+- **Spec:** ADR-0005 (mirror tile discipline); KISS / single source of truth for coordinate mapping.
+
+## Accepted checkpoint advancement is three caller-sequenced store writes
+- **Priority:** normal
+- **Source:** [review]
+- **What / where / how to verify:** `internal/follower/follower.go:165-183` owns the invariant
+  "advance accepted state" by sequencing `RecordCheckpoint`, `SetCoverage`, and
+  `AdvanceFollowState` directly. Those writes are separate store calls rather than one store-owned
+  operation, so ordering and partial-write behavior live in the orchestrator instead of the storage
+  boundary. Add a deep store method such as `AdvanceAccepted(hubID, info, raw, observedAt)` that
+  records the checkpoint, sets coverage once, and advances the follow cursor in one transaction; use
+  it from the verified, non-violation path. Verify fixed with a store-level test for the combined
+  operation, including idempotent re-poll behavior and coverage staying set-once.
+- **Spec:** ADR-0005 (single-writer mirror/follow-state discipline); KISS / locality.
+
+## Self-consistency policy is split across follower orchestration and logclient helpers
+- **Priority:** normal
+- **Source:** [review]
+- **What / where / how to verify:** `internal/follower/follower.go:355-425` owns the branch order,
+  prior-checkpoint lookup, proof construction, missing-tile handling, and calls into
+  `logclient.CheckShrink`, `CheckFork`, `ConsistencyProofFromTiles`, and `CheckEquivocation`.
+  That leaves the load-bearing self-consistency decision spread across `follower`, `logclient`, and
+  the tile fetch seam, making the indeterminate/missing-tile semantics harder to table-test in one
+  place. After or alongside the critical growing split-view fix, collapse the pure decision into a
+  deep `logclient.CheckConsistency` entry point that accepts prior/next checkpoint data plus an
+  injected tile fetcher and returns `(violated, kind, err)` or an explicit indeterminate result. Verify
+  fixed with logclient table tests for shrink, same-size split view, growing split view, clean growth,
+  and missing-tile/error behavior; follower should just look up prior accepted evidence and act on the
+  returned verdict.
+- **Spec:** ADR-0006 (self-consistency violations freeze and preserve evidence).
