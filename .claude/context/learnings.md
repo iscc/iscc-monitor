@@ -564,14 +564,21 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   whose root is `flipByte(m.tree.HashAt(5))` (the real root with one byte flipped) — the candidate
   checkpoint the fetcher signs is internally valid at 300, so the inconsistency is purely between the
   fabricated prior accepted root and the candidate root = a growing split view against THIS monitor.
-- **Re-detection of a fork relies on `CheckpointAt`'s `LIMIT 1` returning the PRIOR root, not the
-  contradictory one.** The freeze path records the contradicting checkpoint as evidence, so after the
-  first detection there are two rows at the same `tree_size` (prior seed root + new root). On the next
-  poll `CheckpointAt(LIMIT 1, no ORDER BY)` returns the lower-rowid (prior/seed) row, so
-  `CheckFork(prior != new)` re-fires and a 2nd `violations` row is recorded (re-detection = evidence).
-  This is correct today (SQLite returns rowid order) and verified stable over 20 runs, but it is an
-  *implicit* dependency on insert order — the equivocation/merkle slice that changes how the prior root
-  is selected must preserve "compare against the prior accepted root, not the contradicting evidence."
+- **Fork re-detection on an already-frozen hub is now driven through a real second `PollHub`, and the
+  determinism it relies on is `CheckpointAt`'s EXPLICIT `ORDER BY rowid LIMIT 1` (no longer implicit).**
+  The freeze path records the contradicting checkpoint as evidence (a higher rowid), so after the first
+  detection two rows share the same `tree_size` (lowest-rowid seed/prior accepted root + the new
+  contradicting root). On the second `PollHub`, `checkConsistency` runs BEFORE the `fs.Frozen`
+  short-circuit and reads the prior root via `CheckpointAt(hubID, m.size)`, which deterministically
+  returns the seed root → `CheckFork(seed != new)` re-fires → `freeze(wasFrozen=true)` records a 2nd
+  `violations` row (re-detection = evidence; `RecordViolation` has no `ON CONFLICT`) WITHOUT re-alerting.
+  `LastSize` stays `m.size` (a frozen hub never advances). Reviewer independently mutation-proved
+  `TestPollHubFork` non-vacuous on the production path two ways (both reverted): asserting `alerts == 2`
+  FAILS (alert fires once), and removing the second `PollHub` FAILS three assertions (violations count,
+  the cumulative `kind="fork"} 2` metric, and reopen-survival). The earlier "no ORDER BY / implicit
+  insert-order dependency" note is now obsolete: the ordering is explicit in `checkpoints.go:159` and
+  pinned by `TestCheckpointAtDeterministicOnFork`. Any future change to prior-root selection must keep
+  "compare against the prior accepted root, never the contradicting evidence row" (ADR-0006).
 - **Fork-test non-vacuousness comes from the `kind == "fork"` (not "shrink") assertion at equal size,
   NOT the `sb0FixtureRootB64` guard.** That guard compares raw seed bytes to a base64 *string*, so it
   can never trip (and the seed is 33 bytes — `copy` into `[32]byte` truncates harmlessly). The real
@@ -602,9 +609,10 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   300-leaf `buildVerifiedMirror` at the same size/root.** This is the deterministic way to reach the
   short-circuit: with `prevSize==info.TreeSize==300` and identical root, `CheckShrink`/`CheckFork` are
   both false and the equivocation branch short-circuits on `info.TreeSize <= prevSize`, so
-  `violated==false` and `fs.Frozen==true` → the new branch fires. Driving the freeze through a first
-  `PollHub`-into-violation would re-engage the `TestPollHubFork` re-detection fragility (a separate
-  deferred issue); the direct `store.Freeze` seed is the clean isolation. The metric assertion uses a
+  `violated==false` and `fs.Frozen==true` → the new branch fires. The direct `store.Freeze` seed is the
+  clean isolation for THIS test (a clean re-poll, no fresh contradiction); the complementary fresh-
+  contradiction-on-a-frozen-hub re-detection path is now exercised end-to-end by `TestPollHubFork`'s
+  second `PollHub` (the prior "re-detection fragility" deferral is resolved). The metric assertion uses a
   *fresh* `metrics.New()` on the re-poll only (seed poll passes `m=nil`), so `status="frozen" 1` present
   + `status="verified"` absent is a clean single-verdict assert.
 - **`Run` is deliberately untested and that is correct here** — it is a 12-line `select` over
