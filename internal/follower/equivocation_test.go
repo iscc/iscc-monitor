@@ -366,3 +366,95 @@ func TestEquivocationMissingTilesDoesNotFreeze(t *testing.T) {
 		t.Errorf("violations after a missing-tile poll = %d, want 0", n)
 	}
 }
+
+// TestPollHubGrowingSplitViewFreezes is the end-to-end regression for the closed
+// critical gap: a growing split view routed through the full PollHub chain must
+// freeze, not silently advance to the inconsistent root. The candidate is a
+// self-consistent in-process verified mirror at size 300 (its signature verifies and
+// its tiles fsck-rebuild). The PRIOR accepted checkpoint is seeded at the smaller
+// size 5 with a WRONG/fabricated root — the real root at 5 with one byte flipped —
+// so the consistency proof from prior@5 -> candidate@300 cannot verify. That is a
+// growing split view against THIS monitor: the candidate checkpoint is internally
+// valid, but it is inconsistent with the prior accepted root.
+//
+// The reorder is what makes this fire: PollHub now mirrors the candidate-size tiles
+// (via ingestTiles) BEFORE checkConsistency, so ConsistencyProofFromTiles(5, 300) is
+// buildable and CheckEquivocation returns a true verdict on the inconsistent root.
+// Before the reorder the proof hit a missing-candidate-tile error that
+// checkConsistency swallowed as a clean pass, and the hub advanced to 300.
+//
+// Assertions are on observable store outputs ONLY (PRD outbound-fetch seam rule):
+// the violations table, the follow cursor, and the alert count — never follower
+// internals. Non-vacuity is provided by the consistent-growing advance path
+// (TestPollHubVerifiedAdvances / TestPollHubMirrorsTiles) over the same mirror, which
+// does NOT freeze — so the suite catches both a "never freezes" and an "always
+// freezes" wiring.
+func TestPollHubGrowingSplitViewFreezes(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "growing-split.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	// The candidate: a self-consistent verified mirror at size 300 (== equivTreeLeaves).
+	// Its fetcher serves the did.json, the signed candidate checkpoint, and the
+	// byte-accurate candidate tiles ingestTiles will mirror before the check.
+	m := buildVerifiedMirror(t, mirrorLeaves)
+
+	// Seed the prior accepted checkpoint at the smaller size 5 with a WRONG root (the
+	// real root at 5 with one byte flipped), then advance the cursor to it. The
+	// consistency proof from this fabricated prior root to the candidate root cannot
+	// verify, so the growing observation is a genuine equivocation.
+	wrongPrevRoot := flipByte(rootArray(t, m.tree.HashAt(equivPrevSize)))
+	if _, _, err := s.RecordCheckpoint(ctx, store.CheckpointRecord{
+		HubID:      hubID,
+		Status:     "verified",
+		TreeSize:   equivPrevSize,
+		Root:       wrongPrevRoot[:],
+		Raw:        []byte("sb0.iscc.id/log\n5\nwrong-prior-root\n"),
+		ObservedAt: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("seed RecordCheckpoint: %v", err)
+	}
+	if err := s.AdvanceFollowState(ctx, hubID, equivPrevSize); err != nil {
+		t.Fatalf("seed AdvanceFollowState: %v", err)
+	}
+
+	var alerts int
+	alert := func(int64, string) { alerts++ }
+
+	// A violation freezes, never crashes (ADR-0006): the signature is valid, so the
+	// verdict is still StatusVerified with a nil error.
+	status, err := PollHub(ctx, s, m.fetcher, hubID, "https://sb0.iscc.id", time.Unix(1, 0), alert, nil)
+	if err != nil {
+		t.Fatalf("PollHub over a growing split view = %v, want nil (a violation freezes, never crashes)", err)
+	}
+	if status != logclient.StatusVerified {
+		t.Fatalf("status = %s, want verified (a violation is a separate axis)", status)
+	}
+
+	assertViolation(t, path, hubID, "equivocation")
+	fs, err := s.FollowState(ctx, hubID)
+	if err != nil {
+		t.Fatalf("FollowState: %v", err)
+	}
+	if !fs.Frozen {
+		t.Errorf("Frozen = false after a growing split view, want true")
+	}
+	if fs.LastSize != equivPrevSize {
+		t.Errorf("LastSize = %d, want %d (a growing split view must NOT advance to the inconsistent root)", fs.LastSize, equivPrevSize)
+	}
+	if alerts != 1 {
+		t.Errorf("alerts = %d after a growing equivocation, want 1 (exactly-one-alert)", alerts)
+	}
+	if n := countRows(t, path, "violations"); n != 1 {
+		t.Errorf("violations after a growing split view = %d, want 1", n)
+	}
+}

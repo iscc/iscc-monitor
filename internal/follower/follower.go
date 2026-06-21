@@ -4,19 +4,22 @@
 // enters the store's closure and the store stays a leaf.
 //
 // This file holds PollHub, the single-observation wiring: for one hub it fetches
-// the latest signed checkpoint, runs the four-way AcceptCheckpoint verdict, runs
-// the three RFC-6962 self-consistency checks (shrink/fork/equivocation) against the
-// prior accepted checkpoint, and then either freezes the hub on a violation or
-// advances the follow cursor — but only a StatusVerified observation may advance
-// accepted state (ADR-0009). On that verified, non-violation path it also records
-// the hub's coverage start once (ADR-0001, set-once), caches the resolved
-// did:web signing key (ADR-0009, hub_keys), mirrors the hub's hash tiles and
-// entry bundles into the local store (ADR-0005, ingestTiles), and then rebuilds the
-// accepted root from that mirror and cross-checks it against the signed checkpoint
-// root (ADR-0005, fsckMirror -> logclient.RunFsck). The merkle-backed
-// equivocation trigger sources its consistency proof from that local mirror (a
-// store.SQLiteFetcher), never re-hitting the hub. The poll loop is its own later
-// step; PollHub does exactly one observation per call and returns.
+// the latest signed checkpoint, runs the four-way AcceptCheckpoint verdict, mirrors
+// the candidate-size hash tiles and entry bundles into the local store (ADR-0005,
+// ingestTiles), runs the three RFC-6962 self-consistency checks
+// (shrink/fork/equivocation) against the prior accepted checkpoint, and then either
+// freezes the hub on a violation or advances the follow cursor — but only a
+// StatusVerified observation may advance accepted state (ADR-0009). The merkle-backed
+// equivocation trigger sources its consistency proof from the local mirror (a
+// store.SQLiteFetcher), never re-hitting the hub; mirroring the candidate tiles
+// BEFORE the consistency check is what makes that proof buildable on a growing split
+// view, so a growing equivocation is detected and frozen instead of silently
+// advancing to the inconsistent root. On the verified, non-violation path PollHub
+// also records the hub's coverage start once (ADR-0001, set-once), caches the
+// resolved did:web signing key (ADR-0009, hub_keys), and rebuilds the accepted root
+// from the mirror and cross-checks it against the signed checkpoint root (ADR-0005,
+// fsckMirror -> logclient.RunFsck). The poll loop is its own later step; PollHub does
+// exactly one observation per call and returns.
 //
 // Mirror root-rebuild (ADR-0005): after the tiles are mirrored, fsckMirror runs
 // RunFsck over the SQLiteFetcher to re-derive the RFC-6962 root from the local
@@ -139,12 +142,30 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 		return status, nil
 	}
 
-	// Self-consistency check against the prior accepted checkpoint, before any
-	// record/advance: a violation must freeze (not advance) the hub (ADR-0006).
 	fs, err := st.FollowState(ctx, hubID)
 	if err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: follow state: %w", hubID, err)
 	}
+
+	// Mirror the hub's hash tiles and entry bundles into the local store
+	// (ADR-0005) BEFORE the self-consistency check, so the candidate-size tiles
+	// are present when the equivocation trigger builds its consistency proof. On a
+	// growing split view this is what makes ConsistencyProofFromTiles(prevSize,
+	// info.TreeSize) buildable: without the candidate tiles the proof hits a
+	// missing-tile error that checkConsistency swallows as a clean pass, and the
+	// hub silently advances to the inconsistent root (the closed critical gap). A
+	// fetch/store fault here is a genuine transport error (NOT a violation): it is
+	// surfaced so accepted state does not advance, and the next poll re-fetches any
+	// missing coords via the idempotent upsert. On a violation the candidate tiles
+	// are already mirrored but the cursor is not advanced — tiles are
+	// rebuildable/evidence, not accepted state (partial-tile discipline + ADR-0006
+	// "preserve evidence").
+	if err := ingestTiles(ctx, st, fetcher, hubID, baseURL, info.TreeSize, observedAt); err != nil {
+		return status, fmt.Errorf("follower.PollHub: hub %d: ingest tiles: %w", hubID, err)
+	}
+
+	// Self-consistency check against the prior accepted checkpoint, before any
+	// record/advance: a violation must freeze (not advance) the hub (ADR-0006).
 	violated, kind, prevRaw, err := checkConsistency(ctx, st, hubID, fs.LastSize, info)
 	if err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err)
@@ -187,19 +208,10 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	if err := cacheHubKey(ctx, st, fetcher, hubID, baseURL, raw, observedAt); err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: cache hub key: %w", hubID, err)
 	}
-	// Mirror the hub's hash tiles and entry bundles into the local store
-	// (ADR-0005). This feeds the SQLiteFetcher so the equivocation consistency
-	// proof and the M2 fsck root-rebuild read real mirrored tiles. A fetch/store
-	// fault here is a genuine transport error (NOT a violation): it is surfaced so
-	// accepted state for the next poll is unaffected — the checkpoint is already
-	// recorded/advanced above, so the next poll re-fetches any missing coords via
-	// the idempotent upsert.
-	if err := ingestTiles(ctx, st, fetcher, hubID, baseURL, info.TreeSize, observedAt); err != nil {
-		return status, fmt.Errorf("follower.PollHub: hub %d: ingest tiles: %w", hubID, err)
-	}
-	// Rebuild the accepted root from the freshly-mirrored tiles and cross-check it
-	// against the signed checkpoint root (ADR-0005, RFC-6962 root-rebuild). This must
-	// run AFTER ingestTiles so the SQLiteFetcher has tiles to read. A mismatch is a
+	// Rebuild the accepted root from the mirrored tiles and cross-check it against
+	// the signed checkpoint root (ADR-0005, RFC-6962 root-rebuild). The tiles were
+	// already mirrored by the ingestTiles call earlier in this poll (moved ahead of
+	// the consistency check), so the SQLiteFetcher has tiles to read. A mismatch is a
 	// genuine mirror/rebuild fault (NOT a self-consistency violation): it is surfaced
 	// without freezing the hub — the checkpoint is already recorded/advanced above, so
 	// a transient fault is re-attempted next poll.
