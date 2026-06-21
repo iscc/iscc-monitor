@@ -49,6 +49,11 @@ trusting the handoff. Downstream roles rely on `state.md` being accurate. Never 
    - Reuse: which `transparency-dev/*` / `modernc.org/sqlite` / `nbd-wtf/opentimestamps` imports are
      actually wired in (`grep -r` the import paths)?
    - Do **not** run the test suite — that is the `review` role's job. Observe and report only.
+   - **Compute the Convergence signal.** For each unmet milestone, count its remaining vs. total
+     `target.md` **Verify** criteria. Over the last ~10 iterations (`git log --grep 'cid(define-next)'`
+     titles + the `## Advances` lines), tally how many closed a milestone Verify criterion vs. were
+     refactor/polish/cache. A long polish streak while Verify criteria stay open and reachable is
+     drift — surface it in the `## Convergence` section, never hide it.
 
 3. **Check CI (only if a remote + workflows exist).** If `.github/workflows/` exists and a remote is
    configured, run
@@ -76,6 +81,12 @@ trusting the handoff. Downstream roles rely on `state.md` being accurate. Never 
 ## Phase: <current development phase — brief label>
 
 <2-3 sentence summary of where the project stands.>
+
+## Convergence
+- **Remaining Verify criteria:** <per unmet milestone — count + the named criteria still open, e.g.
+  "M3: 2/4 open (verify-for-me, log browser); WASM: 1/1; OTS: 1/1">
+- **Last ~10 iterations:** <how many closed a milestone Verify criterion vs. were refactor/polish —
+  e.g. "3 milestone / 7 refactor"; flag a long polish streak with criteria still open as drift>
 
 ## M1 — Read-only Monitor
 **Status**: <met / partially met / not started>

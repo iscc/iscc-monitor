@@ -70,6 +70,14 @@ proof matches the hub's `evidence.IsccLogInclusionProof` for sampled `iscc_id`s.
 
 REST surface (CORS on every public GET) + `verify-for-me` + server-rendered dashboard (status,
 coverage, lag, violations, OTS) + log browser + raw tlog-tiles mirror at canonical paths.
+**Verify** (all asserted at the HTTP seam against fixtures — observable outputs, never handler
+internals): every public GET carries `Access-Control-Allow-Origin: *`; `GET
+/<domain>/log/verify?iscc_id=<known-id>` returns the documented `verify-for-me` JSON verdict (hub
+status + checkpoint `(size, root)` + inclusion result), and a malformed/unknown id returns the
+documented non-verified verdict, never a 5xx; `GET /` returns `200 text/html` listing **every** realm
+hub with its glossary status + coverage window (golden-tested on a fixture store); `GET
+/<domain>/log/` (log browser) returns `200 text/html` exposing the mirrored checkpoint `(size, root)`
+with links into `entries`/proofs.
 
 ### WASM verifier upgrade  `[not started]`
 

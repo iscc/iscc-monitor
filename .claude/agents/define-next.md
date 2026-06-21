@@ -37,7 +37,10 @@ that advances iscc-monitor toward `target.md`. One step — not a plan, not a mi
 
 ## Protocol
 
-1. **Find the gap.** Compare `state.md` against `target.md`. Identify the nearest unmet target.
+1. **Find the gap.** Compare `state.md` against `target.md`. Identify the nearest unmet **milestone
+   Verify criterion** and name it — that is what the step should advance. A step that closes no Verify
+   criterion (pure refactor / polish / cache header) is justified only by a preempting `critical` /
+   `normal` issue; prefer milestone work otherwise.
 2. **Check the handoff.** If `handoff.md` has a `**Next:**` from `review`, start there.
 3. **Check issues.** Any `critical` issue preempts everything. Weigh `normal` issues against the
    state→target gap (prefer finishing a coherent feature before switching). **Skip `low` entirely** —
@@ -52,6 +55,11 @@ that advances iscc-monitor toward `target.md`. One step — not a plan, not a mi
    - has clear, **runnable** verification (a command that exits 0, or an assertion checkable
      mechanically) — prefer `mise run check` plus a specific `go test -run <Name> ./<pkg>`;
    - builds on what exists (don't skip ahead);
+   - **skeleton-first for big features:** when the nearest unmet Verify criterion is too large for one
+     ≤3-file step (the dashboard, log browser, `verify-for-me`), lay a *verifiable skeleton* — a
+     minimal handler + a golden-output test that closes part of the criterion — and list the remaining
+     sub-steps under `## Not In Scope` so later iterations continue the same arc instead of switching
+     to an unrelated refactor;
    - if it changes behavior/config/usage documented somewhere (READMEs, `docs/`, code examples),
      includes those doc files under Scope → Modify. Keeping docs in sync is part of the step.
 6. **Research if needed.** Read the relevant `cauldron/` reference files (`tessera/client`,
@@ -72,6 +80,10 @@ that advances iscc-monitor toward `target.md`. One step — not a plan, not a mi
 # Next Work Package
 
 ## Step: <concise title>
+
+## Advances
+<the `target.md` milestone + Verify criterion this step moves toward — quote it. If it instead closes
+an issue, name the issue and why it preempts milestone work.>
 
 ## Goal
 <1-2 sentences: what this step achieves and why it matters now>
@@ -101,6 +113,10 @@ the relevant Correctness rule from learnings.md>
 ## Rules
 
 - ONE step only. If the handoff suggestion feels larger than 3 files, break it down further.
+- **Milestone precedence.** Default to the nearest unmet milestone Verify criterion. Choose a pure
+  refactor/polish step only when a `critical`/`normal` issue genuinely preempts it — and say so in
+  `## Advances`. Do not drain the self-filed backlog while a milestone Verify criterion sits unstarted
+  and reachable.
 - The first step (pre-bootstrap) bootstraps the module: `go mod init github.com/iscc/iscc-monitor`,
   a minimal layout, and the highest-leverage **pure, golden-testable** unit (`origin()` /
   `verifierKey()` vs `derive_vkey.py`). Prefer pure functions before I/O; runnable + testable before
