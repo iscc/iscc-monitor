@@ -394,7 +394,9 @@ func serveVerify(w http.ResponseWriter, r *http.Request, st *store.Store, f stor
 	rootB64 := base64.StdEncoding.EncodeToString(root)
 
 	// iscc_id → seq is one-to-many and schema-agnostic (ADR-0008): default to the
-	// first committed seq via selectSeq and interpret nothing about the id.
+	// first committed seq (seqs is ascending) and interpret nothing about the id.
+	// verify-for-me takes no index param, so seqs[0] is the deterministic subject —
+	// the empty-seqs case is guarded just below before any index access.
 	seqs, err := st.SeqsForISCCID(ctx, hubID, isccID)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)

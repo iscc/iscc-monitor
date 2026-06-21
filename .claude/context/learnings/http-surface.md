@@ -8,64 +8,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## tlog-tiles HTTP read surface (`internal/tilesserve/handler.go`)
 
-- **`Handler(f store.SQLiteFetcher) http.Handler` is a pure static-byte read transport — the oracle
-  gate is correctly N/A and verified so, not asserted.** `go list -deps ./internal/tilesserve | grep
-  -E 'internal/proof|logclient|didweb|merkle|note|rfc6962'` is EMPTY — the served bodies are opaque
-  BLOBs (the verifier computes proofs locally in a later slice), so no signature/RFC-6962/Merkle/
-  did:web/fsck path is introduced. `notecheck`/`derive_vkey.py`/CI parity job all untouched + green;
-  they re-arm at the proof-serving / `verify-for-me` slice. Same leaf-wrapping posture as `metricshttp`
-  (which keeps `net/http` out of the pure `metrics` leaf): `tilesserve → store`, never the reverse —
-  `go list -deps ./internal/store` shows neither `tilesserve` nor `net/http`, so store stays a leaf.
-- **The routing is robust at every malformed boundary, reviewer-probed against the real tessera parser
-  (not just the 9 test subcases).** `serveTile` trims `tile/` then `strings.Cut(rest, "/")` on the FIRST
-  slash only (so `tile/0/001.p/44` → `level="0"`, `index="001.p/44"`, `width=44` passes straight as the
-  fetcher's `p`); a slash-less `tile/0` → `Cut` `ok=false` → 400; `tile/0/` and `tile/0/abc` →
-  `layout.ParseTileLevelIndexPartial` error → 400. The `tile/entries/` case MUST precede `tile/` in the
-  switch (entries is a sub-prefix) — confirmed present. tessera's returned `width` IS the `SQLiteFetcher`
-  `p` (shared 0==full convention), so it is passed through unmapped, matching `widthForP`.
-- **The body-equality + status assertions are mutation-proven non-vacuous (reviewer, reverted).** (1)
-  `w.Write([]byte("X"))` instead of the BLOB → all four 200-byte-equal subtests FAIL; (2) collapsing the
-  404 mapping to 200 → both the never-mirrored-tile and unmatched-path subtests FAIL. A green-but-wrong
-  handler that served constant bytes or 200'd a missing row cannot ship. The single `_, _ = w.Write`
-  swallow is the documented metricshttp idiom (the 200 is already on the wire), not a gate dodge.
-- **Intentional unwired export seam (like the prior M2 seams): no production caller yet — the binary
-  wiring (per-hub route prefix, hub→origin router, read-only pool) is the deferred next slice that
-  `next.md` scoped out.** `go vet` clean, not dead code. The handler takes `store.SQLiteFetcher` by
-  value (exported `Store *Store` + `HubID int64` fields), so the binary constructs one per hub with no
-  new store surface. go.mod/go.sum/schema byte-identical; `GOOS=js GOARCH=wasm go build ./internal/didweb`
-  still exits 0 (WASM purity rides on `didweb`, untouched by this net/http leaf-wrapper).
-- **Per-route `Cache-Control` keys on the parsed path-API `width`, NOT the store width — `immutable :=
-  (width == 0)`.** `writeBlob(w, data, immutable bool)` sets `public, max-age=31536000, immutable` for
-  FULL tiles/bundles and `no-cache` for partials + the size-varying checkpoint (`serveCheckpoint` passes
-  `false` unconditionally). The predicate is correct because `layout.ParseTile*` returns `width == 0` for
-  a full resource and the actual leaf count (`> 0`) for a partial — reviewer re-derived from ground truth
-  that `tile/0/000`/`tile/entries/000` parse to width 0 and `tile/0/001.p/44` parses to width 44 (the
-  same vocab the SQLiteFetcher documents as `p == 0 → full`, distinct from the store column's 256=full).
-  `no-cache` (NOT `no-store`) is deliberate: a partial is overwritten in place every poll (ADR-0005), so
-  it must be cacheable-with-revalidation, never pinned immutable. The partial-tile assertion is the
-  load-bearing guard — reviewer mutated the predicate to always-immutable and the `partial_tile` subtest
-  FAILED (reverted), so a partial wrongly marked immutable cannot ship.
-- **Header-order + no-conflict are safe: both `Content-Type` and `Cache-Control` are set before the
-  first `w.Write` (the 200 freezes the header map on first write), and the `corsmw` wrap sets only
-  `Access-Control-*` (verified), so it neither duplicates nor conflicts with the per-route
-  `Cache-Control`.** Error paths (`http.Error` 400/404/405/500) intentionally carry no `Cache-Control`.
-  Oracle gate correctly N/A (pure HTTP header wiring on opaque BLOBs — no signature/RFC-6962/Merkle/
-  did:web/fsck/proof path); no new import, so go.mod/go.sum/schema byte-identical; `immutable` directive
-  string appears in exactly one place (the const), `no-store` absent. `proofserve` size-dependent surfaces
-  (`/inclusion`/`/consistency`/`/entries`) still have no cache policy (tied to `LastSize`, later slice).
-- **Conditional GET landed: a strong content ETag + `If-None-Match` → 304 on every `writeBlob` 200.**
-  `etag := fmt.Sprintf("\"%x\"", sha256.Sum256(data))` — quoted lowercase hex, STRONG (no `W/` prefix).
-  All three validators (`Content-Type`/`Cache-Control`/`ETag`) are `Set` BEFORE the `If-None-Match`
-  branch, so a 304 still carries `ETag` + `Cache-Control` per RFC 7232 §4.1 (reviewer wrote a throwaway
-  test, removed: a full-tile 304 echoes both the ETag and `…immutable` Cache-Control). The match is
-  `inm == "*" || inm == etag` — exact-token-or-wildcard only, no comma-separated list parser (a client
-  echoes the exact tag the server sent). `writeBlob` now takes `r *http.Request`; the 304 path
-  `w.WriteHeader(304)` + bare `return` writes no body. Reviewer independently re-derived the seeded
-  full-tile ETag in Python (`sha256(0x11 * 8192)` → `"a44d83e2…"`), confirming Go's `%x` over the
-  `[32]byte` array matches the test's expectation — the tag is genuinely content-derived, not constant.
-  Oracle gate correctly N/A (opaque-BLOB header wiring); no new dep (`crypto/sha256`+`fmt` stdlib),
-  go.mod/go.sum/schema byte-identical, didweb WASM leaf untouched + builds green. The `_, _ = w.Write`
-  is the pre-existing post-status-write idiom (not in the added-line diff), NOT a swallowed-error dodge.
+- **settled:** the static-BLOB mirror (`/checkpoint`, `/tile/...`, `/tile/entries/...`) is landed and
+  stable — pure opaque-byte read transport (oracle gate N/A), `tilesserve → store` (store stays a leaf,
+  `net/http` out of its closure), `strings.Cut`-on-first-slash routing with `tile/entries/` ordered
+  before `tile/`, per-route `Cache-Control` keyed on the parsed `width` (`immutable := width==0`,
+  partials `no-cache`), and a strong content ETag + `If-None-Match` → 304. All body-equality / 404 /
+  partial-immutable / ETag asserts were mutation-proven non-vacuous and reverted. (Detail in git
+  history pre-2026-06-21.) The one durable trap to remember: the path-API `width` vocab (`0 == full`)
+  differs from the store column's `256 == full`, so map deliberately.
 
 ## Computed inclusion proof HTTP surface (`internal/proofserve/handler.go`)
 
@@ -163,6 +113,26 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   this route interprets nothing (no ISCC-ID codec, no `note.$schema`). Reviewer mutation-proved the tests
   non-vacuous: forcing the extractor to `eb.Entries[0]` FAILED the golden across the bundle boundary AND
   the binary routing test (`record-0` vs `record-2`), then reverted -> green.
+
+## verify-for-me JSON verdict (`/verify` + `serveVerify`)
+
+- **`/verify` INVERTS the other proof routes' status mapping: an id-shaped fault is a 200 verdict, never
+  4xx/5xx.** `serveVerify` composes the same machinery the other three routes use (FollowState ->
+  CheckpointAt -> SeqsForISCCID -> ReadEntryBundle -> InclusionProofFromTiles -> proof.VerifyInclusion),
+  but missing-id / unknown-id / no-accepted-checkpoint / leaf-out-of-tree / tile-not-mirrored ALL return
+  `200 {verified:false, reason}`. Non-200 is reserved for genuine infra faults ONLY (DB read error on
+  FollowState/CheckpointAt/SeqsForISCCID, a `CheckpointAt found==false` at the accepted size = a real
+  store inconsistency, or a non-`os.ErrNotExist` proof build/read error -> 500). This is the documented
+  weaker "caller trusts the verdict" path — remember it when adding tests for any future verify-for-me
+  surface (the bundle assembler is the stronger client-verifies path with different posture).
+- **Oracle gate APPLIES (RFC-6962 inclusion crypto) and is reviewer-mutation-proven non-vacuous.** The
+  verdict's `included`/`verified` is a REAL `proof.VerifyInclusion` against the persisted accepted root,
+  not a stub. Reviewer reverted-mutated `serveVerify` to ignore the Merkle result (`included := true`):
+  `TestVerifyInclusionIsNonVacuous` (corrupted accepted root) FAILS all three asserts, reverted -> green.
+  `hub_status` is the store-provable subset only (`frozen` if `FollowState.Frozen`, else `verified` —
+  ADR-0006: only signature-verified checkpoints advance `LastSize`); the richer
+  unverified/unresolvable/rotated statuses live in the in-memory metrics registry and are deliberately
+  NOT threaded into proofserve (a documented limitation, not a defect).
 
 ## CORS middleware (`internal/corsmw`)
 
