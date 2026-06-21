@@ -161,10 +161,10 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	// Mirror the hub's hash tiles and entry bundles into the local store
 	// (ADR-0005) BEFORE the self-consistency check, so the candidate-size tiles
 	// are present when the equivocation trigger builds its consistency proof. On a
-	// growing split view this is what makes ConsistencyProofFromTiles(prevSize,
-	// info.TreeSize) buildable: without the candidate tiles the proof hits a
-	// missing-tile error that checkConsistency swallows as a clean pass, and the
-	// hub silently advances to the inconsistent root (the closed critical gap). A
+	// growing split view this is what makes the prevSize->info.TreeSize consistency
+	// proof buildable: without the candidate tiles the proof hits a missing-tile
+	// error that CheckConsistency swallows as a clean pass, and the hub silently
+	// advances to the inconsistent root (the closed critical gap). A
 	// fetch/store fault here is a genuine transport error (NOT a violation): it is
 	// surfaced so accepted state does not advance, and the next poll re-fetches any
 	// missing coords via the idempotent upsert. On a violation the candidate tiles
@@ -383,36 +383,22 @@ func fsckMirror(ctx context.Context, st *store.Store, hubID int64, vkey, origin 
 	return nil
 }
 
-// checkConsistency runs the three RFC-6962 self-consistency triggers against the
-// prior accepted checkpoint for a hub. prevSize is FollowState.LastSize; the
-// CheckShrink/CheckFork/CheckEquivocation prevSize>0 guards mean a fresh-store zero
-// never trips a violation, so a never-advanced hub is always clean. The prior root
-// and raw bytes come from a checkpoints lookup at prevSize, since follow_state does
-// not persist the root; if no checkpoint is stored at that size (a hub that advanced
-// before this code existed), the root-dependent fork/equivocation checks are skipped
-// while the size-only shrink check still runs. On a true verdict it returns the
-// matching violation kind and the prior raw bytes (RawA evidence). The three
-// triggers are mutually exclusive by size — shrink is next<prev, fork is
-// next==prev, equivocation is the growing-pair next>prev case — so they are
-// evaluated in shrink → fork → equivocation order and the first true kind is used.
+// checkConsistency looks up the prior accepted evidence for a hub and delegates the
+// pure self-consistency verdict to logclient.CheckConsistency (ADR-0006). prevSize
+// is FollowState.LastSize; the prevSize == 0 early return skips a wasteful store read
+// at the fresh-store zero, where no violation is possible. The prior root and raw
+// bytes come from a checkpoints lookup at prevSize, since follow_state does not
+// persist the root; on a true verdict it returns the matching violation kind and the
+// prior raw bytes (RawA evidence) the freeze step preserves.
 //
-// Equivocation sources its RFC-6962 consistency proof from the LOCAL mirror only —
-// ConsistencyProofFromTiles over a store.SQLiteFetcher — and never re-hits the hub.
-// The roots compared are the prior ACCEPTED root at prevSize and the new
-// observation's root (info.Root), never the contradicting-evidence row (ADR-0006).
-//
-// Error vs. violation discipline (ADR-0006 "freeze, never crash"): CheckEquivocation
-// already turns a non-verifying proof into a (violated=true, err=nil) verdict. But
-// ConsistencyProofFromTiles returns a genuine Go error on a tile-fetch/parse fault —
-// most commonly a missing tile (a wrapped os.ErrNotExist), since production does not
-// yet mirror tiles (that is M2 work). Such an error is NOT an equivocation verdict:
-// freezing on a missing tile would be a false positive, and aborting the poll would
-// break the loop. So a proof-build error is treated as "cannot evaluate equivocation
-// this poll" — the equivocation branch is skipped (no violation, no crash) and the
-// poll proceeds. The branch only becomes load-bearing once M2 mirrors tiles. This
-// swallow is deliberately narrow: it suppresses only the proof-build error so a
-// missing tile cannot freeze a hub; a genuine st failure surfaces via CheckpointAt
-// above.
+// The pure shrink/fork/equivocation decision — branch order, the consistency-proof
+// build from mirrored tiles, and the narrow missing-tile swallow — lives in
+// logclient.CheckConsistency. The follower passes a store.SQLiteFetcher.ReadTile so
+// the equivocation proof is sourced from the LOCAL mirror, never re-hitting the hub,
+// and keeps logclient free of any store import (the dependency direction stays
+// follower -> logclient). A genuine st failure surfaces via CheckpointAt below; a
+// missing-tile / proof-build fault is swallowed inside CheckConsistency so a hub is
+// never frozen on a missing tile (M2 mirrors tiles).
 func checkConsistency(ctx context.Context, st *store.Store, hubID int64, prevSize uint64, info logclient.CheckpointInfo) (violated bool, kind logclient.ViolationKind, prevRaw []byte, err error) {
 	if prevSize == 0 {
 		return false, "", nil, nil
@@ -424,36 +410,9 @@ func checkConsistency(ctx context.Context, st *store.Store, hubID int64, prevSiz
 	var prevRoot [32]byte
 	copy(prevRoot[:], prevRootBytes)
 
-	shrink := logclient.CheckShrink(prevSize, info.TreeSize)
-	fork := prevFound && logclient.CheckFork(prevSize, prevRoot, info.TreeSize, info.Root)
-	switch {
-	case shrink:
-		return true, logclient.ViolationShrink, prevRaw, nil
-	case fork:
-		return true, logclient.ViolationFork, prevRaw, nil
-	default:
-		// Equivocation: the only growing-pair trigger (info.TreeSize > prevSize),
-		// reached only when the prior accepted checkpoint is on record (prevFound) so
-		// prevRoot is the real prior root, not a zero placeholder.
-		if !prevFound || info.TreeSize <= prevSize {
-			return false, "", nil, nil
-		}
-		fetcher := store.SQLiteFetcher{Store: st, HubID: hubID}
-		proofHashes, perr := logclient.ConsistencyProofFromTiles(ctx, fetcher.ReadTile, prevSize, info.TreeSize)
-		if perr != nil {
-			// Cannot build the proof from the mirror (most often: tiles not mirrored
-			// yet). Skip the equivocation branch — never freeze on a missing tile.
-			return false, "", nil, nil
-		}
-		eq, eerr := logclient.CheckEquivocation(prevSize, prevRoot, info.TreeSize, info.Root, proofHashes)
-		if eerr != nil {
-			return false, "", nil, fmt.Errorf("check equivocation at sizes %d->%d: %w", prevSize, info.TreeSize, eerr)
-		}
-		if eq {
-			return true, logclient.ViolationEquivocation, prevRaw, nil
-		}
-		return false, "", nil, nil
-	}
+	fetcher := store.SQLiteFetcher{Store: st, HubID: hubID}
+	violated, kind, err = logclient.CheckConsistency(ctx, fetcher.ReadTile, prevSize, prevRoot, prevFound, info)
+	return violated, kind, prevRaw, err
 }
 
 // freeze records the violation as irreplaceable evidence, persists the
