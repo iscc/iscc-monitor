@@ -7,6 +7,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/transparency-dev/merkle/proof"
+	"github.com/transparency-dev/merkle/rfc6962"
+	"github.com/transparency-dev/merkle/testonly"
+	"github.com/transparency-dev/tessera/api"
+
+	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/metrics"
 	"github.com/iscc/iscc-monitor/internal/registry"
 	"github.com/iscc/iscc-monitor/internal/store"
@@ -157,4 +165,118 @@ func TestMirrorRouter(t *testing.T) {
 			t.Errorf("status = %d, want 200", rec.Code)
 		}
 	})
+}
+
+// TestMirrorInclusionRoute proves the proof handler is mounted per hub on the same
+// combined mux as the static mirror: it seeds a verified 5-leaf mirror (tiles +
+// iscc_index + accepted checkpoint), then asserts GET /<origin>/log/inclusion?iscc_id=
+// <seeded> returns 200 JSON whose proof verifies against the tree root, while
+// /<origin>/log/checkpoint still reaches the static mirror and /metrics is untouched.
+// This is the binary-level routing proof the new proof mount does not break the
+// existing mirror routing.
+func TestMirrorInclusionRoute(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "inclusion.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	hub, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	// A small within-one-tile verified mirror: build the tree, mirror its level-0
+	// hash tile byte-accurately, index each leaf, and advance the accepted size.
+	const leaves = 5
+	tree := testonly.New(rfc6962.DefaultHasher)
+	data := make([][]byte, leaves)
+	for i := range data {
+		data[i] = []byte(string(rune('a' + i)))
+	}
+	tree.AppendData(data...)
+	size := tree.Size()
+
+	at := time.Unix(1700000000, 0)
+	nodes := make([][]byte, leaves)
+	for i := range nodes {
+		nodes[i] = tree.LeafHash(uint64(i))
+	}
+	raw, err := api.HashTile{Nodes: nodes}.MarshalText()
+	if err != nil {
+		t.Fatalf("HashTile.MarshalText: %v", err)
+	}
+	if err := st.RecordTile(ctx, hub, 0, 0, leaves, raw, at); err != nil {
+		t.Fatalf("RecordTile: %v", err)
+	}
+	if err := st.RecordProjections(ctx, []store.ProjectionRecord{
+		{HubID: hub, Seq: 2, IsccID: "ISCC:SEEDEDLEAF"},
+	}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+	if _, _, err := st.RecordCheckpoint(ctx, store.CheckpointRecord{
+		HubID: hub, TreeSize: size, Root: tree.Hash(), Raw: []byte("checkpoint"), ObservedAt: at,
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint: %v", err)
+	}
+	if err := st.AdvanceFollowState(ctx, hub, size); err != nil {
+		t.Fatalf("AdvanceFollowState: %v", err)
+	}
+
+	routes := []hubRoute{{HubID: hub, Origin: "sb0.iscc.id/log"}}
+	mux := buildMux(st, routes, metrics.New())
+
+	// GET /sb0.iscc.id/log/inclusion?iscc_id=<seeded> -> 200 JSON whose proof verifies.
+	t.Run("inclusion proof at origin prefix is 200 verifiable JSON", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id/log/inclusion?iscc_id=ISCC:SEEDEDLEAF", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+		}
+		var ev logclient.InclusionEvidence
+		if err := json.Unmarshal(rec.Body.Bytes(), &ev); err != nil {
+			t.Fatalf("decode evidence: %v", err)
+		}
+		if ev.LeafIndex != 2 || ev.TreeSize != size {
+			t.Fatalf("evidence leafIndex/treeSize = %d/%d, want 2/%d", ev.LeafIndex, ev.TreeSize, size)
+		}
+		got := decodeInclusionProof(t, ev.InclusionProof)
+		if err := proof.VerifyInclusion(rfc6962.DefaultHasher, 2, size, tree.LeafHash(2), got, tree.Hash()); err != nil {
+			t.Errorf("served proof does not verify: %v", err)
+		}
+	})
+
+	// GET /sb0.iscc.id/log/checkpoint -> 200: the static mirror still routes.
+	t.Run("checkpoint still reaches the static mirror", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id/log/checkpoint", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200", rec.Code)
+		}
+	})
+
+	// GET /metrics -> 200: the existing route is untouched on the shared mux.
+	t.Run("metrics still served on shared mux", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200", rec.Code)
+		}
+	})
+}
+
+// decodeInclusionProof base64-Std-decodes the served proof hashes (the same encoding
+// iscc_hub inclusion_evidence emits), so the test can re-verify them with merkle.
+func decodeInclusionProof(t *testing.T, enc []string) [][]byte {
+	t.Helper()
+	out := make([][]byte, len(enc))
+	for i, s := range enc {
+		b, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			t.Fatalf("decode proof[%d] %q: %v", i, s, err)
+		}
+		out[i] = b
+	}
+	return out
 }

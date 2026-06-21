@@ -29,6 +29,7 @@ import (
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/metrics"
 	"github.com/iscc/iscc-monitor/internal/metricshttp"
+	"github.com/iscc/iscc-monitor/internal/proofserve"
 	"github.com/iscc/iscc-monitor/internal/registry"
 	"github.com/iscc/iscc-monitor/internal/store"
 	"github.com/iscc/iscc-monitor/internal/tilesserve"
@@ -145,24 +146,40 @@ func buildMux(st *store.Store, routes []hubRoute, m *metrics.Registry) http.Hand
 }
 
 // mirrorHandler builds the per-hub mirror router: for each route it mounts a
-// tilesserve.Handler (reading that hub's BLOBs through a read-only
-// store.SQLiteFetcher) at the subtree prefix "/" + Origin + "/" (e.g.
-// /sb0.iscc.id/log/), stripping that prefix down to the single leading slash the
-// handler trims. A request to /<origin>/checkpoint therefore reaches the handler
-// as /checkpoint. The trailing slash makes http.ServeMux do subtree matching, so
-// all of /tile/... and /tile/entries/... under the prefix route to the same
-// handler; an unknown top-level prefix falls through to the mux's default 404. The
-// origin must be the full <domain>/log — a request missing the /log segment does
-// not match the prefix and 404s. All routes share the store's single open
-// connection (reads serialize on it, ADR-0005/0007); no second DB handle is
-// opened.
+// per-hub handler at the subtree prefix "/" + Origin + "/" (e.g. /sb0.iscc.id/log/),
+// stripping the prefix WITHOUT its trailing slash so the inner handler sees a
+// leading-slash path (/checkpoint, /inclusion). A request to /<origin>/checkpoint
+// therefore reaches the handler as /checkpoint. The mount prefix keeps its trailing
+// slash so http.ServeMux does subtree matching — all of /tile/... and /inclusion
+// under the prefix route to the same hub handler; an unknown top-level prefix falls
+// through to the mux's default 404. Stripping only down to the leading slash (not
+// past it) is load-bearing: the inner hubHandler is itself an http.ServeMux, which
+// 301-redirects a path missing its leading slash. The origin must be the full
+// <domain>/log — a request missing the /log segment does not match the prefix and
+// 404s. All routes share the store's single open connection (reads serialize on it,
+// ADR-0005/0007); no second DB handle is opened.
 func mirrorHandler(st *store.Store, routes []hubRoute) *http.ServeMux {
 	mux := http.NewServeMux()
 	for _, r := range routes {
 		prefix := "/" + r.Origin + "/"
-		h := tilesserve.Handler(store.SQLiteFetcher{Store: st, HubID: r.HubID})
-		mux.Handle(prefix, http.StripPrefix(prefix, h))
+		strip := "/" + r.Origin // leave the leading slash on the suffix
+		mux.Handle(prefix, http.StripPrefix(strip, hubHandler(st, r.HubID)))
 	}
+	return mux
+}
+
+// hubHandler combines one hub's computed-proof and static-mirror surfaces behind a
+// single per-hub mux: GET /inclusion reaches proofserve.Handler (the inclusion proof
+// computed from the local mirror), and every other path falls through to
+// tilesserve.Handler (the static BLOB mirror — /checkpoint, /tile/..., /tile/entries/
+// ...). It receives leading-slash paths (mirrorHandler strips only down to the
+// leading slash), which both inner handlers and this inner ServeMux require. Both
+// read that hub's BLOBs through the store's single open connection, so the proof
+// endpoint never re-hits the hub.
+func hubHandler(st *store.Store, hubID int64) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/", tilesserve.Handler(store.SQLiteFetcher{Store: st, HubID: hubID}))
+	mux.Handle("/inclusion", proofserve.Handler(st, hubID))
 	return mux
 }
 
