@@ -1,66 +1,47 @@
-## 2026-06-21 — Review of: Pure ISCC-IDv1 decoder (`internal/index`) — realm + 12-bit hub_id, golden-tested
+## 2026-06-21 — Validate the ISCC-IDv1 Length nibble in `internal/index.Decode`
 
-**Verdict:** NEEDS_WORK
-**Loop:** CONTINUE
+**Done:** Added a fail-closed guard to `Decode` that rejects any ISCC-IDv1 whose header Length nibble
+(`raw[1] & 0xF`) is nonzero, before the 64-bit body is read. This closes the `normal` issue
+"ISCC-IDv1 decoder accepts a nonzero Length nibble" — the trust-root gap where a non-canonical header
+like `MAIQAAAAAAAAAAAA` (byte1 = 0x11) was mis-read as a valid id and would route the wrong leaf.
 
-**Summary:** The advance adds a clean, pure, WASM-shareable `internal/index.Decode` that parses an
-ISCC-IDv1 string into `{Realm, HubID, Timestamp}`, with a golden-vector test grounded in real external
-ground truth (the hub's own `schema.py` example, independently re-decoded in Python). Scope, purity,
-and the codec arithmetic are all correct and mutation-proven non-vacuous. One confirmed fail-closed
-gap on this trust-root decoder — it does not validate the header **Length nibble** — keeps it from a
-clean PASS; the fix is one guard + one test for a follow-up advance.
+**Files changed:**
+- `internal/index/iscc.go`: added a `lengthV1 = 0` const next to `versionV1`, and a guard after the
+  Version check that returns a descriptive `fmt.Errorf` ("ISCC-IDv1 Length nibble %d is unsupported
+  (want %d): %q") when `raw[1] & 0xF != 0`. No change to the body-decode arithmetic. The file's
+  docstring already listed Length as a header nibble, so this makes the doc true.
+- `internal/index/iscc_test.go`: added `TestDecodeRejectsNonzeroLength`, mirroring
+  `TestDecodeWrongVersion`'s shape — builds the malformed header from raw bytes
+  (`{0x60,0x11,0,...}`), asserts non-nil error; also asserts the named literal `"MAIQAAAAAAAAAAAA"`
+  is rejected; then flips byte1 to `0x10` (Length 0) and asserts it decodes, proving the rejection is
+  specifically the Length check.
 
-**Verification:**
-- [x] `mise run check` green (build + vet + all 20 packages; `internal/index` ran uncached, all PASS).
-- [x] `gofmt -l .` empty.
-- [x] `go test -count=1 ./internal/index` passes (golden + round-trip + malformed + wrong-MainType +
-  wrong-Version + never-panics, all sub-tests PASS uncached).
-- [x] `go list -deps ./internal/index | grep -E 'net/http|database/sql|^net$|os/exec'` empty (pure leaf;
-  only `os` transitively via `fmt`, the allowed stdlib nuance).
-- [x] `GOOS=js GOARCH=wasm go build ./internal/index` succeeds (WASM-shareable).
-- [x] Golden vectors independently re-derived: `MAIGHFECJMOPMIAB` → realm 0 / hub_id 1 / ts
-  1751831876325218 µs (2025-07-06) and `MEIGHFECJMOPMIAC` → realm 1 / hub_id 2 / same ts, both via
-  Python `base64.b32decode` (a different codec than the Go impl). Source example `maighfecjmopmiab`
-  confirmed present in `cauldron/iscc-hub/iscc_hub/schema.py:140`; layout confirmed by `schema.py:65`.
-- [x] Mutation-proven non-vacuous: `timestampShift` 12→16, `hubIDMask` 0xFFF→0xFF, and realm-byte
-  swap each make a test FAIL; restored clean. The hard-coded golden test alone catches the shift
-  mutation; the hub_id-4095 round-trip catches the mask widening (its expected value is the literal
-  input, not a `Decode`-produced value, so it stays ground-truth-tied).
-- [x] Quality-gate integrity: no `nolint`/`t.Skip`/build-tag/swallowed-error/deleted-assertion in any
-  unpushed commit.
-- [ ] Fail-closed contract — **FAILS** for one header case: a nonzero Length nibble (e.g.
-  `MAIQAAAAAAAAAAAA`) is accepted instead of rejected (see Issues). Every *valid* ISCC-IDv1 still
-  decodes correctly; the gap is on malformed input only.
+**Verification:** `mise run check` → green (build + vet + all 20 packages; `internal/index` ran
+uncached PASS). Per-criterion:
+- [x] `mise run check` green; `gofmt -l .` empty.
+- [x] `go test -count=1 ./internal/index` passes (all existing sub-tests + new Length case).
+- [x] `Decode("MAIQAAAAAAAAAAAA")` returns non-nil error (asserted in test, byte1 = 0x11).
+- [x] Golden vectors unchanged: `MAIGHFECJMOPMIAB` → {Realm:0,HubID:1,Timestamp:1751831876325218},
+  `MEIGHFECJMOPMIAC` → {Realm:1,HubID:2,...} (both Length-0, byte1 = 0x10) still decode (golden +
+  round-trip tests PASS).
+- [x] `GOOS=js GOARCH=wasm go build ./internal/index` succeeds (no new imports; still WASM-shareable).
+- [x] Mutation proof: flipping `!= lengthV1` → `== lengthV1` makes `TestDecodeRejectsNonzeroLength`
+  (line 148, the `MAIQAAAAAAAAAAAA` assertion) plus golden/round-trip/version tests FAIL; restored
+  to `!=` and re-verified green before commit. The guard is non-vacuous.
 
-**Oracle gate:** correctly N/A — this is a pure decoder touching no signature-verify / RFC-6962 /
-Merkle-proof path; `go.mod`/`go.sum` byte-identical (stdlib only, no new deps). The gate re-engages at
-the proof-bundle assembler sub-step, as the prior Next noted.
-
-**Issues found:** ISCC-IDv1 decoder accepts a nonzero Length nibble — a fail-closed gap on the
-trust-root decoder (filed `normal` in issues.md). Not a correctness break on any valid id.
-
-**Codex second opinion:** One [P2] finding — "Reject nonzero ISCC-IDv1 length headers"
-(`internal/index/iscc.go:91-94`). **Confirmed real** and filed as a `normal` issue: I verified
-`MAIQAAAAAAAAAAAA` decodes to byte1 = 0x11 (Length nibble 1) and is accepted today, while both real
-golden vectors have Length nibble 0 (byte1 = 0x10), and the hub schema + ADR-0010 confirm the
-canonical 64-bit body needs Length 0. The decoder's own docstring lists Length as a header nibble it
-should validate, so this is a genuine fail-closed contract gap on the trust root. (No other Codex
-findings; the run exited 0 with exactly this one comment.)
-
-**Next:** Add the Length-nibble guard (`raw[1] & 0xF == 0`, reject otherwise) to `Decode` before it
-reads the body, plus a malformed golden case for `MAIQAAAAAAAAAAAA`; confirm both existing golden
-vectors still decode and that flipping the guard makes a test FAIL. This is a ≤1-file fix and should
-land before the 12-bit-`hub_id` → hub resolver (the next M-UI sub-step) consumes the decoder, since the
-resolver routes on the decoded `(realm, hub_id)`. After the guard, the resolver + `internal/registry`
-move to the `hubs/<network>.yaml` Hub-List (ADR-0010 §"Hub-id resolution adopts the iscc-hub
-Hub-List") is the next step, then the `/inclusion/{iscc_id}` HTML certificate + proof-bundle assembler
-(which re-engages the oracle gate).
+**Next:** The 12-bit `hub_id` → issuing-hub resolver. Per the prior review's Next and ADR-0010
+§"Hub-id resolution adopts the iscc-hub Hub-List", `internal/registry` moves from the domains-only
+realm file to the `hubs/<network>.yaml` Hub-List so the decoded `(realm, hub_id)` resolves to a hub
+domain. After that, the `/inclusion/{iscc_id}` HTML certificate page + downloadable proof-bundle
+assembler (which re-engages the oracle gate).
 
 **Notes:**
-- The decoder is otherwise solid: descriptive errors, defensive length checks before every slice
-  (`len(body)!=16`, `len(raw)<10`), no panics on junk (fuzz-style sub-test pins it). The Length fix is
-  the only thing standing between this and PASS.
-- Branch is ahead of `origin/develop` by the define-next + advance + this review commit; not pushed
-  (verdict NEEDS_WORK — the next cycle adds the guard first, then a clean PASS pushes).
-- The `internal/index` learnings detail file was created with the layout facts + the open Length gap +
-  the golden-grounding rule; pointer row added to the index.
+- Oracle gate correctly N/A: pure decoder, no signature-verify / RFC-6962 / Merkle path touched;
+  `go.mod`/`go.sum` unchanged (stdlib only, no new deps). Gate re-engages at the proof-bundle
+  assembler sub-step.
+- Stayed in scope: one non-test source file (`iscc.go`) plus its test. The `lengthV1` const is the
+  optional minimal polish `next.md` explicitly permitted; I did not rework the other header constants.
+- Note for review: when the guard is flipped for the mutation check, several *other* tests (golden,
+  round-trip, the version test's Length-0 sanity arm) also fail because they decode Length-0 vectors —
+  expected; the load-bearing failure is `TestDecodeRejectsNonzeroLength` itself, which fails on the
+  exact case it pins. All restored and green.

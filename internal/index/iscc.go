@@ -33,6 +33,10 @@ const mainTypeID = 6
 // versionV1 is the only ISCC-ID Version this package supports.
 const versionV1 = 1
 
+// lengthV1 is the only ISCC-IDv1 Length nibble: 0 denotes the canonical 64-bit
+// body. Any other value is a non-canonical header and is rejected.
+const lengthV1 = 0
+
 // hubIDMask isolates the low 12 bits of the body — the hub_id slot (0-4095).
 const hubIDMask = 0xFFF
 
@@ -91,6 +95,10 @@ func Decode(isccID string) (ISCCID, error) {
 	version := raw[1] >> 4
 	if version != versionV1 {
 		return ISCCID{}, fmt.Errorf("index: ISCC-ID Version nibble %d is unsupported (want %d): %q", version, versionV1, isccID)
+	}
+	length := raw[1] & 0xF
+	if length != lengthV1 {
+		return ISCCID{}, fmt.Errorf("index: ISCC-IDv1 Length nibble %d is unsupported (want %d): %q", length, lengthV1, isccID)
 	}
 	realm := raw[0] & 0xF
 	value := binary.BigEndian.Uint64(raw[2:10])

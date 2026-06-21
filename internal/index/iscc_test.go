@@ -137,6 +137,29 @@ func TestDecodeWrongVersion(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsNonzeroLength(t *testing.T) {
+	// A canonical ISCC-IDv1 has a Length nibble of 0 (a 64-bit body). Header
+	// MainType 6 (ID) and Version 1 but Length nibble 1 (byte0=0x60, byte1=0x11)
+	// is non-canonical and must be rejected before the body is read — otherwise
+	// bytes 2:10 are mis-interpreted as a 64-bit body and the wrong leaf is proved.
+	raw := []byte{0x60, 0x11, 0, 0, 0, 0, 0, 0, 0, 0}
+	s := iscBase32.EncodeToString(raw)
+	if _, err := Decode(s); err == nil {
+		t.Fatalf("Decode(%q) with Length nibble 1 returned nil error, want rejection", s)
+	}
+	// The issue/handoff name this literal explicitly: byte1 = 0x11.
+	if _, err := Decode("MAIQAAAAAAAAAAAA"); err == nil {
+		t.Fatal(`Decode("MAIQAAAAAAAAAAAA") returned nil error, want rejection`)
+	}
+	// Sanity: the same header with Length nibble 0 (0x10) must decode fine, proving
+	// the rejection above is specifically the Length check, not a length/codec issue.
+	raw[1] = 0x10
+	ok := iscBase32.EncodeToString(raw)
+	if _, err := Decode(ok); err != nil {
+		t.Fatalf("Decode(%q) with Length nibble 0 errored: %v", ok, err)
+	}
+}
+
 func TestDecodeNeverPanicsOnJunk(t *testing.T) {
 	// Cheap fuzz-style insurance: random/short/garbage input must error, never
 	// panic. Vary length around the 16-char boundary and across the alphabet.
