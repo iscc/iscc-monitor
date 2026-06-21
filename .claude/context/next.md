@@ -1,147 +1,112 @@
 # Next Work Package
 
-## Step: Hub dossier skeleton — `GET /<domain>` Evidence-Ledger page (status + coverage honesty), no-JS
+## Step: Reject reserved/empty realm domains before mounting the bare-domain dossier
 
 ## Advances
-M-UI (Evidence Ledger frontend) Verify criterion:
-
-> every SSR surface (`/` realm index, **hub dossier**, log-browser record list, single record,
-> certificate) returns `200 text/html`, embeds the DS tokens + self-hosted fonts with **no external CDN
-> URL in the body**, and is **complete with JavaScript disabled**… the coverage window
-> (`monitored_since` size + RFC-3339 time, or an explicit "coverage just started" / "no coverage yet")
-> shows for **every** hub on the index + **dossier** and a pre-coverage state never renders as a
-> guarantee (ADR-0001).
-
-This is the first of the still-open M-UI screens (state.md M-UI "Still open: **hub dossier**
-(`/<domain>`…)"). It is also the review handoff's explicit `**Next:**` ("Thread the same DS-token/font
-shell + Evidence-Ledger card pattern into the next SSR surface — the hub dossier (`/<domain>`)").
-Skeleton-first: this step lands the dossier *page + route* (masthead, five-status badge, coverage
-honesty); the categorically-distinct **frozen Exhibit** — which needs a NEW `store` violation read that
-does not yet exist — is the next sub-step (see `## Not In Scope`).
+Preempts the open **`normal` issue** "Bare-domain dossier mount collides with reserved exact routes
+(`/metrics`, `/healthz`) → startup panic" (review-confirmed by Codex P2 reproduction). It is the
+review handoff's explicit **Next:** ("Fix the reserved/empty-domain mount collision at the root
+before adding more dossier surface") and step 1 of state's "Next Milestone". This `normal` defect is
+review-blocking: it must clear before the **M-UI hub dossier** screen counts as met, so it preempts
+the remaining M-UI screen work (frozen Exhibit, record list, certificate). target.md §Done When
+requires "no open `critical` or `normal` issue in `issues.md`", so this issue also blocks DONE.
 
 ## Goal
-Stand up a per-hub dossier page at the bare `GET /<domain>` (no `/log`) — a new `internal/dossier` leaf
-that renders one hub's status badge + coverage window in the Evidence-Ledger card pattern, wired into
-the mux. It closes the bulk of the dossier Verify criterion (200 text/html, DS tokens + fonts, no-CDN,
-no-JS, coverage honesty for that hub) and gives the next iteration a place to add the frozen Exhibit.
+Stop the monitor from panicking at startup when a realm-document line is a single-label token that
+collides with a built-in exact mount (`metrics`, `healthz`, the `web.Prefix` segment `_ds`) or is
+empty. Fail loudly at registration with a named error so the operator learns the config is invalid,
+rather than crashing in `http.ServeMux.Handle` inside `buildMux`.
 
 ## Scope
-- **Create**:
-  - `/workspace/iscc-monitor/internal/dossier/handler.go` — handler + view-model + the
-    `StatusSource`/`overlayStatus`/`hubStatus`/`coverageTime` shape, ported from
-    `internal/dashboard/handler.go` (see Not In Scope on why the duplication is accepted here).
-- **Modify**:
-  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` — add `Domain string` to `hubRoute`, set it in
-    `registerHubs`, and mount `dossier.Handler(st, r.HubID, m)` at the exact path `"/" + r.Domain`
-    inside `mirrorHandler`'s per-route loop.
-- **Create (asset/template — not a Go source file, like the prior `.html` work)**:
-  - `/workspace/iscc-monitor/internal/dossier/dossier.html` — the Evidence-Ledger card template
-    (port the `<head>` DS-shell + page-scoped `<style>` from `internal/dashboard/dashboard.html` and
-    the single-hub card body from `internal/proofserve/browser.html`).
-- **Create (test — uncounted)**:
-  - `/workspace/iscc-monitor/internal/dossier/handler_test.go`
-- **Modify (doc — uncounted)**:
-  - `/workspace/iscc-monitor/CLAUDE.md` — add a `GET /<domain>` bullet to the route list (after the
-    `GET /` line, before `GET /<domain>/log/`).
+- **Modify**: `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` (add a reserved/empty-domain guard in
+  `registerHubs`)
+- **Modify (test — uncounted)**: `/workspace/iscc-monitor/cmd/iscc-monitor/main_test.go` (add a
+  reserved-name + empty-domain case driving `registerHubs`, plus a `buildMux`-no-longer-panics
+  assertion)
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/dashboard/handler.go` — the EXACT pattern to mirror: handler
-    shape, the `StatusSource` interface, `overlayStatus`/`hubStatus` precedence, `buildRows` +
-    `badge.Label` `!ok → label = status` fallback, `coverageTime`, render-into-`bytes.Buffer`-then-200,
-    the `template.Must(...).Parse(badge.Source)` init idiom.
-  - `/workspace/iscc-monitor/internal/dashboard/dashboard.html` — the DS `<head>` (two `<link>`s +
-    page-scoped `<style>` over `var(--*)` tokens, `.chrome` masthead).
-  - `/workspace/iscc-monitor/internal/proofserve/browser.html` + `browser_test.go` — the single-hub
-    `.ledger` card body layout + the `TestBrowserLinksTokensNoCDN` no-CDN assertion shape to copy.
-  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` lines 165-244 (`buildMux`/`mirrorHandler`/
-    `hubHandler`) + 246-271 (`registerHubs`, where `e.Domain` is available) + 42-50 (`hubRoute`).
-  - `/workspace/iscc-monitor/internal/store/hubs.go` (`ListHubs` / `HubSummary` / `CoverageInfo`) — the
-    read this handler filters by `hubID`; `HubSummary` carries `.HubID`, `.Domain`, `.Origin`,
-    `.Active`, `.LastSize`, `.Frozen`, `.Coverage`.
-  - `/workspace/iscc-monitor/.claude/context/learnings/dashboard.md`,
-    `/workspace/iscc-monitor/.claude/context/learnings/http-surface.md`,
-    `/workspace/iscc-monitor/.claude/context/learnings/badge.md`,
-    `/workspace/iscc-monitor/.claude/context/learnings/web.md` — Read all four before writing: overlay
-    precedence, the CSS-literal `data-status` trap, the badge `.Label` precompute, the
-    `noExternalCDN` / scheme-less-origin rule.
+  - `/workspace/iscc-monitor/.claude/context/learnings/cmd-monitor.md` — the panic mechanism, mount
+    ordering, and the bullet that already flagged this exact reserved-name class; the
+    `registerHubs` returns index-aligned `([]HubTarget, []hubRoute, error)` contract.
+  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go:169-208` — `buildMux` + `mirrorHandler`:
+    `mirrorHandler` registers `"/"+r.Domain` (205) BEFORE `buildMux` registers `/metrics` (172),
+    `/healthz` (173), and `web.Prefix` (174); the later built-in `mux.Handle("/metrics", …)` is what
+    panics on the duplicate pattern.
+  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go:266-282` — `registerHubs`, the testable choke
+    point that owns the `hubRoute` carrying `Domain`.
+  - `/workspace/iscc-monitor/internal/web/web.go:46-49` — `Prefix = "/_ds/"`, the source of the third
+    reserved name (segment `_ds`).
+  - `/workspace/iscc-monitor/internal/registry/registry.go:49-69` — `Parse` only rejects `://` and
+    `/`, so reserved bare tokens pass through as valid `Domain`s.
+  - `/workspace/iscc-monitor/cmd/iscc-monitor/main_test.go:32-105` — `TestRegisterHubs` (the table to
+    extend) and `:113-133` — `TestMirrorRouter` (the `buildMux` invocation shape to copy).
 
 ## Not In Scope
-- **The frozen Exhibit** (violation kind + detected-at + "do not trust new state", non-dismissable,
-  categorically-distinct markup, ADR-0006). It needs a NEW store read (`store.ListViolations(hubID)`
-  over the `violations` table — only `RecordViolation` exists today, no read) plus the Exhibit block in
-  the template. That is the next sub-step. This skeleton renders the `frozen` *status badge* honestly
-  via the overlay, but does NOT fabricate or render violation detail.
-- **De-duplicating `overlayStatus`/`hubStatus`** into `internal/badge` (the open `low` issue "Hub-status
-  overlay precedence is duplicated"). This step copies the dashboard/proofserve shape a third time
-  DELIBERATELY — consolidation is its own tracked step, not a prerequisite here. Do not refactor the two
-  existing copies in this step (it would balloon scope and touch unrelated packages).
-- **Any new `store` method, schema change, or write path.** Reuse `ListHubs` filtered by `hubID`.
-- **The record list / single record / certificate / proof-bundle / anchor panels** — later M-UI steps.
-- **ETag / Cache-Control / conditional-GET** on the dossier — not a Verify criterion (matches `/`).
+- Do NOT add the reserved-name guard to `internal/registry.Parse`. The reserved set
+  (`metrics`, `healthz`, `_ds`) is a property of the binary's HTTP mount layer, not of the realm
+  document format; the registry is a pure domain-list leaf (ADR-0009) and must not learn HTTP mount
+  names. Keep the guard in `cmd/iscc-monitor` where the mounts live.
+- Do NOT change the mount ordering in `buildMux`/`mirrorHandler` as the fix. Reordering to register
+  built-ins first would only turn the panic into a different collision (the dossier would then panic
+  on `/metrics`); rejecting the bad domain at the root is the correct fix.
+- Do NOT build the frozen **Exhibit**, `store.ListViolations`, the paginated record list, the
+  single-record page, or the certificate — those are later M-UI steps that resume after the dossier
+  is met.
+- Do NOT touch the dossier handler (`internal/dossier`) — the page passed its own Verify criteria;
+  only the wiring is broken.
+- Do NOT consolidate the 3x `overlayStatus` duplication or any other `low` issue.
 
 ## Implementation Notes
-- **Route / mux.** Add `Domain string` to `hubRoute` (main.go:48-50) and set it from `e.Domain` in
-  `registerHubs` alongside the existing `HubID`/`Origin`. In `mirrorHandler`'s per-route loop, ALSO
-  mount `mux.Handle("/"+r.Domain, dossier.Handler(st, r.HubID, m))` — the bare-domain path
-  (e.g. `/sb0.iscc.id`) is a distinct EXACT pattern, more-specific than and disjoint from the existing
-  `/<domain>/log/` subtree (`"/" + r.Origin + "/"`), so `http.ServeMux` keeps both. Because the mount is
-  an exact pattern (no trailing slash), the mux routes ONLY that path here — so the handler needs NO
-  in-handler path guard (unlike `dashboard`, which owns the catch-all `/`). Still guard
-  `r.Method != GET → 405`.
-- **Handler.** Mirror `dashboard.Handler` but for ONE hub: signature `Handler(st *store.Store, hubID
-  int64, statuses StatusSource) http.Handler`. On GET, call `st.ListHubs(ctx)`, find the `HubSummary`
-  whose `.HubID == hubID`. The binary always registers the hub before mounting, so a not-found is a real
-  store inconsistency → 500 (NOT a 404). Build a single view-model: status via `overlayStatus`, label via
-  `badge.Label` with the `!ok → label = status` fallback, coverage via the `coverageTime` helper. Render
-  into a `bytes.Buffer`, then `WriteHeader(200)` + `buf.WriteTo(w)` (post-200 write-drop). Use
-  `html/template` (auto-escape); parse page + `badge.Source` once at init via the
-  `template.Must(template.New("dossier").Parse(pageTemplate))` then `template.Must(t.Parse(badge.Source))`
-  idiom dashboard uses.
-- **Template.** Port `dossier.html` from `dashboard.html`'s `<head>` (the two `/_ds/tokens.css` +
-  `/_ds/fonts.css` `<link>`s as literals — templates can't read Go consts — the page-scoped `<style>`
-  over `var(--*)` tokens, the `.chrome` masthead) and `browser.html`'s single-card body: a
-  bordered/shadowed `.ledger` card with definition rows — Domain, Origin, Status
-  (`{{template "hubStatusBadge" .}}`), Coverage (the honest "size N at <RFC3339>" / "no coverage yet"
-  split), Observed size — plus a relative link to that hub's log browser (`/{{.Origin}}/`). No
-  `<table>`; no `http://`/`https://`/`cdn.`/`jsdelivr` in the body.
-- **CSS-literal trap (learnings/http-surface.md).** If the test asserts a NEGATIVE `data-status="X"` to
-  prove the overlay won, the badge color/tint selectors in the `<style>` MUST use the UNQUOTED CSS
-  attribute form (`[data-status=verified]`), not `dashboard.html`'s QUOTED `[data-status="verified"]` —
-  the quoted form emits that literal into the rendered `<style>` and falsely fails the negative assert.
-  Copy `browser.html`'s unquoted selectors. (If your test does not include a negative `data-status`
-  assert, either form is safe — but prefer the unquoted form for consistency with `browser.html`.)
-- **Coverage honesty (Correctness rule, ADR-0001).** Never render the observed `last_size` as a coverage
-  guarantee. `HasCoverage` false → literal "no coverage yet"; true → "size N at <RFC3339>". Copy
-  `coverageTime` verbatim ("" when `!c.Set || c.Since.IsZero()`).
-- **Purity / closure.** Depend on `internal/store` + `internal/badge` + the `StatusSource` *interface*
-  (NOT `internal/metrics`) — `*metrics.Registry` satisfies it structurally, exactly like dashboard.
-  Keep `net/http`/`internal/dossier` out of `store`/`badge` (they are leaves; do not introduce a cycle).
-- **`--status-error-bg` token caveat.** If you reuse the frozen-row tint, use it WITH the literal
-  fallback `var(--status-error-bg, rgba(245, 97, 105, 0.06))`, exactly as `dashboard.html` does — that
-  token is not defined in `internal/web/tokens.css` (dashboard.md rule; the badge silhouette+label carry
-  status grayscale-safe, hue is decorative).
-- **Oracle/conformance gate is N/A** here: pure HTML render of persisted store rows + the in-memory
-  overlay — no signature/RFC-6962/Merkle/did:web/fsck/proof path. go.mod/go.sum/schema must stay
+- **Where:** add the guard inside the `registerHubs` loop in `main.go` (266-282), before the
+  `UpsertHub` call. `registerHubs` already returns an `error` and is the choke point that builds the
+  `hubRoute{Domain}` the dossier mounts on — it is the right root because both the offending mount
+  (`"/"+r.Domain`) and the collision derive from it. Failing here short-circuits with the offending
+  domain named, matching the existing `fmt.Errorf("register hub %q: %w", e.Domain, err)` style.
+- **Reserved set:** define a small package-level slice/set of reserved mount segments —
+  `"metrics"`, `"healthz"`, and `strings.Trim(web.Prefix, "/")` (which evaluates to `_ds`; derive it
+  from the const, do NOT hardcode `"_ds"`, so it tracks `web.Prefix` if that ever changes). Add a
+  `"strings"` import if not already present.
+- **Empty case:** reject `strings.TrimSpace(e.Domain) == ""` too — an empty Domain mounts the exact
+  `/`, colliding with the dashboard's `/` mount; the handoff and learnings flag empty and reserved as
+  the same class.
+- **Error, not skip:** prefer failing loudly —
+  `return nil, nil, fmt.Errorf("register hub %q: domain is a reserved mount name", e.Domain)` — over a
+  silent skip, so a misconfigured realm surfaces at startup rather than silently dropping a hub.
+  State's Next-Milestone step 1: "prefer failing `registerHubs`/`registry.Parse` loudly over a silent
+  skip".
+- **Origin caveat:** the origin is `<domain>/log`, so a reserved bare domain `metrics` mounts the
+  mirror subtree at `/metrics/log/` (a *subtree*, no collision) but the dossier at `/metrics` (exact,
+  collides). Rejecting the domain covers both mounts uniformly — no need to special-case the mirror.
+- **Learnings rule (cmd-monitor.md):** the existing bullet documents this exact failure
+  (`pattern "/metrics" … conflicts`) and prescribes "reject/skip reserved + empty domains before
+  mounting … and a test must drive a reserved name through `buildMux`". The load-bearing invariant is
+  the single-listener / single-mux model — keep one listener, one mux; the fix lives purely at
+  registration.
+- **Oracle/conformance gate is N/A:** this is pure HTTP-wiring config validation; it touches no
+  signature, RFC-6962, Merkle, did:web, fsck, or proof path. go.mod/go.sum/schema must stay
   byte-identical. State this in the advance.
+- **Test seam:** extend `TestRegisterHubs` (or add a sibling `TestRegisterHubsRejectsReserved`) to
+  drive `registerHubs(ctx, st, []registry.Entry{{Domain:"metrics", BaseURL:"https://metrics"}})` and
+  assert a non-nil error — table-driven over `metrics`, `healthz`, `_ds`, and an empty/whitespace
+  domain. For the panic-no-longer regression, copy `TestMirrorRouter`'s `buildMux(st, routes,
+  metrics.New())` shape with `routes := []hubRoute{{HubID:1, Domain:"metrics", Origin:"metrics/log"}}`
+  and assert it does NOT panic — a bare call fails the test on panic, or use a `recover`-guarded
+  helper. The `issues.md` repro uses exactly that `hubRoute` shape.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -count=1 ./internal/dossier` passes (new package).
-- A new `internal/dossier/handler_test.go` HTTP-seam test (httptest, no socket) asserts, for a fixture
-  store with the hub registered: `GET /<domain>` returns `200` + `Content-Type: text/html`; the body
-  contains `href="/_ds/tokens.css"`, `href="/_ds/fonts.css"`, `var(--font-sans)`; the body contains the
-  hub's `Domain` and its `hubStatusBadge` markup (`class="hub-status-badge"` + the rendered label); the
-  body contains NO `<table>` and NO `http://`/`https://`/`cdn.`/`jsdelivr`.
-- Coverage-honesty assertion: a hub WITHOUT coverage renders "no coverage yet" (no fabricated
-  size+time); a hub WITH coverage renders its `size N at <RFC3339>` (mirror the dashboard fixture split).
-- A non-GET (`POST /<domain>`) returns `405`.
-- The new DS-shell / coverage assertion is mutation-proven non-vacuous (advance: temporarily break a
-  `<link>` href or the coverage branch → the assert FAILS; revert byte-identical, tree clean).
-- `go list -deps ./internal/store ./internal/badge | grep -E 'net/http|internal/dossier'` is empty
-  (store/badge stay leaves; no import cycle introduced).
-- `go test -count=1 ./cmd/iscc-monitor` passes — the new `hubRoute.Domain` + `/<domain>` mount does not
-  break `buildMux` routing (the `/<domain>/log/` subtree AND the `/<domain>` exact path both resolve).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass, `gofmt -l .`
+  empty).
+- `go test -run TestRegisterHubs ./cmd/iscc-monitor` passes, including the new reserved/empty cases:
+  `registerHubs` returns a non-nil error for a `Domain` of `metrics`, `healthz`, `_ds`, and `""`/`" "`.
+- A new test (e.g. `TestBuildMuxReservedDomainNoPanic`) constructs
+  `hubRoute{Domain:"metrics", Origin:"metrics/log"}` and asserts `buildMux` does NOT panic —
+  `go test -run TestBuildMux ./cmd/iscc-monitor` passes (this would have FAILED with a
+  `pattern "/metrics" … conflicts` panic before the fix; mutation-prove by temporarily removing the
+  guard → the test panics/fails, then restore).
+- `go test -run TestMirrorRouter ./cmd/iscc-monitor` still passes (the legitimate
+  `sb0.iscc.id`/`sb1.amlet.id` routing is unchanged).
+- The reserved-set check derives `_ds` from `web.Prefix` (no hardcoded `"_ds"` literal in the guard).
 
 ## Done When
-`GET /<domain>` serves a `200 text/html` Evidence-Ledger dossier page for the registered hub — DS tokens
-+ self-hosted fonts linked, no CDN URL in the body, no-JS, the five-status badge via the overlay, and an
-honest coverage window — with all Verification criteria passing and `mise run check` green.
+`registerHubs` rejects a reserved (`metrics`/`healthz`/`_ds`) or empty realm domain with a named
+error, `buildMux` no longer panics for such a config, and all Verification checks pass — clearing the
+open `normal` issue and unblocking the hub dossier as a met M-UI screen.
