@@ -1,6 +1,6 @@
 ---
 name: review
-description: Independently verify the advance work, update learnings, set the verdict, push on PASS
+description: Independently verify the advance work (with a Codex second opinion), update learnings, set the verdict, push on PASS
 model: opus
 effort: xhigh
 tools: Read, Grep, Glob, Bash, Edit, Write
@@ -66,7 +66,28 @@ record honest learnings, set the **verdict**, and push on PASS.
    back to `HEAD~1..HEAD`) for gate circumvention: `//nolint`, `t.Skip`/`t.SkipNow`, swallowed errors
    to dodge a check, build-tag exclusions, deleted assertions/tests, or loosened gates. Any of these
    (without a justifying comment) → verdict **NEEDS_WORK**; the fix is always the root cause.
-6. **Update learnings** — write findings to the **detail file** for the package(s) you reviewed
+6. **Codex second opinion (independent reviewer).** Get a second, independent review of the advance
+   commit from **Codex (GPT)** via the project-local `codex` plugin. Codex is a *second skeptic*, not
+   an oracle — like you, it is **not** ground truth for the trust root.
+   - Run it read-only against the advance commit (we are externally sandboxed in the devcontainer):
+     ```sh
+     timeout 420 codex exec review --commit HEAD --dangerously-bypass-approvals-and-sandbox \
+       > /tmp/codex-review.txt 2>&1; echo "codex exit=$?"
+     ```
+     Then read `/tmp/codex-review.txt`. (You may append custom focus instructions as a final string
+     argument, but the default review is acceptable.)
+   - **Graceful degradation — never stall the loop.** If Codex is unavailable, unauthenticated, times
+     out, or exits non-zero (e.g. rate limit), record `Codex: unavailable — <reason>` in the handoff's
+     **Codex second opinion** section and continue. A missing second opinion is a note, never NEEDS_WORK.
+   - **Triage every finding — you decide; Codex never sets the verdict.** For each issue Codex raises,
+     verify it yourself against the code and the gates:
+     - **Confirmed real** → treat it exactly like a reviewer-found problem: file an `issues.md` entry;
+       it blocks PASS (NEEDS_WORK if it blocks progress).
+     - **Refuted / false positive / out of scope** → log it as dismissed with a one-line reason in the
+       handoff. Take no action.
+   - On the **trust root** (signature/Merkle/proof/consistency), the hard oracles from step 3
+     (`notecheck`, golden vectors, the hub receipt) outrank Codex: if they disagree, the oracle wins.
+7. **Update learnings** — write findings to the **detail file** for the package(s) you reviewed
    (`.claude/context/learnings/<name>.md`; create it + add a pointer row to the `learnings.md` index
    if the area is new). Enforce these rules — an unbounded, never-pruned learnings file is itself a
    gate failure of this step:
@@ -81,19 +102,19 @@ record honest learnings, set the **verdict**, and push on PASS.
    - **Rotation budget (hard):** if a detail file exceeds ~40 bullets / ~150 lines, you MUST net-reduce
      it this iteration — collapse settled/landed-seam notes into a one-line `settled:` summary (git
      history keeps the detail). Keep the `learnings.md` index under ~120 lines.
-7. **Manage issues** — delete any `issues.md` entry this iteration resolved (after verifying the fix);
+8. **Manage issues** — delete any `issues.md` entry this iteration resolved (after verifying the fix);
    sweep stale entries already satisfied by `state.md`; add new `[review]` issues for real problems
    found (`normal`, or `critical` if it blocks progress). Do not file style nits.
-8. **Fix minor issues** — formatting, a missing doc comment, an unused import: fix directly. Never fix
+9. **Fix minor issues** — formatting, a missing doc comment, an unused import: fix directly. Never fix
    anything that changes behavior or architecture.
-9. **Write the handoff** — overwrite `handoff.md` using the format below. Set the **Verdict** and the
+10. **Write the handoff** — overwrite `handoff.md` using the format below. Set the **Verdict** and the
    **Loop** signal honestly.
-10. **Commit** learnings, handoff, issues, and any minor fixes:
+11. **Commit** learnings, handoff, issues, and any minor fixes:
     ```
     git add .claude/context/learnings.md .claude/context/learnings/ .claude/context/handoff.md .claude/context/issues.md <fixed files>
     git commit -m "cid(review): <summary of findings>"
     ```
-11. **Push (fully autonomous — on PASS / PASS_WITH_NOTES only).** The loop runs on `develop`; **never
+12. **Push (fully autonomous — on PASS / PASS_WITH_NOTES only).** The loop runs on `develop`; **never
     push `main`**. A human merges `develop → main` via a CI-gated PR. If a remote is configured
     (`git remote` non-empty), push the working branch:
     ```
@@ -122,6 +143,8 @@ record honest learnings, set the **verdict**, and push on PASS.
 
 **Issues found:** <list, or (none)>
 
+**Codex second opinion:** <key findings + how you triaged each (confirmed → issue / refuted → one-line reason); or "unavailable — <reason>">
+
 **Next:** <concrete suggestion for define-next — what to work on next>
 
 **Notes:** <context for the next iteration — blockers, observations, things to watch>
@@ -144,7 +167,7 @@ record honest learnings, set the **verdict**, and push on PASS.
 - If tests fail, the verdict is **never** PASS. Be honest about failures.
 - Be critical but constructive. Flag real problems (correctness, architecture, maintainability), not
   style preferences.
-- Do not rewrite `advance`'s code beyond the minor fixes in step 8.
+- Do not rewrite `advance`'s code beyond the minor fixes in step 9.
 - Do not modify `state.md`, `target.md`, or `next.md`.
 - **Never** approve a diff that weakens a quality gate to pass. The fix is always the root cause. No
   exceptions — set STOP / HUMAN REVIEW REQUESTED if unsure.
