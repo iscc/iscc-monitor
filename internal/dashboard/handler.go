@@ -1,20 +1,26 @@
 // Package dashboard serves the monitor's human-facing root page: a server-rendered
-// HTML list of every followed hub with its store-provable status (frozen /
-// verified / inactive) and coverage window (ADR-0001). It is a thin leaf in the
-// shape of internal/healthz and internal/metricshttp — a package-local handler
-// whose only internal dependency is internal/store, which it calls once per
-// request via ListHubs. The dashboard owns the HTML; cmd/iscc-monitor only wires
-// the handler at "/".
+// HTML list of every followed hub with its status and coverage window (ADR-0001).
+// It is a thin leaf in the shape of internal/healthz and internal/metricshttp — a
+// package-local handler whose only internal dependencies are internal/store (read
+// once per request via ListHubs) and internal/badge (the status partial). The
+// dashboard owns the HTML; cmd/iscc-monitor only wires the handler at "/".
 //
-// The status it shows is deliberately the store-provable subset only — the same
-// mapping internal/proofserve.hubStatus uses, extended with the realm-registry
-// "inactive" — so the page is golden-testable on a fixture store. The richer
-// in-memory statuses (unverified / unresolvable / rotated) live in the metrics
-// registry and are not threaded in here.
+// The status it shows overlays two sources so all five glossary statuses can
+// render honestly. The store proves the durable subset (inactive / frozen /
+// verified); only those survive a restart. The richer live verdicts
+// (unresolvable / unverified) come from the in-memory metrics registry via a
+// StatusSource — a fresher poll verdict than the store's accepted-checkpoint flag.
+// Precedence is load-bearing: inactive and frozen are harder, durable truths that
+// the live verdict must never override, so the overlay applies only when the store
+// status is verified.
+//
+// The dashboard depends on the StatusSource interface, not the concrete metrics
+// package, so it stays golden-testable with a fake and keeps a minimal closure
+// (bytes / embed / html/template / net/http / internal/store / internal/badge).
 //
 // The oracle/conformance gate is N/A: this is pure HTML rendering of persisted
-// store rows, touching no signature, RFC-6962, Merkle, did:web, fsck, or proof
-// path.
+// store rows plus an in-memory status overlay, touching no signature, RFC-6962,
+// Merkle, did:web, fsck, or proof path.
 package dashboard
 
 import (
@@ -64,6 +70,16 @@ type pageData struct {
 	Hubs []row
 }
 
+// StatusSource reports a hub's current in-memory glossary status by hub_id. It is
+// the read seam the dashboard uses to overlay the live poll verdict (the richer
+// unresolvable / unverified states the store cannot prove) onto the store-provable
+// subset. ok is false when no live status is recorded for the hub. *metrics.Registry
+// satisfies it structurally via its Status method; the dashboard takes the
+// interface, not the concrete package, so it never imports internal/metrics.
+type StatusSource interface {
+	Status(hubID int64) (string, bool)
+}
+
 // Handler returns an http.Handler that renders the hub-list dashboard at the exact
 // path "/". Only GET is served (any other method is 405); any path other than "/"
 // is 404 — http.ServeMux routes everything unmatched by a more-specific pattern
@@ -73,8 +89,10 @@ type pageData struct {
 // client never sees a half-rendered 200.
 //
 // st must be non-nil (the binary always passes the real store); there is no
-// nil-guard branch.
-func Handler(st *store.Store) http.Handler {
+// nil-guard branch. statuses is the in-memory status overlay (the metrics
+// registry); a nil statuses is tolerated and simply leaves every store-verified
+// hub showing "verified".
+func Handler(st *store.Store, statuses StatusSource) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -90,7 +108,7 @@ func Handler(st *store.Store) http.Handler {
 			return
 		}
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, pageData{Hubs: buildRows(summaries)}); err != nil {
+		if err := tmpl.Execute(&buf, pageData{Hubs: buildRows(summaries, statuses)}); err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -104,14 +122,15 @@ func Handler(st *store.Store) http.Handler {
 
 // buildRows maps the store summaries into template rows, precomputing each hub's
 // glossary status and its fixed-table badge label so the template carries no
-// logic. hubStatus only ever yields a store-provable status that is a valid
-// badge.Label key, so ok is always true here; the row still falls back to the
-// status string if badge.Label ever returns ok==false, so the page never renders
-// an unlabeled badge.
-func buildRows(summaries []store.HubSummary) []row {
+// logic. It overlays the in-memory status (overlayStatus) so all five glossary
+// statuses render honestly. The resulting status is always a valid badge.Label key
+// (the store subset and the registry both emit glossary keys), so ok is always
+// true here; the row still falls back to the status string if badge.Label ever
+// returns ok==false, so the page never renders an unlabeled badge.
+func buildRows(summaries []store.HubSummary, statuses StatusSource) []row {
 	rows := make([]row, 0, len(summaries))
 	for _, s := range summaries {
-		status := hubStatus(s)
+		status := overlayStatus(s, statuses)
 		label, ok := badge.Label(status)
 		if !ok {
 			label = status
@@ -128,6 +147,28 @@ func buildRows(summaries []store.HubSummary) []row {
 		})
 	}
 	return rows
+}
+
+// overlayStatus resolves a hub's displayed status from the store-provable subset
+// plus the in-memory live verdict. The store status wins for the durable, harder
+// truths: inactive (registry removed/paused) and frozen (a self-consistency
+// violation, ADR-0006 evidence that survives restart) must never be overridden by
+// a fresher in-memory verdict. Only when the store says "verified" does it consult
+// statuses: a hub with an old accepted checkpoint but a currently-failing did:web
+// resolve is honestly "unresolvable" now, and a current signature matching no
+// listed key is "unverified" — both fresher than the store's verified flag. Any
+// other live verdict (including verified itself, or no record) keeps "verified".
+func overlayStatus(s store.HubSummary, statuses StatusSource) string {
+	status := hubStatus(s)
+	if status != "verified" || statuses == nil {
+		return status
+	}
+	switch live, ok := statuses.Status(s.HubID); {
+	case ok && (live == "unresolvable" || live == "unverified"):
+		return live
+	default:
+		return status
+	}
 }
 
 // hubStatus maps a hub summary to the store-provable glossary status subset

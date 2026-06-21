@@ -49,8 +49,10 @@ after a container rebuild.
 After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSON / text / Prometheus;
 `GET /` now serves a minimal server-rendered HTML dashboard (no CSS/JS yet):
 
-- `GET /` — server-rendered HTML dashboard listing every realm hub with its store-provable status
-  (frozen / verified / inactive) and coverage window (`monitored_since` size + time, observed size).
+- `GET /` — server-rendered HTML dashboard listing every realm hub with its status badge and coverage
+  window (`monitored_since` size + time, observed size). The status overlays the store-provable subset
+  (frozen / verified / inactive) with the in-memory live verdict (unresolvable / unverified), so all
+  five glossary statuses render honestly.
 - `GET /healthz` — liveness + store readiness.
 - `GET /metrics` — Prometheus: hub status, last-observed, poll failures, violations.
 - `GET /<domain>/log/` — server-rendered HTML log browser: the mirrored accepted checkpoint

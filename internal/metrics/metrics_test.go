@@ -123,6 +123,36 @@ func TestSetHubStatusSingleActive(t *testing.T) {
 	}
 }
 
+// TestStatus asserts the Status accessor returns the hub's active status after
+// SetHubStatus, reflects a status transition, and reports a miss for an unknown
+// hub (and for a hub whose only sample has been superseded to 0).
+func TestStatus(t *testing.T) {
+	r := New()
+
+	// Unknown hub: no sample recorded at all.
+	if status, ok := r.Status(99); ok || status != "" {
+		t.Errorf("Status(99) = (%q, %v), want (\"\", false) for an unknown hub", status, ok)
+	}
+
+	// Hit: the single active status reads back.
+	r.SetHubStatus(5, "unresolvable")
+	if status, ok := r.Status(5); !ok || status != "unresolvable" {
+		t.Errorf("Status(5) = (%q, %v), want (\"unresolvable\", true)", status, ok)
+	}
+
+	// Transition: only the newest active status is returned, not the superseded one.
+	r.SetHubStatus(5, "unverified")
+	if status, ok := r.Status(5); !ok || status != "unverified" {
+		t.Errorf("after transition Status(5) = (%q, %v), want (\"unverified\", true)", status, ok)
+	}
+
+	// Another hub's status does not leak into the queried hub.
+	r.SetHubStatus(6, "frozen")
+	if status, ok := r.Status(5); !ok || status != "unverified" {
+		t.Errorf("Status(5) after writing hub 6 = (%q, %v), want (\"unverified\", true)", status, ok)
+	}
+}
+
 // TestEmptyRegistryRendersHeadersOnly asserts a fresh registry renders every
 // family's # HELP/# TYPE header with no sample lines and no panic.
 func TestEmptyRegistryRendersHeadersOnly(t *testing.T) {

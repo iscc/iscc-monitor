@@ -103,6 +103,24 @@ func (r *Registry) SetHubStatus(hubID int64, status string) {
 	r.hubStatus[statusKey{hubID: hubID, status: status}] = 1
 }
 
+// Status returns the hub's current active status (the single status whose gauge
+// sample reads 1) and ok reporting whether any status is recorded for the hub.
+// SetHubStatus keeps at most one active status per hub (it zeroes the others), so
+// the first sample reading 1 is unambiguous; a hub never written, or one whose
+// only samples read 0, yields ("", false). It is the read accessor the dashboard
+// consumes to overlay the in-memory glossary verdict onto the store-provable
+// status; it does not touch the Prometheus render path.
+func (r *Registry) Status(hubID int64) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for k, v := range r.hubStatus {
+		if k.hubID == hubID && v == 1 {
+			return k.status, true
+		}
+	}
+	return "", false
+}
+
 // SetLastObservedAt records the unix-seconds timestamp of the hub's most recent
 // observation. The value is supplied by the caller (the leaf never reads the
 // clock) so the series stays deterministic under test.

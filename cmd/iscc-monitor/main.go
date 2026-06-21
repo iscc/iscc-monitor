@@ -143,7 +143,10 @@ func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hu
 // store readiness), plus every hub's mirror subtree from mirrorHandler. The
 // dashboard mounts at the exact path "/" — http.ServeMux's most-specific match
 // means it never shadows /metrics, /healthz, or any /<domain>/log/ subtree (the
-// dashboard.Handler itself 404s any path other than "/"). Both /metrics and
+// dashboard.Handler itself 404s any path other than "/"). The same metrics
+// registry m the /metrics handler exposes is also passed to the dashboard as its
+// in-memory status overlay (the StatusSource), so the page can render the live
+// unresolvable / unverified verdicts the store cannot prove. Both /metrics and
 // /healthz mount as exact paths next to the per-hub mirror subtrees on the same
 // mux, so the single-listener invariant holds (no second socket). The assembled
 // mux is wrapped once in corsmw.Handler — the lone convergence point all public
@@ -154,7 +157,7 @@ func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hu
 // httptest.ResponseRecorder without binding a socket.
 func buildMux(st *store.Store, routes []hubRoute, m *metrics.Registry) http.Handler {
 	mux := mirrorHandler(st, routes)
-	mux.Handle("/", dashboard.Handler(st))
+	mux.Handle("/", dashboard.Handler(st, m))
 	mux.Handle("/metrics", metricshttp.Handler(m))
 	mux.Handle("/healthz", healthz.Handler(st))
 	return corsmw.Handler(mux)
