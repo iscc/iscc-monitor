@@ -27,6 +27,7 @@ import (
 	_ "embed"
 	"html/template"
 	"net/http"
+	"time"
 
 	"github.com/iscc/iscc-monitor/internal/badge"
 	"github.com/iscc/iscc-monitor/internal/store"
@@ -53,6 +54,12 @@ var tmpl = func() *template.Template {
 // coverage yet" split — the observed LastSize is never passed off as a coverage
 // guarantee, ADR-0001). The hubStatusBadge partial reads .Label directly, so the
 // view carries a precomputed Label from the badge package's single source of truth.
+//
+// Frozen gates the non-dismissable Exhibit panel (ADR-0006 irreplaceable evidence):
+// when true the template renders the categorically-distinct "do not trust new
+// state" panel listing each Violations row. A frozen hub may carry zero Violations
+// (defended against), so the panel header renders even with an empty list, never a
+// broken {{range}}.
 type dossierData struct {
 	Domain      string
 	Origin      string
@@ -62,6 +69,19 @@ type dossierData struct {
 	HasCoverage bool
 	SinceSize   uint64
 	SinceTime   string
+	Frozen      bool
+	Violations  []violationRow
+}
+
+// violationRow is one self-consistency violation rendered into the dossier Exhibit:
+// the trigger Kind ("fork"/"shrink"/"equivocation") and the DetectedAt instant as
+// RFC 3339, or the empty string when the detected time is unknown (the template
+// shows "time unknown" rather than a fabricated epoch — coverage-honesty discipline
+// applies to evidence timestamps too). The raw checkpoint bytes and proof are NOT
+// rendered here; they belong with the future proof-bundle surface.
+type violationRow struct {
+	Kind       string
+	DetectedAt string
 }
 
 // StatusSource reports a hub's current in-memory glossary status by hub_id. It is
@@ -109,8 +129,20 @@ func Handler(st *store.Store, hubID int64, statuses StatusSource) http.Handler {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		status := overlayStatus(summary, statuses)
+		// The Exhibit read stays off the hot path: only a frozen hub queries
+		// violations. frozen is store-provable and the overlay never downgrades it
+		// (it only promotes verified), so status == "frozen" is a safe gate.
+		var violations []store.Violation
+		if status == "frozen" {
+			violations, err = st.ListViolations(r.Context(), summary.HubID)
+			if err != nil {
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+		}
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, buildData(summary, statuses)); err != nil {
+		if err := tmpl.Execute(&buf, buildData(summary, status, violations)); err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -134,14 +166,15 @@ func findHub(summaries []store.HubSummary, hubID int64) (store.HubSummary, bool)
 	return store.HubSummary{}, false
 }
 
-// buildData maps one store summary into the dossier view-model, precomputing the
-// hub's overlaid glossary status and its fixed-table badge label so the template
+// buildData maps one store summary and its already-resolved glossary status into
+// the dossier view-model, precomputing the fixed-table badge label so the template
 // carries no status logic. The status is always a valid badge.Label key (the store
 // subset and the registry both emit glossary keys), so ok is always true here; the
 // view still falls back to the status string if badge.Label ever returns ok==false,
-// so the page never renders an unlabeled badge.
-func buildData(s store.HubSummary, statuses StatusSource) dossierData {
-	status := overlayStatus(s, statuses)
+// so the page never renders an unlabeled badge. The caller passes the violations
+// (empty for a non-frozen hub, which never reads them); buildData folds them into
+// the Exhibit rows and sets Frozen so the template renders the panel.
+func buildData(s store.HubSummary, status string, violations []store.Violation) dossierData {
 	label, ok := badge.Label(status)
 	if !ok {
 		label = status
@@ -155,7 +188,34 @@ func buildData(s store.HubSummary, statuses StatusSource) dossierData {
 		HasCoverage: s.Coverage.Set,
 		SinceSize:   s.Coverage.Size,
 		SinceTime:   coverageTime(s.Coverage),
+		Frozen:      status == "frozen",
+		Violations:  violationRows(violations),
 	}
+}
+
+// violationRows maps the store violation rows into the dossier render structs,
+// formatting each DetectedAt as RFC 3339 (or the empty string when the time is
+// unknown — the same idiom coverageTime uses, never a fabricated epoch). Only kind
+// and detected-at are surfaced; the raw evidence bytes are out of scope here.
+func violationRows(violations []store.Violation) []violationRow {
+	rows := make([]violationRow, 0, len(violations))
+	for _, v := range violations {
+		rows = append(rows, violationRow{
+			Kind:       v.Kind,
+			DetectedAt: violationTime(v.DetectedAt),
+		})
+	}
+	return rows
+}
+
+// violationTime renders a violation's detected-at as RFC 3339 UTC, or the empty
+// string when zero (a NULL detected_at). It mirrors coverageTime so evidence
+// timestamps follow the same honesty discipline as the coverage window.
+func violationTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format("2006-01-02T15:04:05Z")
 }
 
 // overlayStatus resolves a hub's displayed status from the store-provable subset

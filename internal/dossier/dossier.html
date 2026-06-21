@@ -171,6 +171,93 @@
       margin: var(--space-4) var(--space-1) 0;
     }
 
+    /* Exhibit — the non-dismissable evidence panel for a frozen hub (ADR-0006).
+       Deliberately markup-distinct from the status badge caution (ADR-0010): a
+       full bordered panel, not a recolored chip, with a left accent rail and a
+       loud heading. There is no dismiss/close control and no JS toggle — the
+       content is always present in the served HTML (no-JS baseline). The error
+       hue is decorative; the heading copy + the per-violation list carry the
+       meaning grayscale-safe. --status-error-bg / --status-error-text have a DS
+       token; the accent rail uses --status-error-text with no literal fallback. */
+    .exhibit {
+      margin-top: var(--space-8);
+      background: var(--surface-card);
+      border: var(--border-width) solid var(--status-error-text);
+      border-left-width: var(--space-1);
+      border-radius: var(--radius-xs);
+      box-shadow: var(--shadow-sm);
+      overflow: hidden;
+    }
+    .exhibit-head {
+      padding: var(--space-4) var(--space-5) var(--space-3);
+      background: var(--status-error-bg, rgba(245, 97, 105, 0.06));
+      border-bottom: var(--border-width) solid var(--border-subtle);
+    }
+    .exhibit-title {
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--status-error-text);
+      font-weight: var(--weight-bold);
+      margin: 0;
+    }
+    .exhibit-warn {
+      font-family: var(--font-sans);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-bold);
+      color: var(--status-error-text);
+      margin: var(--space-2) 0 0;
+    }
+    .exhibit-body {
+      padding: var(--space-4) var(--space-5) var(--space-5);
+    }
+    .exhibit-lede {
+      font-size: var(--text-xs);
+      color: var(--text-body);
+      line-height: var(--leading-normal);
+      margin: 0 0 var(--space-3);
+    }
+    .exhibit-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .exhibit-item {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: var(--space-4);
+      align-items: baseline;
+      padding: var(--space-2) 0;
+      border-bottom: var(--border-width) solid var(--border-subtle);
+    }
+    .exhibit-item:last-child {
+      border-bottom: 0;
+    }
+    .exhibit-kind {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--tracking-wide);
+      color: var(--status-error-text);
+      font-weight: var(--weight-bold);
+    }
+    .exhibit-when {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-body);
+      min-width: 0;
+    }
+    .exhibit-when-unknown {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-faint);
+    }
+    .exhibit-empty {
+      font-size: var(--text-xs);
+      color: var(--text-faint);
+    }
+
     /* The status badge partial (icon + label). Coloring is decorative and keyed
        on data-status; the silhouette + label remain the load-bearing,
        grayscale-safe status signal. The attribute values are unquoted (valid CSS
@@ -256,6 +343,34 @@
         </ul>
       </div>
     </div>
+
+    {{if .Frozen}}
+    <section class="exhibit">
+      <div class="exhibit-head">
+        <h2 class="exhibit-title">Exhibit — self-consistency violation</h2>
+        <p class="exhibit-warn">Do not trust new state from this hub.</p>
+      </div>
+      <div class="exhibit-body">
+        <p class="exhibit-lede">This hub rewrote its history against the monitor. Serving is frozen and the contradictory evidence below is preserved permanently; this freeze is not cleared automatically.</p>
+        {{if .Violations}}
+        <ul class="exhibit-list">
+          {{- range .Violations}}
+          <li class="exhibit-item">
+            <span class="exhibit-kind">{{.Kind}}</span>
+            {{- if .DetectedAt}}
+            <span class="exhibit-when">detected {{.DetectedAt}}</span>
+            {{- else}}
+            <span class="exhibit-when-unknown">detected at an unknown time</span>
+            {{- end}}
+          </li>
+          {{- end}}
+        </ul>
+        {{else}}
+        <p class="exhibit-empty">No itemized violation records are available, but the hub is frozen on a recorded self-consistency violation.</p>
+        {{end}}
+      </div>
+    </section>
+    {{end}}
 
     <p class="footnote">Every hub is mirrored and served regardless of status. Only verified checkpoints advance the monitor's accepted state, and guarantees hold only from coverage start — entries committed before the monitor began watching are mirrored but not vouched for.</p>
   </main>

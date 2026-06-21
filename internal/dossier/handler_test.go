@@ -60,6 +60,115 @@ func coveredHub(t *testing.T) (*store.Store, int64) {
 	return st, id
 }
 
+// frozenHub opens a fresh store, registers one hub, records two self-consistency
+// violations (a fork then a later shrink), and freezes it — the state the dossier's
+// non-dismissable Exhibit surfaces (ADR-0006). It returns the store and the hub_id.
+func frozenHub(t *testing.T) (*store.Store, int64) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "frozen.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	id, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	if _, err := st.RecordViolation(ctx, store.Violation{
+		HubID: id, Kind: "fork", RawA: []byte("a"), RawB: []byte("b"),
+		DetectedAt: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("RecordViolation fork: %v", err)
+	}
+	if _, err := st.RecordViolation(ctx, store.Violation{
+		HubID: id, Kind: "shrink", RawA: []byte("c"), RawB: []byte("d"),
+		DetectedAt: time.Unix(1_700_009_999, 0),
+	}); err != nil {
+		t.Fatalf("RecordViolation shrink: %v", err)
+	}
+	if err := st.Freeze(ctx, id); err != nil {
+		t.Fatalf("Freeze: %v", err)
+	}
+	return st, id
+}
+
+// TestDossierFrozenExhibit asserts a frozen hub's dossier renders the
+// categorically-distinct, non-dismissable Exhibit panel (ADR-0006): the distinct
+// panel class/heading, the literal "do not trust new state" notice, each violation
+// kind + its detected-at, AND the frozen badge silhouette marker. There must be no
+// dismiss/close control (non-dismissable: no <button>, no JS).
+func TestDossierFrozenExhibit(t *testing.T) {
+	st, id := frozenHub(t)
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// The frozen badge silhouette marker must be present (the five-status badge).
+	if !strings.Contains(body, "M8.2 3.3h7.6") {
+		t.Errorf("body missing the frozen badge silhouette marker\n%s", body)
+	}
+	// The Exhibit panel: its distinct class + heading, and the non-dismissable
+	// "do not trust new state" notice (case-insensitive on the copy).
+	for _, want := range []string{
+		`class="exhibit"`,
+		"Exhibit",
+		"self-consistency violation",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing Exhibit marker %q\n%s", want, body)
+		}
+	}
+	if !strings.Contains(strings.ToLower(body), "do not trust new state") {
+		t.Errorf("body missing the non-dismissable \"do not trust new state\" notice\n%s", body)
+	}
+	// Each violation's kind and detected-at (newest-first: shrink then fork).
+	for _, want := range []string{
+		"shrink", "fork",
+		"2023-11-14T22:13:20Z", // fork detected_at (earlier)
+		"2023-11-15T00:59:59Z", // shrink detected_at (later)
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing violation detail %q\n%s", want, body)
+		}
+	}
+	// Non-dismissable: no dismiss/close control and no JS. The HTML `hidden`
+	// attribute (`hidden>` / `hidden=`) is banned specifically — not the CSS
+	// `overflow: hidden`, which is a layout property, not a visibility toggle.
+	for _, banned := range []string{"<button", "<script", " hidden>", " hidden="} {
+		if strings.Contains(body, banned) {
+			t.Errorf("Exhibit must be non-dismissable; body contains %q\n%s", banned, body)
+		}
+	}
+}
+
+// TestDossierNoExhibitWhenNotFrozen asserts a verified (non-frozen) hub renders NO
+// Exhibit panel: neither the distinct panel class nor the "do not trust new state"
+// copy may appear, so the Exhibit is categorically reserved for the frozen state.
+func TestDossierNoExhibitWhenNotFrozen(t *testing.T) {
+	st, id := coveredHub(t)
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, banned := range []string{`class="exhibit"`} {
+		if strings.Contains(body, banned) {
+			t.Errorf("verified dossier renders an Exhibit marker %q\n%s", banned, body)
+		}
+	}
+	if strings.Contains(strings.ToLower(body), "do not trust new state") {
+		t.Errorf("verified dossier renders the frozen \"do not trust new state\" copy\n%s", body)
+	}
+}
+
 // TestDossierRendersCoveredHub asserts GET /<domain> returns 200 text/html with the
 // Evidence-Ledger DS shell, the hub's domain rendered through the hubStatusBadge
 // partial, the honest coverage window for a covered hub, and no <table> / CDN URL.

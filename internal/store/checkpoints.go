@@ -291,6 +291,46 @@ func (s *Store) RecordViolation(ctx context.Context, v Violation) (int64, error)
 	return id, nil
 }
 
+// ListViolations reads a hub's recorded self-consistency violations newest-first
+// (ORDER BY detected_at DESC, id DESC) for the dossier's permanent-evidence
+// Exhibit (ADR-0006). It is a pure leaf read returning plain []Violation: only
+// hub_id, kind, and detected_at are read (the markup renders kind + detected_at;
+// raw_a / raw_b / proof_json belong with the future proof-bundle surface and are
+// left zero here). detected_at is read through sql.NullInt64 — the unixOrNil write
+// inverse — so a NULL detected_at degrades to a zero time.Time. A hub with no
+// violations returns an empty slice and a nil error (an absent row is not an
+// error, mirroring the other reads).
+func (s *Store) ListViolations(ctx context.Context, hubID int64) ([]Violation, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT hub_id, kind, detected_at FROM violations WHERE hub_id = ? "+
+			"ORDER BY detected_at DESC, id DESC",
+		hubID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store.ListViolations: hub %d: %w", hubID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var violations []Violation
+	for rows.Next() {
+		var (
+			v        Violation
+			detected sql.NullInt64
+		)
+		if err := rows.Scan(&v.HubID, &v.Kind, &detected); err != nil {
+			return nil, fmt.Errorf("store.ListViolations: scan: %w", err)
+		}
+		if detected.Valid {
+			v.DetectedAt = time.Unix(detected.Int64, 0)
+		}
+		violations = append(violations, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.ListViolations: rows: %w", err)
+	}
+	return violations, nil
+}
+
 // Freeze sets frozen=1 on the hub's follow_state row, upserting so it works
 // whether or not a row exists yet (a hub can be frozen before its first verified
 // advance). It is the only writer of frozen; AdvanceFollowState deliberately omits

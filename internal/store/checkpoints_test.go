@@ -747,6 +747,109 @@ func TestRecordViolationZeroDetectedAtNull(t *testing.T) {
 	}
 }
 
+// TestListViolations confirms ListViolations returns a hub's violations
+// newest-first (ORDER BY detected_at DESC) with the correct kind and a non-zero
+// detected-at, scoped to the hub, and returns an empty result (no error) for a hub
+// with no violations — the read side of the frozen dossier's Exhibit (ADR-0006).
+func TestListViolations(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	otherID, err := s.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub other: %v", err)
+	}
+
+	// A hub with no violations returns an empty result and a nil error.
+	none, err := s.ListViolations(ctx, hubID)
+	if err != nil {
+		t.Fatalf("ListViolations (none): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("ListViolations for a hub with none = %v, want empty", none)
+	}
+
+	// Seed a fork, then a later shrink, plus a violation on a different hub the
+	// query must not return.
+	earlier := time.Unix(1_700_000_000, 0)
+	later := time.Unix(1_700_009_999, 0)
+	if _, err := s.RecordViolation(ctx, Violation{
+		HubID: hubID, Kind: "fork", RawA: []byte("a"), RawB: []byte("b"), DetectedAt: earlier,
+	}); err != nil {
+		t.Fatalf("RecordViolation fork: %v", err)
+	}
+	if _, err := s.RecordViolation(ctx, Violation{
+		HubID: hubID, Kind: "shrink", RawA: []byte("c"), RawB: []byte("d"), DetectedAt: later,
+	}); err != nil {
+		t.Fatalf("RecordViolation shrink: %v", err)
+	}
+	if _, err := s.RecordViolation(ctx, Violation{
+		HubID: otherID, Kind: "equivocation", RawA: []byte("e"), RawB: []byte("f"), DetectedAt: later,
+	}); err != nil {
+		t.Fatalf("RecordViolation other hub: %v", err)
+	}
+
+	got, err := s.ListViolations(ctx, hubID)
+	if err != nil {
+		t.Fatalf("ListViolations: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListViolations returned %d rows, want 2 (scoped to the hub)", len(got))
+	}
+	// Newest-first: the later shrink precedes the earlier fork.
+	if got[0].Kind != "shrink" || got[1].Kind != "fork" {
+		t.Errorf("kinds = [%q %q], want [shrink fork] (newest-first)", got[0].Kind, got[1].Kind)
+	}
+	if !got[0].DetectedAt.Equal(later) {
+		t.Errorf("got[0].DetectedAt = %v, want %v", got[0].DetectedAt, later)
+	}
+	if !got[1].DetectedAt.Equal(earlier) {
+		t.Errorf("got[1].DetectedAt = %v, want %v", got[1].DetectedAt, earlier)
+	}
+	for i, v := range got {
+		if v.HubID != hubID {
+			t.Errorf("got[%d].HubID = %d, want %d (scoped to the hub)", i, v.HubID, hubID)
+		}
+		if v.DetectedAt.IsZero() {
+			t.Errorf("got[%d].DetectedAt is zero, want a non-zero instant", i)
+		}
+	}
+}
+
+// TestListViolationsNullDetectedAt confirms a violation written with a zero
+// DetectedAt (stored as NULL) reads back as a zero time.Time, the unixOrNil inverse
+// — so the dossier can render "time unknown" rather than a fabricated epoch.
+func TestListViolationsNullDetectedAt(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	if _, err := s.RecordViolation(ctx, Violation{
+		HubID: hubID, Kind: "fork", RawA: []byte("a"), RawB: []byte("b"),
+		// DetectedAt left zero → NULL.
+	}); err != nil {
+		t.Fatalf("RecordViolation: %v", err)
+	}
+
+	got, err := s.ListViolations(ctx, hubID)
+	if err != nil {
+		t.Fatalf("ListViolations: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListViolations returned %d rows, want 1", len(got))
+	}
+	if !got[0].DetectedAt.IsZero() {
+		t.Errorf("DetectedAt = %v, want zero (NULL → zero time)", got[0].DetectedAt)
+	}
+}
+
 // TestFreezeNoPriorRow confirms Freeze on a hub with no follow_state row creates
 // the row with frozen=1 (a hub can be frozen before its first verified advance).
 func TestFreezeNoPriorRow(t *testing.T) {
