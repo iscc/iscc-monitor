@@ -18,11 +18,14 @@
 // The certificate grows clause by clause: §1 Subject, §2 Checkpoint (the accepted
 // (size, root) the subject position falls within), and §3 Inclusion Proof (the
 // RFC-6962 leaf→siblings→root chain recomputed from the hub's mirrored tiles) are
-// real for a certifiable id, alongside the documented honesty states. Clauses §4-§6
-// (signing key, Bitcoin anchor, record history) and the downloadable proof bundle
-// are gated placeholders that render nothing yet — later sub-steps grow the template
-// without rework. The Download-proof-bundle action renders as a disabled
-// placeholder.
+// real for a certifiable id, alongside the documented honesty states. §3 is gated on
+// !hub.Frozen: a frozen-after-fork hub can hold the contradictory tree's tiles in the
+// mirror while its accepted root is still the old one, so rendering a proof built from
+// those tiles under the accepted root's ✓ would be self-contradictory (the freeze gate
+// in buildData explains the full mechanism). Clauses §4-§6 (signing key, Bitcoin
+// anchor, record history) and the downloadable proof bundle are gated placeholders
+// that render nothing yet — later sub-steps grow the template without rework. The
+// Download-proof-bundle action renders as a disabled placeholder.
 //
 // Fail-closed / coverage-honesty discipline (ADR-0001): every "cannot certify"
 // branch — a malformed id, an id resolving to no listed slot, a resolved domain
@@ -88,11 +91,13 @@ type StatusSource interface {
 // certData is the certificate template view-model. For a certifiable id it
 // populates the §1 SUBJECT clause + subject banner (subject id, resolved hub
 // domain, subject position), the §2 CHECKPOINT clause (the accepted (size, root)),
-// and the §3 INCLUSION PROOF clause (the RFC-6962 sibling-hash chain that rebuilds
-// the accepted root from the subject leaf). It carries the honest "cannot certify"
-// state with a human-readable Reason; the subject id is echoed back even on a
-// not-found so the page names what was looked up. The §4-§6 HasClauseX flags are all
-// false so the template's gated clause placeholders render nothing yet.
+// and — for a non-frozen hub — the §3 INCLUSION PROOF clause (the RFC-6962
+// sibling-hash chain that rebuilds the accepted root from the subject leaf). §3 is
+// withheld for a frozen hub whose mirror may diverge from its accepted root (the
+// freeze gate in buildData). It carries the honest "cannot certify" state with a
+// human-readable Reason; the subject id is echoed back even on a not-found so the
+// page names what was looked up. The §4-§6 HasClauseX flags are all false so the
+// template's gated clause placeholders render nothing yet.
 type certData struct {
 	// IsccID is the subject id as supplied by the caller (echoed verbatim, never
 	// interpreted beyond the decode). It is shown even on a not-found.
@@ -130,14 +135,16 @@ type certData struct {
 	// CheckpointRoot and verify-for-me's writeEvidence so the strings are
 	// byte-identical across surfaces). Meaningful only when HasClause3; it may be
 	// empty (a single-leaf tree has an empty-but-valid proof), so HasClause3 gates on
-	// the proof building, not on len(ProofHashes) > 0.
+	// the proof building, not on len(ProofHashes) > 0. It is never populated for a
+	// frozen hub (the freeze gate withholds §3 entirely).
 	ProofHashes []string
 
 	// HasClause2..6 gate the later clauses (checkpoint, inclusion proof, signing
 	// key, Bitcoin anchor, record history). HasClause2 is set when the accepted
 	// checkpoint's (size, root) is read for a certifiable id; HasClause3 when the
-	// inclusion proof builds from the mirror; the rest are false so their gated
-	// placeholders render nothing; later sub-steps set them.
+	// inclusion proof builds from the mirror AND the hub is not frozen (a frozen hub's
+	// mirror may diverge from its accepted root, so §3 is withheld); the rest are false
+	// so their gated placeholders render nothing; later sub-steps set them.
 	HasClause2 bool
 	HasClause3 bool
 	HasClause4 bool
@@ -211,13 +218,16 @@ func Handler(hubList *registry.HubList, st *store.Store, statuses StatusSource) 
 //     CheckpointAt(hub.LastSize) and populate the §2 CHECKPOINT clause with the
 //     accepted (size, root). A DB error here is a 500; an absent row leaves §2
 //     unrendered (no fabricated checkpoint).
-//  7. For a certifiable id, recompute the RFC-6962 inclusion proof of the subject
-//     leaf (seqs[0]) against the accepted tree (hub.LastSize) from the hub's
-//     mirrored tiles (InclusionProofFromTiles over a SQLiteFetcher) and populate the
-//     §3 INCLUSION PROOF clause. A tile not yet mirrored (os.ErrNotExist) leaves §3
-//     unrendered (an honest gap, NOT a 500 — the certificate can decline a clause,
-//     unlike verify-for-me which has committed to serving a proof); any other build
-//     error is a 500 (buffered before any 200).
+//  7. For a certifiable, non-frozen id, recompute the RFC-6962 inclusion proof of
+//     the subject leaf (seqs[0]) against the accepted tree (hub.LastSize) from the
+//     hub's mirrored tiles (InclusionProofFromTiles over a SQLiteFetcher) and populate
+//     the §3 INCLUSION PROOF clause. §3 is gated on !hub.Frozen: a frozen hub's mirror
+//     can diverge from its accepted root (the frozen path ingests contradictory tiles
+//     but skips AdvanceAccepted/fsckMirror), so it never renders §3 — see the
+//     freeze-gate paragraph at the §3 branch. A tile not yet mirrored (os.ErrNotExist)
+//     leaves §3 unrendered (an honest gap, NOT a 500 — the certificate can decline a
+//     clause, unlike verify-for-me which has committed to serving a proof); any other
+//     build error is a 500 (buffered before any 200).
 func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawID string) (certData, int) {
 	if rawID == "" {
 		return certData{Reason: "no ISCC-ID supplied"}, http.StatusOK
@@ -321,6 +331,29 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 	// leaf is in range. A valid proof can be empty (a single-leaf tree), so HasClause3
 	// gates on the build SUCCEEDING, not on the proof length. §3 also renders the
 	// accepted root chip (data.CheckpointRoot), so it is meaningful only alongside §2.
+	//
+	// Freeze gate (the !hub.Frozen guard below): a frozen hub NEVER renders §3, even
+	// when the proof builds. InclusionProofFromTiles is a pure builder — it folds
+	// whatever tile bytes the mirror returns and never checks the proof rebuilds the
+	// accepted root. For a non-frozen verified hub that is safe by construction: the
+	// follower's verified-advance path runs AdvanceAccepted then fsckMirror
+	// (follower.go:221,241), and fsckMirror rebuilds the accepted root from the mirror
+	// and freezes on any divergence, so a non-frozen hub's mirror is fsck-consistent
+	// with its accepted root. The frozen path is the SOLE divergence window: the
+	// follower ingests the contradictory candidate tiles (follower.go:174) BEFORE the
+	// freeze check and returns early (follower.go:204-207) BEFORE
+	// AdvanceAccepted/fsckMirror, so a frozen-after-fork hub can hold the contradictory
+	// tree's tiles in the mirror while CheckpointAt(LastSize) still returns the OLD
+	// accepted root. Building §3 from those tiles would render a sibling chain under a
+	// `root … ✓` the siblings do not rebuild — a self-contradictory certificate that
+	// violates the Proof-bundle / Verifiable-cache contract (a client verifies the
+	// artifact itself) and ADR-0006 (freeze preserves evidence, never advances accepted
+	// state). Gating on !hub.Frozen is therefore the COMPLETE fix, not a partial one:
+	// it covers the only window where mirror and accepted root can diverge. §1/§2 are
+	// unaffected (they read the irreplaceable accepted-checkpoint record via
+	// CheckpointAt, which a fork cannot corrupt), so only §3 — the mirror-tile read —
+	// gets the gate. Fail-closed (ADR-0001): when in doubt about the mirror, decline
+	// the clause.
 	f := store.SQLiteFetcher{Store: st, HubID: hub.HubID}
 	proof, err := logclient.InclusionProofFromTiles(r.Context(), f.ReadTile, data.Position, hub.LastSize)
 	if err != nil {
@@ -333,8 +366,12 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 		if !errors.Is(err, os.ErrNotExist) {
 			return certData{}, http.StatusInternalServerError
 		}
-	} else if data.HasClause2 {
-		// §3's root chip is the accepted root from §2, so render §3 only when §2 holds.
+	} else if data.HasClause2 && !hub.Frozen {
+		// §3's root chip is the accepted root from §2, so render §3 only when §2 holds;
+		// and never for a frozen hub, whose mirror may diverge from the accepted root
+		// (see the freeze-gate paragraph above). A frozen hub simply takes neither
+		// branch: the proof may still build (the tiles are present), but it is never
+		// rendered.
 		hashes := make([]string, len(proof))
 		for i, h := range proof {
 			hashes[i] = base64.StdEncoding.EncodeToString(h)

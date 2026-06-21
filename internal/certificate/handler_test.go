@@ -464,13 +464,19 @@ func treeNodeHash(t *testing.T, tree *testonly.Tree, treeLevel, treeIndex, size 
 // internally-consistent RFC-6962 tree of `leaves` records (merkle's testonly.Tree
 // as the single source of truth), ingests every hash tile a complete mirror of that
 // tree needs (the level-0 leaf-hash rows plus any upper levels, each node recomputed
-// from the tree so the served tiles are byte-accurate), seeds the accepted
-// checkpoint with the tree's REAL root at that size (AdvanceAccepted sets LastSize),
-// and indexes the golden leaf at `seq` under the production ISCC:-prefixed form. The
-// returned tree is the independent prover the §3 test cross-checks against. Pick a
-// `leaves`/`seq` that yields a multi-hash proof (e.g. a 5-leaf tree, leaf 0) so the
-// proof is substantive, never empty.
-func fixtureStoreTiled(t *testing.T, indexDomain, indexedID string, seq uint64, leaves int) (*store.Store, *testonly.Tree) {
+// from the tree so the served tiles are byte-accurate), accepts the checkpoint at
+// `acceptedRoot` (AdvanceAccepted sets LastSize), optionally freezes the hub, and
+// indexes the golden leaf at `seq` under the production ISCC:-prefixed form. The
+// returned tree is the independent prover the §3 test cross-checks against.
+//
+// acceptedRoot lets a caller deliberately make the mirror and the accepted root
+// belong to DIFFERENT trees (the frozen-after-fork case): pass nil for the clean,
+// consistent fixture (the accepted root defaults to the mirrored tree's own
+// tree.Hash()), or a divergent root (a second tree's hash) to model a hub whose
+// mirrored tiles do not rebuild the accepted root. freeze runs Freeze so ListHubs
+// reports Frozen == true. Pick a `leaves`/`seq` that yields a multi-hash proof (e.g.
+// a 5-leaf tree, leaf 0) so the proof is substantive, never empty.
+func fixtureStoreTiled(t *testing.T, indexDomain, indexedID string, seq uint64, leaves int, acceptedRoot []byte, freeze bool) (*store.Store, *testonly.Tree) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -479,6 +485,9 @@ func fixtureStoreTiled(t *testing.T, indexDomain, indexedID string, seq uint64, 
 		tree.AppendData([]byte(fmt.Sprintf("leaf-%d", i)))
 	}
 	size := tree.Size()
+	if acceptedRoot == nil {
+		acceptedRoot = tree.Hash() // clean fixture: mirror and accepted root agree
+	}
 
 	st, err := store.Open(filepath.Join(t.TempDir(), "certificate-tiled.db"))
 	if err != nil {
@@ -528,15 +537,21 @@ func fixtureStoreTiled(t *testing.T, indexDomain, indexedID string, seq uint64, 
 	}); err != nil {
 		t.Fatalf("RecordProjections: %v", err)
 	}
-	// Accept the checkpoint at the tree's REAL root (the same root the §3 proof must
-	// rebuild to), so the accepted-tree cap certifies the leaf and §2 renders the root.
+	// Accept the checkpoint at acceptedRoot (tree.Hash() for the clean fixture, a
+	// divergent root for the frozen-after-fork case), so the accepted-tree cap
+	// certifies the leaf and §2 renders that root. AdvanceAccepted sets LastSize.
 	if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
 		HubID:    target,
 		TreeSize: size,
-		Root:     tree.Hash(),
+		Root:     acceptedRoot,
 		Raw:      []byte("raw"),
 	}); err != nil {
 		t.Fatalf("AdvanceAccepted: %v", err)
+	}
+	if freeze {
+		if err := st.Freeze(ctx, target); err != nil {
+			t.Fatalf("Freeze: %v", err)
+		}
 	}
 	return st, tree
 }
@@ -551,7 +566,9 @@ func fixtureStoreTiled(t *testing.T, indexDomain, indexedID string, seq uint64, 
 func TestCertificateInclusionProof(t *testing.T) {
 	const seq = 0
 	const leaves = 5
-	st, tree := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves)
+	// Clean, non-frozen hub: the mirror and the accepted root are the SAME tree, so
+	// §3 renders the proof that rebuilds the accepted root.
+	st, tree := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false)
 	h := Handler(testnetHubList(), st, nil)
 
 	rec := get(t, h, goldenID)
@@ -619,5 +636,66 @@ func TestCertificateInclusionProofTileGap(t *testing.T) {
 	// §3 must be ABSENT — the tile gap is honest, not a fabricated proof.
 	if strings.Contains(body, "§3 INCLUSION PROOF") {
 		t.Errorf("a tile-less fixture rendered a §3 INCLUSION PROOF clause\n%s", body)
+	}
+}
+
+// TestCertificateInclusionProofFrozen asserts the freeze gate: a FROZEN hub whose
+// mirrored tiles disagree with its accepted root (the frozen-after-fork case — the
+// follower ingested the contradictory tree's tiles before the freeze but never
+// advanced the accepted root) renders §1 SUBJECT + §2 CHECKPOINT but NO §3 INCLUSION
+// PROOF. The proof would still BUILD from the contradictory tiles, but it does not
+// rebuild the accepted root, so rendering it under the accepted-root ✓ would be a
+// self-contradictory certificate (ADR-0006 / the Proof-bundle contract). The fixture
+// mirrors tree A's tiles but accepts tree B's root (a different 5-leaf tree of the
+// same size), then freezes, so ListHubs reports Frozen == true.
+//
+// Mutation (non-vacuity, review reproduces it): reverting the `&& !hub.Frozen` guard
+// in buildData's §3 branch to `} else if data.HasClause2 {` makes this test FAIL —
+// the frozen hub would then render §3 INCLUSION PROOF again (the proof builds from the
+// present tiles).
+func TestCertificateInclusionProofFrozen(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+
+	// Tree B is a DIFFERENT 5-leaf tree (distinct leaf bytes), so its root differs
+	// from the mirrored tree A's root — the accepted root the §3 proof would have to
+	// rebuild does not match the mirrored (tree-A) tiles (the contradictory-tile case).
+	treeB := testonly.New(rfc6962.DefaultHasher)
+	for i := range leaves {
+		treeB.AppendData([]byte(fmt.Sprintf("forked-leaf-%d", i)))
+	}
+	if treeB.Size() != uint64(leaves) {
+		t.Fatalf("treeB.Size() = %d, want %d", treeB.Size(), leaves)
+	}
+
+	st, treeA := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, treeB.Hash(), true)
+	// Sanity: the two trees genuinely disagree, so this is a real contradictory-tile
+	// fixture (not an accidental same-root coincidence).
+	if string(treeA.Hash()) == string(treeB.Hash()) {
+		t.Fatalf("treeA and treeB share a root; the fixture is not contradictory")
+	}
+	h := Handler(testnetHubList(), st, nil)
+
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got, want := rec.Header().Get("Content-Type"), "text/html; charset=utf-8"; got != want {
+		t.Errorf("Content-Type = %q, want %q", got, want)
+	}
+	body := rec.Body.String()
+
+	// §1 + §2 still render — they read the irreplaceable accepted-checkpoint record,
+	// which a fork cannot corrupt, so the page is NOT blank.
+	for _, want := range []string{"§1 SUBJECT", "§2 CHECKPOINT"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("frozen certificate missing %q (the page must still render §1+§2)\n%s", want, body)
+		}
+	}
+	// §3 must be ABSENT — a frozen hub's mirror may diverge from its accepted root, so
+	// the certificate declines the inclusion-proof clause rather than render a proof
+	// that does not rebuild the accepted root.
+	if strings.Contains(body, "§3 INCLUSION PROOF") {
+		t.Errorf("a frozen-after-fork hub rendered a §3 INCLUSION PROOF clause\n%s", body)
 	}
 }
