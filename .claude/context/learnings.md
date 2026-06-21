@@ -668,6 +668,10 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
 
 ## Equivocation trigger wiring (`internal/follower/checkConsistency`)
 
+- **RELOCATED (a90d884): the shrink→fork→equivocation `switch` + proof build + missing-tile swallow
+  now live in `logclient.CheckConsistency`** — see the "Self-consistency verdict" section below. The
+  bullets here describe the original in-follower wiring; the branch order, guards, and error-discipline
+  are byte-identical after the move, so they still document the *logic*, just at its new home.
 - **The third trigger lands in `checkConsistency`'s `switch` default (the growing-pair case).** Order
   is shrink (`next<prev`) → fork (`next==prev`) → equivocation (`next>prev`); the default-branch guard
   `if !prevFound || info.TreeSize <= prevSize` is load-bearing, NOT redundant: fork is `prevFound`-guarded,
@@ -1298,3 +1302,31 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   stdlib only (`go list -deps` has no `store`/`logclient`); go.mod/go.sum/schema byte-identical; oracle
   gate correctly N/A (pure HTTP header wiring, no signature/RFC-6962/Merkle/did:web/fsck/proof path).
   `corsmw` is NOT on the WASM-shared verifier path (that rides `internal/didweb`) but stays stdlib-only.
+
+## Self-consistency verdict (`internal/logclient/checkconsistency.go`)
+
+- **`CheckConsistency(ctx, fetch TileFetcher, prevSize uint64, prevRoot [rootBytes]byte, prevFound
+  bool, info CheckpointInfo) (violated, kind, err)` is the single pure home for the shrink→fork→
+  equivocation verdict (ADR-0006), composing the three triggers in `consistency.go` + the proof source
+  in `proofbuilder.go`.** It is a byte-faithful port of the old `follower.checkConsistency` *minus* the
+  `st.CheckpointAt` store read: same branch order, same `prevFound &&` fork guard, same
+  `!prevFound || info.TreeSize <= prevSize` equivocation guard, same `(false,"",nil)` missing-tile
+  swallow, same `eerr`-wraps path. Imports are exactly `context`+`fmt`; `go list -deps
+  ./internal/logclient | grep internal/store` is empty (dependency direction stays follower →
+  logclient; the follower passes `SQLiteFetcher.ReadTile` in). The follower's `checkConsistency` keeps
+  ONLY the prior-evidence store lookup + a `prevSize==0` early return (wasteful-read skip; duplicated
+  by design with the pure guard so the function is total on its own).
+- **The unconditional `prevRaw` return from the follower delegate is invisible to `PollHub` — verified.**
+  The old follower returned `prevRaw` only on a true verdict and `nil` on clean/missing-tile paths;
+  the refactored follower returns `prevRaw` from the store lookup regardless. But `PollHub`
+  (follower.go:180-194) checks `err` before `violated` and consumes `prevRaw` ONLY inside `if violated`,
+  so the discarded-on-clean-path bytes never reach `freeze`. Semantically identical, no contract change.
+- **Oracle gate APPLIES (composes RFC-6962 consistency-proof verification) and is reviewer-mutation-
+  proven non-vacuous two ways (reverted):** (1) suppress the `eq → (true, ViolationEquivocation)` return
+  → the growing-split-view case FAILS (`violated=false`/`kind=""`); (2) `fork := false` → the fork case
+  FAILS. The table builds merkle ground truth via `testonly.Tree` served through `tileFetcherFor` (the
+  same fixture as `proofbuilder_test.go`/`inclusioncheck_test.go`); prover (`ConsistencyProof`) and
+  composed verifier (`CheckConsistency`→`CheckEquivocation`→`VerifyConsistency`) are independent paths,
+  so the cross-check is not a tautology. `notecheck` (in `mise run check`'s `cmd/notecheck`) green;
+  `derive_vkey.py` reproduces both vectors (`40b74463`/`22b08f3e`) — N/A here (no signature/did:web
+  path touched) but confirmed unmoved. go.mod/go.sum byte-identical; didweb WASM seam still builds.

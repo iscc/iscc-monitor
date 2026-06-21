@@ -1,61 +1,64 @@
-## 2026-06-21 — Collapse the self-consistency decision into `logclient.CheckConsistency`
+## 2026-06-21 — Review of: Collapse the self-consistency decision into `logclient.CheckConsistency`
 
-**Done:** Moved the load-bearing shrink/fork/equivocation branch order, the consistency-proof build
-from mirrored tiles, and the narrow missing-tile swallow out of the follower into one pure,
-table-testable `logclient.CheckConsistency(ctx, fetch, prevSize, prevRoot, prevFound, info) ->
-(violated, kind, err)`. The follower's `checkConsistency` now only does the `CheckpointAt(prevSize)`
-store read + `prevRaw` evidence bookkeeping and delegates the verdict; `PollHub` is unchanged.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/logclient/checkconsistency.go` (new): `CheckConsistency` composes
-  `CheckShrink → CheckFork → ConsistencyProofFromTiles → CheckEquivocation` with the exact ported
-  branch order from the old follower body (prevSize==0 early return, shrink/fork precompute with the
-  `prevFound &&` fork guard, the `!prevFound || info.TreeSize <= prevSize` equivocation guard, the
-  proof-build-error swallow to `(false, "", nil)`, and the `eerr`-wraps-to-Go-error path). No `store`
-  import — takes the `TileFetcher` closure.
-- `internal/follower/follower.go`: `checkConsistency` body replaced with the store lookup + delegate
-  (`logclient.CheckConsistency(ctx, fetcher.ReadTile, prevSize, prevRoot, prevFound, info)`), returning
-  the same `(violated, kind, prevRaw, err)` tuple. The `ConsistencyProofFromTiles`/`CheckEquivocation`
-  calls are gone from the file. Also retouched one `PollHub`-body comment (line ~164) that named
-  `ConsistencyProofFromTiles` so the moved-out symbol no longer appears in follower.go.
-- `internal/logclient/checkconsistency_test.go` (new): table test over the boundary-crossing
-  `testonly.Tree` (reuses `buildTree`/`tileFetcherFor` from `proofbuilder_test.go`). Cases: shrink,
-  same-size fork, growing split view (corrupt new root → real proof fails → equivocation), clean
-  growth (valid proof → not violated), prevSize==0, missing-tile fetcher (proof build errors →
-  swallowed), and two `!prevFound` cases (root-checks skipped on growth; shrink still fires size-only).
+**Summary:** `advance` moved the shrink→fork→equivocation `switch`, the consistency-proof build, and
+the narrow missing-tile swallow out of the follower into one pure, table-testable
+`logclient.CheckConsistency`, leaving the follower's `checkConsistency` to do only the
+`CheckpointAt(prevSize)` store read and delegate. The port is byte-faithful (branch order, guards, and
+error-vs-violation discipline identical), well-scoped (2 production files + 1 test, nothing from Not
+In Scope), and the new table is reviewer-mutation-proven non-vacuous. Resolves the ADR-0006 `normal`
+issue "self-consistency policy is split across follower orchestration and logclient helpers".
 
-**Verification:** `mise run check` → green (all 15 packages `ok`, incl. local `cmd/notecheck`);
-`gofmt -l .` empty.
-- `go test -run TestCheckConsistency ./internal/logclient` — PASS.
-- `go test -run TestPollHub ./internal/follower` — PASS (delegated path: freeze/fork/equivocation/
-  inclusion/fsck unchanged).
-- `grep -n "ConsistencyProofFromTiles" internal/follower/follower.go` — nothing (exit 1).
-- `go list -deps ./internal/logclient | grep iscc-monitor/internal/store` — empty (no new store edge).
-- Mutation check (reverted): forcing the equivocation branch to drop its `(true, ViolationEquivocation)`
-  return FAILS the growing-split-view case (`violated=false`/`kind=""` vs want `true`/`"equivocation"`)
-  — the table is non-vacuous; a green-but-wrong verdict cannot ship.
+**Verification:**
+- [x] `mise run check` (build + vet + test) — green, all 15 packages `ok` (incl. `cmd/notecheck`).
+- [x] `gofmt -l .` — empty (clean).
+- [x] `go test -count=1 -run TestCheckConsistency ./internal/logclient` — PASS (8 cases: shrink, fork,
+  growing split view, clean growth, prevSize==0, missing-tile, and two `!prevFound` cases).
+- [x] `go test -count=1 -run TestPollHub ./internal/follower` — PASS (delegated path: freeze / fork /
+  equivocation / inclusion / fsck all green).
+- [x] `grep -n ConsistencyProofFromTiles internal/follower/follower.go` — empty (exit 1; proof build
+  moved out of the follower).
+- [x] `go list -deps ./internal/logclient | grep iscc-monitor/internal/store` — empty (no store edge;
+  dependency direction stays follower → logclient).
+- [x] **Oracle/conformance gate APPLIES (composes RFC-6962 consistency-proof verification) — SATISFIED.**
+  The table builds merkle ground truth via `testonly.Tree` served through `tileFetcherFor` (same
+  fixture as `proofbuilder_test.go`); prover (`ConsistencyProof`) and composed verifier
+  (`CheckConsistency`→`CheckEquivocation`→`VerifyConsistency`) are independent paths. Reviewer-reverted
+  mutations: (1) suppress the equivocation verdict → growing-split-view case FAILS; (2) `fork := false`
+  → fork case FAILS. A green-but-wrong verdict cannot ship. `notecheck` green in `cmd/notecheck`;
+  `derive_vkey.py` reproduces both vectors (`40b74463`/`22b08f3e`) — N/A to this diff (no
+  signature/did:web path) but confirmed unmoved.
+- [x] Gate-integrity scan over unpushed commits — no `//nolint` / `t.Skip` / build-tag /
+  swallowed-error / deleted-assertion / loosened gate in added code. The `(false,"",nil)` missing-tile
+  swallow is the ADR-0006-mandated false-positive guard with a dedicated `wantViol:false` test case,
+  not a dodge.
+- [x] Purity / scope — `checkconsistency.go` imports only `context`+`fmt`; didweb WASM seam still
+  builds; go.mod/go.sum byte-untouched; 2 production files both in `next.md` Create/Modify scope.
 
-**Next:** Drain the next ADR-0006 `normal` from `issues.md`. Candidates: the store-owned
-`AdvanceAccepted` single-transaction write (collapse the three sequenced
-`RecordCheckpoint`/`SetCoverage`/`AdvanceFollowState` writes in `PollHub`); OR the tile-writer
-`p`-vocabulary unification (delete the follower's `widthForP` copy).
+**Issues found:** (none). Resolved + deleted the ADR-0006 `normal` issue "self-consistency policy is
+split across follower orchestration and logclient helpers" (verified the fix). Two `normal` issues
+remain in `issues.md`: the `AdvanceAccepted` single-transaction write and the `widthForP` tile-writer
+unification.
+
+**Next:** Drain one of the two remaining ADR-0006/0005 `normal` issues. Preferred: the store-owned
+`AdvanceAccepted(hubID, info, raw, observedAt)` single-transaction write that collapses the three
+caller-sequenced `RecordCheckpoint`/`SetCoverage`/`AdvanceFollowState` writes in `PollHub` (lines
+165-183) into one store-boundary operation with idempotent re-poll + set-once-coverage behavior.
+Alternative: the tile-writer `p`-vocabulary unification (make `RecordTile`/`RecordEntryBundle` take
+`p uint8`, delete the follower's `widthForP` copy). Either keeps M3-arc momentum without opening a new
+milestone.
 
 **Notes:**
-- **Oracle gate APPLIES (composes RFC-6962 consistency-proof verification) and is satisfied.** The
-  table test builds merkle ground truth via `testonly.Tree` (independent prover) served through the
-  same `tileFetcherFor` as the existing `ConsistencyProofFromTiles` golden; the composed verifier
-  (`CheckConsistency`→`CheckEquivocation`→`VerifyConsistency`) is an independent path, so the
-  growing-split-view cross-check is not a tautology. Mutation-proven above. `notecheck` runs in
-  `mise run check`'s `cmd/notecheck` package — green. `derive_vkey.py` N/A (no signature/did:web path
-  touched).
-- **Pure port, byte-for-byte branch order.** The three trigger functions and `ConsistencyProofFromTiles`
-  were not touched; `CheckConsistency` only composes them. Behavior is identical to the old follower
-  body (incl. the missing-tile = clean-pass contract `PollHub` depends on) — no `PollHub` contract
-  change, no new return type.
-- **`prevSize==0` early return is now duplicated** (once in `follower.checkConsistency` to skip the
-  store read, once in `logclient.CheckConsistency` as the pure guard). This is intentional per
-  `next.md`: the follower keeps its copy to avoid a wasteful `CheckpointAt` at size 0; the logclient
-  copy keeps the pure function total/correct on its own. Not debt.
-- Touched a `PollHub`-body comment to remove the now-moved `ConsistencyProofFromTiles` name so the
-  `next.md` grep criterion holds and the comment stays accurate (it now says "the prevSize->
-  info.TreeSize consistency proof"). No code in `PollHub` changed.
+- **A genuine behavior subtlety I verified, not a defect:** the follower delegate now returns `prevRaw`
+  from the store lookup unconditionally (the old code returned `nil` on clean/missing-tile paths). This
+  is invisible to `PollHub` — it checks `err` before `violated` and reads `prevRaw` ONLY inside
+  `if violated` (follower.go:181-194), so the discarded bytes never reach `freeze`. Semantically
+  identical; documented in learnings.
+- **`prevSize==0` is intentionally duplicated** across `follower.checkConsistency` (skip a wasteful
+  size-0 `CheckpointAt`) and `logclient.CheckConsistency` (keep the pure function total). Per `next.md`;
+  not debt.
+- **Pushed to `origin/develop`** (see below). Loop is CONTINUE: M1/M2 met, M3 in progress (mirror arc +
+  three computed proofs done); verify-for-me / dashboard / log browser / WASM verifier / OTS anchoring
+  remain the bulk of v1 — not DONE. No human-only decision open — not STOP.

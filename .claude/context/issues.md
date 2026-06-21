@@ -55,19 +55,3 @@ filed it and does **not** affect priority.
   it from the verified, non-violation path. Verify fixed with a store-level test for the combined
   operation, including idempotent re-poll behavior and coverage staying set-once.
 - **Spec:** ADR-0005 (single-writer mirror/follow-state discipline); KISS / locality.
-
-## Self-consistency policy is split across follower orchestration and logclient helpers
-- **Priority:** normal
-- **Source:** [review]
-- **What / where / how to verify:** `internal/follower/follower.go:355-425` owns the branch order,
-  prior-checkpoint lookup, proof construction, missing-tile handling, and calls into
-  `logclient.CheckShrink`, `CheckFork`, `ConsistencyProofFromTiles`, and `CheckEquivocation`.
-  That leaves the load-bearing self-consistency decision spread across `follower`, `logclient`, and
-  the tile fetch seam, making the indeterminate/missing-tile semantics harder to table-test in one
-  place. After or alongside the critical growing split-view fix, collapse the pure decision into a
-  deep `logclient.CheckConsistency` entry point that accepts prior/next checkpoint data plus an
-  injected tile fetcher and returns `(violated, kind, err)` or an explicit indeterminate result. Verify
-  fixed with logclient table tests for shrink, same-size split view, growing split view, clean growth,
-  and missing-tile/error behavior; follower should just look up prior accepted evidence and act on the
-  returned verdict.
-- **Spec:** ADR-0006 (self-consistency violations freeze and preserve evidence).
