@@ -141,13 +141,16 @@ func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hu
 
 // buildMux assembles the monitor's single request multiplexer: GET / (the
 // server-rendered hub-list dashboard), GET /metrics, GET /healthz (liveness +
-// store readiness), GET /_ds/tokens.css (the shared ISCC Design System v2 token
-// stylesheet every SSR page links), plus every hub's mirror subtree from
-// mirrorHandler. The dashboard mounts at the exact path "/" — http.ServeMux's
-// most-specific match means it never shadows /metrics, /healthz, /_ds/tokens.css,
-// or any /<domain>/log/ subtree (the dashboard.Handler itself 404s any path other
-// than "/"). The token stylesheet mounts at the exact path web.TokensPath, so it
-// is isolated and never shadows "/" or the per-hub subtrees. The same metrics
+// store readiness), the GET /_ds/ subtree (the shared ISCC Design System v2 token
+// stylesheet, the self-hosted @font-face stylesheet, and the woff2 font binaries
+// every SSR page links), plus every hub's mirror subtree from mirrorHandler. The
+// dashboard mounts at the exact path "/" — http.ServeMux's most-specific match
+// means it never shadows /metrics, /healthz, the /_ds/ subtree, or any
+// /<domain>/log/ subtree (the dashboard.Handler itself 404s any path other than
+// "/"). The static assets mount at the web.Prefix subtree ("/_ds/"), so the token
+// stylesheet, the fonts stylesheet, and every /_ds/fonts/<file>.woff2 route to the
+// one web.Handler; it is isolated and never shadows "/" or the per-hub subtrees.
+// The same metrics
 // registry m the /metrics handler exposes is also passed to the dashboard as its
 // in-memory status overlay (the StatusSource), so the page can render the live
 // unresolvable / unverified verdicts the store cannot prove. Both /metrics and
@@ -164,7 +167,7 @@ func buildMux(st *store.Store, routes []hubRoute, m *metrics.Registry) http.Hand
 	mux.Handle("/", dashboard.Handler(st, m))
 	mux.Handle("/metrics", metricshttp.Handler(m))
 	mux.Handle("/healthz", healthz.Handler(st))
-	mux.Handle(web.TokensPath, web.Handler())
+	mux.Handle(web.Prefix, web.Handler())
 	return corsmw.Handler(mux)
 }
 

@@ -1,0 +1,69 @@
+/* ISCC self-hosted webfonts — Readex Pro (sans) + JetBrains Mono (mono).
+   Ported from the design bundle's tokens/fonts.css with every jsDelivr CDN src
+   URL rewritten to a same-origin /_ds/fonts/ path, so the monitor serves the
+   woff2 binaries from its own embed.FS (no runtime CDN). The Readex Pro arabic-300
+   subset from the source is deliberately omitted: the monitor UI is English, so
+   only the eight latin subsets are embedded (Readex Pro 300/400/500/600/700 +
+   JetBrains Mono 400/500/700). font-display: swap matches the source and the
+   Arial / Consolas fallbacks in tokens.css, so pages render before a font loads.
+   The font names here must match the committed internal/web/fonts/*.woff2 files. */
+
+/* ---------- Readex Pro ---------- */
+@font-face {
+  font-family: "Readex Pro";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("/_ds/fonts/readex-pro-300.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Readex Pro";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/_ds/fonts/readex-pro-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Readex Pro";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/_ds/fonts/readex-pro-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Readex Pro";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/_ds/fonts/readex-pro-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Readex Pro";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/_ds/fonts/readex-pro-700.woff2") format("woff2");
+}
+
+/* ---------- JetBrains Mono ---------- */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/_ds/fonts/jetbrains-mono-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/_ds/fonts/jetbrains-mono-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/_ds/fonts/jetbrains-mono-700.woff2") format("woff2");
+}

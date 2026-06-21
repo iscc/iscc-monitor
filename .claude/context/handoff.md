@@ -1,69 +1,65 @@
-## 2026-06-21 — Review of: Embed the DS v2 token CSS as a shared `internal/web` leaf and link it from `GET /`
+## 2026-06-21 — Self-host the DS v2 webfonts under `/_ds/fonts/...` + fold in the stable-path cache fix
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Embedded the eight latin woff2 subsets (Readex Pro 300/400/500/600/700 + JetBrains Mono
+400/500/700) plus an `@font-face` stylesheet and the SIL OFL license into `internal/web`, served them
+under a new `/_ds/` subtree, switched every `/_ds/...` asset (tokens.css, fonts.css, woff2) from the
+`immutable` cache policy to the `tilesserve.writeBlob` shape (`no-cache` + strong content ETag +
+`If-None-Match`→304), and linked `/_ds/fonts.css` from the dashboard `<head>`. The monitor UI now
+renders in Readex Pro / JetBrains Mono with zero runtime CDN dependency; `internal/web` stays a pure
+WASM-green stdlib leaf.
 
-**Summary:** `advance` (`ffa6049`) stood up a pure stdlib `internal/web` leaf that `go:embed`s a
-concatenated, CDN-free DS v2 token stylesheet and serves it at the exact path `/_ds/tokens.css`
-(GET→200 text/css, non-GET→405), mounted it in `buildMux`, and linked it from the dashboard `<head>`.
-The diff is scope-clean (3 non-test source files at the limit), the port is verbatim-faithful (grain
-`background-image` neutralized, `fonts.css` excluded), and every gate is green. One confirmed Codex
-[P2] (immutable cache on a stable overwrite-in-place URL) is filed as a `normal` follow-up — it is
-cosmetic and spec-sanctioned, so it does not block this increment.
+**Files changed:**
+- `internal/web/web.go` — embed `fonts.css` + the `fonts` dir; one `Handler()` mounted at the `/_ds/`
+  subtree dispatches tokens.css / fonts.css / `fonts/*.woff2` by path, sets explicit content types
+  (`text/css` / `font/woff2`), and applies the `no-cache`+strong-ETag+304 `writeAsset` policy (the
+  `immutable` const is gone). Added `Prefix`, `FontsCSSPath` consts (kept `TokensPath`).
+- `internal/web/fonts.css` (new) — same-origin `@font-face` shell, ported from the design `fonts.css`
+  with CDN URLs rewritten to `/_ds/fonts/...`; the Arabic-300 Readex subset omitted (English UI), noted
+  in the header comment.
+- `internal/web/fonts/*.woff2` (new, 8 files, ~140 KB) — the latin subsets fetched from the Fontsource
+  jsDelivr CDN, each verified as "Web Open Font Format (Version 2)".
+- `internal/web/fonts/OFL.txt` (new) — SIL OFL 1.1 with both families' copyright headers (the OFL bodies
+  were byte-identical between the two npm packages).
+- `internal/web/web_test.go` — narrowed the `url(` ban to "no external CDN" (`jsdelivr`/`http://`/
+  `https://`/`cdn.`); added fonts.css, woff2-binary, all-8-subsets, css↔embed cross-check, 304-conditional,
+  no-cache+strong-ETag, and 405 assertions.
+- `cmd/iscc-monitor/main.go` — mount changed from exact `web.TokensPath` to the `web.Prefix` subtree;
+  `buildMux` doc comment updated.
+- `internal/dashboard/dashboard.html` — added `<link rel="stylesheet" href="/_ds/fonts.css">`.
 
-**Verification:**
-- [x] `mise run check` green — all 18 packages `ok` (build + vet + test).
-- [x] `gofmt -l .` empty (whole tree).
-- [x] `go test -count=1 -run 'TestTokens|TestDashboard' ./internal/web ./internal/dashboard` — PASS (uncached).
-- [x] `internal/web` test: GET→200 `text/css` + `--iscc-blue` present; POST→405; body has no `jsdelivr`/`http`/`url(` — PASS.
-- [x] CDN-free non-vacuous (my mutation, reverted): appended an `https://cdn.jsdelivr.net` line → `TestTokensCDNFree` FAILS all three asserts; restored byte-identical → green.
-- [x] Dashboard-link non-vacuous (my mutation, reverted): dropped the `<link>` → `TestDashboardLinksTokensNoCDN` FAILS; restored byte-identical → green.
-- [x] End-to-end through full `buildMux` (throwaway test, removed): `GET /_ds/tokens.css`→200 text/css + `immutable` Cache-Control + CORS `*`; POST→405; `GET /`→200 html linking the css; `GET /_ds/fonts/x.woff2`→404 (exact-path mount, no subtree leak).
-- [x] Leaf purity: `go list -deps ./internal/web` internal closure is only `internal/web`; no store/metrics/logclient. `GOOS=js GOARCH=wasm go build ./internal/web` → OK.
-- [x] `git diff --stat HEAD~1..HEAD -- go.mod go.sum internal/store/schema.sql` empty (no dep/schema change).
-- [x] Port fidelity: only `url(`/CDN reference across colors/typography/spacing/base is the grain `background-image` (base.css:46), which is dropped; `fonts.css` (all jsDelivr URLs) excluded; size/blend no-ops kept.
-- [x] Gate-integrity scan over unpushed range (`@{upstream}..HEAD`) — no `//nolint`/`t.Skip`/build-tag/swallowed-error/deleted-assertion. The `_, _ = ...WriteTo(w)` site is the documented post-200 write-drop convention.
-- [x] Oracle/conformance gate correctly N/A — pure static-asset transport + a static `<link>`; no signature/RFC-6962/Merkle/did:web/fsck/proof path.
+**Verification:** `mise run check` → green (all 18 packages `ok`; `go build`/`go vet`/`go test` pass);
+`gofmt -l .` empty. Per criterion:
+- `go test -run 'TestTokens|TestFonts|TestDashboard'` → PASS (web + dashboard).
+- `GOOS=js GOARCH=wasm go build ./internal/web` → OK; `go list -deps` internal closure is only
+  `internal/web` (no store/metrics/logclient) → leaf purity holds.
+- E2E through real `buildMux` (throwaway test, removed): `GET /_ds/fonts.css` → 200 text/css, no-cache +
+  quoted-hex ETag, body has `@font-face` + `/_ds/fonts/`, no jsdelivr/http; `GET /_ds/fonts/readex-pro-400.woff2`
+  → 200 `font/woff2` + strong ETag; same request with `If-None-Match` → 304; `POST` → 405; `GET /_ds/tokens.css`
+  → 200 with `Cache-Control: no-cache` (no `immutable`).
+- `GET /` body links `/_ds/fonts.css` and stays CDN-free (`TestDashboardLinksTokensNoCDN` passes).
+- Each `internal/web/fonts/*.woff2` → "Web Open Font Format (Version 2)".
+- `git diff --stat HEAD -- go.mod go.sum internal/store/schema.sql` empty (no dep/schema change).
+- No `immutable` Cache-Control value remains in web.go (only two doc-comment mentions explaining the
+  policy choice).
 
-**Issues found:** One — Codex [P2], reviewer-confirmed (see below). Filed in `issues.md` as `normal`
-(`/_ds/tokens.css` immutable cache on a stable URL). No defect that blocks this increment.
-
-**Codex second opinion:** First run reviewed the WRONG commit. HEAD had advanced past the advance
-(`ffa6049`) to a human loop-doc commit (`4a8a313 fix(review-agent): capture only Codex's verdict`), so
-`--commit HEAD` reviewed the agent-doc change, not the tokens work ("only updates the review-agent
-instructions … no issue"). I re-ran `codex review --commit ffa6049` (the real increment). Its one
-finding:
-- **[P2] immutable Cache-Control on the stable `/_ds/tokens.css` URL (`web.go:42`) — CONFIRMED.** The
-  dashboard links the stable, non-content-addressed path, so a redeploy overwrites the bytes in place
-  while clients can pin the year-long `immutable` response → new HTML, stale CSS. I verified this
-  contradicts the project's OWN convention: `internal/tilesserve` uses `immutable` only for
-  content-addressed FULL tiles and `no-cache` (+ strong ETag) for overwrite-in-place resources, whose
-  comment explicitly warns against `immutable`. `next.md` sanctioned `immutable` ("build-pinned"), but
-  build-pinned ≠ content-addressed. Cosmetic (stale tokens; no correctness/security/trust-root impact)
-  → `normal` issue for a later M-UI slice, not a NEEDS_WORK blocker. Fix: `no-cache`+ETag+304 (the
-  `tilesserve.writeBlob` shape) or a fingerprinted path.
-
-**Next:** The fonts sub-step — fetch + commit the Readex Pro / JetBrains Mono woff2 binaries,
-`go:embed` them, serve under `/_ds/fonts/...`, add a self-hosted `@font-face` stylesheet (its own ≤3-file
-change). **When that lands, apply the `no-cache`+ETag cache fix to BOTH `/_ds/...` assets** (it touches
-`internal/web` anyway — fold the issue fix in there) and **narrow the CDN-free `url(` ban** to
-"no external `url(`" (self-hosted `src: url("/_ds/fonts/...")` is a legitimate same-origin `url(`).
-After fonts: the realm-index redress (table → Evidence-Ledger grid + token classes), then thread tokens
-into the log browser / dossier / record / certificate surfaces.
+**Next:** The realm-index redress — replace the dashboard `<table>` with the Evidence-Ledger grid +
+DS token classes (`var(--font-sans)`/`--font-mono` now actually resolve to the embedded webfonts). After
+that, thread the token/font CSS into the log browser / dossier / record / certificate surfaces.
 
 **Notes:**
-- HEAD layout this iteration: the advance is `ffa6049` (HEAD~1); a human commit `4a8a313` (loop-doc
-  only, `.claude/agents/review.md`: split Codex stdout/stderr) sits on top. My code review was of
-  `ffa6049` (the context diff snapshot predated the human commit and showed exactly its content). The
-  `4a8a313` change touches no source code — no gate impact.
-- Scope clean: 2 new source files (`internal/web/web.go`, `tokens.css`) + 1 modified (`cmd/iscc-monitor/main.go`)
-  = 3 non-test, at the limit; nothing from `## Not In Scope` touched (no `fonts.css`/`@font-face`/woff2/
-  grain asset/markup restyle/log-browser wiring/store-metrics import/dep/schema change).
-- Learnings: created `learnings/web.md` (+ index pointer row) recording the immutable-on-stable-path
-  trap, the exact-path-mount guard, the `url(`-ban-vs-coming-fonts narrowing, the dashboard `https://`
-  ban relying on scheme-less `h.origin`, and the WASM-green leaf shape. No cross-cutting index promotion
-  (all package-local). Budgets OK.
-- Milestones: M1/M2/M3 met; M-UI in progress (~8 open), WASM verifier + OTS not started — so Loop =
-  CONTINUE, not DONE. No human-only decision open (the cache finding is a sanctioned `normal` follow-up),
-  so not STOP.
-- Working tree clean after review (all mutations + the throwaway e2e test reverted; no codex `.scratch`).
+- Scope: 2 modified non-test source files (`internal/web/web.go`, `cmd/iscc-monitor/main.go`) — the
+  `.css`/`.woff2`/`OFL.txt` assets and the `.html` template are uncounted per `next.md`; within the
+  ≤3-file limit. Nothing from `## Not In Scope` touched (no realm-grid restyle, no log-browser wiring,
+  no Arabic subset, no dep/schema change, no store/metrics import into `internal/web`).
+- Mount changed exact→subtree per the learnings guard: this is the deliberate reverse of the prior
+  exact-path note (fonts NEED `/_ds/fonts/` under a subtree). `http.ServeMux` most-specific match still
+  keeps `/`, `/metrics`, `/healthz`, and the per-hub `/<domain>/log/` subtrees from being shadowed
+  (E2E-confirmed via buildMux), and `web.Handler` 404s any non-asset `/_ds/` path.
+- The woff2 binaries were fetched live from jsDelivr/Fontsource at build time and committed, so the
+  served bytes are now build-pinned and never re-fetched at runtime (the CDN was used only as the asset
+  source, not a runtime dependency). If the reviewer wants byte-reproducibility, the source URLs and
+  resolved package versions (readex-pro@5.2.11, jetbrains-mono@5.2.8) are in this handoff.
+- The OFL bodies from the two Fontsource npm packages were verified byte-identical (`diff -q`), so
+  `OFL.txt` carries both copyright notices + one shared license body rather than duplicating the text.
+- Oracle/conformance gate N/A: pure static-asset transport + a static `<link>`; no signature/RFC-6962/
+  Merkle/did:web/fsck/proof path.
