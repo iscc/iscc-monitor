@@ -1,24 +1,27 @@
-<!-- assessed-at: 2a21f353d34dbd647f8fde99417418a2531e0639 -->
+<!-- assessed-at: 2d7b0571e1992cf679ec066098f402dde3a55ecd -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: M1 complete + CI-gated & green — M2 (Aggregator) is the active milestone. Both pure
-coordinate enumerations now exist (`tiles.BundleCoords` + the newest `tiles.TileCoords`), so the M2
-live tile-ingestion writer is fully unblocked. M2's Verify bar — live tile/bundle ingestion, the
-inclusion cross-check vs the hub's own proof, `fsck` root-rebuild over the store, `iscc_index`, and
-store-served proofs — remains not-started.
+## Phase: M1 complete + CI-gated & green — M2 (Aggregator) is the active milestone. Every pure
+prerequisite for the M2 live tile-ingestion writer now exists: both coordinate enumerations
+(`tiles.BundleCoords` + `tiles.TileCoords`) AND, as of this iteration, the two transport primitives
+(`logclient.FetchTile` + `logclient.FetchEntryBundle`) that fetch a tile/bundle over the `Fetcher`
+seam. What remains for M2's Verify bar — wiring these into `PollHub` to actually mirror live
+tiles/bundles, the `fsck` root-rebuild over `SQLiteFetcher`, the inclusion cross-check vs the hub's
+own proof, `iscc_index`, and store-served proofs — is still not-started.
 
-Since the prior assessment (`679d4fd`) the **only source-relevant change is one additive pure seam**:
-`internal/tiles/coords.go` gained `TileCoord{Level, Index uint64; Partial uint8}` +
-`TileCoords(treeSize uint64) []TileCoord` (the multi-level hash-tile sibling of `BundleCoords`; it
-climbs tile-levels itself, taking each `Partial` from tessera's `PartialTileSize`) plus its golden
-test `tilecoords_test.go` (`4a5e9ae`, reviewed PASS in `2a21f35`). `git diff 679d4fd..HEAD -- go.mod
-go.sum schema.sql` is empty; the diff touches no other `.go` byte (only those two `tiles` files +
-context md). It is an **unwired export seam** (`grep` confirms neither `TileCoords` nor `BundleCoords`
-has any production caller — they appear only in their definitions + doc comments + tests). The project
-stays off DONE because M2 → OTS are not yet built.
+Since the prior assessment (`2a21f35`) the **only source-relevant change is one additive pure seam**:
+`internal/logclient/tilefetch.go` gained `FetchTile(ctx, fetcher, baseURL, level, index uint64, p
+uint8)` and `FetchEntryBundle(ctx, fetcher, baseURL, index uint64, p uint8)` — both port
+`FetchCheckpoint` verbatim-in-shape (`origin()` → `"https://"+name+"/"+TilePath/EntriesPath` →
+`fetcher.Fetch` → body verbatim, `%w`-wrapping so a 404's `os.ErrNotExist` survives) plus the golden
+test `tilefetch_test.go` (6 `func Test`, reviewed PASS in `2d7b057`). `git diff 2a21f35..HEAD -- go.mod
+go.sum schema.sql` is empty; the diff touches no other `.go` byte (only those two new `logclient` files
++ context md). It is an **unwired export seam** (`grep` confirms neither `FetchTile` nor
+`FetchEntryBundle` has any production caller — they appear only in their definitions + tests). The
+project stays off DONE because M2 → OTS are not yet built.
 
 ## M1 — Read-only Monitor
 **Status**: met (all Verify criteria satisfied — `origin`/`vkey` golden, all three triggers
@@ -27,24 +30,23 @@ logs, `/metrics` served over HTTP and collected by the binary). **CI-gated & gre
 alert transport and live tile ingestion (the latter an M2 dependency) remain connective tissue outside
 M1's Verify bar.
 
-- **Verified incrementally** from `679d4fd`. The diff `679d4fd..HEAD` touches no
-  Go/`go.mod`/`go.sum`/`schema.sql` byte outside `internal/tiles/coords.go` (+`tilecoords_test.go`).
-  Every cmd/iscc-monitor / follower / logclient / store / didweb / tiles (sans the one changed file) /
-  metrics / metricshttp / registry / config source + `cmd/notecheck` + `schema.sql` is carried forward
-  byte-unchanged.
-- **Test totals re-grepped at HEAD**: 9 (didweb) + 36 (logclient) + 48 (store) + 14 (follower) + 3
-  (registry) + 4 (config) + 12 (tiles, +5 from `TileCoords`) + 6 (metrics) + 1 (metricshttp) + 1
-  (cmd/iscc-monitor) + 3 (cmd/notecheck) = **137 `func Test`** across **11 packages** (**33** `_test.go`
-  files).
+- **Verified incrementally** from `2a21f35`. The diff `2a21f35..HEAD` touches no
+  Go/`go.mod`/`go.sum`/`schema.sql` byte outside the two new `internal/logclient/tilefetch{,_test}.go`
+  files. Every cmd/iscc-monitor / follower / logclient (sans the two new files) / store / didweb /
+  tiles / metrics / metricshttp / registry / config source + `cmd/notecheck` + `schema.sql` is carried
+  forward byte-unchanged.
+- **Test totals re-grepped at HEAD**: **143 `func Test`** across **11 packages** (**34** `_test.go`
+  files), up from 137 — the +6 are the new `tilefetch_test.go` (`FetchTile`/`FetchEntryBundle` golden
+  URLs + `os.ErrNotExist` propagation).
 
 - **`cmd/notecheck` — fully-independent signature-parity oracle (CI-gated)** (unchanged): reads
   `--vkey` + checkpoint text on stdin, runs `transparency-dev/formats/note.NewVerifier` +
   `golang.org/x/mod/sumdb/note.Open`, applies the strict reject (`len(n.Sigs)==0 ||
   len(n.UnverifiedSigs)!=0`) mirroring `internal/logclient/verify.go`, prints `OK <name>`/exit 0 or
-  exits 1 (verify fail) / 2 (bad vkey or stdin read). It is the EXTERNAL parity check for the monitor's
-  own crypto path — distinct from the in-process `RunFsck` self-check. Three tests. **CI shells the
-  built binary out** against `testdata/live/sb0.iscc.id_checkpoint`, asserting the exact
-  `OK sb0.iscc.id/log` accept AND a one-char-flipped-signature reject (exit 1).
+  exits 1 (verify fail) / 2 (bad vkey or stdin read). EXTERNAL parity check for the monitor's own
+  crypto path — distinct from the in-process `RunFsck` self-check. **CI shells the built binary out**
+  against `testdata/live/sb0.iscc.id_checkpoint`, asserting the exact `OK sb0.iscc.id/log` accept AND a
+  one-char-flipped-signature reject (exit 1).
 
 - **`/metrics` served + wired** (unchanged): `internal/metricshttp/handler.go` —
   `Handler(*metrics.Registry) http.Handler`; `cmd/iscc-monitor/main.go` serves it from a background
@@ -64,8 +66,9 @@ M1's Verify bar.
   key readers**, **coverage tracking** (set-once `monitored_since_{size,time}`, ADR-0001),
   **`logclient.Origin`** + golden `TestOrigin`, **config loader**, **realm-registry parser**
   (domains-only), **poll-loop cadence** (single-writer), **freeze + alert-once** (gated on
-  `!wasFrozen`), the pure `ConsistencyProofFromTiles` + `InclusionProofFromTiles` builders, and the
-  `internal/tiles` seam — all unchanged and carried forward.
+  `!wasFrozen`), the pure `ConsistencyProofFromTiles` + `InclusionProofFromTiles` builders, the
+  `internal/tiles` seam, and now the two `Fetch{Tile,EntryBundle}` transport primitives — all carried
+  forward / unchanged.
 
 - `store/{sqlite,schema,checkpoints,tiles,fetcher}.go` — `modernc.org/sqlite v1.46.1`, ADR-0005/0007
   single-writer discipline (WAL, `busy_timeout=5000`, `foreign_keys=ON`, `synchronous=NORMAL`,
@@ -97,12 +100,12 @@ M1's Verify bar.
 - **Reuse imports wired**: `golang.org/x/mod/sumdb/note`, `modernc.org/sqlite`, `transparency-dev/merkle
   v0.0.2` (`rfc6962`, `proof` — `proof.Inclusion` AND `proof.Consistency`), `transparency-dev/tessera
   v1.0.2` (`api/layout` in `internal/tiles` — `layout.Range` via `BundleCoords`, plus
-  `PartialTileSize`/`TilePath`/`EntriesPath` via the rest of the package incl. `TileCoords`; both proof
-  builders; `leafhasher.go`; `tessera/fsck` in `logclient/fsck.go`; `tessera/client` re-export under
-  `proofbuilder.go`/`store/fetcher.go`), `transparency-dev/formats` (DIRECT — `cmd/notecheck` imports
-  `formats/note`), stdlib `log/slog` + `net/http` + `os`/`flag`/`io`. `internal/metrics` is stdlib-only.
-  **Not yet wired**: the full tessera `client` proof-builder as a production caller,
-  `nbd-wtf/opentimestamps`.
+  `PartialTileSize`/`TilePath`/`EntriesPath` via the rest of the package incl. `TileCoords` and now the
+  `Fetch{Tile,EntryBundle}` primitives; both proof builders; `leafhasher.go`; `tessera/fsck` in
+  `logclient/fsck.go`; `tessera/client` re-export under `proofbuilder.go`/`store/fetcher.go`),
+  `transparency-dev/formats` (DIRECT — `cmd/notecheck` imports `formats/note`), stdlib `log/slog` +
+  `net/http` + `os`/`flag`/`io`. `internal/metrics` is stdlib-only. **Not yet wired**: the full tessera
+  `client` proof-builder as a production caller, `nbd-wtf/opentimestamps`.
 
 - **Verify criteria status — ALL MET**: `origin("https://sb0.iscc.id") == "sb0.iscc.id/log"` and
   `VerifierKey` byte-match — met. All three triggers met end-to-end in golden tests (synthetic shrink,
@@ -111,45 +114,47 @@ M1's Verify bar.
   set-once. Structured logs — met. `/metrics` — served over HTTP and collected by the binary.
 
 ## M2 — Aggregator
-**Status**: not started — but **both pure coordinate enumerations + six other prerequisite slices have
+**Status**: not started — but **every pure prerequisite for the live tile-ingestion writer has now
 landed** (all carried forward):
 - `internal/tiles` re-exports tessera's tlog-tiles layout math (`TilePath`/`EntriesPath`/
   `PartialTileSize`) + the `IsFull` predicate;
 - `internal/tiles/coords.go` — `BundleCoords(treeSize uint64) []BundleCoord`: pure entry-bundle
-  coordinate enumeration, delegating boundary math to `layout.Range(0, treeSize, treeSize)`. Golden over
-  7 boundary sizes, oracle-confirmed byte-equal to `layout.Range`. **Unwired export seam**;
-- `internal/tiles/coords.go` — **`TileCoords(treeSize uint64) []TileCoord` (NEW this iteration)**: pure
-  multi-level hash-tile coordinate enumeration naming which hash tiles (across every tile-level) a
-  complete mirror must hold. Since no single `layout.Range` covers all levels, it climbs the levels
-  itself (`sizeAtLevel = treeSize >> level*TileHeight`; full tiles + a top partial), taking each
-  `Partial` from tessera's `PartialTileSize` and stopping at the lone root tile. Table-driven golden
-  over 7 boundary sizes + power-of-256 + zero cases + an oracle cross-check (review independently
-  re-derived all vectors against the tessera oracle, byte-equal, and mutation-proved non-vacuousness:
-  `257→[{0,0,0},{0,1,1},{1,0,1}]`, `513→[{0,0,0},{0,1,0},{0,2,1},{1,0,2}]`, `65536→`257 entries ending
-  `{1,0,0}`). **Unwired export seam** — first caller is the M2 live tile-ingestion writer;
+  coordinate enumeration, delegating boundary math to `layout.Range`. Golden over 7 boundary sizes,
+  oracle-confirmed byte-equal. **Unwired export seam**;
+- `internal/tiles/coords.go` — `TileCoords(treeSize uint64) []TileCoord`: pure multi-level hash-tile
+  coordinate enumeration (climbs tile-levels itself, `Partial` from `PartialTileSize`, stops at the
+  root tile). Table-driven golden + oracle cross-check, mutation-proved non-vacuousness. **Unwired
+  export seam**;
+- `internal/logclient/tilefetch.go` — **`FetchTile` + `FetchEntryBundle` (NEW this iteration)**: the
+  transport-only seam between the coordinate enumerations and the mirror writers. Port `FetchCheckpoint`
+  verbatim-in-shape (`origin()` → canonical `TilePath`/`EntriesPath` URL → `fetcher.Fetch` → body
+  verbatim), `%w`-wrapping the Fetcher's error so a 404's `os.ErrNotExist` survives for the ingestion
+  loop to distinguish "tile not served yet" from a hard fault. 6 golden tests (URLs anchored on
+  tessera's own layout goldens, not author assertion; `os.ErrNotExist` propagation). **Unwired export
+  seam** — first caller is the ingestion writer;
 - `internal/store/{tiles,fetcher}.go` provides the partial-tile mirror CRUD + `SQLiteFetcher`
   (structural `client.Fetcher`/`fsck.Fetcher`);
-- `internal/logclient/proofbuilder.go` — pure `ConsistencyProofFromTiles`;
-- `internal/logclient/proofbuilder.go` — `InclusionProofFromTiles(ctx, fetch, index, size)`: tile-sourced
-  RFC-6962 inclusion proof, golden-tested over a 300-leaf `testonly.Tree` boundary, oracle mutation-proven.
-  **Unwired export seam**;
+- `internal/logclient/proofbuilder.go` — pure `ConsistencyProofFromTiles` + `InclusionProofFromTiles`
+  (tile-sourced RFC-6962 inclusion proof, golden over a 300-leaf `testonly.Tree`, oracle
+  mutation-proven). **Unwired export seams**;
 - `internal/logclient/leafhasher.go` — `LeafHashes(bundle []byte) ([][]byte, error)`;
 - `internal/logclient/fsck.go` — `RunFsck(ctx, vkey, origin string, f fsck.Fetcher) error`, the
   root-rebuild conformance gate over the mirror path (in-process **structural self-check**;
-  mutation-proven). No production caller yet — its first caller needs the live tile-ingestion writer;
+  mutation-proven). No production caller yet — needs the live tile-ingestion writer;
 - `cmd/notecheck` — the **fully-independent** external signature-parity oracle, compiling in-repo AND
   shelled out in CI on every push.
 
-What remains for M2's Verify bar (all not-started): the **live tile-ingestion writer** (make `PollHub`
-mirror real tiles/bundles — consuming both `TileCoords` + `BundleCoords`, fetching each tile/bundle
-over the `logclient` `Fetcher` seam at its `TilePath`/`EntriesPath`, writing via
-`RecordTile`/`RecordEntryBundle` with the path-`Partial`→store-`width` translation; also un-dormants the
-equivocation branch and gives `RunFsck` its first production root-rebuild caller); the **`fsck`
-root-rebuild over `SQLiteFetcher`** (first half of M2 Verify); the **inclusion cross-check** — assert
-`InclusionProofFromTiles` byte-equals a hub's real `evidence.IsccLogInclusionProof` for sampled
-`iscc_id`s (needs captured `IsccLogInclusionProof` + tile + entry-bundle fixtures in `testdata/live/`);
-the `iscc_index` projection writer (schema-agnostic, `iscc_id → seq` one-to-many); and
-`inclusion`/`consistency`/`entries` served via a full `ProofBuilder` from the local store.
+What remains for M2's Verify bar (all not-started): the **live tile-ingestion writer** (make `PollHub`,
+on a verified growing checkpoint, walk `TileCoords(size)` + `BundleCoords(size)`, fetch each
+tile/bundle over the new `Fetch{Tile,EntryBundle}` primitives, and write via
+`RecordTile`/`RecordEntryBundle` with the path-`Partial`→store-`width` translation — full tile `p==0` →
+width 256 via `widthForP`, re-fetching partials every poll per ADR-0005); the **`fsck` root-rebuild
+over `SQLiteFetcher`** (first half of M2 Verify, gives `RunFsck` its first production caller); the
+**inclusion cross-check** — assert `InclusionProofFromTiles` byte-equals a hub's real
+`evidence.IsccLogInclusionProof` for sampled `iscc_id`s (needs captured `IsccLogInclusionProof` + tile
++ entry-bundle fixtures in `testdata/live/`); the `iscc_index` projection writer (schema-agnostic,
+`iscc_id → seq` one-to-many); and `inclusion`/`consistency`/`entries` served via a full `ProofBuilder`
+from the local store.
 
 ## M3 — Trust API + dashboard
 **Status**: not started. (The binary has a `net/http` mux serving only `/metrics`; `/`, `/healthz`, and
@@ -165,21 +170,22 @@ as the guard; `internal/tiles` is also WASM-green).
 **Status**: green — **enforced in CI**
 - `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.24.0`, no `toolchain` line; requires
   `formats` (DIRECT) + `merkle v0.0.2` + `tessera v1.0.2` + `x/mod v0.33.0` + `sqlite v1.46.1`);
-  `mise run check` runnable. `go.mod`/`go.sum` byte-unchanged since `679d4fd` (`PartialTileSize` already
-  in the closure via `internal/tiles`).
+  `mise run check` runnable. `go.mod`/`go.sum`/`schema.sql` byte-unchanged since `2a21f35` (this slice
+  adds no dependency — `TilePath`/`EntriesPath` already in the closure via `internal/tiles`).
 - **CI is configured and passing.** `.github/workflows/ci.yml` runs one `ubuntu-latest` /
   `CGO_ENABLED=0` job on push + PR to `develop`/`main`: the inlined `mise run check` gate (`go build
   ./...`, `go vet ./...`, `go test ./...`) plus the `cmd/notecheck` oracle shell-out (accept
   `OK sb0.iscc.id/log` exit 0 + reject a one-char-corrupted signature exit 1). **Latest run on
-  `develop`: `conclusion: success`** (`gh run list --branch develop` → success, run 27891539432).
+  `develop`: `conclusion: success`** (`gh run list --branch develop` → success, run 27891778400).
   Remote `origin` configured (`github.com/iscc/iscc-monitor`); working branch `develop`; tree clean at
-  HEAD `2a21f35`.
-- Latest `review` handoff (2026-06-21, "Pure hash-tile (multi-level) coordinate enumeration
-  (`tiles.TileCoords`)", verdict **PASS / CONTINUE**) records `mise run check` green (all 11 packages
-  `ok`, `go vet`/`gofmt -l .` clean). Oracle gate correctly N/A for this pure path-math slice; review
-  re-ran `PartialTileSize` externally over all vectors → byte-equal goldens (tessera ground truth, not
-  author-asserted) and mutation-proved non-vacuousness. Gate-circumvention + scope-discipline scans
-  clean (1 prod file + 1 test file; no caller wired).
+  HEAD `2d7b057`.
+- Latest `review` handoff (2026-06-21, "Transport primitives to fetch a tile / entry bundle over the
+  Fetcher seam (`logclient.FetchTile` / `FetchEntryBundle`)", verdict **PASS / CONTINUE**) records
+  `mise run check` green (all 11 packages `ok`, `go vet`/`gofmt -l .` clean). Oracle gate correctly
+  N/A for this transport-only slice (imports only `context`+`fmt`+`internal/tiles`; no
+  signature/Merkle/RFC-6962/did:web/fsck path — trust-root packages re-ran uncached, all `ok`). Golden
+  URLs anchored on tessera's own layout golden strings. Gate-circumvention + scope-discipline scans
+  clean (2 new files, both `internal/logclient`; no caller wired).
 - **No open `critical`/`normal` issue.** **One open `low` issue** (loop-skipped): `cmd/notecheck`'s
   `run(vkey, in, out)` has a vestigial `out io.Writer` param never written to — harmless, `go vet`-clean,
   fix when `run` is next touched.
@@ -190,19 +196,18 @@ as the guard; `internal/tiles` is also WASM-green).
 
 ## Next Milestone
 **M2 — Aggregator.** M1 meets its full Verify bar and is CI-gated & green; the active work is M2's
-Verify bar. With both proof builders AND both coordinate enumerations (`BundleCoords` + `TileCoords`)
-now landed and oracle-proven, the next slice is the **live tile-ingestion writer** — every pure
-prerequisite for it now exists.
+Verify bar. With both coordinate enumerations (`BundleCoords` + `TileCoords`) AND both transport
+primitives (`FetchTile` + `FetchEntryBundle`) now landed and oracle-/golden-proven, every pure
+prerequisite for the live tile-ingestion writer exists — that writer is the next slice.
 
 Candidate order:
 1. **Live tile-ingestion writer** — make `PollHub`, on a verified growing checkpoint, walk
-   `TileCoords(size)` + `BundleCoords(size)`, fetch each tile/bundle over the `logclient` `Fetcher` seam
-   at its `TilePath`/`EntriesPath`, and write via `RecordTile`/`RecordEntryBundle` (translating the
-   path-`Partial` to the store's `width` via `widthForP`, re-fetching partials every poll per ADR-0005).
-   This un-dormants the wired equivocation branch on the live path AND feeds
-   `SQLiteFetcher.ReadTile`/`ReadEntryBundle` for proof nodes — the unblocker for both crypto
-   cross-checks below; both want real tile + entry-bundle fixtures in `testdata/live/`. Watch the
-   full-tile request (`p==0`) width-keying to 256, not 0 (the `widthForP` seam already pins this).
+   `TileCoords(size)` + `BundleCoords(size)`, fetch each tile/bundle via the new
+   `FetchTile`/`FetchEntryBundle` primitives, and write via `RecordTile`/`RecordEntryBundle`
+   (translating the path-`Partial` to the store's `width` via `widthForP` — full tile `p==0` → 256, not
+   0 — re-fetching partials every poll per ADR-0005). This un-dormants the wired equivocation branch on
+   the live path AND feeds `SQLiteFetcher.ReadTile`/`ReadEntryBundle` — the unblocker for both crypto
+   cross-checks below; both want real tile + entry-bundle fixtures in `testdata/live/`.
 2. **`fsck` root-rebuild over `SQLiteFetcher`** — wire `RunFsck` against the mirrored tiles (its first
    production caller), the FIRST half of M2's Verify.
 3. **Inclusion cross-check** — assert `InclusionProofFromTiles` byte-equals the hub's own
