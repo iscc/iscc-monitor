@@ -116,6 +116,13 @@
       background: var(--status-error-bg, rgba(245, 97, 105, 0.06));
     }
 
+    /* The hub cell must be allowed to shrink below its content's min-content
+       width (grid items default to min-width:auto), or the no-wrap ellipsis on
+       .hub-name/.hub-origin never engages and a long domain pushes the
+       coverage/status columns out of view. */
+    .hub-cell {
+      min-width: 0;
+    }
     .hub-name {
       font-weight: var(--weight-semibold);
       font-size: var(--text-base);
@@ -214,7 +221,7 @@
       </div>
       {{- range .Hubs}}
       <div class="ledger-row" data-status="{{.Status}}">
-        <div>
+        <div class="hub-cell">
           <div class="hub-name">{{.Domain}}</div>
           <div class="hub-origin">{{.Origin}}</div>
         </div>

@@ -51,6 +51,20 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   any 200 (the post-200 `buf.WriteTo(w)` drop is the documented broken-client convention). Oracle gate
   N/A — pure HTML of persisted rows, no signature/RFC-6962/Merkle/did:web/fsck/proof path;
   go.mod/go.sum/schema byte-identical.
+- **`GET /` is now the Evidence-Ledger grid (no `<table>`), styled by a page-scoped `<style>` block in
+  `dashboard.html` over the shared `var(--*)` DS tokens.** Every token used resolves in `internal/web/tokens.css`
+  EXCEPT `--status-error-bg` (the frozen-row tint), which has no token and is therefore used WITH a literal
+  fallback `var(--status-error-bg, rgba(245,97,105,0.06))` — decorative only (ADR-0010 inv.4: badge silhouette
+  + label carry the status grayscale-safe; the hue is never the sole signal). Keep page layout local to this
+  `<style>`, NOT in tokens.css, so it cannot regress another surface. `TestDashboardRendersEveryHub` asserts
+  `display: grid` + `var(--font-sans)`/`var(--font-mono)` present AND `<table>` absent (both mutation-confirmed
+  non-vacuous); `TestDashboardLinksTokensNoCDN` still bans `http(s)://`/`cdn.`/`jsdelivr` — passes only because
+  the body renders scheme-less `Origin`, never an `https://` `base_url` (see web.md trap).
+- **CSS-Grid ellipsis trap: a grid cell that wraps no-wrap+`text-overflow:ellipsis` content needs `min-width:0`.**
+  Grid items default to `min-width:auto`, so the no-wrap `.hub-name`/`.hub-origin` would set the column's
+  min-content width and the ellipsis never engages — a long domain pushes the coverage/status columns out of
+  view. Fixed by `.hub-cell { min-width: 0 }` on the wrapping div (Codex P2, confirmed + fixed in review). Any
+  future ledger cell that intends to ellipsize must carry `min-width: 0` on the grid item, not just the children.
 - **The status cell renders through the `hubStatusBadge` partial, not the bare word.** The partial is
   associated into the page set once at init (`template.Must(template.New("dashboard").Parse(pageTemplate))`
   then `template.Must(t.Parse(badge.Source))`, wrapped in an init closure since `template.Must` returns
