@@ -1,17 +1,24 @@
 # Target — iscc-monitor v1
 
 > Authoritative specs: `.claude/prd/0001-iscc-monitor-v1.md`, `.claude/plans/cosmic-baking-octopus.md`,
-> `.claude/adr/0001`–`0009`, glossary in `CLAUDE.md`. Where this file and an ADR/PRD disagree, the
+> `.claude/adr/0001`–`0011`, glossary in `CLAUDE.md`. Where this file and an ADR/PRD disagree, the
 > ADR/PRD wins. This file is the *fixed target* the CID loop advances toward — the desired end-state
 > plus the bar every increment is verified against.
 
-## Stack (locked — ADR-0003)
+## Stack (locked — ADR-0003, ADR-0011)
 
-Go 1.24, `CGO_ENABLED=0`, module `github.com/iscc/iscc-monitor`. **Reuse, do not reimplement** the
-transparency stack: `transparency-dev/tessera` (`client`, `api`, `api/layout`, `fsck`),
-`transparency-dev/merkle` (`rfc6962`, `proof`), `transparency-dev/formats`,
-`golang.org/x/mod/sumdb/note`, `nbd-wtf/opentimestamps`, `modernc.org/sqlite`. Read-only vendored
-reference copies live under `cauldron/` (gitignored) — port/oracle against them, never import them.
+Go 1.26 (bumped from 1.24 to consume the iscc-lib Go codec — ADR-0011; the config bump + dependency
+add is the active increment in `issues.md`), `CGO_ENABLED=0`, module `github.com/iscc/iscc-monitor`.
+**Reuse, do not reimplement** — the transparency stack: `transparency-dev/tessera` (`client`, `api`,
+`api/layout`, `fsck`), `transparency-dev/merkle` (`rfc6962`, `proof`), `transparency-dev/formats`,
+`golang.org/x/mod/sumdb/note`, `nbd-wtf/opentimestamps`, `modernc.org/sqlite`; **and the ISCC codec**:
+`github.com/iscc/iscc-lib/packages/go` (pure-Go, `CGO_ENABLED=0`, conformance-tested vs `iscc-core`;
+pinned v0.5.0) is the canonical ISCC en/decoder for generic ISO 24138 / Version-0 codec work.
+**Carve-out (ADR-0011):** ISCC-IDv1 (`MainType=ID`, `Version=1`) is **not** in iscc-lib yet — its
+`decodeHeader` rejects `Version>0` — so `internal/index.Decode` stays the **interim** in-repo port
+until upstream ships it (migration trigger = [iscc/iscc-lib#43](https://github.com/iscc/iscc-lib/issues/43)
++ the `internal/index` tripwire test). Read-only vendored reference copies live under `cauldron/`
+(gitignored) — port/oracle against them, never import them.
 
 **Frontend (locked — ADR-0010).** The v1 web surfaces follow the **Evidence Ledger** direction on the
 **ISCC Design System v2**; the build source of truth is

@@ -28,9 +28,12 @@ only *from coverage start* (cold start is inherent; see ADR-0001 Coverage).
   (`did:web:<domain>` → `/.well-known/did.json`), managed by the domain owner (rotation/revocation via CID 1.0
   `verificationMethod.revoked`). The realm registry advertises **domains/membership only — no keys**. Domain ownership
   *is* the identity; **domain-compromise detection is out of scope**.
-- **Stack: Go (ADR-0003).** Real rationale: (1) reuse the battle-tested Go transparency stack rather than owning
-  security-critical proof code, (2) one verifier codebase compiling to both native and WASM. Single static binary
-  (CGO_ENABLED=0) is a secondary benefit. OpenTimestamps via `nbd-wtf/opentimestamps`.
+- **Stack: Go (ADR-0003, ADR-0011).** Real rationale: (1) reuse the battle-tested Go transparency stack rather than
+  owning security-critical proof code, (2) one verifier codebase compiling to both native and WASM. Single static binary
+  (CGO_ENABLED=0) is a secondary benefit. OpenTimestamps via `nbd-wtf/opentimestamps`. **ISCC en/decoding** likewise
+  reuses the Foundation-owned `iscc/iscc-lib` Go binding rather than a second hand-rolled codec (ADR-0011) — which bumps
+  the toolchain to **Go 1.26** (iscc-lib's `go.mod` requires `go 1.26.1`). ISCC-IDv1 is the one carve-out: iscc-lib's
+  `decodeHeader` rejects `Version>0`, so `internal/index.Decode` is the interim port until [iscc/iscc-lib#43](https://github.com/iscc/iscc-lib/issues/43) lands.
 - **No cosigning in v1 (ADR-0004).** The v1 independent attestation is **OTS-anchoring observed roots** (trustless
   timestamp, no monitor signing key in the trust path). Cosigning has no v1 consumer; it returns at **M7** as the C2SP
   witness/gossip wire format. The monitor therefore needs a TLS identity but publishes **no signing key** in v1.
@@ -103,7 +106,7 @@ only *from coverage start* (cold start is inherent; see ADR-0001 Coverage).
 
 ## Go module / package layout
 
-Module `github.com/iscc/iscc-monitor`, Go 1.24, `CGO_ENABLED=0`.
+Module `github.com/iscc/iscc-monitor`, Go 1.26 (bumped from 1.24 for iscc-lib — ADR-0011), `CGO_ENABLED=0`.
 
 ```
 cmd/iscc-monitor/main.go        # wire DI, supervisor, graceful shutdown
@@ -128,7 +131,8 @@ testdata/live/                  # captured sb0 checkpoints/tiles/receipts/did.js
 **Reused libraries (prefer over reimplementing):** `transparency-dev/tessera` (`client`, `api`, `api/layout`, `fsck`),
 `transparency-dev/merkle` (`rfc6962`, `proof`), `transparency-dev/formats` (`note`, `log`), `golang.org/x/mod/sumdb/note`,
 `github.com/nbd-wtf/opentimestamps`, `modernc.org/sqlite`, `gopkg.in/yaml.v3`, `github.com/mr-tron/base58`,
-`github.com/prometheus/client_golang`. Router: stdlib `net/http` 1.22 patterns (add chi only if needed). Defer
+`github.com/prometheus/client_golang`, and for the **ISCC codec** `github.com/iscc/iscc-lib/packages/go` (pure-Go,
+`CGO_ENABLED=0`, conformance-tested vs `iscc-core`; pinned v0.5.0 — ADR-0011). Router: stdlib `net/http` 1.22 patterns (add chi only if needed). Defer
 `transparency-dev/witness` / `filippo.io/torchwood` and `note.Sign`-based cosigning to the M7 witness/gossip milestone.
 
 **Local reference files to port/oracle against** (vendored read-only copies under `cauldron/`, gitignored; mirrors the
@@ -139,7 +143,7 @@ sibling `iscc-hub`/`tessera` repos so these resolve without a specific checkout 
 - `cauldron/iscc-hub/iscc_hub/checkpoint_note.py` — exact signed-note / keyid wire format to mirror in Go.
 - `.claude/derive_vkey.py` — did → origin → verifier-key derivation to port into `internal/didweb/vkey.go`; the two live testnet hubs are golden vectors (source the did from did:web, not the YAML).
 - `cauldron/iscc-hub/iscc_hub/log_tree.py` (`inclusion_evidence`, `log_origin`) + `cauldron/iscc-hub/iscc_hub/schema.py` (`Evidence`) — authoritative shape of the `IsccLogInclusionProof` cross-check oracle (the `cauldron/iscc-hub/specs/schemas/iscc-receipt.yaml` is stale; trust `schema.py`).
-- `cauldron/iscc-hub/iscc_hub/iscc_id.py` (mirrors `iscc/iscc-core` `iscc_id.py`; upstream: `https://raw.githubusercontent.com/iscc/iscc-core/refs/heads/main/iscc_core/iscc_id.py`) — the **ISCC-IDv1 codec** to port into `internal/index/iscc.go`. **v1 only.** 80-bit code = 16-bit header + 64-bit body: realm = header SubType nibble (0 testnet / 1 mainnet), `hub_id = body & 0xFFF` (low 12 bits), `timestamp = body >> 12` (high 52 bits, µs since epoch). Lets the realm-wide `/inclusion/{iscc_id}` certificate (M-UI, ADR-0010) decode `(realm, hub_id)` and resolve the issuing hub via the registry.
+- `cauldron/iscc-hub/iscc_hub/iscc_id.py` (mirrors `iscc/iscc-core` `iscc_id.py`; upstream: `https://raw.githubusercontent.com/iscc/iscc-core/refs/heads/main/iscc_core/iscc_id.py`) — the **ISCC-IDv1 codec** ported into `internal/index/iscc.go`. **v1 only.** 80-bit code = 16-bit header + 64-bit body: realm = header SubType nibble (0 testnet / 1 mainnet), `hub_id = body & 0xFFF` (low 12 bits), `timestamp = body >> 12` (high 52 bits, µs since epoch). Lets the realm-wide `/inclusion/{iscc_id}` certificate (M-UI, ADR-0010) decode `(realm, hub_id)` and resolve the issuing hub via the registry. **This is the one ISCC codec the monitor keeps in-repo (ADR-0011):** the `iscc/iscc-lib` Go binding we otherwise reuse is a Version-0 / ISO 24138 codec only — its `decodeHeader` rejects `Version>0`, so it cannot decode an ISCC-IDv1 (`Version=1`) yet. `internal/index.Decode` is therefore the **interim** port; the migration trigger (delete the port, call iscc-lib) is [iscc/iscc-lib#43](https://github.com/iscc/iscc-lib/issues/43) plus an `internal/index` tripwire test.
 - `cauldron/iscc-hub/hubs/{testnet,mainnet}.yaml` (upstream: `github.com/iscc/iscc-hub/blob/main/hubs/`) — the authoritative **Hub-List**: `{version, network, hubs:[{hub_id, url, active}]}` mapping the 12-bit `hub_id` slot → hub `url` per network (testnet = realm 0: hub 0 = sb0.iscc.id, hub 1 = sb1.amlet.id; mainnet = realm 1: hub 1 = iscc.id, hub 2 = amlet.id). Owned by iscc-hub; the monitor **consumes** it for realm membership AND to resolve an ISCC-IDv1's embedded `hub_id` (M-UI certificate, ADR-0010). The `pubkey` field is **deprecated/ignored** (keys via did:web, ADR-0009); the `valid_from` rotation variant is superseded (`.claude/hublist-schema-proposal.md`).
 
 ## SQLite schema (core tables; per-network DB, no `network` column)

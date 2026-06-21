@@ -1,7 +1,7 @@
 # PRD: iscc-monitor v1 — Trust & Transparency service for the ISCC-Hub network
 
 > Status: ready-for-agent (to be published to the issue tracker once the repo exists; apply the `ready-for-agent` label).
-> Synthesized from the grilling/domain-modeling session. Authoritative decisions live in `.claude/adr/0001–0009`,
+> Synthesized from the grilling/domain-modeling session. Authoritative decisions live in `.claude/adr/0001–0011`,
 > vocabulary in `CONTEXT.md`, the build plan in `.claude/plans/cosmic-baking-octopus.md`, and the cross-repo asks in
 > `.claude/iscc-hub-side-changes.md`. Where this PRD and an ADR disagree, the ADR wins.
 
@@ -223,7 +223,12 @@ verify; `store` (per-network SQLite + `SQLiteFetcher`); ISCC-ID `index`; pure `p
 
 **Reuse over reimplement:** `transparency-dev/tessera` (`client`, `api`, `api/layout`, `fsck`),
 `transparency-dev/merkle` (`rfc6962`, `proof`), `transparency-dev/formats`, `golang.org/x/mod/sumdb/note`,
-`nbd-wtf/opentimestamps`, `modernc.org/sqlite`. Go 1.24, `CGO_ENABLED=0`.
+`nbd-wtf/opentimestamps`, `modernc.org/sqlite`, and for the **ISCC codec**
+`github.com/iscc/iscc-lib/packages/go` (pure-Go, `CGO_ENABLED=0`, conformance-tested vs `iscc-core`;
+ADR-0011). Go 1.26, `CGO_ENABLED=0` (bumped from 1.24 — iscc-lib's `go.mod` requires `go 1.26.1`).
+**Carve-out:** ISCC-IDv1 (`MainType=ID`, `Version=1`) is not in iscc-lib yet (its `decodeHeader`
+rejects `Version>0`), so `internal/index.Decode` stays the interim in-repo port until upstream ships
+it ([iscc/iscc-lib#43](https://github.com/iscc/iscc-lib/issues/43)).
 
 ## Testing Decisions
 
@@ -283,6 +288,11 @@ iscc-hub/spec maintainers must land — and mainnet has **not launched**, so thi
 ISCC-Log §2.2 amendment to source keys from did:web; (2) realm registry becomes domains-only (drop `pubkey`, keep
 `hub_id` — it is the 12-bit hub field inside every ISCC-ID); (3) make the §13 coverage registry concrete (publish
 `monitored_since` per monitor/hub). The superseded `valid_from` Hub-List proposal is obsolete (rotation is did:web now).
+
+**Cross-repo dependency (iscc-lib side; ADR-0011).** ISCC en/decoding reuses the Foundation-owned
+`iscc/iscc-lib` Go binding, which today is a Version-0 / ISO 24138 codec only. ISCC-IDv1 support in
+the Go binding is requested upstream at [iscc/iscc-lib#43](https://github.com/iscc/iscc-lib/issues/43);
+until it lands, `internal/index.Decode` is the interim port, and a tripwire test signals the migration.
 
 **Verifier integrity.** The monitor can equivocate about its *own* verifier; that is why the verifier app lives on an
 independent origin (`monitor.iscc.codes`), is reproducibly built, and has its hash published independently. Same-origin

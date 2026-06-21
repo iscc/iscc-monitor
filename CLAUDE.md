@@ -7,8 +7,12 @@ to trust the monitor itself.
 
 ## Development
 
-Stack: **Go 1.24, `CGO_ENABLED=0`**, module `github.com/iscc/iscc-monitor` (ADR-0003). Quality gates
-run via **mise** — `mise run check` (build + vet + test) must stay green; formatting via
+Stack: **Go 1.26, `CGO_ENABLED=0`**, module `github.com/iscc/iscc-monitor` (ADR-0003, bumped from
+1.24 to consume the iscc-lib Go codec — ADR-0011; the config bump + dependency add is the active
+build increment). ISCC en/decoding **reuses `github.com/iscc/iscc-lib/packages/go`** (pure-Go,
+conformance-tested vs `iscc-core`) for generic ISO 24138 codec work; ISCC-IDv1 stays the interim
+in-repo port `internal/index.Decode` until iscc-lib ships it (ADR-0011). Quality gates run via
+**mise** — `mise run check` (build + vet + test) must stay green; formatting via
 `mise run fmt` / `gofmt -l .`.
 
 The project is built by an autonomous **CID loop** (Continuous Iterative Development): the `/build`
