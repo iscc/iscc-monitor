@@ -859,3 +859,49 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   `derive_vkey.py` still reproduces `40b74463`/`22b08f3e` (the did:web cache path through `PollHub` is
   composed, not modified). Trust root re-arms at the `fsck`-over-`SQLiteFetcher` slice (next), which is
   where the mirrored tiles first face the RFC-6962 root-rebuild oracle.
+
+## fsck root-rebuild wired into PollHub (`fsckMirror`) + the real-sb0-fixture retirement
+
+- **Wiring `fsckMirror` into the verified `PollHub` path makes a byte-accurate mirror MANDATORY for
+  every completing verified poll — this is why the 6 real-sb0-checkpoint follower tests had to convert
+  to the in-process `testonly.Tree` mirror (`buildVerifiedMirror`), and the conversion is a sound
+  equivalent, NOT a coverage loss.** The real sb0 log's leaf preimages were never captured (live
+  capture is Not In Scope), so its mirror can't rebuild the signed root → fsck would always fail. The
+  `testonly.Tree` fixture is byte-accurate to its OWN signed root (the same standard `fsck_test.go` and
+  the equivocation tests use). Reviewer independently confirmed real-sb0 signature/key parity is fully
+  retained at the correct (verification) layer: `internal/logclient/accept_test.go::TestAcceptCheckpoint/
+  "verified"` verifies the real sb0 checkpoint (size 10183, real sig) against the real captured
+  `sb0.iscc.id_did.json` key → `StatusVerified`/`Origin=sb0.iscc.id/log`/`TreeSize=10183`; the
+  `notecheck` external oracle accepts it (`OK sb0.iscc.id/log`, exit 0); `derive_vkey.py` reproduces
+  `40b74463`/`22b08f3e`. The follower tests' job is *composition/wiring*, not re-asserting the raw
+  signature — moving the literal `10183`/`0x40b74463` asserts to fixture-relative `m.size`/`m.keyID`
+  is architecturally right (net assertions went UP 32:16, not down). The HUMAN REVIEW REQUESTED was
+  honest but over-cautious: no plan/ADR deviation, no public-API change, no gate weakening.
+- **The required mutation is non-vacuous and reviewer-reproduced:** forcing `fsckMirror` to early-
+  `return nil` makes `TestPollHubFsck/RejectsCorruptedMirror` FAIL (corrupted tile no longer caught),
+  reverting restores green — so the rebuild genuinely compares the re-derived RFC-6962 root against the
+  signed root. The corrupt-mirror subtest must call `fsckMirror` DIRECTLY (not via `PollHub`, whose
+  `ingestTiles` re-fetches and overwrites the flipped BLOB first). `RunFsck` is an in-process
+  STRUCTURAL self-check (shares the monitor's own `LeafHashes`/RFC-6962 code) — the docstring correctly
+  does NOT over-claim it is the independent oracle (`notecheck` is); a non-nil return is a mirror/rebuild
+  fault, NOT a self-consistency violation → surfaced to the caller, never `freeze` (ADR-0006).
+- **`fsckMirror` placement is correct: AFTER `ingestTiles`, BEFORE the final `recordVerdict`, on the
+  verified non-violation path only.** Prod follower imports unchanged (`{context, fmt, logclient,
+  metrics, store, tiles, log/slog}`), store stays a leaf, go.mod/go.sum byte-identical (`tessera/fsck`
+  already in the closure via `internal/logclient/fsck.go`), didweb WASM build green. Scope was clean:
+  exactly 1 production file (`follower.go`) + 4 test files.
+- **`buildVerifiedMirror(t, leaves)` is the reusable follower verified-path fixture now** — generates a
+  per-run `note.GenerateKey` keypair (so key-id is NEVER a literal; assert `m.keyID`), signs the C2SP
+  checkpoint body `"<origin>\n<size>\n<base64(root)>\n"`, advertises the key's `z6Mk` multibase via
+  `multibaseFromVKey`+`b58encode` (the exact inverse of `didweb.b58decode`), and serves byte-accurate
+  level-0 tiles + framed entry bundles for every `TileCoords`/`BundleCoords` coord (reusing
+  `equivNodeHash` for level ≥ 1). `mirrorLeaves = 300` crosses the 256-leaf boundary. `mirrorBundleFetcher`
+  routes by `strings.HasSuffix` over a `byPath` map — verified the size-300 tlog-tiles paths have no
+  suffix collisions, so it is unambiguous for this fixture (a future colliding-path fixture would want
+  exact/longest-suffix matching).
+- **Wiring fsck onto the live path SURFACED a pre-existing `store.CheckpointAt` fragility (filed
+  `normal`): an unordered `LIMIT 1` means fork re-detection compares against an undefined row when two
+  same-size checkpoints exist post-freeze.** This forced `TestPollHubFork` to drive fork *re-detection*
+  through `freeze` directly (first detection still via `PollHub`); shrink re-detection via `Tick` stays
+  covered by `TestTickFrozenUnaffected` (size-only, immune). The fix (`ORDER BY rowid` / pick the prior
+  accepted root explicitly) belongs to the store-touching equivocation/serving slice, not this one.
