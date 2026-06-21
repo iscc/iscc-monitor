@@ -1,102 +1,125 @@
 # Next Work Package
 
-## Step: Live tile/bundle ingestion writer in PollHub
+## Step: Wire RunFsck into PollHub over the live SQLiteFetcher mirror
 
 ## Goal
-On a verified, growing checkpoint, make `PollHub` mirror the hub's hash tiles and entry bundles into
-the local store — walking the pure coordinate enumerations, fetching each over the existing transport
-primitives, and writing via the store CRUD. This is the first production caller of `TileCoords`,
-`BundleCoords`, `FetchTile`, and `FetchEntryBundle`; it un-dormants the wired equivocation branch on
-the live path (which today always hits the missing-tile skip) and feeds `SQLiteFetcher`, unblocking
-the M2 `fsck` root-rebuild and inclusion cross-check.
+Give `logclient.RunFsck` its first production caller: after `PollHub` mirrors a verified hub's
+tiles/bundles via `ingestTiles`, run `fsck.New(...).Check(ctx)` over the local `SQLiteFetcher` to
+rebuild the accepted root from the mirror and cross-check it against the signed checkpoint root.
+This re-arms the RFC-6962 root-rebuild oracle gate on the live path and lands the FIRST half of M2's
+Verify bar ("`fsck` rebuilds each accepted root from the `SQLiteFetcher`").
 
 ## Scope
-- **Create**: `internal/follower/ingest.go` — the `ingestTiles` helper (one new non-test file).
-- **Modify**: `internal/follower/follower.go` — call `ingestTiles` from `PollHub` on the verified,
-  non-violation path. (2 non-test files total.)
-- **Create (test)**: `internal/follower/ingest_test.go` — table-driven coordinate + width-translation
-  unit test plus a `PollHub`-level integration test that asserts mirrored rows in the store.
+- **Create**: `internal/follower/fsck_test.go` (a `package follower` test that seeds a
+  `testonly.Tree`-backed consistent mirror and proves `PollHub`/the helper fscks it)
+- **Modify**: `internal/follower/follower.go` (add an `fsckMirror` helper and call it on the
+  verified, non-violation path of `PollHub`, after `ingestTiles`)
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/tiles/coords.go` — `TileCoords`/`BundleCoords` return order +
-    the `Partial` ("0 == full") convention the writer consumes.
-  - `/workspace/iscc-monitor/internal/logclient/tilefetch.go` — `FetchTile(ctx, fetcher, baseURL,
-    level, index uint64, p uint8)` / `FetchEntryBundle(ctx, fetcher, baseURL, index uint64, p uint8)`
-    signatures + the `%w`-wrapped `os.ErrNotExist` contract.
-  - `/workspace/iscc-monitor/internal/store/tiles.go` — `RecordTile(ctx, hubID, level, index uint64,
-    width int, data, observedAt)` / `RecordEntryBundle(ctx, hubID, bundleIndex uint64, width int,
-    data, observedAt)` signatures; `is_full` is set internally by `tiles.IsFull(width)`.
-  - `/workspace/iscc-monitor/internal/store/fetcher.go` lines 109-118 — the canonical `widthForP`
-    translation (`p==0 → tiles.TileWidth (256)`, else `int(p)`) that this writer must replicate (the
-    store's copy is unexported; do NOT export it — re-derive the one-liner in the follower).
-  - `/workspace/iscc-monitor/internal/follower/follower_test.go` lines 32-88 — the `compositeFetcher`
-    URL-routing pattern + fixture loaders the new test extends to serve tile/bundle URLs.
+  - `/workspace/iscc-monitor/internal/logclient/fsck.go` — `RunFsck(ctx, vkey, origin string, f
+    fsck.Fetcher) error`, the seam to call (already built + conformance-tested)
+  - `/workspace/iscc-monitor/internal/logclient/fsck_test.go` — the existing `testonly.Tree` →
+    consistent-mirror seeding pattern (`seedMirror`, `encodeBundle`, the level-0 `api.HashTile` fill,
+    the in-test `note.GenerateKey` signed checkpoint, and the `RejectsCorruptedTile`/`...Bundle`
+    negative cases) to port the new test's fixture from
+  - `/workspace/iscc-monitor/internal/follower/equivocation_test.go` — `buildEquivTree` /
+    `level0TileBytes` / `seedMirrorTiles` show how the follower package builds a
+    `testonly.Tree`-consistent local mirror over `RecordTile`
+  - `/workspace/iscc-monitor/internal/store/fetcher.go` — `SQLiteFetcher{Store, HubID}` (the
+    `fsck.Fetcher` the call passes; `ReadCheckpoint`/`ReadTile`/`ReadEntryBundle`)
+  - `/workspace/iscc-monitor/internal/logclient/didresolve.go` line 93 —
+    `ResolveVerifierKey(ctx, fetcher, baseURL) (vkey string, didweb.DIDKey, error)`, the vkey source
+  - `/workspace/iscc-monitor/internal/logclient/origin.go` line 48 — `Origin(baseURL) (string, error)`,
+    the `<domain>/log` origin `RunFsck` needs
+  - `/workspace/iscc-monitor/cauldron/iscc-hub/conformance/runfsck/main.go` — the original `runfsck`
+    reference `RunFsck`/`LeafHashes` were ported from (read-only oracle context, never import)
 
 ## Not In Scope
-- Wiring `RunFsck` over `SQLiteFetcher` (the M2 `fsck` root-rebuild) — its own next slice; this step
-  only makes the tiles exist in the store for it to read.
-- The inclusion cross-check vs the hub's `evidence.IsccLogInclusionProof` — needs captured
-  `IsccLogInclusionProof` + real tile/bundle fixtures, a later slice.
-- Capturing real on-disk tile/entry-bundle fixtures into `testdata/live/` — the test synthesizes
-  tile/bundle bytes in-process (the writer is transport+CRUD, not crypto, so synthetic BLOBs suffice;
-  byte-accurate live fixtures arrive with the inclusion cross-check).
-- The `iscc_index` projection writer (schema-aware fold) — a distinct M2 slice.
-- Exporting `store.widthForP` or otherwise touching the store package.
-- Re-fetch/backoff policy tuning or a partial-only optimization — fetch every named coord each verified
-  growing poll (ADR-0005: re-fetch partials, overwrite in place; a full tile re-write is idempotent).
+- The **inclusion cross-check** vs the hub's own `evidence.IsccLogInclusionProof` (the SECOND half of
+  M2's Verify) — the sibling slice; it needs captured `IsccLogInclusionProof` fixtures.
+- Capturing **byte-accurate live sb0/sb1 tile/entry-bundle fixtures** over the network into
+  `testdata/live/`. The follower-level test proves the wiring with an in-process `testonly.Tree`
+  mirror (byte-accurate to its own signed root — the same standard `fsck_test.go` uses and the review
+  already accepted), so no live capture is required for this step. Defer live-fixture capture if ever
+  needed.
+- `iscc_index` projection, serving `inclusion`/`consistency`/`entries` from the store, OTS, the M3
+  REST surface — all later milestones.
+- Touching `internal/store` (keep it a leaf; the follower owns the `RunFsck` wiring and the vkey).
+- The `cmd/notecheck` `low` issue (loop-skipped).
 
 ## Implementation Notes
-- **Placement.** Call `ingestTiles(ctx, st, fetcher, hubID, baseURL, info.TreeSize, observedAt)` inside
-  `PollHub` on the verified, non-violation path, AFTER `RecordCheckpoint`/`SetCoverage`/
-  `AdvanceFollowState`/`cacheHubKey` succeed and BEFORE the final `recordVerdict`/`return`. Wrap its
-  error as `fmt.Errorf("follower.PollHub: hub %d: ingest tiles: %w", hubID, err)`. Do NOT ingest on the
-  freeze path (a frozen hub does not advance accepted state) nor on non-verified verdicts.
-- **The writer (`ingest.go`).** `ingestTiles` walks `tiles.TileCoords(treeSize)` then
-  `tiles.BundleCoords(treeSize)` in order. For each `TileCoord{Level, Index, Partial}`:
-  `logclient.FetchTile(ctx, fetcher, baseURL, c.Level, c.Index, c.Partial)` →
-  `st.RecordTile(ctx, hubID, c.Level, c.Index, widthForP(c.Partial), raw, observedAt)`. For each
-  `BundleCoord{Index, Partial}`: `logclient.FetchEntryBundle(...)` → `st.RecordEntryBundle(ctx, hubID,
-  c.Index, widthForP(c.Partial), raw, observedAt)`. Keep the two loops as short, separate, pure-ish
-  helpers if it reads cleaner, but ≤3 non-test files total.
-- **Width translation (load-bearing, learnings "p↔width translation is the load-bearing bug surface").**
-  Define an unexported `widthForP(p uint8) int` in the follower (`p==0 → tiles.TileWidth`, else
-  `int(p)`) — re-deriving the store's one-liner, NOT exporting the store's. A full coord has `Partial==0`
-  and must be stored at width 256; storing width 0 would make it unreadable by `SQLiteFetcher`. The test
-  must pin this: a full `TileCoord{Partial:0}` round-trips at width 256.
-- **Imports.** `follower.go`/`ingest.go` add `internal/tiles` to the existing `{context, fmt, logclient,
-  metrics, store, time}` set. `internal/tiles` is a pure leaf (stdlib-only closure) — store stays a leaf,
-  direction stays follower → {logclient, store, tiles}. go.mod/go.sum stay byte-identical (`tessera/api/
-  layout` already in the closure via `internal/tiles`). Confirm with `git diff --quiet HEAD -- go.mod
-  go.sum`.
-- **Error contract (ADR-0006 + learnings).** A tile/bundle fetch fault is a genuine transport error here
-  (NOT a violation): return it up so `PollHub` surfaces it and accepted state for the NEXT poll is
-  unaffected — but note the checkpoint was already recorded/advanced above, so a mid-ingest fault leaves
-  a partial mirror that the next poll re-fetches (idempotent upsert). Do NOT swallow the fetch error and
-  do NOT freeze on it. (The "missing tile = skip equivocation" swallow lives in `checkConsistency`, a
-  different concern — leave it untouched.)
-- **Oracle gate is N/A for this slice** — transport + CRUD only, no signature/RFC-6962/Merkle/did:web/
-  fsck path is introduced (the equivocation branch it un-dormants is already golden-tested; this slice
-  does not change crypto code). The trust-root re-arms at the `fsck`-over-`SQLiteFetcher` slice.
-- **Test (`ingest_test.go`).** Two parts: (1) a table-driven unit test of the coordinate→width mapping
-  over a boundary tree size (e.g. 300 → tile level 0 full at width 256 + a 44-leaf partial at index 1;
-  bundle index 0 full + index 1 partial 44), asserting the exact `(level, index, width)` writes via a
-  fake/recording fetcher + store read-back (`ReadTileBlob`/`ReadEntryBundleBlob`). (2) Extend the
-  `compositeFetcher` to also serve synthetic tile/bundle bytes for `tile/` URLs, drive `PollHub`
-  end-to-end against the sb0 checkpoint fixture (tree size 10183), and assert that after a verified poll
-  the store holds mirrored tile + bundle rows for the enumerated coords (assert on
-  `ReadTileBlob`/`ReadEntryBundleBlob` returning `found==true`, never on follower internals — PRD
-  "assert on observable outputs"). Keep test functions small and focused (no test classes).
+- **Where (placement).** In `PollHub`, on the verified, non-violation path, add the fsck step
+  **after** `ingestTiles` succeeds and **before** the final
+  `recordVerdict(m, hubID, status, false, observedAt)` (the mirror must be populated first). Keep it a
+  small helper, e.g. `fsckMirror(ctx, st, fetcher, hubID, baseURL)`, called as
+  `if err := fsckMirror(...); err != nil { return status, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err) }`.
+  Do NOT run it on the freeze path nor on non-verified verdicts.
+- **Getting vkey + origin.** `RunFsck` needs `(vkey, origin, fsck.Fetcher)`. Resolve the vkey via
+  `logclient.ResolveVerifierKey(ctx, fetcher, baseURL)` (returns `(vkey string, didweb.DIDKey,
+  error)`; take the vkey, ignore the key — validity was already checked by `AcceptCheckpoint`) and the
+  origin via `logclient.Origin(baseURL)`. The fetcher is `store.SQLiteFetcher{Store: st, HubID:
+  hubID}` — identical to the equivocation branch's construction in `checkConsistency`. Wrap each error
+  with `%w`. (`info.Origin` is also available if you thread `info` in, but `Origin(baseURL)` is the
+  already-used, self-contained call.)
+- **Error-vs-violation discipline (ADR-0006 — the load-bearing subtlety; learnings "Error vs.
+  violation discipline" + "fsck root-rebuild wiring").** A `RunFsck` failure here is a *root-rebuild
+  mismatch or a mirror fault*, NOT a self-consistency violation — it must **not** freeze the hub
+  (freezing is reserved for the three triggers in `checkConsistency`). Treat a non-nil `RunFsck` error
+  as a genuine fault returned up to the caller (the established `PollHub` pattern: surface it; the
+  checkpoint is already recorded/advanced above, so a transient fault is re-attempted next poll). Do
+  **not** swallow it into a clean verdict and do **not** call `freeze`. Document this in the helper
+  docstring and extend the `PollHub` package comment, mirroring the existing `ingestTiles` comment
+  block.
+- **Honesty (learnings "fsck root-rebuild wiring").** `RunFsck` is an *in-process structural
+  self-check* — it shares the monitor's own `LeafHashes`/RFC-6962 code, so it is NOT the
+  fully-independent oracle (`notecheck` is). State this plainly in the docstring; do not over-claim
+  external independence.
+- **Test fixture (port `fsck_test.go`).** Build ONE internally-consistent `testonly.Tree` and serve
+  it through a follower-package fetcher; do NOT reuse `ingest_test.go`'s `mirrorFetcher` — it serves
+  *inconsistent* synthetic per-URL bytes, so the rebuild would always fail. Use a within-one-tile size
+  (e.g. `fsckLeaves = 5`, `< 256`) for the first green so there is exactly one partial level-0 tile +
+  one partial entry bundle. Two viable drive paths, prefer (a):
+  - **(a) end-to-end `PollHub`** — generate a keypair with `note.GenerateKey(rand.Reader, origin)`,
+    serve a `did:web` document advertising that key's multibase (model it on the committed
+    `internal/logclient/testdata/*_did.json` shape), and sign the checkpoint body
+    `"<origin>\n<size>\n<base64(root)>\n"` with it; serve the level-0 `api.HashTile` + framed entry
+    bundle at the tile/bundle URLs. `PollHub` then verifies, mirrors via `ingestTiles`, and fscks —
+    one assertion that `PollHub` returns `(StatusVerified, nil)`.
+  - **(b) direct helper** (fallback if reconstructing a `did.json` is too large for this step) — seed
+    a consistent mirror + signed checkpoint directly into the store exactly as `fsck_test.go`'s
+    `seedMirror` does, then call `fsckMirror(...)` and assert nil. Note `fsckMirror` resolves the vkey
+    via `ResolveVerifierKey`, which needs a `did.json` from the fetcher — so path (b) may need a small
+    fetcher serving the generated key's `did.json` too. Either is acceptable.
+- **Mutation / non-vacuity (REQUIRED).** Include a negative subtest: corrupt one mirrored tile or
+  bundle BLOB after ingest (re-`RecordTile`/`RecordEntryBundle` with a flipped byte at the same key,
+  as `fsck_test.go`'s `RejectsCorruptedTile`/`RejectsCorruptedBundle` do) and assert the fsck step now
+  returns a non-nil error. A green-but-wrong `RunFsck` that ignores the root must fail this case.
+- **Imports.** Production follower imports must stay `{context, fmt, internal/logclient,
+  internal/metrics, internal/store, internal/tiles, log/slog}` (no new prod import — `tessera/fsck` is
+  reached transitively through `logclient.RunFsck`, not imported by the follower). `merkle/testonly` +
+  `tessera/api` + `golang.org/x/mod/sumdb/note` are **test-only**. Store stays a leaf (no reverse dep).
+  `go.mod`/`go.sum` stay byte-identical (`tessera/fsck` already in the closure via
+  `internal/logclient/fsck.go`).
+- **Oracle gate APPLIES** for this slice (RFC-6962 root-rebuild crypto on the live path) and is
+  satisfied by the in-test `testonly.Tree` ground truth (prover) vs `RunFsck`/`LeafHashes` (verifier)
+  being independent code paths, plus the mutation negative case. `notecheck`/`derive_vkey.py` stay the
+  external oracles and are unchanged by this wiring.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass) and
-  `gofmt -l .` is empty.
-- `go test -run 'TestIngest|TestPollHub' -count=1 ./internal/follower` passes.
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
+- `go test -run TestPollHubFsck -count=1 ./internal/follower` passes — the good-mirror case returns
+  nil and the corrupted-mirror case returns non-nil (both asserted in the one test).
+- `go test -run 'TestPollHub|TestIngest|TestWidthForP|TestEquivocation' -count=1 ./internal/follower`
+  still passes (existing verified/fork/shrink/equivocation/ingest paths unaffected).
 - `git diff --quiet HEAD -- go.mod go.sum` exits 0 (no dependency change).
-- `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (trust-root WASM-shared leaf unaffected).
-- The coordinate unit test asserts a full tile (`Partial==0`) is stored at width `256` and a 44-leaf
-  partial at width `44` — read back via `ReadTileBlob` at the matching width.
-- After a verified `PollHub` against the sb0 fixture, `ReadEntryBundleBlob`/`ReadTileBlob` for at least
-  one enumerated coord return `found==true` with the fetched bytes (store-observable assertion).
+- `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (trust-root WASM leaf unaffected).
+- Production follower import set unchanged: `go list -f '{{join .Imports "\n"}}' ./internal/follower`
+  lists no package outside `{context, fmt, internal/logclient, internal/metrics, internal/store,
+  internal/tiles, log/slog}` plus stdlib.
+- Mutation check (run manually, then revert): forcing the new `fsckMirror` helper to `return nil`
+  makes the corrupted-mirror subtest of `TestPollHubFsck` FAIL — proving the rebuild genuinely
+  compares against the signed root.
 
 ## Done When
-`PollHub`, on a verified growing checkpoint, mirrors every `TileCoords`/`BundleCoords`-named tile and
-bundle into the store at the correct `widthForP`-translated width, and all Verification criteria pass.
+`PollHub` runs `RunFsck` over the live `SQLiteFetcher` mirror on every verified, non-violation poll,
+a tampered mirror BLOB surfaces a non-nil fault (without freezing the hub), and all Verification
+criteria pass with `mise run check` green.
