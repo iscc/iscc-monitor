@@ -26,6 +26,7 @@ import (
 
 	"github.com/iscc/iscc-monitor/internal/config"
 	"github.com/iscc/iscc-monitor/internal/corsmw"
+	"github.com/iscc/iscc-monitor/internal/dashboard"
 	"github.com/iscc/iscc-monitor/internal/follower"
 	"github.com/iscc/iscc-monitor/internal/healthz"
 	"github.com/iscc/iscc-monitor/internal/logclient"
@@ -137,18 +138,23 @@ func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hu
 	}
 }
 
-// buildMux assembles the monitor's single request multiplexer: GET /metrics, GET
-// /healthz (liveness + store readiness), plus every hub's mirror subtree from
-// mirrorHandler. Both /metrics and /healthz mount as exact paths next to the
-// per-hub mirror subtrees on the same mux, so the single-listener invariant holds
-// (no second socket). The assembled mux is wrapped once in corsmw.Handler — the
-// lone convergence point all public routes pass through — so every served surface
-// answers cross-origin browser GETs uniformly (Access-Control-Allow-Origin: * on
-// every response; OPTIONS preflights succeed with 204) without per-handler CORS
-// code. It is factored out of serveMetrics so the full routing is unit-testable
-// against an httptest.ResponseRecorder without binding a socket.
+// buildMux assembles the monitor's single request multiplexer: GET / (the
+// server-rendered hub-list dashboard), GET /metrics, GET /healthz (liveness +
+// store readiness), plus every hub's mirror subtree from mirrorHandler. The
+// dashboard mounts at the exact path "/" — http.ServeMux's most-specific match
+// means it never shadows /metrics, /healthz, or any /<domain>/log/ subtree (the
+// dashboard.Handler itself 404s any path other than "/"). Both /metrics and
+// /healthz mount as exact paths next to the per-hub mirror subtrees on the same
+// mux, so the single-listener invariant holds (no second socket). The assembled
+// mux is wrapped once in corsmw.Handler — the lone convergence point all public
+// routes pass through — so every served surface answers cross-origin browser GETs
+// uniformly (Access-Control-Allow-Origin: * on every response; OPTIONS preflights
+// succeed with 204) without per-handler CORS code. It is factored out of
+// serveMetrics so the full routing is unit-testable against an
+// httptest.ResponseRecorder without binding a socket.
 func buildMux(st *store.Store, routes []hubRoute, m *metrics.Registry) http.Handler {
 	mux := mirrorHandler(st, routes)
+	mux.Handle("/", dashboard.Handler(st))
 	mux.Handle("/metrics", metricshttp.Handler(m))
 	mux.Handle("/healthz", healthz.Handler(st))
 	return corsmw.Handler(mux)

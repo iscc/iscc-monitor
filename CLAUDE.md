@@ -45,9 +45,11 @@ ISCC_MONITOR_ADDR=0.0.0.0:41464 \
 `0.0.0.0:41464` (not `127.0.0.1`) makes the instance reachable from the host at `http://localhost:41464`
 after a container rebuild.
 
-After the first poll (~seconds) the HTTP surface is live. There is **no dashboard UI yet** (M3), so
-these are JSON / text / Prometheus endpoints and `/` returns 404:
+After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSON / text / Prometheus;
+`GET /` now serves a minimal server-rendered HTML dashboard (no CSS/JS yet):
 
+- `GET /` — server-rendered HTML dashboard listing every realm hub with its store-provable status
+  (frozen / verified / inactive) and coverage window (`monitored_since` size + time, observed size).
 - `GET /healthz` — liveness + store readiness.
 - `GET /metrics` — Prometheus: hub status, last-observed, poll failures, violations.
 - `GET /<domain>/log/checkpoint` — mirrored signed checkpoint (e.g. `/sb0.iscc.id/log/checkpoint`).

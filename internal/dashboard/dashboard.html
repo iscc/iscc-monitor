@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ISCC Monitor</title>
+</head>
+<body>
+  <h1>ISCC Monitor</h1>
+  <p>Followed hubs and their store-provable status and coverage window.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Hub</th>
+        <th>Origin</th>
+        <th>Status</th>
+        <th>Observed size</th>
+        <th>Coverage since</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{- range .Hubs}}
+      <tr>
+        <td>{{.Domain}}</td>
+        <td>{{.Origin}}</td>
+        <td>{{.Status}}</td>
+        <td>{{.LastSize}}</td>
+        <td>
+          {{- if .HasCoverage}}
+          size {{.SinceSize}}{{if .SinceTime}} at {{.SinceTime}}{{end}}
+          {{- else -}}
+          no coverage yet
+          {{- end}}
+        </td>
+      </tr>
+      {{- else}}
+      <tr>
+        <td colspan="5">No hubs followed.</td>
+      </tr>
+      {{- end}}
+    </tbody>
+  </table>
+</body>
+</html>
