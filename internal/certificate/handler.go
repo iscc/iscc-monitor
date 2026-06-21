@@ -32,10 +32,13 @@
 // cached resolution back from hub_keys (store.LookupHubKey), so the certificate can
 // only ever show the key that actually signed what §2 vouches for; a cache miss (key
 // not yet resolved) honestly omits §4 rather than fabricate a key (ADR-0009: did:web
-// is the only key source). Clauses §5-§6 (Bitcoin anchor, record history) and the
-// downloadable proof bundle are gated placeholders that render nothing yet — later
-// sub-steps grow the template without rework. The Download-proof-bundle action
-// renders as a disabled placeholder.
+// is the only key source). §6 RECORD HISTORY lists the full one-to-many set of
+// accepted-tree seqs the hub indexed under the subject id (the declaration and any
+// later deletion), each labelled by its verbatim note.$schema kind — a store read
+// with no crypto path, so it renders unconditionally for a certifiable id. §5 (the
+// Bitcoin anchor) and the downloadable proof bundle are gated placeholders that
+// render nothing yet — later sub-steps grow the template without rework. The
+// Download-proof-bundle action renders as a disabled placeholder.
 //
 // Fail-closed / coverage-honesty discipline (ADR-0001): every "cannot certify"
 // branch — a malformed id, an id resolving to no listed slot, a resolved domain
@@ -92,6 +95,39 @@ var pageTemplate string
 // source fails to parse, surfacing a template bug at startup.
 var tmpl = template.Must(template.New("certificate").Parse(pageTemplate))
 
+// Record-kind labels for the §6 RECORD HISTORY clause, mapping the verbatim
+// note.$schema to a human-readable kind. The schema constants are the FULL wire URIs
+// the iscc_index projection stores verbatim (CLAUDE.md's iscc-note-0.8.0 is prose
+// shorthand, never the wire value); they mirror internal/proofserve's recordKind
+// (the same schema→label mapping the single-record page uses). The mapping is the
+// ONLY interpretation §6 performs (ADR-0008: verification is schema-agnostic): an
+// unknown or empty schema is the catch-all kindUnknown and is listed verbatim
+// alongside its seq, never gating or erroring the clause.
+const (
+	schemaDeclaration = "http://purl.org/iscc/schema/iscc-note-0.8.0.json"
+	schemaDeletion    = "http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json"
+	kindDeclaration   = "Declaration"
+	kindDeletion      = "Deletion"
+	kindUnknown       = "Unknown record type"
+)
+
+// recordKind maps the verbatim note.$schema to a §6 row label and a deletion flag —
+// the only interpretation §6 performs (ADR-0008). It is fail-open by construction:
+// the declaration / deletion schemas map to their friendly labels, and anything else
+// (including an empty schema) is kindUnknown, so an unknown or empty schema never
+// gates or errors the clause; the row is listed regardless. It mirrors
+// internal/proofserve.recordKind so the certificate and the single-record page agree.
+func recordKind(noteSchema string) (label string, isDeletion bool) {
+	switch noteSchema {
+	case schemaDeclaration:
+		return kindDeclaration, false
+	case schemaDeletion:
+		return kindDeletion, true
+	default:
+		return kindUnknown, false
+	}
+}
+
 // StatusSource reports a hub's current in-memory glossary status by hub_id. It is
 // the read seam later clauses use to overlay the live poll verdict (the richer
 // unresolvable / unverified states the store cannot prove) onto the store-provable
@@ -104,20 +140,40 @@ type StatusSource interface {
 	Status(hubID int64) (string, bool)
 }
 
+// HistoryRow is one §6 RECORD HISTORY entry: an accepted-tree leaf the hub indexed
+// under the subject id, with its human-readable kind Label (from the verbatim
+// note.$schema, recordKind) and an IsDeletion flag the clause folds into HasDeletion.
+// Seq is the leaf's absolute index, listed verbatim and never interpreted (ADR-0008).
+type HistoryRow struct {
+	// Seq is the leaf's absolute index in the accepted tree (seq < CheckpointSize).
+	Seq uint64
+	// Label is the row's human-readable kind (Declaration / Deletion / unknown), from
+	// recordKind over the row's verbatim note.$schema.
+	Label string
+	// IsDeletion is true only for a deletion record; the clause ORs it into HasDeletion
+	// to decide whether to render the deletion note.
+	IsDeletion bool
+}
+
 // certData is the certificate template view-model. For a certifiable id it
 // populates the §1 SUBJECT clause + subject banner (subject id, resolved hub
 // domain, subject position), the §2 CHECKPOINT clause (the accepted (size, root)),
 // the §3 INCLUSION PROOF clause (the RFC-6962 sibling-hash chain that rebuilds the
-// accepted root from the subject leaf), and the §4 SIGNING KEY clause (the
-// did:web-resolved key that signed the §2 accepted checkpoint). §3 is withheld
-// unless the built proof is re-verified against the accepted root, so a hub whose
-// mirror diverges from its accepted root renders §1+§2 but no §3 (the rebuild gate
-// in buildData). §4 is withheld unless the key the accepted checkpoint was signed
-// with is found in the hub_keys cache, so a hub whose key is not yet resolved renders
-// §1+§2(+§3) but no §4 (the cache-miss decline in buildData). It carries the honest
-// "cannot certify" state with a human-readable Reason; the subject id is echoed back
-// even on a not-found so the page names what was looked up. The §5-§6 HasClauseX
-// flags are all false so the template's gated clause placeholders render nothing yet.
+// accepted root from the subject leaf), the §4 SIGNING KEY clause (the
+// did:web-resolved key that signed the §2 accepted checkpoint), and the §6 RECORD
+// HISTORY clause (the full one-to-many list of accepted-tree seqs indexed under the
+// subject id, each labelled by its note.$schema kind). §3 is withheld unless the
+// built proof is re-verified against the accepted root, so a hub whose mirror
+// diverges from its accepted root renders §1+§2 but no §3 (the rebuild gate in
+// buildData). §4 is withheld unless the key the accepted checkpoint was signed with
+// is found in the hub_keys cache, so a hub whose key is not yet resolved renders
+// §1+§2(+§3) but no §4 (the cache-miss decline in buildData). §6 renders
+// unconditionally for a certifiable id (a store read, no crypto gate to fail closed
+// on — the seqs are the accepted-tree projections §1 already certified against). It
+// carries the honest "cannot certify" state with a human-readable Reason; the subject
+// id is echoed back even on a not-found so the page names what was looked up. The §5
+// HasClause5 flag stays false so the template's gated Bitcoin-anchor placeholder
+// renders nothing yet (the OTS store seam does not exist).
 type certData struct {
 	// IsccID is the subject id as supplied by the caller (echoed verbatim, never
 	// interpreted beyond the decode). It is shown even on a not-found.
@@ -180,6 +236,18 @@ type certData struct {
 	// evaluate CID 1.0 validity windows. Meaningful only when HasClause4.
 	SigningKeyRevoked string
 
+	// RecordHistory is the §6 RECORD HISTORY rows: every accepted-tree seq the hub
+	// indexed under the subject id (seqs ascending, capped to seq < CheckpointSize),
+	// each labelled by its note.$schema kind (recordKind). iscc_id → seq is
+	// one-to-many (ADR-0008): a declaration and its later deletion share an id and
+	// list as two rows. It always has at least the subject position (seqs[0]) for a
+	// certifiable id, so the list is non-empty when HasClause6.
+	RecordHistory []HistoryRow
+	// HasDeletion is true when any row in RecordHistory is a deletion; the template
+	// renders the "a deletion is a new record — the declaration is preserved" note
+	// only then. Meaningful only when HasClause6.
+	HasDeletion bool
+
 	// HasClause2..6 gate the later clauses (checkpoint, inclusion proof, signing
 	// key, Bitcoin anchor, record history). HasClause2 is set when the accepted
 	// checkpoint's (size, root) is read for a certifiable id; HasClause3 when the
@@ -187,8 +255,10 @@ type certData struct {
 	// (proof.VerifyInclusion succeeds, so the rendered ✓ is true by construction);
 	// HasClause4 when the key that signed the accepted checkpoint is found in the
 	// hub_keys cache (an honest cache-miss decline leaves it false, never a fabricated
-	// key); the rest are false so their gated placeholders render nothing; later
-	// sub-steps set them.
+	// key); HasClause6 for every certifiable id (a store read of the accepted-tree
+	// record history, no crypto gate to fail closed on). HasClause5 stays false so the
+	// Bitcoin-anchor placeholder renders nothing (the OTS store seam does not exist
+	// yet); a later sub-step sets it.
 	HasClause2 bool
 	HasClause3 bool
 	HasClause4 bool
@@ -279,6 +349,11 @@ func Handler(hubList *registry.HubList, st *store.Store, statuses StatusSource) 
 //     (malformed sig line) or a cache miss leaves §4 unrendered (an honest "key not
 //     yet resolved" decline, never a fabricated key — ADR-0009 did:web is the only key
 //     source); only a real LookupHubKey DB fault is a 500 (buffered before any 200).
+//  9. For a certifiable id, list the §6 RECORD HISTORY: the accepted-tree seqs (seq <
+//     LastSize) from the same SeqsForISCCID result, each read via RecordAt for its
+//     note.$schema and labelled by recordKind (declaration / deletion / unknown). It
+//     renders unconditionally (a store read, no crypto gate); a RecordAt miss is an
+//     honest gap (the seq lists with the unknown label), only a real DB fault is a 500.
 func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawID string) (certData, int) {
 	if rawID == "" {
 		return certData{Reason: "no ISCC-ID supplied"}, http.StatusOK
@@ -492,6 +567,51 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 			}
 		}
 	}
+
+	// §6 RECORD HISTORY: list the full one-to-many set of accepted-tree seqs the hub
+	// indexed under the subject id — the declaration plus any later deletion (iscc_id →
+	// seq is one-to-many, ADR-0008). seqs is already in hand from SeqsForISCCID
+	// (ascending), so each row needs one RecordAt for its verbatim note.$schema, mapped
+	// to a kind label by recordKind. Two honesty disciplines apply:
+	//   - Cap to the accepted tree (ADR-0001 coverage honesty): list only rows with seq
+	//     < hub.LastSize, mirroring §1's accepted-tree cap and every sibling record
+	//     route, so a record indexed ABOVE the accepted checkpoint (an unaccepted
+	//     projection left by a frozen/failed poll) is never implied to be vouched for.
+	//     The history always has at least seqs[0] (the cap above proved seqs[0] <
+	//     LastSize), so the list is non-empty for a certifiable id.
+	//   - A RecordAt MISS (found == false, a projection gap) is an honest gap, NOT a
+	//     500: list the seq with the empty/unknown-schema label rather than dropping it
+	//     or erroring the page. Only a real RecordAt DB fault is a 500 (buffered before
+	//     any 200, like every other clause). The schema is never gated on (an unknown
+	//     schema lists verbatim with the unknown label) — §6 interprets nothing beyond
+	//     the kind label.
+	// §6 renders unconditionally for a certifiable id: unlike §3/§4 there is no crypto
+	// or cache gate to fail closed on — the seqs are the accepted-tree projections §1
+	// already certified against.
+	var history []HistoryRow
+	deletion := false
+	for _, seq := range seqs {
+		if seq >= hub.LastSize {
+			continue
+		}
+		row, found, err := st.RecordAt(r.Context(), hub.HubID, seq)
+		if err != nil {
+			return certData{}, http.StatusInternalServerError
+		}
+		schema := ""
+		if found {
+			schema = row.NoteSchema
+		}
+		label, isDeletion := recordKind(schema)
+		if isDeletion {
+			deletion = true
+		}
+		history = append(history, HistoryRow{Seq: seq, Label: label, IsDeletion: isDeletion})
+	}
+	data.RecordHistory = history
+	data.HasDeletion = deletion
+	data.HasClause6 = true
+
 	return data, http.StatusOK
 }
 

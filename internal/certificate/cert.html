@@ -373,7 +373,10 @@
       {{if .HasClause6}}
       <div class="clause">
         <div class="clause-marker">§6 RECORD HISTORY</div>
-        <div class="clause-value"></div>
+        <div class="clause-value">
+          {{range .RecordHistory}}<div class="clause-mono">{{.Label}} · seq {{.Seq}}</div>
+          {{end}}{{if .HasDeletion}}<div class="clause-note">This id was later deleted. A deletion is a new record — the declaration above is preserved and still proves inclusion.</div>{{end}}
+        </div>
       </div>
       {{end}}
 

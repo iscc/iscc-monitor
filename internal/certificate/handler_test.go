@@ -870,3 +870,125 @@ func TestCertificateSigningKeyUncached(t *testing.T) {
 		t.Errorf("an uncached-key hub rendered a §4 SIGNING KEY clause\n%s", body)
 	}
 }
+
+// The FULL wire URIs the iscc_index projection stores verbatim (CLAUDE.md's
+// iscc-note-0.8.0 is prose shorthand). §6's recordKind maps these to the Declaration
+// / Deletion labels; the fixture seeds the wire form so the kind labels resolve as
+// production stores them.
+const (
+	wireSchemaDeclaration = "http://purl.org/iscc/schema/iscc-note-0.8.0.json"
+	wireSchemaDeletion    = "http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json"
+)
+
+// fixtureStoreHistory seeds a hub whose subject id has the one-to-many §6 record
+// history: a declaration at declSeq and a LATER deletion at delSeq, both under the
+// SAME ISCC:-prefixed id and both below the accepted checkpoint (LastSize = delSeq+1),
+// so both rows fall within the accepted tree. seq is the PRIMARY KEY, so the two
+// records use distinct seqs (a deletion is a new record at a higher seq). The schemas
+// are the FULL wire URIs so §6's recordKind labels them Declaration / Deletion.
+func fixtureStoreHistory(t *testing.T, indexDomain, indexedID string, declSeq, delSeq uint64) *store.Store {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "certificate-history.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	id0, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub sb0: %v", err)
+	}
+	id1, err := st.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub sb1: %v", err)
+	}
+	target := id0
+	if indexDomain == "sb1.amlet.id" {
+		target = id1
+	}
+
+	prefixed := "ISCC:" + indexedID
+	if err := st.RecordProjections(ctx, []store.ProjectionRecord{
+		{HubID: target, Seq: declSeq, IsccID: prefixed, NoteSchema: wireSchemaDeclaration},
+		{HubID: target, Seq: delSeq, IsccID: prefixed, NoteSchema: wireSchemaDeletion},
+	}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+	if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+		HubID:    target,
+		TreeSize: delSeq + 1, // accept a checkpoint covering both records
+		Root:     []byte("root"),
+		Raw:      []byte("raw"),
+	}); err != nil {
+		t.Fatalf("AdvanceAccepted: %v", err)
+	}
+	return st
+}
+
+// TestCertificateRecordHistory is the §6 RECORD HISTORY test: a subject id with a
+// declaration AND a later deletion (the one-to-many iscc_id → seq case, ADR-0008)
+// renders BOTH rows — the declaration row labelled "Declaration · seq <declSeq>" and
+// the deletion row labelled "Deletion · seq <delSeq>" — plus the deletion note that a
+// deletion is a new record and the declaration is preserved. The subject position is
+// the earliest seq (declSeq), so §1 still certifies the declaration.
+//
+// Non-vacuity: setting data.HasClause6 = false in buildData (or dropping the deletion
+// row from RecordHistory) makes this FAIL — the body would then carry no §6 marker
+// (or no Deletion row / no note). The declaration and deletion seqs are distinct
+// asserted values, so a neutered §6 cannot pass.
+func TestCertificateRecordHistory(t *testing.T) {
+	const declSeq = uint64(24815)
+	const delSeq = uint64(31002)
+	st := fixtureStoreHistory(t, "sb1.amlet.id", goldenID, declSeq, delSeq)
+	h := Handler(testnetHubList(), st, nil)
+
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		"§6 RECORD HISTORY",
+		fmt.Sprintf("Declaration · seq %d", declSeq), // the declaration row
+		fmt.Sprintf("Deletion · seq %d", delSeq),     // the later deletion row
+		"A deletion is a new record",                 // the deletion note
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing §6 marker %q\n%s", want, body)
+		}
+	}
+	// §1 still certifies the declaration at the earliest seq.
+	if !strings.Contains(body, fmt.Sprintf("position <span class=\"subject-strong\">%d</span>", declSeq)) {
+		t.Errorf("§1 subject position is not the earliest seq %d\n%s", declSeq, body)
+	}
+}
+
+// TestCertificateRecordHistoryDeclarationOnly asserts the common single-record case:
+// a subject id with only a declaration renders §6 with the one Declaration row and NO
+// deletion note (HasDeletion is false). It guards against the note rendering
+// unconditionally.
+func TestCertificateRecordHistoryDeclarationOnly(t *testing.T) {
+	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815)
+	h := Handler(testnetHubList(), st, nil)
+
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "§6 RECORD HISTORY") {
+		t.Errorf("a certifiable id rendered no §6 RECORD HISTORY clause\n%s", body)
+	}
+	// fixtureStore seeds the bare "iscc-note-0.8.0.json" schema (not the full wire URI),
+	// so recordKind labels it the catch-all unknown — but the seq still lists and the
+	// clause renders. The deletion note must be ABSENT (a single record is no deletion).
+	if !strings.Contains(body, "seq 24815") {
+		t.Errorf("§6 did not list the subject seq\n%s", body)
+	}
+	if strings.Contains(body, "A deletion is a new record") {
+		t.Errorf("a declaration-only id rendered the deletion note\n%s", body)
+	}
+}
