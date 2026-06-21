@@ -26,6 +26,7 @@ import (
 
 	"github.com/iscc/iscc-monitor/internal/config"
 	"github.com/iscc/iscc-monitor/internal/follower"
+	"github.com/iscc/iscc-monitor/internal/healthz"
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/metrics"
 	"github.com/iscc/iscc-monitor/internal/metricshttp"
@@ -135,13 +136,16 @@ func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hu
 	}
 }
 
-// buildMux assembles the monitor's single request multiplexer: GET /metrics plus
-// every hub's mirror subtree from mirrorHandler. It is factored out of
-// serveMetrics so the full routing (metrics + per-hub mirror) is unit-testable
-// against an httptest.ResponseRecorder without binding a socket.
+// buildMux assembles the monitor's single request multiplexer: GET /metrics, GET
+// /healthz (liveness + store readiness), plus every hub's mirror subtree from
+// mirrorHandler. Both /metrics and /healthz mount as exact paths next to the
+// per-hub mirror subtrees on the same mux, so the single-listener invariant holds
+// (no second socket). It is factored out of serveMetrics so the full routing is
+// unit-testable against an httptest.ResponseRecorder without binding a socket.
 func buildMux(st *store.Store, routes []hubRoute, m *metrics.Registry) http.Handler {
 	mux := mirrorHandler(st, routes)
 	mux.Handle("/metrics", metricshttp.Handler(m))
+	mux.Handle("/healthz", healthz.Handler(st))
 	return mux
 }
 

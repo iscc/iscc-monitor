@@ -17,6 +17,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	_ "embed"
 	"fmt"
@@ -73,6 +74,18 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store.Open: apply schema: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+// Ping verifies the underlying SQLite connection is reachable by delegating to
+// database/sql PingContext. It is the store-readiness probe the /healthz handler
+// consults; with SetMaxOpenConns(1) the ping serializes on the single connection
+// like every other read, which is fine for a liveness check. A failure is
+// %w-wrapped so the caller can inspect the driver error.
+func (s *Store) Ping(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("store.Ping: %w", err)
+	}
+	return nil
 }
 
 // Close releases the database handle. It is safe to call once; further use of

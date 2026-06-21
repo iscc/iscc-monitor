@@ -7,6 +7,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
@@ -130,6 +131,21 @@ func TestStoreRestartSurvival(t *testing.T) {
 	}
 	if domain != "sb0.iscc.id" {
 		t.Errorf("sentinel domain = %q, want %q", domain, "sb0.iscc.id")
+	}
+}
+
+// TestStorePing confirms Ping returns nil on a freshly opened store — the
+// readiness signal the /healthz handler consults.
+func TestStorePing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "testnet.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	if err := s.Ping(context.Background()); err != nil {
+		t.Errorf("Ping on a freshly opened store = %v, want nil", err)
 	}
 }
 

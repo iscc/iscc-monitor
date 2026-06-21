@@ -165,6 +165,19 @@ func TestMirrorRouter(t *testing.T) {
 			t.Errorf("status = %d, want 200", rec.Code)
 		}
 	})
+
+	// GET /healthz -> 200 + {"status":"ok"}: the readiness probe is mounted on the
+	// shared mux and pings the (open) store cleanly.
+	t.Run("healthz served on shared mux", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if got, want := rec.Body.String(), `{"status":"ok"}`; got != want {
+			t.Errorf("body = %q, want %q", got, want)
+		}
+	})
 }
 
 // TestMirrorInclusionRoute proves the proof handler is mounted per hub on the same
