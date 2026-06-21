@@ -95,6 +95,20 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   Fetcher errors with `%w` so a 404's `errors.Is(err, os.ErrNotExist)` survives. It does NOT wrap in
   `ErrUnresolvable` — that sentinel is did:web-only; a checkpoint-fetch fault is a plain transport
   error the follower classifies separately.
+- **`FetchTile`/`FetchEntryBundle` (`logclient/tilefetch.go`) are the tile/bundle transport siblings of
+  `FetchCheckpoint` — same shape, imports only `context`+`fmt`+`internal/tiles`.** The one structural
+  difference from `FetchCheckpoint`: `TilePath`/`EntriesPath` return *slash-less* paths (`tile/1/000`),
+  so the URL is `"https://"+name+"/"+tiles.TilePath(...)` (leading slash on the literal), whereas
+  `FetchCheckpoint` appends `"/checkpoint"`. Paths come from `tiles.TilePath`/`tiles.EntriesPath` (never
+  hand-built), both `origin()` and Fetch errors `%w`-wrapped so a 404's `os.ErrNotExist` survives. The
+  test reuses the in-package `fakeFetcher` (records `gotURL`) and anchors `wantURL` on the four tessera
+  golden path strings from `internal/tiles/layout_test.go` prefixed with `https://sb0.iscc.id/log/`, so
+  the URL asserts are tessera ground truth, not author-asserted. Intentional unwired export seam (no
+  production caller yet — first caller is the M2 `PollHub` tile-ingestion loop that walks `TileCoords`/
+  `BundleCoords` and writes via `RecordTile`/`RecordEntryBundle`); `go vet` clean, not dead code. Oracle
+  gate correctly N/A (pure URL construction + transport, no signature/RFC-6962/Merkle/did:web/fsck path),
+  same posture as `FetchCheckpoint`; go.mod/go.sum byte-identical (`tessera/api/layout` already in the
+  closure), WASM leaves (`tiles`/`didweb`) still build green.
 - **An `httptest` round-trip can prove *fetch* but NOT *verify* against a live-host URL** — `Accept`/
   `ResolveVerifierKey` derive the verifier key from `origin(baseURL)`, and the key is origin-bound
   (`SHA-256(name||…)`). A `127.0.0.1:<port>` host derives a different origin than the fixture's
