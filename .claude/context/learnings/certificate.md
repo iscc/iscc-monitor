@@ -65,3 +65,35 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   binary builds `*registry.HubList` from realm.txt order (slot i = entry i, matching
   the testnet fixture sb0=0/sb1=1). KISS interim; documented TODO. `registry.go` and
   `internal/config` stay untouched. The `Hub` literal needs `*uint16` HubIDs.
+
+- **§3 INCLUSION PROOF recomputes the RFC-6962 proof from the mirror — but a proof
+  BUILT is not a proof VERIFIED.** `buildData` calls
+  `logclient.InclusionProofFromTiles(f.ReadTile, data.Position, hub.LastSize)` over a
+  `store.SQLiteFetcher` and base64-Std encodes each sibling, exactly as proofserve's
+  `serveInclusion` does (the same oracle-gated builder — never hand-roll Merkle math).
+  `os.ErrNotExist` → honest §3-omitted gap (the page keeps §1/§2); any other err →
+  500. **Trap (open, see issues.md, critical):** `InclusionProofFromTiles` is a pure
+  *builder* — it folds whatever tile bytes the fetcher returns and NEVER checks the
+  proof rebuilds the accepted root. For a **frozen-after-fork** hub the follower
+  ingests the contradictory candidate tiles BEFORE the freeze check and `RecordTile`
+  overwrites the same (hub,level,index,width) rows (full tiles included — the upsert
+  has no immutability guard), while `CheckpointAt(LastSize)` still returns the OLD
+  accepted root and `AdvanceAccepted`/`fsckMirror` never run on the frozen path. So §3
+  can build a valid proof against the CONTRADICTORY tree yet render it under the
+  accepted root with a `✓` the siblings do not rebuild — a self-contradictory cert.
+  The §1/§2 cap reasoning ("a frozen hub's LastSize caps it at its accepted window")
+  covers §1/§2 because those read the irreplaceable accepted-checkpoint *record*; §3
+  reads the *mirror*, which the fork can corrupt. Fix: gate §3 on `!hub.Frozen` OR
+  verify the built proof rebuilds `data.CheckpointRoot` via `proof.VerifyInclusion`
+  before `HasClause3 = true` (the latter is fail-closed against ANY tile divergence,
+  not just freeze). The §3 test (`TestCertificateInclusionProof`) is mutation-proven
+  non-vacuous against `testonly.Tree.InclusionProof` (review reproduced both
+  mutations), but it only exercises the CLEAN tree — it does not cover the
+  frozen/contradictory-tile case the fix must add.
+
+- **`html/template` entity-escapes base64 `+`/`/` in text nodes (`+`→`&#43;`).** Only
+  the execution-path contextual escaper does this — `html.EscapeString` does not — so
+  §2's `cm9vdA==` fixture root (no `+`) hid it. Any test asserting on rendered base64
+  chips must `html.UnescapeString(body)` first (the §3 test does); the view-model
+  `ProofHashes` strings stay byte-identical to `writeEvidence`'s, the on-page entity
+  escaping is correct/harmless rendering.

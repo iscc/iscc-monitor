@@ -1,76 +1,81 @@
-## 2026-06-21 — Certificate §3 INCLUSION PROOF — render the real RFC-6962 proof from the mirror
+## 2026-06-21 — Review of: Certificate §3 INCLUSION PROOF — render the real RFC-6962 proof from the mirror
 
-**Done:** `buildData`'s certifiable branch now recomputes the RFC-6962 inclusion proof of the subject
-leaf (`seqs[0]` == `data.Position`) against the accepted tree (`hub.LastSize`) from the hub's mirrored
-tiles via `logclient.InclusionProofFromTiles` over a `store.SQLiteFetcher`, base64-Std encodes each
-sibling hash into `certData.ProofHashes`, sets `HasClause3`, and `cert.html` renders the
-leaf→siblings→root chain in §3. A tile-not-mirrored miss (`os.ErrNotExist`) honestly omits §3 (the page
-still shows §1+§2); any other build error is a 500 (buffer-then-200). The §3 test is mutation-proven
-non-vacuous against `testonly.Tree.InclusionProof`.
+**Verdict:** NEEDS_WORK
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/certificate/handler.go`: added `errors`/`os`/`logclient` imports; added
-  `certData.ProofHashes []string` + `HasClause3`; wired the §3 build after §2 (`SQLiteFetcher{Store,
-  HubID}` → `InclusionProofFromTiles(ctx, f.ReadTile, data.Position, hub.LastSize)`; `os.ErrNotExist` →
-  honest gap, other err → 500; render §3 only when §2 holds since the root chip is the accepted root);
-  updated package + struct + `buildData` doc comments (§3 is real, oracle gate now APPLIES).
-- `internal/certificate/cert.html`: filled the `{{if .HasClause3}}` block — `leaf · seq {{.Position}}`,
-  `{{range .ProofHashes}}sibling …{{end}}`, `root {{.CheckpointRoot}} ✓`, and a `{{len .ProofHashes}}
-  sibling hashes` note. Reused existing `.clause-mono`/`.clause-note` CSS; no new CSS.
-- `internal/certificate/handler_test.go`: added `fixtureStoreTiled` (real `testonly.Tree`, ingests every
-  `tiles.TileCoords` hash tile via `RecordTile`, accepts the tree's REAL root via `AdvanceAccepted`) +
-  `treeNodeHash` (ported from proofbuilder_test/fsck_test); `TestCertificateInclusionProof` (asserts each
-  rendered hash == base64-Std of `tree.InclusionProof(seq, size)`) and `TestCertificateInclusionProofTileGap`
-  (tile-less fixture renders §1+§2 but NO §3).
+**Summary:** The advance wires the §3 inclusion-proof clause exactly as `next.md` asked — `buildData`
+recomputes the RFC-6962 proof of `seqs[0]` against `hub.LastSize` from the mirrored tiles via
+`logclient.InclusionProofFromTiles` over a `SQLiteFetcher`, base64-Std encodes each sibling, and
+`cert.html` renders the leaf→siblings→root chain; the test is genuinely non-vacuous (I independently
+reproduced both mutations). All gates are green and scope is clean. BUT a reviewer-confirmed Codex P2
+is a real trust-root defect: for a **frozen-after-fork** hub the mirror can hold the contradictory
+tree's tiles while the accepted root is the old one, so §3 can build a valid proof and render it under
+a `root … ✓` the siblings do not rebuild — a self-contradictory certificate. That blocks PASS.
 
-**Verification:** `mise run check` → green (all 21 packages `ok`, certificate uncached). Per criterion:
-- [x] `go test -count=1 ./internal/certificate` passes uncached; `go test -count=1 -run TestCertificate
-  ./internal/certificate` passes.
-- [x] §3 test body contains `§3 INCLUSION PROOF`, `leaf · seq 0`, and each base64-Std hash of
-  `tree.InclusionProof(0, 5)` (3 hashes — substantive multi-hash proof, not empty). Body is
-  `html.UnescapeString`d first because `html/template` escapes `+`→`&#43;` (see Notes).
-- [x] Mutation (a): `HasClause3 = false` → `TestCertificateInclusionProof` FAILS (all §3 asserts).
-  Reverted.
-- [x] Mutation (b): corrupt one rendered hash (`append([]byte{0x00}, h...)`) →
-  `TestCertificateInclusionProof` FAILS (rendered hashes no longer match the prover). Reverted.
-- [x] Tile-less fixture renders NO `§3 INCLUSION PROOF` (`TestCertificateInclusionProofTileGap`); the
-  §1/§2 synthetic-fixture tests (`TestCertificateKnownID` etc.) still pass.
-- [x] `GOOS=js GOARCH=wasm go build ./internal/index` + `./internal/didweb` exit 0.
-- [x] `go.mod`/`go.sum` byte-unchanged (`InclusionProofFromTiles`/`SQLiteFetcher`/`testonly`/`api`/
-  `compact`/`rfc6962` all already in the closure).
-- [x] Conformance/oracle gate (re-engaged at §3): `go test -count=1 ./internal/logclient ./cmd/notecheck`
-  green uncached; `derive_vkey.py` reproduces both vectors (`40b74463`/`22b08f3e`); scratch cleaned.
-- [x] Scope: 2 source files + 1 test file (≤3 budget). No `## Not In Scope` item touched (no §4-§6,
-  no proof-bundle download, no `registry.go`, no `go.mod`/`mise.toml`/CI bump).
+**Verification:**
+- [x] `mise run check` green (build + vet + test, all 21 packages `ok`).
+- [x] `go test -count=1 ./internal/certificate` passes uncached; `-run TestCertificate` passes.
+- [x] §3 test asserts each base64-Std hash of `tree.InclusionProof(0,5)` (3 hashes, substantive) on the
+  `html.UnescapeString`d body, plus `§3 INCLUSION PROOF` / `leaf · seq 0` / the accepted-root chip /
+  the `N sibling hashes` note.
+- [x] Mutation (a) reproduced INDEPENDENTLY: `HasClause3 = false` → `TestCertificateInclusionProof`
+  FAILS. Reverted.
+- [x] Mutation (b) reproduced INDEPENDENTLY: corrupt one rendered hash (prepend 0x00) → test FAILS with
+  `body missing §3 inclusion-proof hash 0 …`. Reverted; tree clean afterward.
+- [x] Tile-less fixture renders §1+§2 but NO §3 (`TestCertificateInclusionProofTileGap`); §1/§2
+  synthetic tests still pass.
+- [x] Oracle/conformance gate (re-engaged at §3): `go test -count=1 ./internal/logclient ./cmd/notecheck`
+  green uncached; `derive_vkey.py` reproduces both vectors (`40b74463`/`22b08f3e`); scratch removed.
+- [x] `gofmt -l .` empty; `GOOS=js GOARCH=wasm go build ./internal/index` + `./internal/didweb` exit 0.
+- [x] `proof/verify` purity intact (no `net`/`net/http`/`database/sql`/sqlite in its closure); the new
+  `internal/logclient` import in certificate is fine (certificate is an HTTP-surface package, not
+  WASM-shared; `proofbuilder.go` is net-free at file level).
+- [x] `go.mod`/`go.sum` byte-unchanged across the advance commit.
+- [x] No gate circumvention across the 3 unpushed commits (no `nolint`/`t.Skip`/build-tag/swallowed-
+  error/deleted-assertion; the advance is the only code change, define-next/update-state touch context).
+- [x] Scope: 2 source files (`handler.go`, `cert.html`) + 1 test file — within the ≤3 budget. No
+  `## Not In Scope` item touched (no §4-§6, no proof-bundle download, no `registry.go`/`go.mod`/CI).
+- [ ] §3 honesty under a frozen-after-fork hub — FAILS: §3 trusts the mirror tiles blindly and can pair
+  a contradictory-tree proof with the accepted root under a `✓`. Root cause + fix in issues.md.
 
-**Next:** §3 is sound. Proceed to §4 SIGNING KEY (the hub's did:web key — `did:web:<domain>#<keyid>`,
-Ed25519, resolved/cached via `hub_keys` / `LookupHubKey`; the §4 mockup shows the verification-method
-id + "resolved from the hub's did:web document"). Then §5 Bitcoin anchor, §6 record history (the
-per-id `seqs` list with declaration/deletion labels — the schema-aware projection), and the
-downloadable proof-bundle assembler (the disabled Download button). The raw signed-note bytes are
-already available from `CheckpointAt`'s second return for the bundle.
+**Issues found:**
+- **[critical, new]** Certificate §3 renders a self-contradictory proof for a frozen-after-fork hub
+  (built ≠ verified). `InclusionProofFromTiles` is a pure builder that never checks the proof rebuilds
+  the accepted root; the follower ingests contradictory candidate tiles before the freeze check and
+  `RecordTile` overwrites the rows (full tiles included), while the frozen path skips
+  `AdvanceAccepted`/`fsckMirror` and keeps the old accepted root. §3 ignores `hub.Frozen` (which it has
+  in hand). Fix: verify the built proof rebuilds `data.CheckpointRoot` via `proof.VerifyInclusion`
+  before `HasClause3 = true` (fail-closed against any tile divergence) OR gate §3 on `!hub.Frozen`.
+  Filed in issues.md with the full mechanism + line refs.
+
+**Codex second opinion:** One [P2] finding — "Bind §3 proofs to the accepted checkpoint root"
+(`handler.go:343`). **Confirmed real** and promoted to a `critical` issue. I traced the freeze/ingest
+ordering in `internal/follower/follower.go` (ingestTiles at :174 runs before checkConsistency; the
+frozen branch returns at :204-207 without AdvanceAccepted/fsckMirror), the no-immutability-guard upsert
+in `internal/store/tiles.go:49-56`, and confirmed `InclusionProofFromTiles`
+(`internal/logclient/proofbuilder.go:103`) is a builder that never verifies a root. The certificate is
+strictly worse than proofserve here because it renders a `✓` validity assertion, not a client-verified
+JSON. The hard oracles (notecheck, golden vectors) are green and do not contradict this — they cover
+the clean path; the defect is in an untested frozen/contradictory-tile path. No findings dismissed.
+
+**Next:** Fix the confirmed critical first: in `buildData`'s §3 branch, before `HasClause3 = true`,
+verify the built proof rebuilds the accepted root (`proof.VerifyInclusion` with the leaf hash from the
+mirrored entry bundle + `data.CheckpointRoot` decoded) — the truly fail-closed choice for a
+self-verifiable artifact — or, if simpler is preferred, gate §3 on `!hub.Frozen`. Add a frozen-hub /
+contradictory-tile fixture test that asserts §1+§2 render but NO §3 `✓`, mutation-proven (reverting the
+guard makes it FAIL). Then resume the §4 SIGNING KEY clause (did:web key via `hub_keys`/`LookupHubKey`),
+§5 anchor, §6 record history, and the proof-bundle download.
 
 **Notes:**
-- **HTML escaping of base64 chips:** `html/template`'s contextual auto-escaper encodes `+`→`&#43;` in
-  text nodes (`template.HTMLEscapeString`/`html.EscapeString` do NOT — only the execution-path escaper
-  does). The §2 test passed only because its fixture root `cm9vdA==` has no `+`/`/`. The §3 test
-  asserts on `html.UnescapeString(body)` so it checks the real base64-Std proof bytes regardless of
-  escaping. The byte-identity-across-surfaces invariant holds at the view-model level (`ProofHashes` are
-  the same base64-Std strings `writeEvidence` emits); the on-page HTML entity-escapes `+`, which is
-  correct/harmless rendering. Review may want to confirm this is acceptable for a human-readable cert
-  (the proof bundle download — a later step — will carry the unescaped JSON).
-- **Render-§3-only-when-§2 decision:** §3's root chip reuses `data.CheckpointRoot` (the accepted root),
-  so I gate the render on `data.HasClause2` (the `else if data.HasClause2` branch). In practice §2 is
-  always present on a certifiable path (`AdvanceAccepted` records the checkpoint at the same size it
-  advances to), so this is belt-and-suspenders, not a reachable gap. A proof that built but had no §2
-  root would silently drop §3 rather than render a chain to an empty root — the coverage-honest choice.
-- **Empty-proof note:** a single-leaf accepted tree (`size == 1`, leaf 0) yields an empty-but-valid
-  proof, so `HasClause3` gates on `err == nil`, not `len(proof) > 0`. Unreachable on the certifiable
-  path though: the cap requires `seqs[0] < LastSize`, and `seqs[0] >= 0`, so `LastSize >= 2` whenever
-  §3 builds for the chosen leaf except the `seq 0, size 1`… actually `seq 0 < size 1` IS certifiable
-  and would render §3 with zero siblings + the note "0 sibling hashes". That is honest (the root IS the
-  leaf), so it is fine; the §3 test deliberately uses a 5-leaf tree for a substantive 3-hash proof.
-- Open backlog unchanged: the `hubDomain` ForceQuery fail-open (`normal`, waits for a `registry.go`
-  step), the ADR-0011 Go 1.26 / iscc-lib bump (`normal`, foundational), and the four `low` items. None
-  block §3. M-UI's certificate Verify criterion now has §1+§2+§3 of 6 clauses real; §4-§6 + the
-  proof-bundle download remain the in-flight arc, so M-UI is not yet DONE.
+- The same latent "built ≠ verified against an accepted root" gap exists in proofserve's
+  `serveInclusion`, but proofserve returns client-verifiable JSON without a validity assertion, so it is
+  not an honesty defect there. Worth a glance when the proof-bundle assembler lands (the bundle must let
+  the client rebuild the root, which it does by construction).
+- §1/§2 are unaffected by this defect: they read the irreplaceable accepted-checkpoint *record*
+  (`CheckpointAt`), which a fork cannot corrupt. Only §3's mirror-tile read is corruptible.
+- `html/template` entity-escapes `+`/`/` in base64 chips (`+`→`&#43;`); the §3 test correctly
+  `html.UnescapeString`s the body. View-model strings stay byte-identical to `writeEvidence`; the
+  on-page escaping is correct rendering. Recorded in `learnings/certificate.md`.
+- No remote push this cycle (NEEDS_WORK). Open backlog otherwise unchanged: `hubDomain` ForceQuery
+  (`normal`), ADR-0011 Go 1.26/iscc-lib (`normal`), four `low` items. M-UI certificate Verify is
+  §1+§2 real + §3 landed-but-needs-the-frozen-guard; not yet DONE.
