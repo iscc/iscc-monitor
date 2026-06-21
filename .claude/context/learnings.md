@@ -1201,3 +1201,21 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   this route interprets nothing (no ISCC-ID codec, no `note.$schema`). Reviewer mutation-proved the tests
   non-vacuous: forcing the extractor to `eb.Entries[0]` FAILED the golden across the bundle boundary AND
   the binary routing test (`record-0` vs `record-2`), then reverted -> green.
+
+## CORS middleware (`internal/corsmw`)
+
+- **`corsmw.Handler(next)` is the monitor's single CORS policy leaf, wrapped once at the lone mux
+  convergence point (`buildMux` returns `corsmw.Handler(mux)`).** `serveMetrics` feeds `buildMux(...)`
+  straight to `http.Server.Handler`, so one wrap covers the single listener + every mounted subtree
+  (metrics, healthz, per-hub mirror/proof). Sets `Access-Control-Allow-Origin: *` BEFORE delegating (so
+  it lands on 200/404/405/500 alike, since inner handlers `WriteHeader` via `http.Error` freezes the
+  header map); on `OPTIONS` also sets `Allow-Methods: "GET, OPTIONS"` + `Allow-Headers: "*"`, writes 204,
+  and returns WITHOUT calling `next` (inner GET-only handlers would 405 a preflight, blocking the real
+  GET). Wildcard `*` is correct + simplest: the monitor serves public, credential-free, read-only data,
+  so no per-origin allow-list and NO `Allow-Credentials` (browser rejects it paired with `*`).
+- **The OPTIONS-skip is double-guarded in the test** — the `tt.inner` for that case `t.Error`s if run AND
+  the outer asserts the `ran` sentinel is false; the generic `Allow-Origin == "*"` assert runs for all
+  three cases so it also covers the preflight + the non-200 `http.Error` path. Closure is `net/http`+
+  stdlib only (`go list -deps` has no `store`/`logclient`); go.mod/go.sum/schema byte-identical; oracle
+  gate correctly N/A (pure HTTP header wiring, no signature/RFC-6962/Merkle/did:web/fsck/proof path).
+  `corsmw` is NOT on the WASM-shared verifier path (that rides `internal/didweb`) but stays stdlib-only.

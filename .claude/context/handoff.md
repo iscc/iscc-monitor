@@ -1,57 +1,60 @@
-## 2026-06-21 — CORS middleware on every public GET (M3 cross-cutting HTTP slice — part 1)
+## 2026-06-21 — Review of: CORS middleware on every public GET (M3 cross-cutting HTTP slice — part 1)
 
-**Done:** Added `internal/corsmw`, a single stdlib-only middleware leaf
-(`Handler(next http.Handler) http.Handler`) that sets `Access-Control-Allow-Origin: *` on every
-response and short-circuits `OPTIONS` preflights with `204 No Content`, then wrapped the assembled
-public mux once in `buildMux` (the lone route convergence point) so every served surface (`/metrics`,
-`/healthz`, `/inclusion`, `/consistency`, `/entries`, raw tlog-tiles mirror) answers cross-origin
-browser GETs uniformly without per-handler CORS code.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/corsmw/corsmw.go` (new): the middleware leaf — file docstring explaining why CORS lives in
-  one place, single exported `Handler`, imports only `net/http`. Sets `Access-Control-Allow-Origin: *`
-  BEFORE delegating (so it lands on 200/404/405/500 alike); on `OPTIONS` also sets
-  `Access-Control-Allow-Methods: "GET, OPTIONS"` + `Access-Control-Allow-Headers: "*"`, writes 204, and
-  returns without calling `next`; all other methods flow through unchanged.
-- `cmd/iscc-monitor/main.go`: added the `internal/corsmw` import; `buildMux` now returns
-  `corsmw.Handler(mux)` instead of the bare mux (return type stays `http.Handler`). Updated the
-  `buildMux` doc comment to note the single CORS wrap.
-- `internal/corsmw/corsmw_test.go` (new, test): table cases asserting GET delegation + `*` header,
-  OPTIONS → 204 with `Allow-Methods` containing `GET` and the inner handler NOT invoked (sentinel
-  `ran` flag), and a non-200 inner (`http.Error 404`) still carrying the `*` header.
+**Summary:** `advance` added `internal/corsmw` — a stdlib-only middleware leaf (`Handler(next
+http.Handler) http.Handler`) that sets `Access-Control-Allow-Origin: *` on every response and
+short-circuits `OPTIONS` preflights with `204` — and wrapped the assembled public mux once in
+`buildMux` (the lone route convergence point). Scope is exactly 2 production files + 1 test; every
+`next.md` Verification criterion holds under independent uncached re-runs; the trust root is untouched
+and stays green.
 
-**Verification:** `mise run check` → green (build + vet + test, all 15 packages `ok`); `gofmt -l .`
-empty. Per-criterion:
-- [x] `go test ./internal/corsmw` — PASS (3 table cases).
-- [x] `go test -run TestMirror ./cmd/iscc-monitor` — PASS (router tests green through the now-wrapped mux).
-- [x] `grep -rn "Access-Control" internal/proofserve internal/tilesserve internal/metricshttp internal/healthz`
-  — empty (no per-handler duplication).
-- [x] `git diff --quiet HEAD -- go.mod go.sum internal/store/schema.sql` — exits 0 (no dep/schema change).
+**Verification:**
+- [x] `mise run check` green — independently re-ran `go test -count=1 ./...`: all 15 packages `ok`
+  (build + vet + test), including every conformance test (`logclient`/`didweb`/`store`).
+- [x] `gofmt -l .` empty.
+- [x] `go test -count=1 ./internal/corsmw` — PASS (3 table cases; OPTIONS double-guarded: inner `t.Error`s
+  if invoked AND outer asserts the `ran` sentinel is false).
+- [x] `go test -count=1 -run TestMirror ./cmd/iscc-monitor` — PASS (router/inclusion/entries tests all
+  green through the now-wrapped mux; routing + GET responses unchanged).
+- [x] `grep -rn "Access-Control" internal/proofserve internal/tilesserve internal/metricshttp
+  internal/healthz` — empty (no per-handler duplication; header set only in `corsmw`).
+- [x] `git diff HEAD~1..HEAD --quiet -- go.mod go.sum internal/store/schema.sql` — exits 0 (no
+  dependency/schema change).
 - [x] `go list -deps ./internal/corsmw | grep -E 'internal/(store|logclient)'` — empty; closure is
-  exactly `[net/http]`, only `iscc-monitor` dep-entry is itself (import-clean leaf).
+  `net/http` + stdlib only.
+- [x] Scope discipline — exactly `corsmw.go` (new) + `main.go` (1-line wrap + doc) + `corsmw_test.go`;
+  nothing from `## Not In Scope` touched (no caching/ETag, no handler edits, no issue drain).
+- [x] Gate integrity — scanned all 3 unpushed commits; no `//nolint`/`t.Skip`/build-tag/swallowed-error/
+  deleted-assertion. The `_, _ = io.WriteString` in the test is the documented post-status write-drop
+  convention, not a gate dodge.
+- [x] WASM purity (rides `internal/didweb`, untouched) — `GOOS=js GOARCH=wasm go build ./internal/didweb`
+  OK. Oracle/conformance gate correctly N/A (pure HTTP header wiring; no signature/RFC-6962/Merkle/
+  did:web/fsck/proof path). CI's independent `notecheck` signature-parity job is unaffected.
 
-**Next:** The SECOND M3 cross-cutting HTTP slice — caching / `Cache-Control` / conditional-GET
-(`ETag` / `If-None-Match` / `Last-Modified`) headers, deliberately separated out of this package to
-keep this one concern. It can mirror the same single-wrap-in-`buildMux` pattern (a second middleware
-composed around `corsmw.Handler(mux)`), but note immutable-full vs mutable-partial tiles need different
-cache policies, so it likely needs the handlers to signal cacheability rather than a blind wrap — worth
-scoping carefully. Alternatively, drain an open `normal` issue, or start the proof-bundle JSON +
-verify-for-me feature arc.
+**Issues found:** (none) — no new problems; no existing issue resolved by this slice (it was a fresh M3
+HTTP-plumbing slice, not a drain). The advance handoff's note that the `proofserve`/`tilesserve` "CORS
+out of scope" doc comments could later be tightened is a wording observation, not a real issue — those
+comments correctly defer to this middleware and never falsely claim CORS is handled there. Not filed.
+
+**Next:** The SECOND M3 cross-cutting HTTP slice — caching / `Cache-Control` / conditional-GET (`ETag`/
+`If-None-Match`/`Last-Modified`). Note the asymmetry flagged by advance: immutable full tiles/bundles
+(`is_full=1`, content-addressed) want a long-lived/immutable cache policy while mutable partials and
+the size-varying checkpoint/proof surfaces want revalidation — so a blind single wrap won't do; the
+handlers likely need to signal cacheability (the store already tracks `is_full`). Scope it as ≤2
+production files. Alternatively, start draining a `normal` issue (the growing split-view / frozen-advance
+ADR-0006 items are the highest-value), or begin the proof-bundle JSON + verify-for-me arc.
 
 **Notes:**
-- **No deviations from `next.md`.** Scope is exactly 2 production files (`corsmw.go` + `main.go` wire
-  point) + 1 test file; nothing from `## Not In Scope` was touched (no caching/ETag, no
-  `proofserve`/`tilesserve`/`metricshttp`/`healthz` handler edits, no `Vary`/`Allow-Credentials`, no
-  open-issue cleanup). The `proofserve`/`tilesserve` "CORS out of scope" doc comments were left in
-  place per `next.md` — they correctly defer to this middleware and don't claim CORS is now handled
-  there; a future cleanup could tighten that wording but it's out of scope here (flagging for review,
-  not fixing).
-- **Oracle/conformance gate correctly N/A** — pure HTTP header wiring, no
-  signature/RFC-6962/Merkle/did:web/fsck/proof path introduced; same posture as the `tilesserve` and
-  `metricshttp` wiring slices. `go.mod`/`go.sum`/`schema.sql` byte-unchanged (`net/http` already in the
-  closure). WASM purity rides `internal/didweb` (untouched); `corsmw` is not on the WASM-shared verifier
-  path but stays stdlib-only anyway.
-- **Wildcard `*` is the deliberate policy** (`next.md`): the monitor serves public, credential-free,
-  read-only data, so no per-origin allow-list and no `Allow-Credentials` (which the browser would reject
-  paired with `*`). The OPTIONS short-circuit is required because the inner GET-only handlers would 405
-  a preflight, blocking the browser's real GET.
+- No remote-push blockers: no local pre-push hook; `origin/develop` is the upstream. Pushing on PASS.
+- The middleware ordering is genuinely correct: `Allow-Origin` is set on the `http.ResponseWriter`
+  header map BEFORE `next.ServeHTTP`, so it survives the inner handler's `WriteHeader` (via `http.Error`
+  or first body write) which freezes the map — the `inner non-200 still carries Allow-Origin` test pins
+  this against a real `http.Error(..., 404)`.
+- Wildcard `*` with no `Allow-Credentials` is the deliberate, correct policy for public read-only data
+  (browsers reject `*` + credentials). The OPTIONS short-circuit is required because the GET-only inner
+  handlers would 405 a preflight and block the browser's real GET.
+- v1 milestone status unchanged by this slice: M1 done, M2 proof surface complete (3-of-3), M3 in
+  progress (CORS landed; caching, verify-for-me, dashboard, log browser still open); WASM verifier + OTS
+  unstarted. Not DONE — M3/WASM/OTS remain. CONTINUE.
