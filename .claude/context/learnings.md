@@ -232,16 +232,22 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   {,/layout}`; the load-bearing purity invariant is the **`GOOS=js GOARCH=wasm` build**, which passes.
   Reviewer trimmed a stale file-comment that claimed `os` was imported (it never was — the sentinel rides
   the `%w` wrap, this file never references `os`).
-- **`go mod tidy` is NOT a no-op here (adds 22 go.sum lines) — but the committed go.sum is byte-identical
-  to HEAD and the build is fully reproducible under `-mod=readonly` (verified: clean readonly build+test,
-  `go mod verify` passes).** Importing `tessera/api` (vs `tessera/api/layout`, already used by
-  `internal/tiles`) widens the module-graph *require* footprint, so tidy wants checksums for tessera's
-  transitive requires (otel/klog/x-crypto/formats/backoff) that **never compile** (`go list -deps
-  tessera/api` is stdlib-only). There is **no CI yet** (`.github/workflows/` absent), so no tidy-cleanliness
-  job fails today — but **a future `go mod tidy && git diff --exit-code` CI step WOULD fail** on these 22
-  lines. Resolve before CI/notecheck lands: either a deliberate go.sum-only commit adding the 22 entries,
-  or a tidy step scoped to compiled deps. This is the FIRST slice where tidy actually diverges (the
-  go-cmp/tessera-graph churn earlier learnings noted stayed latent until `tessera/api` was imported).
+- **The 22 tessera module-graph go.sum lines are now COMMITTED — tidy is idempotent (RESOLVED).** A
+  deliberate go.sum-only commit (79e5e37) records the `h1:`/`/go.mod` checksums for tessera's transitive
+  *require*-graph modules (otel/klog/x-crypto/formats/backoff) that `tessera/api` widens but **never
+  compile** into a monitor package (`go mod why -m <each>` traces through `tessera/api.test` →
+  `tessera`, never our packages). Now `go mod tidy && git diff --exit-code -- go.sum` exits 0 and a
+  future CI tidy gate passes. Reviewer independently confirmed the recorded checksums are GENUINE, not
+  fabricated: `go mod download` of three of the added modules resolved with **no** verification
+  error/mismatch (Go recomputes the same `h1:` from source) and `go mod verify` → `all modules
+  verified`. Purely additive (no existing go.sum entry rewritten), readonly build+test green, go.mod
+  byte-untouched. The trust root is unaffected — didweb/logclient/follower conformance tests pass
+  uncached and `derive_vkey.py` reproduces both golden vectors (`40b74463`/`22b08f3e`).
+- **Validate go.sum-only commits against the proxy, not just `go mod verify`.** `go mod verify` checks
+  the *local cache* against go.sum (tautological if both were written together); `go mod download -x
+  <module>@<version>` on a fresh module re-fetches from the proxy and recomputes the `h1:` — a mismatch
+  there is the real fabricated-checksum oracle. Combine with `go mod why -m` (proves a require-graph
+  module never reaches a monitor package) to confirm a go.sum addition is legitimately graph-only.
 
 ## tlog-tiles layout seam (`internal/tiles`)
 
