@@ -1,104 +1,102 @@
 # Next Work Package
 
-## Step: Port `notecheck` into the monitor module as `cmd/notecheck`
+## Step: Wire CI — `mise run check` + the `notecheck` signature-parity oracle shell-out
 
 ## Goal
-Give the fully-independent signature-parity oracle (`notecheck`) a real in-repo
-**compile path** by porting it from gitignored `cauldron/` into `cmd/notecheck` inside
-the monitor module. This is the prerequisite the CI gap (the sole open `normal` issue +
-the review handoff `Next:`) is blocked on: `notecheck` currently exists only as a
-module-less `main.go` under `cauldron/` (gitignored, external deps, no local compile
-path), so CI cannot `go build` or `go run` it on a fresh checkout. A real `cmd/notecheck`
-package makes the oracle buildable and shell-out-able, after which the `.github/workflows/`
-YAML becomes a trivial follow-up step that only invokes things that already build.
+Stand up `.github/workflows/` so the green quality gate (`mise run check`) and the
+fully-independent external signature oracle (`cmd/notecheck`) run on every push/PR — not just
+locally. This closes the sole open `normal` issue and makes the trust-root conformance gate actually
+gate, which `target.md` requires ("the fully-independent external oracle `notecheck` … is built and
+**shelled out in CI**").
 
 ## Scope
-- **Create**: `cmd/notecheck/main.go` — port of
-  `cauldron/iscc-hub/conformance/notecheck/main.go`, verbatim-in-shape, into `package main`
-  under the monitor module (`github.com/iscc/iscc-monitor/cmd/notecheck`). The only
-  non-test source file.
-- **Create**: `cmd/notecheck/main_test.go` — golden test driving the oracle against the
-  live `testdata/live/sb0.iscc.id_checkpoint` fixture (test file, not counted toward the
-  3-file limit).
-- **Modify**: `go.mod` / `go.sum` — `go mod tidy` promotes
-  `github.com/transparency-dev/formats` from `// indirect` to a direct require (it is
-  ALREADY in the module graph; this is additive + tidy-idempotent, NOT a version bump).
+- **Create**: `.github/workflows/ci.yml` — a single GitHub Actions workflow (CI infrastructure, not a
+  Go source file; it does not count against the 3-non-test/doc-file budget).
+- **Modify**: (none — no Go source or config changes are needed; `mise.toml` already defines `check`).
 - **Reference**:
-  - `cauldron/iscc-hub/conformance/notecheck/main.go` — the source to port (45 lines:
-    `f_note.NewVerifier(--vkey)` + `note.Open(stdin, VerifierList(v))` + the strict
-    `len(n.Sigs)==0 || len(n.UnverifiedSigs)!=0` reject, prints `OK <name>`, exit codes 2/1/0).
-  - `.claude/derive_vkey.py` — the trust-root oracle that prints the golden vkey
-    (sb0: `sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5`). It writes
-    `.claude/.scratch/` (NOT gitignored) — `rm -rf .claude/.scratch` after running so the
-    tree stays clean.
-  - `internal/logclient/verify.go` + `learnings.md` "Checkpoint signed-note verification" —
-    the monitor-side path this oracle is the external parity check for; the
-    `len(n.Sigs)==0 || len(n.UnverifiedSigs)!=0` reject mirrors `note.Open` exactly.
-  - `testdata/live/sb0.iscc.id_checkpoint` — the live signed checkpoint the test feeds on
-    stdin (name `sb0.iscc.id/log`, size `10183`, signer keyhash `40b74463`).
+  - `/workspace/iscc-monitor/.claude/context/handoff.md` — the `**Next:**` block spells out the exact
+    CI shape (build `./cmd/notecheck`, shell it against a captured checkpoint, assert `OK <name>` +
+    exit 0, exit 1 on a corrupted one, plus a `mise run check` job).
+  - `/workspace/iscc-monitor/cmd/notecheck/main.go` — confirms the CLI contract: `--vkey <string>`,
+    checkpoint text on **stdin**, prints `OK <name>` + exit 0 / exit 1 verify-fail / exit 2 setup-fail.
+  - `/workspace/iscc-monitor/testdata/live/sb0.iscc.id_checkpoint` — the captured checkpoint the CI
+    shells the oracle against (signed by `sb0.iscc.id/log`, size 10183).
+  - `/workspace/iscc-monitor/mise.toml` — the `[tasks.check]` gate the workflow invokes; `[tools] go =
+    "1.24"`. Note `gofmt -l .` is NOT in `check` (the loop's `review` agent judges it); see Notes.
+  - `/workspace/iscc-monitor/.gitignore` — confirms `cauldron/` is gitignored so it never reaches a
+    fresh CI checkout (the `go build ./...` cauldron pitfall in `learnings.md` does not apply to CI).
 
 ## Not In Scope
-- **Do NOT create `.github/workflows/` or any CI YAML.** That is the *next* step; it
-  depends on this compile path existing first, and bundling it here would push the file
-  count and the "runnable-without-GitHub-Actions" verification past one clean step.
-- Do NOT wire `notecheck` into `mise.toml` tasks or into any `internal/` Go test — the
-  monitor's own crypto path is already golden-tested; this step adds only the *external*
-  oracle binary, it does not change how the monitor verifies.
-- Do NOT touch the follower / `cmd/iscc-monitor` / inclusion cross-check / live
-  tile-ingestion writer — all later M2 slices.
-- Do NOT change `derive_vkey.py`, the checkpoint fixtures, or any did.json (the stale sb1
-  fixture refresh is its own separate step).
+- Do **not** add a `gofmt`/formatting gate step to CI. `mise run check` deliberately excludes `gofmt
+  -l .` (it exits 0 even when listing files, so it cannot gate by exit code portably — see `mise.toml`
+  header); formatting stays the `review` agent's job. Adding a hand-rolled `gofmt -l` exit-code check
+  is a separate decision, not this step.
+- Do **not** edit any Go source, `mise.toml`, `go.mod`/`go.sum`, `cmd/notecheck`, or the `low`-issue
+  vestigial `out` param. CI is purely additive.
+- Do **not** start the inclusion cross-check vs `IsccLogInclusionProof` (the next M2 slice) or the
+  live tile-ingestion writer — those wait until CI is green.
+- Do **not** add caching, matrix builds, multi-OS runners, release jobs, or `go mod tidy`/`go mod
+  verify` steps beyond what is needed to gate. Keep the workflow minimal (KISS); a tidy-drift gate can
+  be a later additive step.
 
 ## Implementation Notes
-- **Port faithfully, do not redesign.** Keep the exact two-verifier composition from the
-  reference: `f_note "github.com/transparency-dev/formats/note"` for `NewVerifier(*vkey)`,
-  then `golang.org/x/mod/sumdb/note` for `note.Open(body, note.VerifierList(v))`. Both are
-  already in `go.mod` (formats currently `// indirect`, x/mod direct), so `go mod tidy`
-  downloads nothing new — it only re-classifies formats as a direct require.
-- **Match the reference's exit codes** (CI relies on them): `--vkey` missing / bad vkey /
-  stdin read error → `os.Exit(2)`; `note.Open` failure OR the
-  `len(n.Sigs)==0 || len(n.UnverifiedSigs)!=0` reject → `os.Exit(1)`; success → print
-  `OK <n.Sigs[0].Name>` and exit 0. This strict-signature reject is the same one
-  `internal/logclient/verify.go` uses (learnings: "`note.Open` success check mirrors the
-  notecheck oracle exactly") — it is the load-bearing parity invariant; keep it identical.
-- **Keep `main` thin and testable.** Idiomatic split: a pure helper, e.g.
-  `func run(vkey string, in io.Reader, out io.Writer) (string, error)` doing
-  `NewVerifier → ReadAll → note.Open → strict-reject` and returning `(name, err)`; `main`
-  parses the flag, calls `run`, maps errors to the documented exit codes via `os.Exit`.
-  The test drives `run` directly (no subprocess, no `os.Exit`) so it stays a normal
-  `go test` unit — that is what lets a single `mise run check` cover the oracle's logic
-  while CI shells out the *binary* in the later step.
-- **Correctness rule (learnings, "Checkpoint signed-note verification"):** the vkey's
-  middle `+<hex>+` field is the signed-note keyhash; sb0's is `40b74463`. Embed the exact
-  sb0 vkey string in the test and assert `run` returns `("sb0.iscc.id/log", nil)` for the
-  live fixture. Add a NEGATIVE case: a one-byte-corrupted checkpoint body (flip a byte in
-  the base64 signature line) must make `run` return a non-nil error — a green-but-wrong
-  oracle that accepts anything is worthless. Also assert an empty/garbage vkey makes the
-  `NewVerifier` leg error (the exit-2 path) so the flag-handling branch is covered.
-- **WASM purity is N/A here** — this is a `cmd/` binary importing `os`/`flag`/`io`, never
-  part of the `internal/proof`/`didweb` WASM-shared seam. No `GOOS=js` constraint applies.
-- **Oracle/conformance gate APPLIES** (this IS the external signature oracle being made
-  buildable) and is satisfied within this step by the golden + negative test proving the
-  ported oracle accepts the genuine live sb0 checkpoint and rejects a corrupted one. The
-  fully-independent ground truth is reproducible: `.claude/derive_vkey.py` prints the same
-  sb0 vkey the test embeds.
+- Trigger on `push` and `pull_request`. Include both `develop` (the working branch) and `main` (the
+  default), or use no branch filter — either is fine. Run on `ubuntu-latest`; the workflow `run:` steps
+  execute in bash on the Linux runner, so shell scripting (incl. the corruption one-liner below) is
+  fine — the CLAUDE.md cross-platform rule constrains **dev tooling developers run locally**, not the
+  CI runner OS.
+- Prefer one job with clearly named steps (simplest), `env: CGO_ENABLED: 0` at the job level per
+  ADR-0003 / `target.md`:
+  1. `actions/checkout@v4`.
+  2. `actions/setup-go@v5` with `go-version: '1.24'`.
+  3. **check gate**: `go build ./... && go vet ./... && go test ./...` (this IS `mise run check`,
+     inlined). Inlining avoids needing `mise` on the runner. If you instead prefer to invoke `mise run
+     check` for single-source-of-truth, add `jdx/mise-action@v2` before it — acceptable, but inlining
+     the three commands is the lighter path. Pick one; do not do both.
+  4. **notecheck oracle** (after the build): `go build -o notecheck ./cmd/notecheck`, then shell the
+     assertions against `testdata/live/sb0.iscc.id_checkpoint` (use `set -euo pipefail` and a guarded
+     non-zero-exit check so the binary's intentional exit 1 doesn't fail the step):
+     - **accept**: `./notecheck --vkey "$VKEY" < testdata/live/sb0.iscc.id_checkpoint` prints exactly
+       `OK sb0.iscc.id/log` and exits 0. Assert the output string, not just the exit code.
+     - **reject (corrupted)**: corrupt the signature line and assert the binary exits **1**. Use the
+       deterministic base64-char flip the handoff used: `sed 's/QLdEY/QLdEZ/'` (`QLdEY…` begins the sig
+       line's base64). Guard it, e.g.
+       `if sed 's/QLdEY/QLdEZ/' testdata/live/sb0.iscc.id_checkpoint | ./notecheck --vkey "$VKEY"; then
+       echo "ERROR: oracle accepted a corrupted checkpoint"; exit 1; fi` so a *spurious accept* fails CI.
+     - **bad vkey** (optional, cheap): `./notecheck --vkey not-a-valid-vkey < … ` exits **2**.
+  - The golden vkey to pass: `sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5`
+    (the embedded `sb0VKey`, confirmed in `cmd/notecheck/main_test.go` and `derive_vkey.py`). Put it in
+    a step-level `env: VKEY:` and always double-quote `"$VKEY"` — the `+` chars must not shell-mangle.
+- `go build ./...` on a fresh CI checkout is **safe**: `cauldron/` is gitignored (verified in
+  `.gitignore`), so the "cauldron breaks `go build ./...`" pitfall in `learnings.md` does not reach
+  CI. The `./cmd/notecheck` build sidesteps it regardless.
+- Pin action versions (`@v4`/`@v5`/`@v2`) rather than `@main` for reproducibility.
+- **Correctness rule in play (target.md "Oracle / conformance gate"):** `notecheck` is the
+  *fully-independent* external oracle — a green-but-wrong verify must not ship on `mise run check` + an
+  LLM PASS alone. The **reject-corrupted assertion is the load-bearing half**: a workflow that only
+  checks the accept path is a green-but-useless gate. Both the accept and the reject step must be
+  present.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass).
-- `gofmt -l cmd/notecheck/` prints nothing.
-- `go test -count=1 -run TestNotecheck ./cmd/notecheck` passes uncached (golden accept +
-  corrupted-body reject + bad-vkey error).
-- The built binary works end-to-end against the live fixture:
-  `go build -o /tmp/notecheck ./cmd/notecheck && /tmp/notecheck --vkey "sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5" < testdata/live/sb0.iscc.id_checkpoint`
-  prints `OK sb0.iscc.id/log` and exits 0.
-- A corrupted checkpoint is rejected non-zero:
-  `sed 's/QLdEY/QLdEZ/' testdata/live/sb0.iscc.id_checkpoint | /tmp/notecheck --vkey "sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5"; test $? -eq 1`.
-- `go mod tidy && git diff --exit-code -- go.mod go.sum` exits 0 (idempotent after the
-  formats direct-require promotion); `grep -c '^go 1.24.0$' go.mod` == 1 and
-  `grep -c '^toolchain' go.mod` == 0.
+- `.github/workflows/ci.yml` exists and is valid YAML:
+  `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"` exits 0 (PyYAML present
+  with the repo's Python 3.11; if PyYAML is absent, `yamllint`/any YAML parser substitute is acceptable).
+- The accept step reproduces locally:
+  `go build -o /tmp/notecheck ./cmd/notecheck && /tmp/notecheck --vkey
+  "sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5" <
+  testdata/live/sb0.iscc.id_checkpoint` prints `OK sb0.iscc.id/log` and exits 0.
+- The reject step reproduces locally:
+  `sed 's/QLdEY/QLdEZ/' testdata/live/sb0.iscc.id_checkpoint | /tmp/notecheck --vkey
+  "sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5"; test $? -eq 1` exits 0
+  (i.e. the binary exited 1 on the corrupted checkpoint).
+- `mise run check` is green locally (proves the gate the workflow runs still passes; CI did not
+  regress it).
+- After push to `develop`: `gh run list --branch develop --json status,conclusion,name` shows a
+  completed run with `conclusion == "success"` — the real CI-is-live confirmation the issue's "Verify
+  fixed" asks for. `advance` performs this push-and-check once the workflow is committed.
 
 ## Done When
-`cmd/notecheck` compiles inside the monitor module, its golden + negative test passes under
-`mise run check`, and the built binary prints `OK sb0.iscc.id/log` for the live fixture
-while exiting non-zero on a corrupted one — giving CI a real in-repo compile path to shell
-the oracle out in the follow-up workflow step.
+`.github/workflows/ci.yml` is valid YAML running both a `mise run check`-equivalent (build+vet+test,
+`CGO_ENABLED=0`) gate and the `notecheck` oracle shell-out (accept → `OK sb0.iscc.id/log` exit 0,
+corrupted → exit 1), the local reproductions above all pass, and a pushed `develop` run reports
+`success`.
