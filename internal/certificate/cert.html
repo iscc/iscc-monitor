@@ -394,7 +394,7 @@
       </div>
 
       <div class="actions">
-        {{if .HasBundle}}<a class="action-download action-download-enabled" href="{{.IsccID}}.bundle" download>Download proof bundle</a>{{else}}<button type="button" class="action-download" disabled aria-disabled="true">Download proof bundle (coming soon)</button>{{end}}
+        {{if .HasBundle}}<a class="action-download action-download-enabled" href="{{.BundleHref}}" download>Download proof bundle</a>{{else}}<button type="button" class="action-download" disabled aria-disabled="true">Download proof bundle (coming soon)</button>{{end}}
         <a class="action-verify" href="https://monitor.iscc.codes/">Verify independently in your browser →</a>
       </div>
 

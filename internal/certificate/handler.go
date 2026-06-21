@@ -190,6 +190,15 @@ type certData struct {
 	// IsccID is the subject id as supplied by the caller (echoed verbatim, never
 	// interpreted beyond the decode). It is shown even on a not-found.
 	IsccID string
+	// BundleHref is the path-rooted, ISCC:-prefix-free href the "Download proof
+	// bundle" action links to (/inclusion/<bare-id>.bundle). It is built canonically
+	// — a leading slash and the stripped ISCC: prefix both remove the scheme
+	// ambiguity, so html/template's URL escaper emits it verbatim instead of the
+	// #ZgotmplZ sentinel it produces for the raw ISCC:-prefixed form. The .bundle
+	// handler decodes the bare form identically. Meaningful only when HasBundle (the
+	// template reads it under {{if .HasBundle}}); populated only on the certifiable
+	// path so a non-certifiable id leaves it empty.
+	BundleHref string
 	// Certifiable is true only when the id decoded, resolved to a followed hub, had
 	// at least one indexed leaf under the canonical ISCC:-prefixed key, AND that
 	// earliest leaf falls within the hub's accepted checkpoint (seqs[0] < LastSize,
@@ -610,6 +619,15 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 	// interpreted.
 	data.Certifiable = true
 	data.Position = seqs[0]
+	// Build the proof-bundle download href canonically: path-rooted at the mount
+	// (PathPrefix) and ISCC:-prefix-free. cert.html cannot use the raw .IsccID here —
+	// for the ISCC:-prefixed request form html/template's URL escaper reads the
+	// leading ISCC: as an unknown scheme and emits the #ZgotmplZ sentinel, breaking
+	// the headline download link. A leading "/" plus the stripped prefix make this an
+	// unambiguous path the escaper passes through verbatim, and the .bundle handler
+	// decodes the bare form identically (decode is prefix-agnostic), so it resolves to
+	// the same bundle.
+	data.BundleHref = PathPrefix + strings.TrimPrefix(rawID, "ISCC:") + bundleSuffix
 
 	// §2 CHECKPOINT: render the accepted (size, root) the cap above keys on. The
 	// size is hub.LastSize (already proven > 0 by the cap), so only the root needs a

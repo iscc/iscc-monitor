@@ -158,23 +158,40 @@ func TestCertificateProofBundle(t *testing.T) {
 // download action: a certifiable id renders an enabled <a href="…bundle"> download
 // link (not the disabled placeholder), and a non-certifiable id keeps the disabled
 // placeholder. The link is what makes the bundle reachable from the page.
+//
+// The href is the canonical path-rooted, ISCC:-prefix-free form (/inclusion/<bare
+// id>.bundle) for BOTH request id forms. The ISCC:-prefixed sub-case is the
+// regression guard: rendering the raw .IsccID into the href made html/template's URL
+// escaper read the leading ISCC: as a scheme and emit the #ZgotmplZ sentinel
+// (href="#ZgotmplZ.bundle"), a dead link to the headline affordance. The bare form
+// hid it because it has no leading scheme.
 func TestCertificateProofBundleLinkRendered(t *testing.T) {
 	const seq = 0
 	const leaves = 5
 	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, []byte("raw"))
 	h := Handler(testnetHubList(), st, nil)
 
-	// Certifiable id: enabled download link to <id>.bundle, no disabled placeholder.
-	rec := get(t, h, goldenID)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	body := rec.Body.String()
-	if want := `href="` + goldenID + `.bundle"`; !strings.Contains(body, want) {
-		t.Errorf("certifiable page missing enabled download link %q\n%s", want, body)
-	}
-	if strings.Contains(body, "Download proof bundle (coming soon)") {
-		t.Errorf("certifiable page still shows the disabled placeholder\n%s", body)
+	// The canonical href both id forms must resolve to: path-rooted at the mount,
+	// ISCC:-prefix-free. The .bundle handler decodes the bare form identically.
+	wantHref := `href="` + PathPrefix + goldenID + bundleSuffix + `"`
+
+	// Both id forms certify the same leaf and must render the SAME working href with no
+	// #ZgotmplZ. The ISCC:-prefixed form is the regression guard for the URL-escaper bug.
+	for _, reqID := range []string{goldenID, "ISCC:" + goldenID} {
+		rec := get(t, h, reqID)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("id %q: status = %d, want 200", reqID, rec.Code)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, wantHref) {
+			t.Errorf("id %q: certifiable page missing working download link %q\n%s", reqID, wantHref, body)
+		}
+		if strings.Contains(body, "#ZgotmplZ") {
+			t.Errorf("id %q: download href was filtered to the #ZgotmplZ sentinel (dead link)\n%s", reqID, body)
+		}
+		if strings.Contains(body, "Download proof bundle (coming soon)") {
+			t.Errorf("id %q: certifiable page still shows the disabled placeholder\n%s", reqID, body)
+		}
 	}
 
 	// Non-certifiable id (malformed): the disabled placeholder stays. (A malformed id
