@@ -1,103 +1,102 @@
 # Next Work Package
 
-## Step: `HubStatusBadge` five-status template partial (icon + label + silhouette)
+## Step: Wire `HubStatusBadge` into the `/` dashboard
 
 ## Advances
-M-UI — Evidence Ledger frontend. Closes a self-contained slice of the M-UI Verify bar:
+M-UI (Evidence Ledger frontend) Verify criterion:
+> "`HubStatusBadge` renders **all five** statuses each with a distinct text label **and** a distinct
+> inline-SVG silhouette (golden-tested per status) … status conveyed by icon + label + silhouette and
+> never by hue alone."
 
-> `HubStatusBadge` renders **all five** statuses each with a distinct text label **and** a distinct
-> inline-SVG silhouette (golden-tested per status) … status stays legible in grayscale + colorblind-safe
-> (icon+label+silhouette, not hue).
-
-This is the leaf-first foundation of M-UI step (b) in `state.md`'s convergence order. M-UI is the
-nearest unmet milestone (M1/M2/M3 all met; no open `critical`/`normal` issue, so feature work proceeds).
+This is the first wiring of the landed `internal/badge` leaf into an HTTP surface, closing the start of
+the M-UI requirement that "every hub [is rendered] via a five-status `HubStatusBadge` template partial
+(icon + label + silhouette)" on the `/` realm index. It is the exact `**Next:**` from the latest
+`review` handoff (PASS / CONTINUE for the badge partial). Only 3 of 5 statuses
+(`verified`/`frozen`/`inactive`) are store-provable on `/` today, so the page honestly shows those three
+through the badge; full five-status store-provability is a separate later M-UI sub-step (left in Not In
+Scope).
 
 ## Goal
-Build a pure, reusable server-rendered template partial that renders the five-status `HubStatusBadge`
-(`verified` / `unresolvable` / `unverified` / `frozen` / `inactive`) as inline SVG + text label, ported
-from the handoff's React component. This is the grayscale-safe status primitive every M-UI surface
-(realm index, hub dossier, log browser, certificate) reuses; it lands first as a golden-tested leaf so
-later steps can embed it and wire real five-status resolution.
+Replace the bare `{{.Status}}` text cell in the dashboard with the `hubStatusBadge` partial so every hub
+on `/` renders its status as icon + label + silhouette (grayscale-safe), turning the badge leaf into the
+first wired M-UI surface.
 
 ## Scope
-- **Create**: `internal/badge/badge.go` — a pure leaf package exporting the parsed partial + a `Render`
-  helper (or an `html/template` `*template.Template` other packages associate via `template.Must(t.Parse(...))`).
-- **Create**: `internal/badge/badge.html` — the embedded template partial (`{{define "hubStatusBadge"}}…{{end}}`),
-  one `{{if}}` arm per status emitting that status's distinct inline `<svg>` silhouette + a `<span>` label.
-- **Create (test)**: `internal/badge/badge_test.go` — golden test (test file, does not count against the ≤3).
+- **Create**: (none)
+- **Modify**:
+  - `internal/badge/badge.go` — add ONE small exported label accessor (e.g. `Label(status string)
+    (string, bool)`) that reads the existing unexported `labels` table, so a parent page can precompute a
+    row's `.Label` from the single source of truth without re-deriving it. Do not change `Render`,
+    `Source`, `PartialName`, `labels`, or `view`.
+  - `internal/dashboard/handler.go` — associate the partial via
+    `template.Must(template.New("dashboard").Parse(pageTemplate))` followed by
+    `template.Must(tmpl.Parse(badge.Source))` (one parsed set), add a `Label string` field to the `row`
+    view-model, and populate it in `buildRows` from `badge.Label(hubStatus(s))`.
+  - `internal/dashboard/dashboard.html` — replace the `<td>{{.Status}}</td>` cell with
+    `<td>{{template "hubStatusBadge" .}}</td>`.
 - **Reference** (read before editing — exact paths):
-  - `/workspace/iscc-monitor/.claude/design/HubStatusBadge.dc.html` — the source component: the five SVG
-    silhouettes (exact `viewBox`/`path`/`circle`/`line` markup), the five labels, and the `META` table.
-  - `/workspace/iscc-monitor/.claude/adr/0010-evidence-ledger-frontend.md` — the partial spec (lines
-    47–52: inline SVG, five silhouettes check-circle · cloud-? · triangle · octagon-x · pause-circle;
-    icon+label+silhouette, never hue alone) and the status palette (line 104).
-  - `/workspace/iscc-monitor/.claude/context/learnings/dashboard.md` — the SSR-leaf render posture this
-    package mirrors (`html/template` NOT text; render-into-buffer; leaf with no `net/http`/`store` dep).
-  - `/workspace/iscc-monitor/internal/dashboard/handler.go` + `/workspace/iscc-monitor/internal/dashboard/dashboard.html`
-    — the established `//go:embed` + `template.Must` pattern to copy (this step does NOT modify them).
+  - `/workspace/iscc-monitor/.claude/context/learnings/badge.md` (the partial's surface + fail-closed
+    contract + 3/5 store-provable caveat)
+  - `/workspace/iscc-monitor/.claude/context/learnings/dashboard.md` (mount/path-guard, store-provable
+    status subset, coverage-honesty render)
+  - `/workspace/iscc-monitor/internal/badge/badge.go`, `/workspace/iscc-monitor/internal/badge/badge.html`
+    (partial expects `.Status` + `.Label`)
+  - `/workspace/iscc-monitor/internal/dashboard/handler.go`,
+    `/workspace/iscc-monitor/internal/dashboard/dashboard.html`,
+    `/workspace/iscc-monitor/internal/dashboard/handler_test.go` (existing golden test to extend)
+  - `/workspace/iscc-monitor/.claude/design/HubStatusBadge.dc.html` (design source of truth — do NOT
+    change the SVG markup)
 
 ## Not In Scope
-- **Do NOT wire the badge into `internal/dashboard` / `internal/proofserve` yet.** No change to
-  `dashboard.html`, `handler.go`, `store.ListHubs`, or `cmd/iscc-monitor`. Wiring + replacing the bare
-  `Status` text with the partial is the next step (and depends on this leaf existing).
-- **Do NOT make the full taxonomy store-provable.** `unresolvable`/`unverified` are still not resolvable
-  from the store (they live in the in-memory `metrics.Registry`). The partial accepts a status *string*
-  and renders any of the five honestly; threading real five-status resolution through is a separate,
-  later M-UI sub-step. Until then the dashboard still resolves only `frozen`/`verified`/`inactive`.
-- **Do NOT embed DS tokens / self-hosted fonts / external CSS** here. The partial carries only the inline
-  SVG + label markup (the handoff's inline `style=` colors may be ported as-is or dropped — accessibility
-  rides icon+label+silhouette, not hue). Font/token embedding is its own M-UI step.
-- **Do NOT build the frozen Exhibit panel.** The `frozen` *badge* (octagon-x silhouette + "Frozen"
-  label) is in scope; the categorically-distinct non-dismissable Exhibit page-element is a later screen.
+- Making the full five-status taxonomy (`unresolvable`/`unverified`/`rotated`) store-provable on `/` —
+  separate M-UI sub-step; the `metrics.Registry` thread-through belongs there, NOT in `ListHubs` or
+  `dashboard.hubStatus` (learnings/dashboard.md). Keep the page honest: only 3 statuses appear.
+- DS v2 tokens, self-hosted fonts (`go:embed`), CSS, or chip styling — a later M-UI step. Do not add
+  inline `style=` hue colors to the partial (ADR-0010 invariant 4; learnings/badge.md).
+- Wiring the badge into the log browser, dossier, or certificate — later sub-steps in the same arc.
+- Changing the badge SVG markup, `Render`, or the silhouette golden markers.
+- ETag/Cache-Control on `/` (not a Verify criterion).
 
 ## Implementation Notes
-- **Port faithfully from `HubStatusBadge.dc.html`.** Map the five `sc-if` arms to five Go-template arms.
-  Use the component's exact SVG inner markup per status so the silhouettes match the design:
-  - `verified` → `<circle cx=12 cy=12 r=9>` + check `<path d="M8.4 12.3l2.5 2.5 4.7-5.2">` (check-circle)
-  - `unresolvable` → `<circle r=9>` + question `<path d="M9.2 9.3a3 3 0 0 1 5.6 1.2…">` + dot (question-circle)
-  - `unverified` → triangle `<path d="M12 3.4 21 19H3z">` + exclamation line + dot (triangle-warning)
-  - `frozen` → octagon `<path d="M8.2 3.3h7.6L20.7 8.2v7.6L15.8 20.7H8.2L3.3 15.8V8.2z">` + X lines (octagon-x)
-  - `inactive` → `<circle r=9>` + two vertical `<line>`s (pause-circle)
-  Labels (from `META`): `Verified` / `Unresolvable` / `Unverified` / `Frozen` / `Inactive`.
-- **Choose the selection mechanism deliberately.** A single `{{define "hubStatusBadge"}}` with an
-  `{{if eq .Status "verified"}}…{{else if eq .Status "unverified"}}…{{end}}` chain over a small
-  view-model (`{Status, Label}`) is the simplest. Expose BOTH (a) an exported
-  `Render(w io.Writer, status string) error` for direct use AND (b) the embedded source string (or a
-  `MustParseInto(parent *template.Template)` helper) so a parent page template can `{{template
-  "hubStatusBadge" .}}` it later — the standard `html/template` partial-include idiom (parent
-  `template.Must(parent.Parse(badgeSrc))`, then invoke by name). Decide the exact surface from how
-  `html/template` associated templates compose; keep it minimal.
-- **Map the label inside Go from a fixed table, never trust the caller's string verbatim for the label**,
-  so an unknown status fails closed (return an error, or render an explicit fallback) rather than emitting
-  an attacker-controlled label. The five SVG arms are static literal template text (not `template.HTML`
-  from input), so they auto-escape-safely; `html/template` (NOT `text/template`) is mandatory.
-- **Keep the package a pure leaf.** Closure must be `bytes`/`embed`/`html/template`/`io` + stdlib only —
-  NO `net/http`, NO `internal/store`. Verify with `go list -deps ./internal/badge`. Mirror the
-  `internal/dashboard` embed + `template.Must(...Parse)` pattern (learnings/dashboard.md): parse the
-  embedded source once at init so a malformed partial fails the build, not a request.
-- **Oracle/conformance gate is N/A** — pure static-markup rendering keyed on a status string; no
-  signature / RFC-6962 / Merkle / did:web / fsck / proof path. `go.mod`/`go.sum`/`schema.sql` must be
-  byte-identical (no new deps). State this in the review handoff.
-- **Correctness rule (learnings index):** status is conveyed by icon + label + silhouette, never hue
-  alone (ADR-0010 invariant 4). The golden test must assert the *silhouette* and *label* differ across
-  statuses — not merely a color attribute.
+- The partial reads `.Label` DIRECTLY and does NOT re-derive it from `.Status` (learnings/badge.md), so
+  the `row` MUST carry a precomputed `.Label`. `badge.labels` is unexported — add a thin exported
+  `Label(status) (string, bool)` reading that same table so the label stays single-sourced and the
+  fail-closed contract is preserved (caller status never trusted verbatim for the label).
+- The dashboard only ever produces `hubStatus(s)` ∈ {`verified`,`frozen`,`inactive`} — all valid
+  `labels` keys — so `badge.Label` always returns `ok == true` here. Still, in `buildRows`, treat a
+  `false` from `badge.Label` defensively (the page should not render an unlabeled/blank badge); do not
+  silently emit an empty label.
+- Use `html/template` (NOT `text/template`) — already the case; associating `badge.Source` into the same
+  template set via `tmpl.Parse(badge.Source)` makes `{{template "hubStatusBadge" .}}` resolve over the
+  `row` value (which exposes `.Status` and `.Label`). This is the associated-template idiom proven by
+  `badge.TestPartialComposesIntoParent`.
+- Keep the buffer-first render (`tmpl.Execute(&buf, …)` → 500-before-200) and the exact-path/method
+  guards untouched — they are correctness load-bearing (learnings/dashboard.md).
+- Correctness rule from learnings.md index: store stays a leaf — do NOT import `net/http` or
+  `internal/badge` into `internal/store`; the dashboard imports both, never the reverse. `internal/badge`
+  must remain a pure WASM-shareable leaf (no `net/http`/`internal/store`) after adding `Label`.
+- Extend `internal/dashboard/handler_test.go`'s `TestDashboardRendersEveryHub` to assert the badge markup
+  now appears: the body must contain the `hub-status-badge` wrapper and a per-status label (`>Verified<`,
+  `>Frozen<`) AND a distinguishing silhouette marker (verified `M8.4 12.3`, frozen `M8.2 3.3h7.6`) —
+  proving the partial rendered, not just the raw status word. Do NOT weaken the existing
+  domain/origin/coverage assertions.
+- Oracle/conformance gate is N/A for this step (pure HTML composition; no signature/RFC-6962/Merkle/
+  did:web/fsck/proof path; `go.mod`/`go.sum`/`schema.sql` stay byte-identical).
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -count=1 ./internal/badge` passes uncached.
-- The golden test asserts, for each of the five statuses, the rendered output contains that status's
-  distinct text label (`Verified`/`Unresolvable`/`Unverified`/`Frozen`/`Inactive`) AND its distinct
-  distinguishing SVG element — e.g. `verified` contains the check path `M8.4 12.3`, `unverified` the
-  triangle `M12 3.4 21 19H3z`, `frozen` the octagon `M8.2 3.3h7.6`, `inactive` two pause `<line>`s,
-  `unresolvable` the question `M9.2 9.3`.
-- The golden test asserts the five rendered outputs are **pairwise distinct** (collect the five into a
-  set and assert `len == 5`) — proving no two statuses collapse to the same silhouette.
-- An unknown/empty status fails closed: the test asserts `Render` returns an error OR renders an explicit
-  fallback, never an arbitrary attacker-controlled label.
-- `go list -deps ./internal/badge | grep -E 'net/http|internal/store'` is empty (badge stays a leaf).
-- `git diff --stat HEAD -- go.mod go.sum internal/store/schema.sql` is empty (no new deps / schema change).
+- `mise run check` is green (build + vet + test all pass).
+- `gofmt -l internal/badge internal/dashboard` is empty.
+- `go test -count=1 ./internal/badge ./internal/dashboard` passes (uncached).
+- `go test -run TestDashboardRendersEveryHub ./internal/dashboard` passes and the rendered body contains
+  `class="hub-status-badge"`, the verified silhouette marker `M8.4 12.3`, and the frozen marker
+  `M8.2 3.3h7.6` (badge rendered for both store-provable hubs, not the bare status word).
+- `GOOS=js GOARCH=wasm go build ./internal/badge` succeeds (the new `Label` accessor keeps the badge a
+  WASM-shareable leaf).
+- `go list -deps ./internal/store | grep -E 'net/http|internal/dashboard|internal/badge'` is empty
+  (store remains a leaf).
+- `git diff --stat HEAD -- go.mod go.sum internal/store/schema.sql` is empty (no dep/schema change).
 
 ## Done When
-`internal/badge` exists as a pure leaf rendering the five-status `HubStatusBadge` partial, its golden
-test proves all five statuses produce distinct labels + distinct inline-SVG silhouettes (pairwise
-unique) with an unknown status failing closed, and `mise run check` is green.
+`advance` is done when the `/` dashboard renders each hub's status through the `hubStatusBadge` partial
+(icon + label + silhouette) for the three store-provable statuses, the extended golden test asserts the
+badge markup, and all Verification criteria pass.
