@@ -1,54 +1,54 @@
-## 2026-06-21 — Review of: Serve the raw tlog-tiles mirror (checkpoint / tile / entries) over HTTP from one hub's SQLiteFetcher
+## 2026-06-21 — Wire tilesserve.Handler into the binary with a per-hub mirror router
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Mounted the already-built `tilesserve.Handler` per-hub on the monitor binary's single HTTP
+server, so each followed hub's mirrored tlog-tiles artifacts are now served at its canonical origin
+prefix (`/<origin>/checkpoint`, `/<origin>/tile/...`, `/<origin>/tile/entries/...`) alongside the
+existing `/metrics`. This turns the built-but-unserved raw-mirror surface into a live inbound
+transport (the foundation for the M2/M3 `verify-for-me` proof-serving slice).
 
-**Summary:** `internal/tilesserve` adds one clean `Handler(f store.SQLiteFetcher) http.Handler` that
-routes the three canonical tlog-tiles paths to `ReadCheckpoint`/`ReadTile`/`ReadEntryBundle` and serves
-the raw mirror BLOBs verbatim, with correct 400/404/405/500 status mapping. The diff is exactly the two
-new files + handoff (scope-clean), every `next.md` verification criterion passes, and the body-equality +
-status assertions are reviewer-mutation-proven non-vacuous. The oracle gate is correctly N/A (no
-trust-root path) — verified by dep-closure, not asserted.
+**Files changed:**
+- `cmd/iscc-monitor/main.go`: added package-local `hubRoute{HubID, Origin}`; `registerHubs` now
+  returns index-aligned `([]follower.HubTarget, []hubRoute, error)` (re-using the `org` it already
+  derives); added `mirrorHandler(st, routes)` (per-hub `http.StripPrefix("/"+origin+"/")` →
+  `tilesserve.Handler(store.SQLiteFetcher{...})` on a `*http.ServeMux`) and `buildMux(st, routes, m)`
+  (mirror subtrees + `/metrics` on one mux); `serveMetrics` now serves that combined mux on the one
+  listener. `/metrics` registration behavior unchanged.
+- `cmd/iscc-monitor/main_test.go`: updated `TestRegisterHubs` for the new 3-value signature (asserts
+  routes are index-aligned and carry the full `<domain>/log` origin); added `TestMirrorRouter` driving
+  `buildMux` directly via `httptest.NewRecorder`/`ServeHTTP` (no socket).
 
-**Verification:**
-- [x] `mise run check` green — all 12 packages `ok` (build + vet + test).
-- [x] `gofmt -l .` empty — no formatting failures.
-- [x] `go test -run TestHandler -count=1 ./internal/tilesserve` PASS — all 9 sub-cases (full, partial,
-  entries, checkpoint, 404 missing, 400 malformed tile, 400 malformed entries, 404 unmatched, 405 POST).
-  (Test fn is `TestHandlerServesSeededBytes`; `-run TestHandler` matches it as a prefix.)
-- [x] `git diff --quiet HEAD~1 -- internal/store/schema.sql go.mod go.sum` exit 0 — no schema/dep change
-  (used HEAD~1, the pre-advance base, since the advance commit is HEAD).
+**Verification:** `mise run check` → green (all 12 packages `ok`; build + vet + test). Per-criterion:
+- [x] `mise run check` green; `gofmt -l .` empty.
+- [x] `go test -run TestMirror -count=1 ./cmd/iscc-monitor` PASS — all 4 subtests:
+  `GET /sb0.iscc.id/log/checkpoint` → 200 byte-equal seeded BLOB; `GET /sb0.iscc.id/log/tile/0/000`
+  (unmirrored under prefix) → 404; `GET /sb0.iscc.id/checkpoint` (missing `/log`) → 404; `GET /metrics`
+  → 200.
+- [x] `git diff --quiet HEAD -- internal/store/schema.sql go.mod go.sum` exit 0 — no schema/dep change.
 - [x] `go list -deps ./internal/store | grep -E 'internal/tilesserve|net/http'` empty — store stays a
-  leaf; `tilesserve → store`, never the reverse.
-- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` exit 0 — WASM purity invariant untouched.
-- [x] Full tile → 200 byte-equal seeded BLOB; never-mirrored tile → 404; malformed index → 400; POST →
-  405 (all asserted, all mutation-proven non-vacuous).
-- [x] Oracle/conformance gate correctly N/A — `go list -deps ./internal/tilesserve` pulls in no
-  `internal/proof`/`logclient`/`didweb`/`merkle`/`note`/`rfc6962`; opaque BLOB transport only. CI
-  `notecheck` parity job present + unchanged + green.
-- [x] Gate-integrity scan over all unpushed commits (`origin/develop..HEAD`) — no `//nolint`/`t.Skip`/
-  swallowed-error dodge/loosened gate. The lone `_, _ = w.Write` is the documented metricshttp idiom.
+  leaf; the binary depends on `tilesserve → store`, never the reverse.
 
-**Issues found:** (none) — the handler is correct, simple, and well-documented; no minor fixes needed.
-
-**Next:** Wire `tilesserve.Handler` into `cmd/iscc-monitor/main.go` (the deferred binary slice): a per-hub
-route prefix, a hub→origin router resolving the request's `HubID` from a path prefix or host, and a
-read-only connection. That needs the multi-hub routing design `next.md` called out. In parallel, the
-`consistency`/`inclusion` `verify-for-me` REST surface (M2/M3) builds on this inbound transport, consuming
-`ConsistencyProofFromTiles`/`VerifyInclusionEvidence`.
+**Next:** The raw static mirror is now served. The next M2 slice is the proof-computing
+`verify-for-me` REST surface (`inclusion`/`consistency`/`entries`-as-proofs) building on this inbound
+transport — it consumes `ConsistencyProofFromTiles` / `InclusionProofFromTiles` /
+`VerifyInclusionEvidence` over the same `SQLiteFetcher`, and (per the M3 split) will own CORS, caching,
+conditional GET, and healthz that this slice intentionally deferred.
 
 **Notes:**
-- **Routing robustness independently probed against the real tessera parser** (not just the 9 subcases):
-  `tile/0` (no 2nd slash) → 400 via `strings.Cut` `ok=false`; `tile/0/`, `tile/0/abc` → parser error →
-  400; `tile/0/001.p/44` → `width=44` passed straight through as the fetcher's `p` (shared 0==full). The
-  `tile/entries/` switch case correctly precedes `tile/` (sub-prefix). No panic, no misroute.
-- **Non-vacuousness proven by two reverted mutations:** (1) serving constant `"X"` fails all four
-  byte-equal subtests; (2) collapsing the 404 mapping to 200 fails the never-mirrored + unmatched
-  subtests. A green-but-wrong handler cannot ship.
-- **6 open issues remain orthogonal + untouched** — none of the open-issue files (`checkpoints.go`,
-  `accept.go`, `notecheck`, `follower.go`, `ingest.go`, `fetcher.go`, `tiles.go`, `consistency.go`) was
-  modified this slice, so none is resolved or made stale. Backlog unchanged.
-- **Intentional unwired export seam** (like prior M2 seams): no production caller yet (binary wiring is
-  the next slice). `go vet` clean, not dead code. go.mod/go.sum/schema byte-identical across the full
-  unpushed range.
-- M2 progresses; not DONE (binary wiring + proof-serving REST surface still open). Loop CONTINUE.
+- **Non-vacuousness proven by a reverted mutation:** dropping the trailing slash from the mount prefix
+  (`"/"+r.Origin` instead of `"/"+r.Origin+"/"`, which kills `http.ServeMux` subtree matching) fails
+  the 200-byte-equal subtest; reverted → green. A green-but-misrouted router cannot ship.
+- **Scope-clean:** only the one production file + its test changed. `tilesserve.Handler`'s routing and
+  signature are untouched; `internal/store`/`internal/follower`/`schema.sql`/`go.mod`/`go.sum` are
+  byte-identical to HEAD. No `HubID→origin` store lookup was added — the origin is re-derived in
+  `registerHubs` via `logclient.Origin`, exactly as the prior code already did.
+- **`StripPrefix` down to the single leading slash** is the key wiring detail: the handler trims
+  exactly one leading slash, so mounting at `/<origin>/` and stripping `/<origin>/` leaves the handler
+  seeing `/checkpoint`, `/tile/0/000`, etc. The full-`<origin>` (`<domain>/log`) prefix is load-bearing
+  — a request missing `/log` does not match and 404s (asserted).
+- **Single connection reused** by all per-hub `SQLiteFetcher`s through the shared `*store.Store`
+  (`SetMaxOpenConns(1)`, reads serialize, ADR-0005/0007); no second DB handle opened.
+- Oracle/conformance gate correctly N/A for this slice — pure HTTP wiring of existing packages, no
+  signature/RFC-6962/Merkle/did:web/fsck path introduced (`tilesserve` serves opaque BLOBs).
+- The 6 open `normal` issues are orthogonal and untouched (none of
+  `checkpoints.go`/`accept.go`/`follower.go`/`ingest.go`/`fetcher.go`/`tiles.go`/`consistency.go` was
+  modified).

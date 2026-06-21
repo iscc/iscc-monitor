@@ -31,7 +31,19 @@ import (
 	"github.com/iscc/iscc-monitor/internal/metricshttp"
 	"github.com/iscc/iscc-monitor/internal/registry"
 	"github.com/iscc/iscc-monitor/internal/store"
+	"github.com/iscc/iscc-monitor/internal/tilesserve"
 )
+
+// hubRoute is one hub's mirror mount point: its store hub_id and its log origin
+// (<domain>/log, e.g. sb0.iscc.id/log). The router mounts tilesserve.Handler at
+// "/" + Origin + "/" so a request to /<origin>/checkpoint reaches that hub's
+// SQLiteFetcher. It is package-local to main — the follower needs no origin, so
+// HubTarget does not carry one, and the origin is re-derived here from the same
+// logclient.Origin registerHubs already uses.
+type hubRoute struct {
+	HubID  int64
+	Origin string
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -71,13 +83,13 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	targets, err := registerHubs(ctx, st, entries)
+	targets, routes, err := registerHubs(ctx, st, entries)
 	if err != nil {
 		return err
 	}
 
 	m := metrics.New()
-	go serveMetrics(ctx, cfg.Addr, m, logger)
+	go serveMetrics(ctx, cfg.Addr, st, routes, m, logger)
 
 	loop := &follower.Loop{
 		Store:   st,
@@ -95,18 +107,18 @@ func run() error {
 	return nil
 }
 
-// serveMetrics runs the /metrics HTTP server until ctx is cancelled. It serves
-// exactly GET /metrics from m via metricshttp.Handler and is started in a
-// background goroutine so it never blocks the follower loop (the foreground
-// blocker). On ctx cancellation it shuts the server down with a short-timeout
-// context so a SIGINT exits promptly. http.ErrServerClosed from ListenAndServe is
-// the normal-shutdown signal (mirroring how Run treats context.Canceled as clean)
-// and is logged, not surfaced; any other listen error is logged so a misconfigured
-// address is never silent.
-func serveMetrics(ctx context.Context, addr string, m *metrics.Registry, logger *slog.Logger) {
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", metricshttp.Handler(m))
-	srv := &http.Server{Addr: addr, Handler: mux}
+// serveMetrics runs the monitor's single HTTP server until ctx is cancelled. The
+// one server serves both GET /metrics (via metricshttp.Handler) and each followed
+// hub's mirrored tlog-tiles artifacts (via mirrorHandler over the same mux), so
+// there is exactly one listener. It is started in a background goroutine so it
+// never blocks the follower loop (the foreground blocker). On ctx cancellation it
+// shuts the server down with a short-timeout context so a SIGINT exits promptly.
+// http.ErrServerClosed from ListenAndServe is the normal-shutdown signal
+// (mirroring how Run treats context.Canceled as clean) and is logged, not
+// surfaced; any other listen error is logged so a misconfigured address is never
+// silent.
+func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hubRoute, m *metrics.Registry, logger *slog.Logger) {
+	srv := &http.Server{Addr: addr, Handler: buildMux(st, routes, m)}
 
 	go func() {
 		<-ctx.Done()
@@ -122,26 +134,63 @@ func serveMetrics(ctx context.Context, addr string, m *metrics.Registry, logger 
 	}
 }
 
-// registerHubs registers each realm entry in the store and returns the follower
-// targets to poll. For each entry it derives the log origin (<domain>/log, never
-// the bare domain) and upserts the hub, building a HubTarget from the returned
-// hub_id and the entry's base URL. UpsertHub is idempotent on the domain, so a
-// re-run returns identical hub_ids. The first error short-circuits, naming the
-// offending domain.
-func registerHubs(ctx context.Context, st *store.Store, entries []registry.Entry) ([]follower.HubTarget, error) {
+// buildMux assembles the monitor's single request multiplexer: GET /metrics plus
+// every hub's mirror subtree from mirrorHandler. It is factored out of
+// serveMetrics so the full routing (metrics + per-hub mirror) is unit-testable
+// against an httptest.ResponseRecorder without binding a socket.
+func buildMux(st *store.Store, routes []hubRoute, m *metrics.Registry) http.Handler {
+	mux := mirrorHandler(st, routes)
+	mux.Handle("/metrics", metricshttp.Handler(m))
+	return mux
+}
+
+// mirrorHandler builds the per-hub mirror router: for each route it mounts a
+// tilesserve.Handler (reading that hub's BLOBs through a read-only
+// store.SQLiteFetcher) at the subtree prefix "/" + Origin + "/" (e.g.
+// /sb0.iscc.id/log/), stripping that prefix down to the single leading slash the
+// handler trims. A request to /<origin>/checkpoint therefore reaches the handler
+// as /checkpoint. The trailing slash makes http.ServeMux do subtree matching, so
+// all of /tile/... and /tile/entries/... under the prefix route to the same
+// handler; an unknown top-level prefix falls through to the mux's default 404. The
+// origin must be the full <domain>/log — a request missing the /log segment does
+// not match the prefix and 404s. All routes share the store's single open
+// connection (reads serialize on it, ADR-0005/0007); no second DB handle is
+// opened.
+func mirrorHandler(st *store.Store, routes []hubRoute) *http.ServeMux {
+	mux := http.NewServeMux()
+	for _, r := range routes {
+		prefix := "/" + r.Origin + "/"
+		h := tilesserve.Handler(store.SQLiteFetcher{Store: st, HubID: r.HubID})
+		mux.Handle(prefix, http.StripPrefix(prefix, h))
+	}
+	return mux
+}
+
+// registerHubs registers each realm entry in the store and returns both the
+// follower targets to poll and the mirror routes to serve. For each entry it
+// derives the log origin (<domain>/log, never the bare domain) and upserts the
+// hub, building a HubTarget from the returned hub_id and the entry's base URL and
+// a hubRoute from the same hub_id and origin. UpsertHub is idempotent on the
+// domain, so a re-run returns identical hub_ids. The first error short-circuits,
+// naming the offending domain. The targets and routes are index-aligned and
+// derive from the same upsert, so the poll set and the served mirror set never
+// diverge.
+func registerHubs(ctx context.Context, st *store.Store, entries []registry.Entry) ([]follower.HubTarget, []hubRoute, error) {
 	targets := make([]follower.HubTarget, 0, len(entries))
+	routes := make([]hubRoute, 0, len(entries))
 	for _, e := range entries {
 		org, err := logclient.Origin(e.BaseURL)
 		if err != nil {
-			return nil, fmt.Errorf("derive origin for %q: %w", e.Domain, err)
+			return nil, nil, fmt.Errorf("derive origin for %q: %w", e.Domain, err)
 		}
 		id, err := st.UpsertHub(ctx, e.Domain, org, e.BaseURL)
 		if err != nil {
-			return nil, fmt.Errorf("register hub %q: %w", e.Domain, err)
+			return nil, nil, fmt.Errorf("register hub %q: %w", e.Domain, err)
 		}
 		targets = append(targets, follower.HubTarget{HubID: id, BaseURL: e.BaseURL})
+		routes = append(routes, hubRoute{HubID: id, Origin: org})
 	}
-	return targets, nil
+	return targets, routes, nil
 }
 
 // alertFunc builds the freeze alert sink over the given logger: it emits a
