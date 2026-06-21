@@ -1,162 +1,98 @@
 # Next Work Package
 
-## Step: Single-record page at `GET /record?index=<seq>` (declaration / deletion / unknown schema)
+## Step: Fix single-record kind-label constants to the full `note.$schema` URIs
 
 ## Advances
-M-UI (Evidence Ledger frontend) Verify criterion (`target.md`):
+M-UI (Evidence Ledger frontend) Verify criterion — quoted from `target.md`:
+> "the single-record page renders `declaration`, `deletion` (a new record — original preserved) **and an
+> unknown `note.$schema`** without erroring"
 
-> "the single-record page renders `declaration`, `deletion` (a new record — original preserved) **and
-> an unknown `note.$schema`** without erroring"
-
-and the row-repoint half of the record-list criterion:
-
-> "the log-browser record list paginates via plain links … each row links to its single-record page".
-
-This is the nearest unmet M-UI criterion and the planned next slice (state.md "Next Milestone" #1, and
-the latest `review` handoff `**Next:**`). It precedes the certificate-of-inclusion slice (which
-re-engages the oracle gate) and stays on the same leaf-first M-UI arc — no switch to an unrelated
-refactor. No `critical`/`normal` issue is open (the 5 open issues are all `low`, loop-skipped), so
-milestone work takes precedence.
+This step closes the **open `normal` issue** "Single-record page kind-label constants miss the real
+`note.$schema` URIs" and resolves the latest review NEEDS_WORK verdict (handoff `**Next:**`). It is not
+a detour from milestone work — it *completes* an in-flight M-UI Verify criterion that currently fails
+for every real declaration/deletion. Per protocol a NEEDS_WORK handoff is fixed before new milestone
+work, and the single-record slice cannot be pushed until this lands.
 
 ## Goal
-Add a server-rendered, no-JS single-record page showing one accepted leaf's seq, verbatim `iscc_id`,
-verbatim `note.$schema`, a human-readable record-kind label (declaration / deletion / unknown), and its
-raw record bytes — and re-point every `/records` row from `entries?index=<seq>` to it. This closes the
-single-record M-UI Verify criterion and completes the record-list row affordance.
+The single-record page currently labels every production declaration and deletion "Unknown record type"
+because the kind-label constants are CLAUDE.md glossary short forms (`iscc-note-0.8.0`) while the
+projection fold stores the verbatim wire value — the full URI
+`http://purl.org/iscc/schema/iscc-note-0.8.0.json`. Set the two constants to the full URIs and reseed
+the test fixture with the production URIs so the page labels real records correctly and the test
+exercises the real wire value.
 
 ## Scope
-- **Create**:
-  - `/workspace/iscc-monitor/internal/proofserve/record.html` (the single-record template; not counted
-    toward the ≤3 `.go` budget) — a DS-shell page mirroring `records.html`/`browser.html`: same `<link>`
-    to `/_ds/tokens.css` + `/_ds/fonts.css`, `var(--*)` tokens, no CDN, `{{template "hubStatusBadge" .}}`
-    partial, ledger card, and a graceful no-projection state.
-- **Modify** (3 non-test/doc `.go` files — at budget):
-  - `/workspace/iscc-monitor/internal/store/iscc_index.go` — add a `RecordAt(ctx, hubID, seq)`
-    single-row reader returning the one projection row (`iscc_id_str`, `note_schema`) + a `found` bool;
-    leaf read, store stays a leaf.
-  - `/workspace/iscc-monitor/internal/proofserve/handler.go` — add `serveRecord` + a `case "/record":`
-    in `Handler`'s path switch; parse `index` via the existing `parseUint`; apply the accepted-tree cap;
-    read the projection via `RecordAt` and the raw record bytes via the same bundle math
-    `serveEntries`/`serveVerify` use; render `record.html`; add a parsed-once `recordTmpl` var +
-    `//go:embed record.html`.
-  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` — add `mux.Handle("/record", proofs)` in
-    `hubHandler` (the inner ServeMux mounts each proofserve route explicitly at lines 293-297; without
-    this `/record` falls through to `tilesserve` in production even though the proofserve unit test
-    passes by driving the handler directly).
-  - **Modify (template/doc, not counted)**: `/workspace/iscc-monitor/internal/proofserve/records.html`
-    — re-point each row's link from `entries?index={{.Seq}}` to `record?index={{.Seq}}` (keep the
-    `record-seq` styling/markup).
-  - **Modify (docs, not counted)**: `/workspace/iscc-monitor/CLAUDE.md` "Running a local dev instance"
-    endpoint list — add a `GET /<domain>/log/record?index=<seq>` line (keeping docs in sync is part of
-    the step).
-  - **Tests (uncounted)**: `/workspace/iscc-monitor/internal/proofserve/record_test.go` (new) and
-    `/workspace/iscc-monitor/internal/store/iscc_index_test.go`; update the row-link assertion in
-    `/workspace/iscc-monitor/internal/proofserve/records_test.go`.
+- **Modify**: `internal/proofserve/handler.go` (the only production file — 2 constant lines)
+- **Modify (test)**: `internal/proofserve/record_test.go` (the `schemaForSeq` fixture follows the
+  constants automatically; scope the no-CDN ban so the now-real schema URI does not false-fail)
 - **Reference**:
-  - `/workspace/iscc-monitor/.claude/context/learnings/http-surface.md` — the `## HTML record list` +
-    `## Computed record-bytes HTTP surface` sections: the `>= LastSize` accepted-tree cap is the contract
-    EVERY record-facing route follows; bundle reads keyed on an absolute index MUST compute
-    `p := tiles.PartialTileSize(0, bundleIndex, size)`, never `p == 0`; the unquoted-`[data-status=…]`
-    CSS trap for any surface carrying a negative `data-status="X"` assert.
-  - `/workspace/iscc-monitor/.claude/context/learnings/store.md` — the `## iscc_index writer/reader`
-    section: scan `seq` int64→uint64; read `iscc_id_str`/`note_schema` via `sql.NullString` (NULL→"");
-    absent row is the no-row case (return `found=false`, not an error); store stays a leaf
-    (`go list -deps … | grep '^net/http$'` empty); keep `schema.sql`/`go.mod`/`go.sum` byte-identical.
-  - `/workspace/iscc-monitor/internal/proofserve/handler.go:329-401` (`serveEntries`) — copy the
-    bundle-read + accepted-tree-cap flow verbatim; `serveRecords`:682-766 + `serveBrowser`:581-629
-    (render-into-`bytes.Buffer`-then-200; `overlayStatus(fs, hubID, statuses)` + `badge.Label`).
-  - `/workspace/iscc-monitor/internal/proofserve/records.html` + `browser.html` — the DS-shell HTML to
-    mirror; `/workspace/iscc-monitor/internal/proofserve/handler_test.go:42-160` (`buildMirror`,
-    `leafISCCID`, `mirrorLeaves`) and `entries_test.go` (`buildEntriesMirror`, `recordBytes`,
-    `frameBundle`) — the fixtures the new tests reuse.
+  - `internal/logclient/projection_test.go:18-21` — the golden ground truth for the exact wire URIs
+    (`http://purl.org/iscc/schema/iscc-note-0.8.0.json`, `…iscc-note-delete-0.8.0.json`).
+  - `.claude/context/learnings/store.md` (lines 43-48) — the "stored `note.$schema` is the VERBATIM wire
+    value — a full URI, NOT a short name" trap.
+  - `.claude/context/learnings/http-surface.md` (lines 85-99) — the single-record section's durable
+    trap: match the full wire URI, seed the test with the URI, and scope a no-CDN `http://` body ban to
+    the template/CDN region once a real schema URI renders.
+  - `.claude/context/issues.md` — the full issue text (the issue `review` deletes on PASS).
 
 ## Not In Scope
-- The certificate of inclusion (`/inclusion/{iscc_id}`), the downloadable proof-bundle assembler, and
-  the Bitcoin-anchor vs comparison-anchor panels — the NEXT M-UI slice (re-engages the oracle gate).
-- Interpreting the ISCC-ID (no codec, no `hub_id`/realm decode) — ADR-0008: the page lists the id
-  verbatim. The ONLY interpretation allowed is mapping the verbatim `note.$schema` string to a display
-  label (declaration / deletion / unknown), and that mapping must never gate or error.
-- Fetching/joining the original declaration for a deletion's per-id history — that cross-record view
-  belongs to the certificate slice. Render only THIS leaf here.
-- Any WASM / tier-2 "verify in your browser" affordance (later milestone).
-- Consolidating the 3x `overlayStatus` precedence into `internal/badge` (open `low` issue, loop-skipped).
-- Any schema change (`internal/store/schema.sql` byte-identical) or any change to `RecordProjections` /
-  the `PollHub` ingest write path — the slice is read-side + render-side only.
+- The certificate of inclusion (`/inclusion/{iscc_id}`) and the downloadable proof-bundle assembler —
+  the NEXT slice (it re-engages the oracle/conformance gate). Do not start it here.
+- Touching `cmd/iscc-monitor`, `internal/store`, `internal/logclient`, or any file outside
+  `internal/proofserve` — the defect is entirely local to the kind-label map and its test.
+- Reworking `recordKind`'s structure (the `switch` at handler.go:835-844 is correct); only the two
+  `const` values change.
+- Adding a separate "glossary short name" constant or any ISCC-ID codec — ADR-0008 is schema-agnostic;
+  the page interprets only the verbatim `note.$schema` against the wire URI.
+- Any `go.mod`/`go.sum`/`schema.sql` change (must stay byte-identical).
 
 ## Implementation Notes
-- **Schema → kind label (the only interpretation, fail-open).** Map the verbatim `note.$schema`:
-  `iscc-note-0.8.0` → "Declaration", `iscc-note-delete-0.8.0` → "Deletion" (`CLAUDE.md` glossary lines
-  174/178), anything else INCLUDING empty → "Unknown record type". An unknown/empty schema MUST render
-  the page, never a 4xx/5xx — that is the explicit Verify clause. Keep the verbatim raw `note.$schema`
-  string visible ALONGSIDE the friendly label (honest: the monitor interprets nothing). For a deletion,
-  the copy should note it is a *new* record that marks the declaration redacted in derived views but
-  never removes the committed declaration (glossary "Deletion") — but DO NOT fetch the original here.
-- **Status mapping (mirror `serveEntries`, the record-facing contract).** `parseUint` empty/non-numeric/
-  overflow → 400; `FollowState`/`RecordAt`/bundle-read DB error → 500; `LastSize == 0` or
-  `seq >= LastSize` → 404 "leaf not covered by accepted checkpoint"; bundle not mirrored
-  (`errors.Is(err, os.ErrNotExist)`) → 404; `logclient.ErrLeafOutOfBundle` → 404; non-GET → 405 (the
-  shared gate at the top of `Handler`). **Decide and test the missing-projection case explicitly:** a
-  leaf that is in-tree (`seq < LastSize`) and whose bytes ARE mirrored but has NO `iscc_index` projection
-  row (`RecordAt` found=false) should still render the page from the raw bytes with id/schema shown as a
-  "no projection indexed" state — do NOT 404 it solely on a missing projection (the bytes are the source
-  of truth; the projection is a derived view). The page does its work from the bytes; the projection only
-  supplies the id/schema labels.
-- **Bundle math (learnings trap).** `bundleIndex := seq / tiles.TileWidth`; `offset := seq %
-  tiles.TileWidth`; `p := tiles.PartialTileSize(0, bundleIndex, size)` — never pass `p == 0`
-  unconditionally or the final partial bundle of a non-multiple-of-256 tree 404s a real leaf. Then
-  `logclient.RecordBytesFromBundle(bundle, offset)`.
-- **Raw bytes rendering.** The record envelope is opaque JCS/JSON-ish bytes. Render them inside a
-  `<pre>`/`<code>` block via `html/template` auto-escape (string-cast, NOT `template.HTML`). They are
-  bytes for human inspection, not parsed. Page must be complete with JS off.
-- **Buffer-then-200 + overlay.** Render into a `bytes.Buffer`, set `Content-Type: text/html;
-  charset=utf-8`, `WriteHeader(200)`, `buf.WriteTo(w)` (post-200 write-drop). Reuse `overlayStatus(fs,
-  hubID, statuses)` + `badge.Label(status)` exactly as `serveRecords` does so the five-status badge
-  partial renders, and `record.html` invokes `{{template "hubStatusBadge" .}}` over a view-model that
-  carries `.Status` + `.Label`.
-- **CSS-literal trap (cross-cutting).** If `record.html` inlines the badge color block AND a test
-  asserts the body contains NO `data-status="verified"`, use the UNQUOTED CSS attribute form
-  (`[data-status=verified]`), like `records.html`/`browser.html`, not the quoted form `dashboard.html`
-  gets away with.
-- **`recordTmpl`** is parsed once at package init —
-  `template.Must(template.New("record").Parse(recordSource))` then `template.Must(t.Parse(badge.Source))`
-  — exactly like `recordsTmpl`/`browserTmpl`, so a malformed template fails the build, not a request.
-- **Store reader.** `RecordAt` is `SELECT seq, iscc_id_str, note_schema FROM iscc_index WHERE hub_id=?
-  AND seq=?` via `QueryRowContext`; map `sql.ErrNoRows` → `found=false, nil`; scan the two text columns
-  through `sql.NullString` (NULL→""), `seq` int64→uint64. `iscc_index.go` currently imports only
-  `context, database/sql, fmt`; add `errors` if you consult `errors.Is(err, sql.ErrNoRows)`. Return a
-  small store-owned value (e.g. reuse `RecordRow`).
-- **Correctness rules in play:** `iscc_id → seq` is one-to-many and verification is schema-agnostic
-  (ADR-0008) — this route reads ONE leaf by absolute seq, interpreting nothing beyond the display-label
-  map; coverage honesty (ADR-0001) — never imply a leaf above `LastSize` is accepted; store stays a leaf
-  (no `net/http`/`internal/logclient` in its closure).
+- In `internal/proofserve/handler.go:108-109`, change the two constants to the exact wire URIs (port them
+  verbatim from `projection_test.go:19-20`):
+  - `schemaDeclaration = "http://purl.org/iscc/schema/iscc-note-0.8.0.json"`
+  - `schemaDeletion    = "http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json"`
+  The comment at handler.go:101-106 already says "the verbatim `note.$schema`", so it stays accurate; the
+  constants now match that prose. `recordKind` (835-844) needs no change — it `switch`es on these
+  constants.
+- In `internal/proofserve/record_test.go`, `schemaForSeq` (lines 40-52) returns the *constants* for seq 0
+  (declaration) and seq 1 (deletion), so those two cases follow the rename automatically and now feed the
+  production wire URIs — which is the whole point: the test must exercise the production path, not invent
+  short forms. Keep seq 2 (`"iscc-note-future-9.9.9"`, a non-URL unknown) and seq 3 (`""`, empty →
+  Unknown) as-is so the unknown/empty no-error clause stays exercised.
+- **The no-CDN ban interaction (the review's explicit warning, the load-bearing part of this fix).**
+  `TestRecordLinksTokensNoCDN` (record_test.go:369-396) renders `index=0` (a declaration) and bans
+  `"jsdelivr"`, `"http://"`, `"https://"`, `"cdn."` across the WHOLE body. Once seq 0's schema is the
+  full URI, `record.html:272` renders `http://purl.org/...` as legitimate record data, so the whole-body
+  `http://` ban false-fails. Fix the test, NOT the page: scope the CDN ban to the template/CDN region —
+  the document head where a CDN `<link>`/`url(` would actually appear (slice the body at `</style>` or at
+  `<body`, and run the `http://`/`https://`/`jsdelivr`/`cdn.` ban only over that head region). The
+  legitimate same-origin `/_ds/` link asserts (`href="/_ds/tokens.css"`, `href="/_ds/fonts.css"`,
+  `var(--font-sans)`, `var(--font-mono)`) and the `<table>` absence assert must still hold over the
+  appropriate region. (Alternative the review allows: render that one no-CDN assertion against a non-URL
+  schema such as seq 2 — but prefer scoping the region; it keeps the ban honest where a CDN link would
+  appear and survives future surfaces that render real URIs.)
+- Correctness rule (learnings index "schema-agnostic" + store.md trap): the stored `note.$schema` is the
+  verbatim wire value (a full URI), so any consumer matching it against a literal MUST use the full URI
+  and its test MUST seed the URI, never the glossary short form. CLAUDE.md's `iscc-note-0.8.0` is prose
+  shorthand only.
+- Keep the slice a pure render (oracle gate N/A — no signature/RFC-6962/Merkle/did:web/fsck/proof path is
+  touched); `internal/store` stays a leaf; `go.mod`/`go.sum`/`schema.sql` byte-identical.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -run TestRecord ./internal/proofserve` passes, including new HTTP-seam tests (driving
-  `proofserve.Handler` over `buildMirror`/`buildEntriesMirror`):
-  - `GET /record?index=<seq>` returns `200 text/html` for an in-tree leaf and shows `seq`, the verbatim
-    `iscc_id`, the verbatim `note.$schema`, and the raw record bytes;
-  - a projection with schema `iscc-note-0.8.0` shows the "Declaration" label, one with
-    `iscc-note-delete-0.8.0` shows "Deletion", and one with an unknown/empty schema renders 200 with the
-    "Unknown" label (the no-error clause) — seed three projections with those schemas via
-    `store.RecordProjections`;
-  - `index` missing/non-numeric → 400; `seq >= LastSize` → 404; `LastSize == 0` → 404; bundle not
-    mirrored → 404; non-GET → 405;
-  - body links `/_ds/tokens.css` + `/_ds/fonts.css`, contains no `http://`/`https://`/`jsdelivr`/`cdn.`,
-    and has no `<table>` (DS-shell + no-CDN invariant).
-- `go test -run TestRecordsListsNewestFirst ./internal/proofserve` (updated) passes asserting each
-  `/records` row now links to `record?index=<seq>` (not `entries?index=<seq>`).
-- `go test -run TestRecordAt ./internal/store` passes: `RecordAt` returns the persisted row for an
-  existing seq and `found=false` for an absent one.
-- `go list -deps ./internal/store | grep '^net/http$'` is empty (store stays a leaf) AND
-  `git diff --stat HEAD -- internal/store/schema.sql go.mod go.sum` is empty (byte-identical).
-- Oracle/conformance gate is N/A and NOT skipped: the page is a pure decode + index render of persisted
-  rows + mirrored bytes — no signature / RFC-6962 / Merkle / did:web / fsck / proof-build path (the
-  proof-bundle assembler that DOES re-engage it is the next slice). Confirm `go test ./...` still runs
-  the existing inclusion/consistency conformance tests green.
+- `mise run check` is green (build + vet + all packages test; `gofmt -l .` empty).
+- `go test -run TestRecord ./internal/proofserve` passes — including `TestRecordLinksTokensNoCDN` (no
+  longer false-failing on the now-realistic `http://purl.org/...` schema data) and the
+  declaration/deletion kind-label assertions.
+- Assertion: a single-record page for a leaf whose projection `note.$schema` is
+  `"http://purl.org/iscc/schema/iscc-note-0.8.0.json"` renders the label **"Declaration"** (not
+  "Unknown record type"); a leaf with `"http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json"` renders
+  **"Deletion"**; a non-URL/empty schema still renders 200 with **"Unknown record type"**.
+- `grep -n '"iscc-note-0.8.0"\|"iscc-note-delete-0.8.0"' internal/proofserve/handler.go` returns nothing
+  (the short forms are gone from the production constants).
+- `git diff --stat HEAD -- go.mod go.sum internal/store/schema.sql` is empty (byte-identical).
 
 ## Done When
-`GET /<domain>/log/record?index=<seq>` serves a no-JS, DS-shell, CDN-free 200 page rendering one
-accepted leaf (declaration / deletion / unknown schema, with raw bytes) and errors per the mapping
-above, every `/records` row links to it, `cmd/iscc-monitor` mounts the route, and all Verification
-checks pass with `mise run check` green.
+`mise run check` is green, the single-record page labels the full-URI declaration/deletion schemas as
+"Declaration"/"Deletion" (and unknown/empty as "Unknown record type") proven by
+`go test -run TestRecord ./internal/proofserve`, the production constants no longer hold the short forms,
+and the no-CDN ban no longer false-fails on the verbatim schema URI.
