@@ -6,35 +6,34 @@
 Read this when a step touches the area above. Durable cross-cutting rules live in
 the index (`.claude/context/learnings.md`); the package-local mechanics are here.
 
-## `internal/web` — embedded DS token CSS shell (`GET /_ds/tokens.css`)
+## `internal/web` — embedded DS token/font shell (`GET /_ds/...`)
 
-- **`immutable` Cache-Control is ONLY safe on a content-addressed URL; `/_ds/tokens.css` is a STABLE
-  overwrite-in-place path, so `immutable` is the wrong policy here.** The landed handler sets
-  `public, max-age=31536000, immutable`, which contradicts the project's own convention:
-  `internal/tilesserve` uses `cacheImmutable` ONLY for FULL content-addressed tiles (URL changes when
-  bytes change) and `cacheRevalidate = "no-cache"` for anything overwritten in place at a fixed URL —
-  its comment warns such a resource "must NOT carry the immutable directive or a client would pin a
-  soon-overwritten" version. A redeploy that changes `tokens.css` reuses the same URL, so an `immutable`
-  client can keep stale CSS for a year. Cosmetic (stale tokens, no correctness impact) — tracked in
-  issues.md as a `normal` follow-up. For ANY future static asset served at a stable path (the upcoming
-  self-hosted woff2 at `/_ds/fonts/...` too): use `no-cache` + a strong content ETag + `If-None-Match`→304
-  (the `tilesserve.writeBlob` shape), OR a build-fingerprinted path (`/_ds/tokens.<hash>.css`). Do NOT
-  copy the `immutable`-on-a-stable-path pattern forward.
-- **Mount at the EXACT path, never a `/_ds/` subtree.** `mux.Handle(web.TokensPath, web.Handler())` is an
-  exact `http.ServeMux` pattern (no trailing slash). Reviewer end-to-end-confirmed through the full
-  `buildMux`: `GET /_ds/tokens.css` → 200 text/css; `GET /_ds/fonts/x.woff2` → 404 (nothing else under
-  `/_ds/` is served); `GET /` still hits the dashboard; CORS (`Allow-Origin: *`) rides the outer
-  `corsmw.Handler(mux)` wrap so the handler sets none. An exact mount keeps the surface isolated and
-  stops a later sub-step (fonts) from silently leaking under a subtree.
-- **The CDN-free test bans `http` AND `url(` substrings — this only stays true because the ported token
-  files are scheme-less.** `internal/web/web_test.go` asserts the served bytes contain no `jsdelivr`, no
-  `http`, no `url(`. Source-of-truth: the only CDN URLs in the DS bundle live in `fonts.css` (excluded),
-  and the only `url(` in colors/typography/spacing/base is the `.iscc-grain background-image:
-  url("../assets/grain.png")` in `base.css` — which the port neutralizes (drops the `background-image`
-  line, keeps `background-size`/`background-blend-mode` as harmless no-ops). When the fonts sub-step
-  lands self-hosted `@font-face`, those `src: url("/_ds/fonts/...woff2")` lines WILL reintroduce `url(`
-  (a same-origin relative URL, which is fine) — the `url(` ban must then narrow to "no external/CDN
-  `url(`", not "no `url(` at all". Keep the `jsdelivr`/`http`-substring bans; relax only the bare `url(`.
+- settled: the `immutable`-on-a-stable-path trap is fixed and the surface is now a `/_ds/` SUBTREE mount.
+  Every `/_ds/...` asset (tokens.css, fonts.css, woff2) is served by one `web.Handler` mounted at
+  `web.Prefix` with the `no-cache` + strong content-ETag + `If-None-Match`→304 policy (the
+  `tilesserve.writeBlob` shape, hex of `sha256.Sum256(data)`, no `W/` prefix). The two `immutable`
+  mentions left in `web.go` are doc comments explaining WHY the directive is avoided, not a header value.
+  Forward rule: NEVER serve a stable (non-content-addressed) `/_ds/` asset with `immutable`; redeploy
+  reuses the URL with changed bytes, so a client would pin stale CSS/fonts for a year. Content-fingerprint
+  the path or revalidate.
+- **The mount is now a `/_ds/` SUBTREE (`mux.Handle(web.Prefix, web.Handler())`), the deliberate reverse
+  of the prior exact-path mount** — fonts need `/_ds/fonts/x.woff2` to route here. `http.ServeMux`
+  most-specific match still keeps `/`, `/metrics`, `/healthz`, and each `/<domain>/log/` subtree from being
+  shadowed (reviewer E2E-confirmed through the real `buildMux`), and `web.Handler` 404s any non-asset
+  `/_ds/` path. If you add another `/_ds/...` family, extend the in-handler path switch — do NOT add a
+  second competing `/_ds/...` mux pattern.
+- **`serveFont` is the one request-path→filesystem-read site; its guard is load-bearing.** It rejects
+  anything not ending `.woff2` and anything with a `/` after `fonts/`, so `../`, nested paths, and
+  non-woff2 names all 404 before the `fs.ReadFile`. Reviewer probed `..`/nested/double-`fonts/` paths →
+  all 404. Keep both clauses if you touch this; `http.ServeMux` also path-cleans `..` in production, but
+  the guard must stand alone.
+- **The CDN-free invariant is now enforced by `noExternalCDN` banning `jsdelivr`/`http://`/`https://`/`cdn.`
+  — the bare `http`/`url(` substring bans are GONE on purpose.** Self-hosted `@font-face` legitimately
+  needs same-origin `src: url("/_ds/fonts/...woff2")`, so a bare `url(` ban is wrong. The new helper bans
+  only third-party origins; a same-origin `url(` and a relative `/_ds/` path pass. `TestFontsCSSReferencesEmbeddedSubsets`
+  also cross-checks that every `src` path in fonts.css resolves to an embedded woff2 (200) — exactly 8.
+  Watch: the `http://`/`https://` bans (not bare `http`) still false-positive if a future SSR surface
+  renders a hub `base_url` (an `https://...`); scope to a non-self host then.
 - **The dashboard body's `http://`/`https://` ban is satisfied only because `ListHubs` renders the
   scheme-less `h.origin` (`<domain>/log`), NOT the `https://...` `base_url`.** `TestDashboardLinksTokensNoCDN`
   bans `http://`/`https://`/`cdn.` in the rendered `/` body; this passes because the template renders
