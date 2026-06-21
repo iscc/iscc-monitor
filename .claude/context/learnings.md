@@ -495,6 +495,21 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
 - **Whitespace-only `RealmPath` now fails cleanly at the binary's `os.ReadFile`** with the path named
   (`read realm document "   ": open …: no such file or directory`), closing the config presence-only
   gap noted in earlier learnings — the binary owns the fs error, config owns presence.
+- **`tilesserve.Handler` is now wired per-hub on the one HTTP server** via `mirrorHandler(st, routes)`
+  + `buildMux(st, routes, m)` (mirror subtrees + `/metrics` on a single `*http.ServeMux`); `serveMetrics`
+  serves that combined mux on the lone listener (no second socket). The mount is the load-bearing
+  detail: `mux.Handle("/"+origin+"/", http.StripPrefix("/"+origin+"/", h))` — the **trailing slash**
+  arms `http.ServeMux` subtree matching, and `StripPrefix` down to the single leading slash gives the
+  handler exactly the `/checkpoint`-style suffix it trims. Reviewer re-ran the trailing-slash mutation
+  (drop the `+"/"` → 404 on the 200-byte-equal subtest, reverted → green): a green-but-misrouted router
+  cannot ship. Origin is `<domain>/log` (full, never bare), re-derived via `logclient.Origin` in
+  `registerHubs` (now returns index-aligned `([]HubTarget, []hubRoute, error)`) — a request missing
+  `/log` does not match the prefix and 404s. `hubRoute{HubID, Origin}` is package-local to `main`
+  (`HubTarget` carries no origin; the follower needs none). All per-hub `SQLiteFetcher`s share the
+  store's single connection (ADR-0005/0007). Oracle gate correctly N/A — pure HTTP wiring of existing
+  packages, `tilesserve` serves opaque BLOBs (no signature/RFC-6962/Merkle/did:web/fsck path);
+  store stays a leaf (`go list -deps ./internal/store | grep tilesserve` empty — dep is binary→
+  tilesserve→store), go.mod/go.sum/schema byte-identical.
 
 ## Follower composition (`internal/follower`)
 
