@@ -1,68 +1,51 @@
-## 2026-06-21 — Fix the `/records` list — cap at `LastSize`, clamp overflow, reach seq 0
+## 2026-06-21 — Review of: Fix the `/records` list — cap at `LastSize`, clamp overflow, reach seq 0
 
-**Done:** Closed all three record-list defects (the two open `normal` `[review]` issues) in two
-source files: `ListRecords` now takes an accepted-tree ceiling (`last`) applied to BOTH the
-`COUNT(*)` total and the page query, and an explicit `hasFrom bool` so the seq cursor is no longer
-overloaded as the start-at-newest sentinel; `serveRecords` threads `fs.LastSize`, clamps the page
-size while still `uint64` BEFORE the `int()` conversion, and `parseUint` now rejects overflow.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/store/iscc_index.go`: `ListRecords` signature is now `(ctx, hubID, last uint64,
-  hasFrom bool, from uint64, n int)`. Added `AND seq < ?` (bound `int64(last)`) to both the total
-  count and the windowed SELECT; the cursor predicate is gated on `hasFrom` instead of `from > 0`,
-  so `from=0` is a real cursor. Docstring updated.
-- `internal/proofserve/handler.go`: `serveRecords` passes `fs.LastSize` and `hasFrom` (=`fromErr ==
-  nil`) into `ListRecords`; the page-size clamp moved to `if n > maxPageSize { n = maxPageSize }`
-  BEFORE `pageSize = int(n)`; `HasNewer` now keys on `hasFrom`. `parseUint` rejects values that would
-  overflow `uint64` (returns its existing error type, leaving empty/non-numeric behaviour intact);
-  added `math` import. Two docstrings updated.
-- `internal/store/iscc_index_test.go`: updated all `ListRecords` callers to the new signature; added
-  a `from=0`-cursor assertion to `TestListRecords` (reaches seq 0, not the newest page) and a new
-  `TestListRecordsCeiling` (rows + total cap at `seq < last`).
-- `internal/proofserve/records_test.go`: added `TestRecordsClampsHostilePageSize`
-  (`n=9223372036854775808` → ≤ `maxPageSize` rows), `TestRecordsOlderLinkReachesSeq0` (walks the
-  page-emitted older chain at `n=1` down to seq 0), `TestRecordsCeilingHidesUnacceptedLeaves`
-  (projections above `LastSize` never list), and `TestParseUintOverflow` (overflow + contract).
+**Summary:** The advance closes all three record-list defects (the two open `normal` `[review]` issues)
+in exactly the two source files `next.md` named: `ListRecords` gained an accepted-tree ceiling applied to
+BOTH the `COUNT(*)` total and the windowed `SELECT`, plus an explicit `hasFrom bool` so the seq cursor is
+no longer overloaded as the start-at-newest sentinel; `serveRecords` threads `fs.LastSize` + `hasFrom`,
+moved the page-size clamp before the `int()` conversion, and `parseUint` now rejects uint64 overflow. The
+diff is tight, well-documented, all gates are green, and every new assertion is mutation-proven
+non-vacuous (I re-ran all three mutations independently).
 
-**Verification:** `mise run check` → green (build + vet + all 20 packages `ok`; `gofmt -l .` empty).
-Per-criterion:
-- [x] `go test -run TestListRecords ./internal/store` PASS incl. `TestListRecordsCeiling`; ceiling
-  drop mutation → FAILS (`total = 6, want 4`; seq 4/5 leak), reverted (non-vacuous).
-- [x] `go test -run TestRecords ./internal/proofserve` PASS incl. the overflow-clamp and
-  older-link-reaches-seq-0 cases.
-- [x] `go list -deps ./internal/store | grep '^net/http$'` empty (store stays a leaf); package
-  `.Imports` unchanged (no `logclient`/`net/http`).
-- [x] `git diff --stat HEAD -- internal/store/schema.sql go.mod go.sum` empty (byte-identical).
-- [x] Ceiling assertion: a hub with rows at `seq >= last` lists only `seq < last`, total counts only
-  `seq < last` (store + proofserve).
-- [x] Older-chain assertion: following the page-emitted older chain (`n=1`) from the page ending at
-  seq 1 reaches a page containing seq 0; re-overload mutation → walk never reaches seq 0, reverted.
-- [x] Hostile-`n` assertion: `?n=9223372036854775808` renders ≤ `maxPageSize` rows; post-`int()`
-  clamp mutation → whole 300-row index renders, reverted.
-- [x] `parseUint` overflow guard mutation-proven (`MaxUint64+1` rejected), reverted.
+**Verification:**
+- [x] `mise run check` — green (build + vet + all 20 packages `ok`).
+- [x] `gofmt -l .` — empty (no formatting failures).
+- [x] `go test -run TestListRecords ./internal/store` — PASS incl. new `TestListRecordsCeiling`; drop-ceiling mutation → FAILS (`total = 6, want 4`; seq 4/5 leak), reverted.
+- [x] `go test -run TestRecords ./internal/proofserve` — PASS incl. `TestRecordsClampsHostilePageSize`, `TestRecordsOlderLinkReachesSeq0`, `TestRecordsCeilingHidesUnacceptedLeaves`, `TestParseUintOverflow`.
+- [x] Mutation: post-`int()` clamp → `TestRecordsClampsHostilePageSize` FAILS (whole 300-row index renders), reverted.
+- [x] Mutation: re-overload `from` (`hasFrom`→`from > 0`) → `TestListRecords` + `TestRecordsOlderLinkReachesSeq0` FAIL (seq 0 unreachable), reverted.
+- [x] `go list -deps ./internal/store | grep '^net/http$'` empty AND no `internal/logclient` — store stays a leaf; `.Imports` unchanged.
+- [x] `git diff --stat HEAD~1..HEAD -- internal/store/schema.sql go.mod go.sum` empty (byte-identical).
+- [x] Scope: 2 non-test/doc `.go` files (handler.go, iscc_index.go) + 2 test files — within the ≤3 budget; nothing in `## Not In Scope` touched.
+- [x] Gate-integrity scan over all unpushed commits (`@{upstream}..HEAD`) — no `//nolint`/`t.Skip`/build-tag/swallowed-error/removed-assertion patterns.
+- [x] Oracle gate — correctly N/A (pure HTML render of persisted `iscc_index` rows via leaf reads; no signature / RFC-6962 / Merkle / did:web / fsck / proof path). Not skipped; does not apply.
+
+**Issues found:** (none) — both open `normal` `[review]` issues verified fixed and deleted from `issues.md`.
+
+**Codex second opinion:** Codex ran long (broad codebase grep well past the advance scope) but produced
+a clean verdict before completing: "The changes correctly apply the accepted-size ceiling to record
+listing, preserve from=0 as a real cursor, clamp page size before int conversion, and reject uint64 parse
+overflow. The updated call sites and tests are consistent, and the test suite passes." No `[P1]`–`[P3]`
+findings. Concurs with my independent assessment and mutation testing; nothing to triage.
 
 **Next:** Resume the planned M-UI order — the single-record page (declaration / deletion / unknown
 schema) and re-point each `/records` row from `entries?index=<seq>` to it, then the certificate of
-inclusion (`/inclusion/{iscc_id}`, which re-engages the oracle gate). The record-list Verify criterion
-should now be on its bar.
+inclusion (`/inclusion/{iscc_id}`, which re-engages the oracle gate). The record-list Verify criterion is
+now on its bar.
 
 **Notes:**
-- **Oracle/conformance gate correctly N/A** — pure HTML render of persisted `iscc_index` rows via a
-  leaf read; no signature / RFC-6962 / Merkle / did:web / fsck / proof path touched. Not skipped, it
-  does not apply.
-- **Cursor-encoding choice:** went with `hasFrom bool` threaded into `ListRecords` (not a `+1` /
-  1-based cursor) — it keeps the URL semantics intact (`from=<seq>` is always an inclusive upper-bound
-  seq, `from=0` == seq 0) and the template emits unchanged, so emit / parse / query all agree with no
-  off-by-one. The template (`records.html`) needed no change: it already emits raw `OlderFrom` /
-  `NewerFrom` seq values.
-- **`parseUint` is shared** by `selectSeq`/`serveInclusion`/`serveEntries`/`serveRecords`; the overflow
-  rejection only ADDS a guard returning the same `error` type, so every caller treats overflow exactly
-  as it already treats a malformed value (→ 400 / silent default). Verified the reviewer's exact repro:
-  `n=9223372036854775808` (= `1<<63`) parses fine and is caught by the `> maxPageSize` clamp, not by
-  the overflow guard — so the clamp is the load-bearing anti-DoS guard, the overflow guard handles
-  21+-digit values that previously wrapped silently.
-- **`int64(last)` cast** follows the file's existing `int64(from)` / `int64(r.Seq)` cast symmetry (a
-  tree size always fits in int64); no new lint or vet noise.
-- Working tree carries only the 4 in-scope files; no scratch dir created; `go.mod`/`go.sum`/
-  `schema.sql` byte-identical. The 3x `overlayStatus`/`hubStatus` consolidation (open `low` issue)
-  was left untouched per scope.
+- The record-list section of `learnings/http-surface.md` was net-tightened: the two stale "open issue"
+  pointers were collapsed into a single settled bullet carrying the durable seq-cursor-pagination lessons
+  (never overload `0` as both cursor + sentinel; clamp page size while still `uint64`; cap COUNT and the
+  windowed SELECT together; `parseUint` overflow reject). File is 157 lines — at the soft cap; a future
+  record-list review should net-reduce by collapsing more settled traps rather than appending.
+- Three remaining `low` issues only (the `overlayStatus`/`hubStatus` 3x duplication, the Mirror-seam
+  leak, the proofserve `writeReadError` lift, the scaling trip-wire metrics, and the `notecheck` `out`
+  param) — all skipped by the loop; reserved for human-directed work.
+- The `olderHref` test helper correctly distinguishes the live anchor (`older &rarr;</a>`) from the dead
+  `<span>` and grabs the older link's href via `LastIndex` past the newer link in source order — a
+  faithful walk of the chain the page actually emits, not a hand-built URL.

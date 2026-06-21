@@ -70,29 +70,33 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   record-facing route must follow):** `LastSize == 0` → 404; **`seq >= LastSize` → 404 "leaf not covered
   by accepted checkpoint"**; bundle-miss `os.ErrNotExist` → 404; `ErrLeafOutOfBundle` → 404; missing/
   non-numeric `index` → 400; non-GET → 405. The index is the absolute leaf **seq**, schema-agnostic
-  (ADR-0008) — nothing interpreted. **NOTE the `>= LastSize` cap: `serveRecords`/`ListRecords` is the one
-  record-facing route that omits it (open `[review]` issue) — `iscc_index` can hold projections ABOVE
-  `LastSize` (ingest writes them before accept; a freeze/fault leaves them), so an uncapped list shows
-  unaccepted leaves whose `entries?index=` links this route then 404s.**
+  (ADR-0008) — nothing interpreted. **The `>= LastSize` accepted-tree cap is the contract EVERY
+  record-facing route must follow** — `serveRecords`/`ListRecords` now enforces it too (see below).
+  `iscc_index` can hold projections ABOVE `LastSize` (ingest writes them before accept; a freeze/fault
+  leaves them), so any record route that omits the cap shows unaccepted leaves whose `entries?index=`
+  links would then 404.
 
 ## HTML record list at `/records` (`serveRecords` + `store.ListRecords`)
 
-- **settled:** the no-JS, newest-first (`seq DESC`), seq-cursor-paginated record list is landed (DS shell,
-  no `<table>`, no CDN, unquoted `[data-status=…]` CSS so the negative overlay assert stays honest, badge
-  partial reuse, render-into-buffer-then-200). Pure store-read (oracle gate N/A): `FollowState` +
-  `ListRecords` only; store stays a leaf; go.mod/go.sum/schema byte-identical. `ListRecords` newest-first
-  + hub-scope mutation-proven (`DESC→ASC` FAILS store + proofserve tests), reverted.
-- **`from == 0` is OVERLOADED as both a cursor value AND the "start at newest" sentinel — two confirmed
-  bugs both root here (open `[review]` issues):** (1) the older-link `OlderFrom = oldest-1` emits
-  `from=0` whenever a page ends at seq 1, but `ListRecords` reads `from==0` as "newest", so clicking
-  older jumps back to the newest page and **seq 0 is unreachable** via navigation; (2) `serveRecords`
-  parses `n` via `parseUint` then `int(n)` BEFORE the `> maxPageSize` clamp — a huge `n` (e.g.
-  `9223372036854775808`) wraps to a NEGATIVE `int`, the `> 200` check misses it, and modernc SQLite
-  treats a negative `LIMIT` as UNLIMITED (reviewer-confirmed: 10 rows returned for `n=-5`), so the
-  intended anti-DoS clamp is bypassed and the whole index renders. **Durable lessons for any cursor
-  pagination here:** never overload 0 (carry a separate `has-from` bool or use a 1-based/`+1` cursor);
-  clamp page size while still `uint64` BEFORE the `int()` conversion; `parseUint` itself has no overflow
-  guard (it wraps silently in `n = n*10 + …`), so an upstream cap is mandatory, not optional.
+- **settled:** the no-JS, newest-first (`seq DESC`), seq-cursor-paginated record list is landed + correct
+  (DS shell, no `<table>`, no CDN, unquoted `[data-status=…]` CSS so the negative overlay assert stays
+  honest, badge partial reuse, render-into-buffer-then-200; pure store-read, oracle gate N/A; store stays
+  a leaf; go.mod/go.sum/schema byte-identical). All three record-list defects are closed (`ListRecords`
+  now takes `(…, last, hasFrom, from, n)`; `serveRecords` threads `fs.LastSize` + `hasFrom = fromErr ==
+  nil`). (1) `last` caps BOTH the
+  `COUNT(*)` total and the page `SELECT` with `AND seq < ?` so the list never shows a leaf the accepted
+  checkpoint omits; (2) the page-size clamp moved to `if n > maxPageSize { n = maxPageSize }` BEFORE the
+  `int(n)` conversion; (3) `from` is no longer overloaded — `hasFrom` carries present/absent so `from=0`
+  is a real seq-0 cursor. `parseUint` gained an overflow reject. All three mutation-proven (reviewer
+  re-ran each: drop-ceiling → `total 6 want 4`; post-`int()` clamp → whole 300-row index; re-overload
+  → seq 0 unreachable), reverted. Codex concurred (no findings). **Durable lessons for any seq-cursor
+  pagination here:** never overload `0` as both a cursor value and a sentinel (carry a `has-from` bool
+  or a 1-based/`+1` cursor); clamp page size while still `uint64` BEFORE the `int()` conversion (a huge
+  `n` wraps `int(n)` negative and modernc SQLite reads a negative `LIMIT` as UNLIMITED); apply the same
+  accepted-tree ceiling to the COUNT and the windowed SELECT (an uncapped total still lies in the
+  "showing N of TOTAL" line). `parseUint` had no overflow guard (it wrapped silently in `n = n*10 + …`),
+  so it now rejects overflow with its existing error type — every shared caller treats it as a malformed
+  value, no behaviour change for empty/non-numeric.
 
 ## verify-for-me JSON verdict (`/verify` + `serveVerify`)
 
