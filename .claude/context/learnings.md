@@ -275,6 +275,36 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   `proofbuilder.go`); file-level WASM purity holds (`GOOS=js GOARCH=wasm go build ./internal/logclient`
   exits 0, imports are exactly `fmt`+those two).
 
+## fsck root-rebuild wiring (`internal/logclient/fsck.go`)
+
+- **`RunFsck(ctx, vkey, origin string, f fsck.Fetcher) error` is thin glue: `note.NewVerifier(vkey)`
+  then `fsck.New(origin, v, f, LeafHashes, fsck.Opts{N:1}).Check(ctx)`, both `%w`-wrapped.** It takes
+  the `fsck.Fetcher` *interface* (NOT concrete `store.SQLiteFetcher`), so production `logclient` gains
+  no `store` import edge; the test supplies the concrete fetcher from external `package logclient_test`.
+  Imports are exactly `context`+`fmt`+`tessera/fsck`+`x/mod/sumdb/note`. No production caller yet —
+  intentional unused-until-wired seam (like the consistency triggers / `LeafHashes` / `IsFull`), `go
+  vet` clean. Its first caller needs the live tile-ingestion writer (M2, not yet built).
+- **Oracle gate APPLIES (RFC-6962 root-rebuild crypto) and is satisfied + independently mutation-proven
+  by the reviewer.** Forcing `RunFsck` to `return nil` (drop the `Check` call, reverted) makes BOTH
+  corruption subtests FAIL (`RejectsCorruptedTile`/`RejectsCorruptedBundle`) — so the rebuild genuinely
+  compares the re-derived root against the signed checkpoint root; a green-but-wrong fsck cannot ship.
+  Green case klog: "Successfully fsck'd log with size 5 and root 00d21829…". The prover (`testonly.Tree`
+  leaf+node hashes) and verifier (`fsck`+`LeafHashes`) are independent of the fetcher; the bundle
+  encoder (manual uint16 framing) is a third path distinct from `EntryBundle.UnmarshalText`. The
+  fully-independent `notecheck` oracle is the deferred CI companion (still the sole open `normal` issue).
+- **The handoff's "logclient no longer builds for WASM" claim is OVERSTATED but harmless.** `GOOS=js
+  GOARCH=wasm go build ./internal/logclient` actually still exits 0 even with `fsck.go` added —
+  `net/http`/`klog`/`otel` are all usable under js/wasm (the js/wasm `net/http` is fetch-backed). The
+  load-bearing purity invariant is NOT this package; it rides on `internal/didweb` (the WASM-shared
+  verifier seam — `internal/proof` doesn't exist yet), which builds clean. Verify with the didweb WASM
+  build, never by asserting logclient fails to build for WASM.
+- **The `tessera/fsck` require-graph is legitimate, additive, and tidy-idempotent (verified).** `go mod
+  why -m` traces `stretchr/testify`/`otel`/`klog/v2`/`formats` through `internal/logclient →
+  tessera/fsck` (genuine compile-graph now that `fsck.go` imports it), so klog/otel/formats enter
+  go.mod's indirect block and the testify-family (testify/go-spew/difflib/yaml.v3) enter go.sum only as
+  transitive test-deps. `go mod tidy && git diff --exit-code -- go.mod go.sum` exits 0, `go mod verify`
+  → all modules verified, directive stays `go 1.24.0` (no `toolchain` line). No existing entry rewritten.
+
 ## tlog-tiles layout seam (`internal/tiles`)
 
 - **`internal/tiles` is a thin re-export of `tessera/api/layout`, not a reimplementation** — wrappers
