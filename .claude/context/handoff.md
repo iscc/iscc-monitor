@@ -1,73 +1,58 @@
 # Handoff
 
-## 2026-06-21 — Review of: Port `InclusionProofFromTiles` — the tile-sourced RFC-6962 inclusion proof builder
+## 2026-06-21 — Pure entry-bundle coordinate enumeration for a tree of size N (`tiles.BundleCoords`)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added the pure, golden-testable `BundleCoords(treeSize uint64) []BundleCoord` to
+`internal/tiles/coords.go` — the (index, partial) list naming which entry bundles a complete mirror of
+a tree of size N must hold. It delegates the boundary math to tessera by iterating
+`layout.Range(0, treeSize, treeSize)` and projecting each `RangeInfo` to `BundleCoord{Index, Partial}`.
+No I/O, no store wiring, no hash-tile enumeration — purely additive and dependency-clean.
 
-**Summary:** `advance` added the exported `InclusionProofFromTiles(ctx, fetch TileFetcher, index, size
-uint64) ([][]byte, error)` to `internal/logclient/proofbuilder.go` plus a golden test
-`inclusionproof_test.go` reusing the sibling's shared helpers. It is a faithful, structurally-identical
-mirror of `ConsistencyProofFromTiles` with exactly the two intended swaps (`proof.Inclusion(index,
-size)` and `size` as the `getNode` `logSize`); the sibling, `getNode`, `tileKey`, and `TileFetcher` are
-byte-untouched. Every Verification criterion passes and the RFC-6962 oracle gate is mutation-proven
-non-vacuous two independent ways.
+**Files changed:**
+- `internal/tiles/coords.go` (new): `BundleCoord` type (`Index uint64`, `Partial uint8`) + `BundleCoords`.
+- `internal/tiles/coords_test.go` (new): table-driven golden test asserting all 7 `next.md` vectors
+  (length + each `{Index, Partial}` in order) plus a non-nil-empty-slice assertion for `treeSize == 0`.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green (all 11 packages `ok`; re-ran `logclient`
-      uncached → `ok`, `go vet ./...` clean).
-- [x] `gofmt -l internal/logclient/` — empty. Also ran `gofmt -l .` over the whole tree → empty.
-- [x] `go test -run TestInclusionProofFromTiles ./internal/logclient` — passes (3 subtests:
-      golden, missing-tile, index-out-of-range).
-- [x] `go test -run 'TestConsistencyProofFromTiles|TestInclusionProofFromTiles' ./internal/logclient`
-      — passes (consistency goldens still green; additive change confirmed).
-- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` — exit 0 (WASM-share purity invariant intact).
-- [x] `git diff --quiet HEAD~1..HEAD -- go.mod go.sum` — exit 0 (no dependency change; `proof.Inclusion`
-      was already in the closure via the sibling).
+**Verification:** `mise run check` (build + vet + test) → green (all 11 packages `ok`; `internal/tiles`
+ran uncached `ok`). Per-criterion:
+- [x] `gofmt -l internal/tiles/` → empty (after `mise run fmt`).
+- [x] `go test -run TestBundleCoords ./internal/tiles` → passes (all 7 golden vectors).
+- [x] `git diff --quiet HEAD -- go.mod go.sum` → exit 0 (no dependency change; `layout.Range` already
+      compiled in via `layout.go`).
+- [x] `GOOS=js GOARCH=wasm go build ./internal/tiles` → exit 0 (leaf-purity invariant holds).
+- [x] Boundary assertion: `BundleCoords(300)` returns exactly `[]BundleCoord{{0, 0}, {1, 44}}` — full
+      bundle at index 0, partial-44 at index 1, never partial at index 0.
 
-**Oracle gate (APPLIES — RFC-6962 inclusion crypto):** SATISFIED + independently mutation-proven by the
-reviewer. The golden builds the 300-leaf `testonly.Tree` boundary fixture and, for
-`{0,5,200,255,256,260,299}`, asserts the tile-built proof byte-equals `tree.InclusionProof(index,300)`
-AND verifies via `proof.VerifyInclusion(hasher, index, 300, tree.LeafHash(index), got, tree.HashAt(300))`
-— prover, verifier, and builder are three independent merkle paths. I ran two mutations (both reverted,
-file confirmed byte-identical to HEAD after): (1) `proof.Inclusion(index+1, size)` → root mismatch at
-256/260 + out-of-bounds at 299; (2) corrupting every fetched node hash in the shared `getNode` loop →
-root mismatch. Both FAILED the golden — a green-but-wrong builder cannot ship. `notecheck` /
-`derive_vkey.py` / `fsck` ground-truth oracles are correctly N/A for this slice (no signature / did:web
-/ tile-rebuild path introduced; they re-arm at the cross-check-vs-real-`IsccLogInclusionProof` slice).
-Port faithfulness confirmed against `cauldron/tessera/client/client.go:201` (`ProofBuilder.
-InclusionProof` → `proof.Inclusion(index, pb.treeSize)` → `fetchNodes`): structurally identical, otel
-spans dropped, `%w` wraps instead of `%v` (better for `errors.Is`).
+**Oracle/conformance gate (N/A — stated per `next.md`):** This slice is pure path/coordinate math
+delegating to tessera; it introduces no signature / RFC-6962 / Merkle / did:web / fsck-rebuild path, so
+the `notecheck` / `derive_vkey.py` / `fsck` ground-truth oracles do not apply. The gate **re-arms** when
+the fetched bundles feed `LeafHashes` + the inclusion cross-check (the M2 ingestion writer slice).
+Non-vacuousness is grounded externally: before writing, I ran `layout.Range(0, size, size)` in-module
+over all 7 sizes (throwaway test, removed) and the output matched every pinned vector exactly, including
+the `300 -> {0,0} {1,44}` boundary — so the golden is tessera ground truth, not author-asserted.
 
-**Issues found:** (none) — purely additive seam, no behavior to fix.
-
-**Gate-integrity scan:** clean over all 3 unpushed commits (`@{upstream}..HEAD`). No `//nolint`,
-`t.Skip`, swallowed errors, build-tag exclusions, or loosened assertions in added lines (the two grep
-hits were handoff prose: a prior gate-scan note and the word "build target", not a `//+build` tag).
-
-**Scope discipline:** clean. 1 non-test/doc file (`proofbuilder.go`) + 1 new test file + handoff —
-well within ≤3. No "Not In Scope" work leaked in: no production caller was wired (`grep` confirms
-`InclusionProofFromTiles` appears only in its own definition + test), `ConsistencyProofFromTiles` was
-not refactored, no shared `fetchNodes` extracted, the `cmd/notecheck out io.Writer` low issue untouched.
-
-**Next:** The fixture-and-wiring half this `next.md` deferred — the inclusion **cross-check** asserting
-`InclusionProofFromTiles` byte-equals a hub's real `evidence.IsccLogInclusionProof`. Still blocked on two
-artifacts that do not exist: (1) captured `IsccLogInclusionProof` + tile + entry-bundle fixtures in
-`testdata/live/`, and (2) the live tile-ingestion writer making `PollHub` mirror real tiles/bundles so
-`SQLiteFetcher.ReadTile` can source proof nodes. The **live tile-ingestion writer** is the natural next
-slice — it unblocks both the inclusion cross-check AND the `fsck` root-rebuild over `SQLiteFetcher`
-(`RunFsck` landed, still unwired); both want the same real tile fixtures.
+**Next:** The natural next slice is the **hash-tile (multi-level) coordinate enumeration** — the sibling
+this step explicitly deferred. Hash tiles span tile-levels `0, 1, 2, …` (tree-levels `0, 8, 16, …`) and
+need their own boundary reasoning (per-level tile counts + the top partial tile via
+`layout.PartialTileSize(level, index, treeSize)`); unlike entry bundles there is no single `Range` call
+covering all levels, so it needs its own loop over levels until the level has one (root) tile. After
+both enumerations exist, the **live tile-ingestion writer** (fetch loop + `PollHub` wiring calling
+`RecordTile` / `RecordEntryBundle`) becomes implementable, which in turn unblocks the still-deferred
+`fsck` root-rebuild over `SQLiteFetcher` and the inclusion cross-check vs the hub's real
+`IsccLogInclusionProof` (both want the same real tile/bundle fixtures in `testdata/live/`).
 
 **Notes:**
-- Both proof builders intentionally have no explicit `index < size` / `max > treeSize` guard before the
-  `proof.*` call (unlike tessera's `ConsistencyProof`, which guards `max > pb.treeSize`). They lean on
-  `proof.Inclusion`/`proof.Consistency`'s own precondition — verified safe: `index == size` returns a
-  wrapped non-nil error, never panics, never reaches the fetcher.
-- `InclusionProofFromTiles` is an intentional unused-until-wired export seam (like
-  `ConsistencyProofFromTiles`, `CheckEquivocation`, `LeafHashes`, `RunFsck`) — `go vet` clean, not dead
-  code. Its first caller is the M2 inclusion cross-check above.
-- The test reuses `buildTree`/`tileFetcherFor`/`equalProof`/`fmtProof`/`treeLeaves` from
-  `proofbuilder_test.go` (same package) without redefinition — confirmed (no duplicate func/const).
-- (low, still open, untouched) `cmd/notecheck`'s `run` has a vestigial `out io.Writer` param — correctly
-  loop-skipped per `next.md`'s Not In Scope (low priority, skipped by the loop).
-- Branch is `develop` with upstream `origin/develop`; remote configured → pushing on PASS.
+- `BundleCoords` is an intentional unused-until-wired export seam (like `IsFull`, the consistency
+  triggers, `LeafHashes`, `RunFsck`, the proof builders) — `go vet` clean, not dead code. Its first
+  caller is the M2 live tile-ingestion fetch loop.
+- The two-convention discipline is preserved: `BundleCoord.Partial` is the **path** qualifier
+  (path-API "0 == full", the same `p` `EntriesPath`/`Range` use). The store's `width` column is a
+  different encoding (`widthForP(Partial)`: `0 -> 256`), translated downstream by the ingestion writer
+  via `RecordEntryBundle(hubID, bundleIndex, width, …)` — NOT this step's concern. The doc comments on
+  both the type field and the function call this out so the eventual writer does not conflate them.
+- `treeSize == 0` returns a non-nil length-0 slice (pre-sized `make([]BundleCoord, 0)` accumulator;
+  `layout.Range` yields nothing). A dedicated test pins the non-nil contract.
+- Used `reflect.DeepEqual` for the full-slice golden compare (plus an explicit length check first for a
+  clearer failure message) — `BundleCoord` is a comparable value type, so this is exact.
+- No `go.mod`/`go.sum` churn and no new import beyond the `layout` already in the package closure via
+  `layout.go`, as required.
