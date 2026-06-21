@@ -1,110 +1,112 @@
 # Next Work Package
 
-## Step: Land the pure inclusion cross-check `VerifyInclusionEvidence` (decode hub `IsccLogInclusionProof` → compute from tiles → byte-compare)
+## Step: Mirror candidate tiles before the consistency check so a growing split view freezes
 
 ## Goal
-Build the pure, golden-testable core of M2's SECOND Verify half: a function that decodes a hub's
-`IsccLogInclusionProof` and asserts the monitor's own `InclusionProofFromTiles` byte-equals the
-hub-supplied proof for that leaf. This is `InclusionProofFromTiles`'s first production-shaped caller
-and the second true *external* oracle (the hub-computed proof), kept pure so the `PollHub` wiring +
-`iscc_index` lookup can follow in a later, separate slice.
+Close the open `critical` trust-root gap: `PollHub` currently builds the growing-pair RFC-6962
+consistency proof from a mirror that holds tiles only up to the *previously* accepted size, so a
+growing split view hits a missing-candidate-tile error that `checkConsistency` swallows as a clean
+pass — and then advances `last_size` to the inconsistent root and never freezes. Mirroring the
+candidate tiles *before* the self-consistency check makes the proof buildable, so a genuine growing
+equivocation is detected and frozen (ADR-0006).
 
 ## Scope
-- **Create**: `internal/logclient/inclusioncheck.go` — the decode + cross-check function.
-- **Create**: `internal/logclient/inclusioncheck_test.go` — golden + mutation test (test, not counted).
-- **Modify**: (none — strictly additive; no existing production file changes)
+- **Modify**: `internal/follower/follower.go` (reorder `PollHub`: call `ingestTiles(...info.TreeSize...)`
+  BEFORE `checkConsistency`, so the candidate-size tiles are mirrored before the equivocation proof is
+  built; update the file/`PollHub` doc comments to describe the new order).
+- **Modify**: `internal/follower/equivocation_test.go` (add the end-to-end growing split-view test
+  through `PollHub`; this is a test file and does not count against the 3-file budget).
 - **Reference**:
-  - `/workspace/iscc-monitor/cauldron/iscc-hub/iscc_hub/log_tree.py` lines ~208-232
-    (`inclusion_evidence`) — the EXACT `IsccLogInclusionProof` shape the hub emits:
-    `{type, checkpoint, treeSize, leafIndex, inclusionProof: [base64(h) for h in proof]}`.
-    `base64.b64encode` = **standard** padding (`base64.StdEncoding`).
-  - `/workspace/iscc-monitor/cauldron/iscc-hub/iscc_hub/schema.py` lines ~193-206 (`Evidence` model) —
-    field names/types (`treeSize ge=1`, `leafIndex ge=0`, `inclusionProof list[str]`).
-  - `/workspace/iscc-monitor/internal/logclient/proofbuilder.go` lines 86-127 —
-    `InclusionProofFromTiles(ctx, fetch, index, size)` and the `TileFetcher` type (line 39):
-    `func(ctx, level, index uint64, p uint8) ([]byte, error)`, byte-identical to
-    `store.SQLiteFetcher.ReadTile`.
-  - `/workspace/iscc-monitor/internal/logclient/inclusionproof_test.go` — the `testonly.Tree` +
-    `tileFetcherFor` + `equalProof` golden pattern to reuse (same package).
-  - `/workspace/iscc-monitor/internal/logclient/verify.go` line 16 — `encoding/base64` is already
-    imported in this package (precedent for stdlib `StdEncoding`).
+  - `/workspace/iscc-monitor/internal/follower/follower.go` — current `PollHub` (lines 122-211),
+    `checkConsistency` (lines 385-426; the missing-tile swallow at 412-415), the `ingestTiles` call at
+    line 197 and `fsckMirror` call at line 206.
+  - `/workspace/iscc-monitor/internal/follower/ingest.go` — `ingestTiles` signature (line 40); it is
+    transport+CRUD only and returns a genuine fetch/store error (never a violation).
+  - `/workspace/iscc-monitor/internal/follower/equivocation_test.go` — `buildEquivTree`,
+    `equivNodeHash`, `seedMirrorTiles`, `flipByte`, `rootArray`, `equivPrevSize` (5),
+    `equivTreeLeaves` (300), and `TestEquivocationMissingTilesDoesNotFreeze` (which calls
+    `checkConsistency` directly and must keep passing unchanged — the missing-tile swallow stays as a
+    robustness guard).
+  - `/workspace/iscc-monitor/internal/follower/fsck_test.go` — `buildVerifiedMirror`,
+    `mirrorBundleFetcher`, `fsckOrigin` ("sb0.iscc.id/log"), `mirrorLeaves` (300); the `byPath` fetcher
+    fixture for a self-consistent candidate tree (did.json + signed checkpoint + byte-accurate tiles).
+  - `/workspace/iscc-monitor/internal/follower/follower_test.go` — `openTemp`, `noopAlert`,
+    `countRows`, `assertViolation` helpers.
+  - `/workspace/iscc-monitor/internal/logclient/proofbuilder.go` — `ConsistencyProofFromTiles` wraps a
+    missing tile as `os.ErrNotExist` via `%w` (lines 60-84, `getNode` 139-153); confirms why the
+    pre-ingest order produced a swallowed missing-tile error.
 
 ## Not In Scope
-- **Do NOT wire this into `PollHub`/`follower.go`.** That needs the `iscc_index` writer to resolve a
-  sampled `iscc_id` → `leafIndex`, plus bundle fixtures — its own later slice.
-- **Do NOT add the `iscc_index` projection writer** (the schema-agnostic `iscc_id → seq` table is a
-  separate M2 item; this step does not read or write it).
-- **Do NOT re-verify the embedded `checkpoint` signature here** — this function cross-checks the
-  *proof hashes* only; signature + treeSize/root verification is already `AcceptCheckpoint`'s job. You
-  MAY decode `treeSize`/`leafIndex` from the JSON, but do not re-run `note.Open` on the bundled
-  checkpoint string.
-- **Do NOT capture live sb0/sb1 tiles or real `IsccLogInclusionProof` fixtures.** Use the in-process
-  `testonly.Tree` mirror, consistent with the fsck slice precedent (handoff 2026-06-21: live leaf
-  preimages were never captured).
-- **Do NOT touch `go.mod`/`go.sum`/`schema.sql`** — `encoding/json` + `encoding/base64` are stdlib;
-  `InclusionProofFromTiles`, `proof`, `tessera/api` are already in the package closure.
+- Wiring `VerifyInclusionEvidence` into `PollHub` or the `iscc_index` projection writer (the M2
+  second-half slice — a separate, later step).
+- Fixing the `normal` "frozen hubs still advance accepted state" issue or the `normal` `CheckpointAt`
+  unordered `LIMIT 1` issue (separate backlog entries; do not bundle).
+- Removing or rewriting the `checkConsistency` missing-tile swallow (lines 412-415). It stays as a
+  robustness guard for the genuine no-mirror case (e.g. a hub that advanced before tiles were
+  mirrored); the reorder is what closes the gap. Do not also turn it into a hard error in this step.
+- Refactoring `fsckMirror`, `cacheHubKey`, or the metrics wiring.
 
 ## Implementation Notes
-- Define an exported struct mirroring the hub VC member, e.g.:
-  ```go
-  type InclusionEvidence struct {
-      Type           string   `json:"type"`
-      Checkpoint     string   `json:"checkpoint"`
-      TreeSize       uint64   `json:"treeSize"`
-      LeafIndex      uint64   `json:"leafIndex"`
-      InclusionProof []string `json:"inclusionProof"`
-  }
-  ```
-- Add `ParseInclusionEvidence(raw []byte) (InclusionEvidence, error)` — a thin `json.Unmarshal`,
-  reject a wrong `Type` (`!= "IsccLogInclusionProof"`) and `TreeSize == 0`. Match the
-  `ParseDIDDocument` style (`%w`-wrapped errors).
-- Add the cross-check `VerifyInclusionEvidence(ctx context.Context, fetch TileFetcher, ev
-  InclusionEvidence) error`:
-  1. Guard `ev.LeafIndex < ev.TreeSize` — else a clear non-nil error WITHOUT reaching the fetcher
-     (same posture as `TestInclusionProofFromTilesIndexOutOfRange`).
-  2. `got, err := InclusionProofFromTiles(ctx, fetch, ev.LeafIndex, ev.TreeSize)` — propagate `%w`
-     (a missing tile must keep `errors.Is(err, os.ErrNotExist)`, like the builder's own tests).
-  3. base64-**Std**-decode each `ev.InclusionProof[i]` → `[]byte` (mirror `inclusion_evidence`'s
-     `base64.b64encode`); a bad base64 element → wrapped error.
-  4. Compare lengths first, then each hash with `bytes.Equal`. On any mismatch return a **descriptive
-     sentinel** (package var `ErrInclusionMismatch`) wrapped with context so the future `PollHub`
-     caller can `errors.Is` on it; on full match return `nil`.
-- Keep the file **net-free at the file level** (imports exactly `bytes`/`context`/`encoding/base64`/
-  `encoding/json`/`errors`/`fmt`). The package already pulls `net/http` via `didresolve.go`, so the
-  load-bearing purity invariant is the `internal/didweb` WASM build (unaffected), NOT this package —
-  do not try to make `go list -deps ./internal/logclient | grep net/http` empty (it can't be, and
-  that is documented in learnings).
-- **Correctness rule (learnings — oracle gate APPLIES, RFC-6962 inclusion crypto).** Make the golden
-  non-circular: build the proof with `testonly.Tree.InclusionProof(index, treeLeaves)` (the hub's
-  role), base64-Std-encode it into an `InclusionEvidence` exactly as `log_tree.py` does, serve tiles
-  via the existing `tileFetcherFor`, and assert `VerifyInclusionEvidence` returns `nil` across the
-  256-leaf boundary (reuse indices like `{0, 5, 255, 256, 299}` against the 300-leaf `testonly.Tree`).
-  Prover (`testonly.Tree.InclusionProof`), tile-builder (`InclusionProofFromTiles`), and the
-  base64+bytes compare are independent paths → not a tautology.
-- **Mutation / non-vacuity (REQUIRED).** Add a negative subtest: flip one byte of one
-  `ev.InclusionProof` hash (or pass a wrong `LeafIndex` with the right proof) and assert
-  `errors.Is(err, ErrInclusionMismatch)`. A green-but-wrong check that ignored the proof bytes must
-  FAIL this — proving the byte-comparison is load-bearing.
-- Note `proof.VerifyInclusion`'s arg order is `(hasher, index, size, leafHash, proof, root)` — but you
-  do NOT call it here; you only byte-compare the proof node lists, which is exactly what M2's Verify
-  bar asks ("computed inclusion proof matches the hub's `evidence.IsccLogInclusionProof`").
+- The minimal correct change is a **reorder in `PollHub`**, not new logic. After `AcceptCheckpoint`
+  returns `StatusVerified` and `st.FollowState(ctx, hubID)` is read, call
+  `ingestTiles(ctx, st, fetcher, hubID, baseURL, info.TreeSize, observedAt)` **before**
+  `checkConsistency(...)`. On a growing pair this mirrors the candidate-size tiles, so
+  `ConsistencyProofFromTiles(prevSize, info.TreeSize)` can build the proof and `CheckEquivocation`
+  returns a true verdict on an inconsistent root — the hub freezes instead of silently advancing.
+- Move the single `ingestTiles` call up; do NOT duplicate it. There must remain exactly one
+  `ingestTiles` invocation per `PollHub`. Keep `fsckMirror` where it is, on the clean advance path
+  after `RecordCheckpoint`/`AdvanceFollowState` — it still has mirrored tiles because `ingestTiles`
+  now runs earlier in the same call.
+- On a violation the candidate tiles are now already mirrored but the cursor is NOT advanced (freeze
+  returns without `AdvanceFollowState`). That is intended: tiles are rebuildable/evidence, not
+  accepted state (Correctness rule "partial-tile discipline" + ADR-0006 "preserve evidence"). Do NOT
+  add logic to roll back the mirror on a freeze.
+- A genuine transport/store fault during the moved `ingestTiles` is returned as the existing
+  `%w`-wrapped "ingest tiles" error and aborts the poll WITHOUT advancing — which is exactly the
+  "missing proof tile → error, not clean pass" behavior the `critical` issue asks for. No accepted
+  state changes on that path.
+- `buildVerifiedMirror(t, mirrorLeaves)` already serves byte-accurate bytes for every coord
+  `tiles.TileCoords(300)` / `BundleCoords(300)` enumerates, so the candidate side of the new test is a
+  normal self-consistent tree whose signature verifies and whose tiles fsck-rebuild.
+- **New test (`TestPollHubGrowingSplitViewFreezes`)** — construct a growing split view routed through
+  the full `PollHub` chain:
+  - Build a self-consistent candidate via `m := buildVerifiedMirror(t, mirrorLeaves)` (size 300). Its
+    `m.fetcher` serves the did.json, the signed candidate checkpoint, and byte-accurate candidate tiles.
+  - Seed a *prior accepted* checkpoint at a smaller size (e.g. `equivPrevSize` = 5) whose root is a
+    **wrong/fabricated** prior root — use `flipByte(rootArray(t, m.tree.HashAt(equivPrevSize)))` so the
+    consistency proof from prior→candidate cannot verify — then `AdvanceFollowState(ctx, hubID, 5)`.
+    The candidate checkpoint the fetcher signs is internally valid; the inconsistency is between the
+    seeded prior accepted root and the candidate root, which is exactly a growing split view against
+    this monitor.
+  - Call `PollHub(ctx, s, m.fetcher, hubID, "https://sb0.iscc.id", observedAt, alert, nil)` with a
+    counting `AlertFunc`; assert it returns `(StatusVerified, nil)` (freeze, never crash — ADR-0006).
+  - Assert via observable store outputs ONLY (PRD outbound-fetch seam rule — never follower
+    internals): `assertViolation(t, path, hubID, "equivocation")`; `FollowState.Frozen == true`;
+    `FollowState.LastSize == equivPrevSize` (did NOT advance to 300); exactly one alert;
+    `countRows(t, path, "violations") == 1`.
+  - Non-vacuity is provided by the pair with the existing `TestPollHubVerifiedAdvances` /
+    `TestPollHubMirrorsTiles` (a *consistent* growing observation over the same mirror advances and
+    does not freeze) — so the suite catches both a "never freezes" and an "always freezes" wiring.
+- Correctness rule in play (learnings.md): "A self-consistency violation freezes, never crashes
+  (ADR-0006) — three triggers fork/shrink/equivocation; persist evidence, set `frozen=1`, alert once,
+  do not advance." The reorder is what makes the equivocation trigger actually fire on a growing pair.
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -run TestVerifyInclusionEvidence -count=1 ./internal/logclient` passes.
-- The golden subtest asserts `VerifyInclusionEvidence` returns `nil` for `{0, 5, 255, 256, 299}` on
-  the 300-leaf `testonly.Tree`, with the evidence's `inclusionProof` built base64-Std from
-  `tree.InclusionProof(index, 300)`.
-- A mutation subtest (corrupted proof hash and/or wrong `LeafIndex`) returns a non-nil error with
-  `errors.Is(err, ErrInclusionMismatch) == true`; a missing-tile fetcher returns a non-nil error with
-  `errors.Is(err, os.ErrNotExist) == true`.
-- `go test -run TestParseInclusionEvidence -count=1 ./internal/logclient` passes (round-trips a valid
-  evidence JSON; rejects wrong `Type` and `TreeSize == 0`).
-- `git diff --quiet HEAD -- go.mod go.sum internal/store/schema.sql` exits 0 (no dep/schema change).
+- `go test -run TestPollHubGrowingSplitViewFreezes -count=1 ./internal/follower` passes (the new
+  end-to-end growing split-view freeze test).
+- `go test -run 'TestPollHubEquivocation|TestEquivocationMissingTilesDoesNotFreeze' -count=1
+  ./internal/follower` still passes (the direct-`checkConsistency` missing-tile robustness guard is
+  unchanged).
+- `go test -run 'TestPollHubVerifiedAdvances|TestPollHubMirrorsTiles|TestPollHubFsck' -count=1
+  ./internal/follower` still passes (the consistent-growing advance path and the fsck rebuild are
+  unaffected by the reorder).
+- `git diff --quiet HEAD -- go.mod go.sum internal/store/schema.sql` exits 0 (no dependency or schema
+  change — this is a follower-only reorder).
 - `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (WASM purity guard unaffected).
 
 ## Done When
-`internal/logclient/inclusioncheck.go` exposes `ParseInclusionEvidence` + `VerifyInclusionEvidence`
-(the first production-shaped caller of `InclusionProofFromTiles`), all Verification criteria pass, and
-the golden + mutation tests prove the hub-vs-monitor inclusion-proof byte-comparison is correct and
-non-vacuous — leaving only the `PollHub`/`iscc_index` wiring to complete M2's second Verify half.
+`PollHub` mirrors candidate tiles before the self-consistency check, a growing split view freezes
+without advancing accepted state (`TestPollHubGrowingSplitViewFreezes` green), the pre-existing
+equivocation/advance/fsck tests still pass, and `mise run check` is green — closing the open `critical`
+issue.
