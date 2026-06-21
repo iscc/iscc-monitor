@@ -1121,9 +1121,21 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   `Cache-Control`.** Error paths (`http.Error` 400/404/405/500) intentionally carry no `Cache-Control`.
   Oracle gate correctly N/A (pure HTTP header wiring on opaque BLOBs — no signature/RFC-6962/Merkle/
   did:web/fsck/proof path); no new import, so go.mod/go.sum/schema byte-identical; `immutable` directive
-  string appears in exactly one place (the const), `no-store` absent. Conditional GET (`ETag`/
-  `If-None-Match`/304) is the deliberately-deferred follow-up slice; `proofserve` size-dependent surfaces
+  string appears in exactly one place (the const), `no-store` absent. `proofserve` size-dependent surfaces
   (`/inclusion`/`/consistency`/`/entries`) still have no cache policy (tied to `LastSize`, later slice).
+- **Conditional GET landed: a strong content ETag + `If-None-Match` → 304 on every `writeBlob` 200.**
+  `etag := fmt.Sprintf("\"%x\"", sha256.Sum256(data))` — quoted lowercase hex, STRONG (no `W/` prefix).
+  All three validators (`Content-Type`/`Cache-Control`/`ETag`) are `Set` BEFORE the `If-None-Match`
+  branch, so a 304 still carries `ETag` + `Cache-Control` per RFC 7232 §4.1 (reviewer wrote a throwaway
+  test, removed: a full-tile 304 echoes both the ETag and `…immutable` Cache-Control). The match is
+  `inm == "*" || inm == etag` — exact-token-or-wildcard only, no comma-separated list parser (a client
+  echoes the exact tag the server sent). `writeBlob` now takes `r *http.Request`; the 304 path
+  `w.WriteHeader(304)` + bare `return` writes no body. Reviewer independently re-derived the seeded
+  full-tile ETag in Python (`sha256(0x11 * 8192)` → `"a44d83e2…"`), confirming Go's `%x` over the
+  `[32]byte` array matches the test's expectation — the tag is genuinely content-derived, not constant.
+  Oracle gate correctly N/A (opaque-BLOB header wiring); no new dep (`crypto/sha256`+`fmt` stdlib),
+  go.mod/go.sum/schema byte-identical, didweb WASM leaf untouched + builds green. The `_, _ = w.Write`
+  is the pre-existing post-status-write idiom (not in the added-line diff), NOT a swallowed-error dodge.
 
 ## Computed inclusion proof HTTP surface (`internal/proofserve/handler.go`)
 
