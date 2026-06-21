@@ -151,10 +151,10 @@ func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hu
 // from mirrorHandler. The dashboard mounts at the exact path "/" —
 // http.ServeMux's most-specific match means it never shadows /metrics, /healthz,
 // the /_ds/ subtree, any /<domain>/log/ subtree, or any /<domain> dossier (the
-// dashboard.Handler itself 404s any path other than "/"). The static assets mount at the web.Prefix subtree ("/_ds/"), so the token
-// stylesheet, the fonts stylesheet, and every /_ds/fonts/<file>.woff2 route to the
-// one web.Handler; it is isolated and never shadows "/" or the per-hub subtrees.
-// The same metrics
+// dashboard.Handler itself 404s any path other than "/"). The static assets mount
+// at the web.Prefix subtree ("/_ds/"), so the token stylesheet, the fonts
+// stylesheet, and every /_ds/fonts/<file>.woff2 route to the one web.Handler; it
+// is isolated and never shadows "/" or the per-hub subtrees. The same metrics
 // registry m the /metrics handler exposes is also passed to the dashboard as its
 // in-memory status overlay (the StatusSource), so the page can render the live
 // unresolvable / unverified verdicts the store cannot prove. Both /metrics and

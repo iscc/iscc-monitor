@@ -1,67 +1,71 @@
-## 2026-06-21 — Hub dossier skeleton — `GET /<domain>` Evidence-Ledger page (status + coverage honesty), no-JS
+## 2026-06-21 — Review of: Hub dossier skeleton — `GET /<domain>` Evidence-Ledger page (status + coverage honesty), no-JS
 
-**Done:** Stood up a per-hub dossier page at the bare `GET /<domain>` (e.g. `/sb0.iscc.id`): a new
-`internal/dossier` leaf that renders one hub's five-status badge (store subset overlaid with the
-in-memory live verdict) and honest coverage window in the Evidence-Ledger card pattern, wired into the
-mux via a new exact-path mount alongside each hub's `/<domain>/log/` mirror subtree.
+**Verdict:** NEEDS_WORK
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/dossier/handler.go` (new): `Handler(st, hubID, statuses)` + `dossierData` view-model +
-  `findHub`/`buildData`/`overlayStatus`/`hubStatus`/`coverageTime`, ported from
-  `internal/dashboard/handler.go` (deliberate third copy — consolidation is its own tracked step).
-- `internal/dossier/dossier.html` (new asset): the Evidence-Ledger card — DS `<head>` shell (the two
-  `/_ds/tokens.css` + `/_ds/fonts.css` `<link>`s + page-scoped `<style>` over `var(--*)`), `.chrome`
-  masthead, a `.ledger` card with definition rows (Domain, Origin, Status badge, honest Coverage,
-  Observed size) + a relative link to `/{{.Origin}}/`. Unquoted `data-status=` selectors (CSS-literal
-  trap), `--status-error-bg` used with the literal fallback.
-- `internal/dossier/handler_test.go` (new test): HTTP-seam asserts — 200 text/html, DS-shell wiring,
-  domain through the `hubStatusBadge` partial, coverage honesty (covered → `size 42 at 2023-11-14…Z`;
-  uncovered → "no coverage yet"), no `<table>`/CDN, non-GET → 405, missing summary → 500, plus the
-  `hubStatus`/`overlayStatus` table tests mirrored from dashboard.
-- `cmd/iscc-monitor/main.go`: added `Domain string` to `hubRoute`, set it from `e.Domain` in
-  `registerHubs`, mounted `dossier.Handler(st, r.HubID, m)` at `"/"+r.Domain` in `mirrorHandler`,
-  updated the `buildMux`/`hubRoute`/`mirrorHandler` doc comments, added the `internal/dossier` import.
-- `cmd/iscc-monitor/main_test.go`: set the now-required `Domain` on the three `hubRoute` fixtures (an
-  empty Domain registered `mux.Handle("/")` and collided with the dashboard mount → panic), asserted
-  `routes[i].Domain` in the registerHubs test, and added a `TestMirrorRouter` subtest proving the bare
-  `/sb0.iscc.id` dossier resolves 200 text/html alongside the `/sb0.iscc.id/log/` subtree.
-- `CLAUDE.md`: added the `GET /<domain>` route bullet after `GET /`.
+**Summary:** The dossier page itself is well-built: a faithful third copy of the dashboard
+status/coverage shape, honest coverage rendering, the five-status badge overlay, no-JS/no-CDN DS
+shell, and a clean mux mount proven to coexist with the `/<domain>/log/` subtree. All Verification
+criteria pass and `mise run check` is green. BUT Codex surfaced a real, reviewer-reproduced defect the
+advance introduced: the new bare-domain mount panics `buildMux` at startup if a realm entry uses a
+single-label host that collides with a built-in exact route (`metrics`/`healthz`). That blocks PASS;
+the root-cause fix (reject reserved mount names before mounting) is the next advance.
 
-**Verification:** `mise run check` → green (`go build`/`go vet`/`go test` all 19 packages `ok`);
-`gofmt -l .` empty.
-- 200 text/html + DS shell (`href="/_ds/tokens.css"`, `href="/_ds/fonts.css"`, `var(--font-sans)`,
-  `var(--font-mono)`) — PASS.
-- Domain rendered through `hubStatusBadge` (`class="hub-status-badge"` + label + silhouette) — PASS.
-- Coverage honesty: covered hub `size 42 at 2023-11-14T22:13:20Z`; uncovered hub "no coverage yet" with
-  no fabricated `row-mono">size` — PASS.
-- In-memory overlay reaches the dossier (store-verified + live `unresolvable` → renders unresolvable,
-  body carries NO `data-status="verified"`) — PASS.
-- No `<table>`, no `http://`/`https://`/`cdn.`/`jsdelivr` in body — PASS.
-- `POST /<domain>` → 405; missing store summary → 500 (real inconsistency, not 404) — PASS.
-- Mutation-proven non-vacuous (reverted byte-identical, tree clean): broke `/_ds/fonts.css` href → FAIL;
-  forced the coverage branch to `{{- if false}}` → FAIL.
-- `go list -deps ./internal/store ./internal/badge | grep -E 'net/http|internal/dossier'` empty (leaves
-  intact, no cycle). `cmd/iscc-monitor` test green (`/<domain>` AND `/<domain>/log/` both resolve).
-- Oracle/conformance gate N/A (pure HTML render of persisted rows + in-memory overlay; no
-  signature/RFC-6962/Merkle/did:web/fsck/proof path). go.mod/go.sum byte-identical; no schema change.
+**Verification:**
+- [x] `mise run check` — green (all 19 packages `ok`; build/vet/test pass).
+- [x] `gofmt -l .` — empty (also after my comment re-wrap fix).
+- [x] `go test -count=1 ./internal/dossier` — PASS (new package, 7 tests).
+- [x] `go test -count=1 ./cmd/iscc-monitor` — PASS; `TestMirrorRouter` proves `/sb0.iscc.id` (200
+  text/html) AND `/sb0.iscc.id/log/` subtree both resolve on the shared mux (re-ran `-v`, all subtests pass).
+- [x] DS shell wired — `href="/_ds/tokens.css"`, `href="/_ds/fonts.css"`, `var(--font-sans/mono)` — asserted at the seam.
+- [x] Domain through `hubStatusBadge` partial (`class="hub-status-badge"` + label + silhouette marker) — PASS.
+- [x] Coverage honesty (ADR-0001): covered → `size 42 at 2023-11-14T22:13:20Z`; uncovered → "no coverage
+  yet" with Observed-size `0` clearly labeled and distinct (independently re-rendered the body to confirm).
+- [x] In-memory overlay reaches the dossier (verified+live-unresolvable → renders unresolvable, NO
+  `data-status="verified"`); CSS-literal trap handled (unquoted `[data-status=verified]` selectors,
+  0 quoted literals in the template — negative assert is honest).
+- [x] No `<table>`, no `http://`/`https://`/`cdn.`/`jsdelivr` in body — asserted.
+- [x] Leaf check: `go list -deps ./internal/store ./internal/badge | grep -E 'net/http|internal/dossier'` empty.
+- [x] go.mod/go.sum byte-identical (not in the diff); oracle gate correctly N/A (pure HTML render).
+- [x] Gate-integrity scan over the 3 unpushed commits — no `//nolint`/`t.Skip`/build-tag/swallowed-error/loosened gate; the diff only ADDS tests.
+- [x] Mutation-proven non-vacuous independently: broke `/_ds/fonts.css` href → FAIL; `{{- if false}}`
+  coverage branch → FAIL; bare `{{.Status}}` instead of badge → FAIL; neutered `overlayStatus` (always
+  return store status) → `TestOverlayStatusPrecedence` FAIL. All reverted byte-identical, tree clean.
+- [ ] **Reserved-domain startup safety** — FAIL. A realm entry `metrics`/`healthz` panics `buildMux`
+  (reproduced: `pattern "/metrics" … conflicts`). See Issues.
 
-**Next:** The frozen **Exhibit** sub-step (the categorically-distinct, non-dismissable
-violation-detail block, ADR-0006) is now the natural follow-on — it needs a NEW store read
-(`store.ListViolations(hubID)` over the `violations` table; only `RecordViolation` exists today, no
-read) plus the Exhibit markup in `dossier.html`. The dossier skeleton renders the `frozen` *status
-badge* honestly via the overlay but deliberately fabricates no violation detail. After that, the
-remaining M-UI SSR screens (paginated record list / single record / certificate-of-inclusion) — the
-certificate re-engages the oracle gate (inclusion-proof path).
+**Issues found:**
+- **[BLOCKS PASS, normal] Bare-domain dossier mount collides with reserved exact routes** — `main.go:205`
+  registers `/`+Domain inside `mirrorHandler`, which `buildMux` runs BEFORE mounting the exact
+  `/metrics`/`/healthz`/`/_ds/`. `registry.Parse` accepts any non-URL token as a Domain, so a realm line
+  `metrics` makes the dossier register `/metrics` first → the later built-in `mux.Handle("/metrics", …)`
+  panics → monitor fails to start. Reviewer reproduced the exact panic through `buildMux`. This is a
+  misconfiguration crash (real hub domains are multi-label), but it is a NEW crash surface this advance
+  introduced (the prior `/<domain>/log/` subtree never collided with the exact `/metrics`). Root-cause
+  fix: reject/skip a reserved-or-empty Domain before mounting (prefer failing `registerHubs`/`Parse`
+  loudly). Filed in `issues.md` with a repro + verify recipe.
+- Pre-existing `low` issues untouched (notecheck `out` param, Mirror seam, proofserve `writeReadError`).
+  The overlay-duplication issue is now 3x (dossier added a third verbatim copy) — re-titled + noted, still `low`.
+
+**Codex second opinion:** Completed (exit 0, ~5 min). One finding — **[P2] reserved dossier mount
+names collide with built-in `/metrics`/`/healthz` → startup panic** (`main.go:205`). **CONFIRMED REAL**
+by reproduction (filed as the blocking issue above). No other findings. Codex's other note ("other
+tested behavior appears intact") matches my independent review.
+
+**Next:** Fix the reserved/empty-domain mount collision at the root before adding more dossier surface:
+reject a `Domain` equal to a reserved mount name (`metrics`, `healthz`, the `web.Prefix` segment) and
+the empty case in `registerHubs` (or `registry.Parse`), with a `buildMux` test driving a reserved name.
+Then resume the planned frozen **Exhibit** sub-step (needs a NEW `store.ListViolations(hubID)` read over
+the `violations` table — only `RecordViolation` exists today — plus the non-dismissable Exhibit markup,
+ADR-0006). After that, the remaining M-UI SSR screens (record list / single record / certificate — the
+certificate re-engages the oracle/inclusion-proof gate).
 
 **Notes:**
-- The `hubRoute.Domain` field is now load-bearing: an empty `Domain` makes `mirrorHandler` register
-  `mux.Handle("/")`, which collides with the dashboard's `/` mount and panics `ServeMux.register`. The
-  three `cmd/iscc-monitor` test fixtures had to set it (production `registerHubs` always does). Flagging
-  so review knows the test-fixture change is required, not gratuitous.
-- Deliberate duplication: `overlayStatus`/`hubStatus`/`coverageTime` are now a THIRD copy (dashboard,
-  proofserve, dossier). Per `next.md` Not-In-Scope, consolidating into `internal/badge` is its own
-  tracked `low` issue ("Hub-status overlay precedence is duplicated") — NOT done here to avoid touching
-  unrelated packages. Review may want to bump that issue's weight now that it is 3x.
-- Followed the CSS-literal trap (learnings/http-surface.md): used unquoted `[data-status=verified]`
-  selectors so the negative `data-status="verified"` overlay assert stays honest, and used
-  `var(--status-error-bg, rgba(245, 97, 105, 0.06))` with the literal fallback (token not in tokens.css).
+- Minor fix applied by review: re-wrapped a 132-char doc-comment line + a dangling "The same metrics"
+  fragment in `buildMux`'s comment (`main.go:154-157`) that the advance left unwrapped. Comment-only, no
+  behavior change; gofmt clean, build green.
+- The dossier page quality is genuinely good — only the wiring edge case fails. The fix is small and
+  well-scoped; this is NEEDS_WORK on a single root cause, not a rewrite.
+- `hubRoute.Domain` is load-bearing (an empty Domain mounts `/` and collides with the dashboard) — the
+  reserved-name fix should cover the empty case too (the handoff flagged it; both are the same class).
+- No push (verdict is NEEDS_WORK). Remote is configured; the next PASS cycle pushes `develop`.

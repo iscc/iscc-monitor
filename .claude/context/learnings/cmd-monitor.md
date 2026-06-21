@@ -41,6 +41,16 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   packages, `tilesserve` serves opaque BLOBs (no signature/RFC-6962/Merkle/did:web/fsck path);
   store stays a leaf (`go list -deps ./internal/store | grep tilesserve` empty — dep is binary→
   tilesserve→store), go.mod/go.sum/schema byte-identical.
+- **A `mux.Handle("/"+r.Domain, …)` mount over an operator-controlled domain can COLLIDE with a
+  built-in exact route — `mirrorHandler` runs before `buildMux` registers `/metrics`/`/healthz`/`/_ds/`,
+  so the per-hub mount registers first and `http.ServeMux.Handle` PANICS on the duplicate pattern.**
+  `internal/registry.Parse` only rejects `://`/`/`, so a bare token like `metrics` is a valid `Domain`;
+  a realm line `metrics` crashes the binary at startup (reviewer reproduced the exact
+  `pattern "/metrics" … conflicts` panic through `buildMux`). The handoff already flagged the empty-Domain
+  `/`-collision; reserved single-label names (`metrics`, `healthz`, the `web.Prefix` segment) are the
+  same class. Any future exact bare-domain mount must reject/skip reserved + empty domains before
+  mounting (prefer failing `registerHubs`/`Parse` loudly so the operator sees the bad config), and a
+  test must drive a reserved name through `buildMux`. Open as a `normal` issue this iteration.
 - **`/healthz` is a `metricshttp`-style leaf that pings the store WITHOUT importing it.** `internal/
   healthz` declares its own 1-method `Pinger interface { Ping(context.Context) error }` (NOT a `store`
   import); `*store.Store` satisfies it structurally via a thin `Ping(ctx) error` → `db.PingContext`
