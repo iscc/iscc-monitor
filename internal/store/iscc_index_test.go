@@ -262,7 +262,8 @@ func TestListRecords(t *testing.T) {
 	}
 
 	// A full page from the newest record is newest-first and reports the right total.
-	rows, total, err := s.ListRecords(ctx, hub, 0, 10)
+	// last == 5 (the accepted tree size) lets every seq 0..4 through.
+	rows, total, err := s.ListRecords(ctx, hub, 5, false, 0, 10)
 	if err != nil {
 		t.Fatalf("ListRecords full page: %v", err)
 	}
@@ -281,7 +282,7 @@ func TestListRecords(t *testing.T) {
 	}
 
 	// A page size of 2 from the newest yields exactly the two newest, total unchanged.
-	rows, total, err = s.ListRecords(ctx, hub, 0, 2)
+	rows, total, err = s.ListRecords(ctx, hub, 5, false, 0, 2)
 	if err != nil {
 		t.Fatalf("ListRecords first page n=2: %v", err)
 	}
@@ -294,12 +295,61 @@ func TestListRecords(t *testing.T) {
 
 	// The next page via the from cursor (one below the page's smallest seq, 3-1=2)
 	// continues newest-first from seq 2.
-	rows, _, err = s.ListRecords(ctx, hub, 2, 2)
+	rows, _, err = s.ListRecords(ctx, hub, 5, true, 2, 2)
 	if err != nil {
 		t.Fatalf("ListRecords second page: %v", err)
 	}
 	if got := seqsOf(rows); !reflect.DeepEqual(got, []uint64{2, 1}) {
 		t.Errorf("second page (from=2, n=2) seqs = %v, want [2 1]", got)
+	}
+
+	// from=0 is a real cursor now (NOT the start-at-newest sentinel): it must page to
+	// exactly seq 0, never jump back to the newest leaf.
+	rows, _, err = s.ListRecords(ctx, hub, 5, true, 0, 2)
+	if err != nil {
+		t.Fatalf("ListRecords from=0 cursor: %v", err)
+	}
+	if got := seqsOf(rows); !reflect.DeepEqual(got, []uint64{0}) {
+		t.Errorf("from=0 cursor seqs = %v, want [0] (the oldest record, not the newest page)", got)
+	}
+}
+
+// TestListRecordsCeiling confirms ListRecords caps at the accepted tree size: a
+// frozen/fault hub whose iscc_index holds projections at seq >= last (ingest writes
+// projections before AdvanceAccepted) must list ONLY seq < last rows, and the total
+// must count only those — an uncapped list would imply the unaccepted leaves are
+// vouched for (coverage honesty, ADR-0001). The ceiling guard mirrors every other
+// record route's seq >= LastSize cap.
+func TestListRecordsCeiling(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hub := newHub(t, s)
+
+	// Six contiguous leaves (seq 0..5) but the accepted tree is only size 4, so seqs
+	// 4 and 5 sit ABOVE the accepted ceiling (the frozen-hub-past-violation case).
+	recs := make([]ProjectionRecord, 6)
+	for i := range recs {
+		recs[i] = ProjectionRecord{HubID: hub, Seq: uint64(i), IsccID: leafID(i), NoteSchema: "iscc-note-0.8.0.json"}
+	}
+	if err := s.RecordProjections(ctx, recs); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+
+	const last = 4
+	rows, total, err := s.ListRecords(ctx, hub, last, false, 0, 10)
+	if err != nil {
+		t.Fatalf("ListRecords with ceiling: %v", err)
+	}
+	if total != last {
+		t.Errorf("total = %d, want %d (only seq < last counted)", total, last)
+	}
+	if got := seqsOf(rows); !reflect.DeepEqual(got, []uint64{3, 2, 1, 0}) {
+		t.Errorf("ceiling-capped seqs = %v, want [3 2 1 0] (seq 4 and 5 excluded)", got)
+	}
+	for _, r := range rows {
+		if r.Seq >= last {
+			t.Errorf("row seq %d >= last %d leaked past the ceiling", r.Seq, last)
+		}
 	}
 }
 
@@ -325,7 +375,8 @@ func TestListRecordsScopedByHub(t *testing.T) {
 		t.Fatalf("RecordProjections: %v", err)
 	}
 
-	rows, total, err := s.ListRecords(ctx, hubA, 0, 10)
+	// last == 12 admits hubA's seqs 10 and 11 (both < 12) while staying hub-scoped.
+	rows, total, err := s.ListRecords(ctx, hubA, 12, false, 0, 10)
 	if err != nil {
 		t.Fatalf("ListRecords hubA: %v", err)
 	}
@@ -344,7 +395,7 @@ func TestListRecordsEmpty(t *testing.T) {
 	s := openTemp(t)
 	hub := newHub(t, s)
 
-	rows, total, err := s.ListRecords(ctx, hub, 0, 10)
+	rows, total, err := s.ListRecords(ctx, hub, 0, false, 0, 10)
 	if err != nil {
 		t.Fatalf("ListRecords empty: unexpected error %v", err)
 	}

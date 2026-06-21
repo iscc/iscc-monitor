@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"errors"
 	"html/template"
+	"math"
 	"net/http"
 	"os"
 
@@ -655,13 +656,23 @@ type recordsData struct {
 // overlays the store-provable subset with the in-memory live verdict (overlayStatus),
 // the same five-status hubStatusBadge partial the browser and dashboard use.
 //
+// The list is capped at the accepted tree size (fs.LastSize): only leaves with
+// seq < LastSize list, the same accepted-tree contract serveEntries / serveInclusion /
+// serveVerify enforce — on a freeze/fault ingest can leave iscc_index rows above
+// LastSize, and an uncapped list would imply those unaccepted leaves are vouched for
+// (coverage honesty, ADR-0001).
+//
 // Pagination is a seq cursor, not OFFSET, so paging stays stable under concurrent
 // ingest. from / n are parsed via parseUint, so an empty or non-numeric value falls
-// back to the default (bare /records works, never a 400). n is clamped to maxPageSize
-// so a hostile n cannot scan the whole index. The older link starts at one below the
-// last (smallest) seq on the page and is live only while more records remain below it;
-// the newer link starts at one above the first (largest) seq and is live only while
-// this page does not already begin at the newest record.
+// back to the default (bare /records works, never a 400). from is NOT overloaded as
+// the start-at-newest sentinel: an absent from means "no cursor (start at the newest
+// leaf)", while from=0 is a real cursor (the page starting at seq 0), so the older
+// chain reaches the oldest record. n is clamped to maxPageSize while still uint64
+// (BEFORE the int() conversion, so a huge n cannot wrap negative and bypass the clamp)
+// so a hostile n can never scan the whole index. The older link starts at one below
+// the last (smallest) seq on the page and is live only while more records remain below
+// it; the newer link starts at one above the first (largest) seq and is live only
+// while this page does not already begin at the newest record.
 //
 // Status mapping: a FollowState / ListRecords DB error → 500; an empty index (or a
 // hub with no accepted checkpoint) → 200 with the informative empty state (NEVER a
@@ -685,19 +696,27 @@ func serveRecords(w http.ResponseWriter, r *http.Request, st *store.Store, hubID
 		label = status
 	}
 
-	// from is the inclusive upper-bound seq the newest-first page starts at; absent or
-	// non-numeric falls back to 0 (the newest record), never a 400. n is the page size,
-	// defaulted and clamped so a hostile value cannot scan the whole index.
-	from, _ := parseUint(r.URL.Query().Get("from"))
+	// from is the inclusive upper-bound seq the newest-first page starts at. A present,
+	// numeric from is a real cursor (from=0 starts at seq 0, so the older chain reaches
+	// the oldest record); an absent or non-numeric from means "no cursor (start at the
+	// newest leaf)", never a 400. hasFrom carries that present/absent distinction so the
+	// seq cursor is never overloaded as the start-at-newest sentinel.
+	from, fromErr := parseUint(r.URL.Query().Get("from"))
+	hasFrom := fromErr == nil
+	// n is the page size, defaulted and clamped. The clamp happens while n is still
+	// uint64, BEFORE the int() conversion: a huge n (e.g. 9223372036854775808) would
+	// wrap int(n) negative and slip past a post-conversion > maxPageSize check, and
+	// modernc SQLite reads a negative LIMIT as unlimited (the whole index). parseUint
+	// itself rejects an overflow now, but the uint64 clamp is the load-bearing guard.
 	pageSize := defaultPageSize
 	if n, err := parseUint(r.URL.Query().Get("n")); err == nil && n > 0 {
-		pageSize = int(n)
-		if pageSize > maxPageSize {
-			pageSize = maxPageSize
+		if n > maxPageSize {
+			n = maxPageSize
 		}
+		pageSize = int(n)
 	}
 
-	records, total, err := st.ListRecords(ctx, hubID, from, pageSize)
+	records, total, err := st.ListRecords(ctx, hubID, fs.LastSize, hasFrom, from, pageSize)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -712,20 +731,22 @@ func serveRecords(w http.ResponseWriter, r *http.Request, st *store.Store, hubID
 	}
 	if len(records) > 0 {
 		oldest := records[len(records)-1].Seq // smallest seq on the page
-		// A newer page exists only once we have paged down at all (from > 0; the
-		// initial from == 0 page always starts at the newest record). Its cursor is a
-		// full page above the page's top seq; ListRecords clamps seq <= cursor with
-		// LIMIT pageSize, so an over-large cursor simply lands on the newest page —
-		// the newer link can never error or skip the newest run.
-		if from > 0 {
+		// A newer page exists only once we have paged down at all (hasFrom; the
+		// no-cursor page always starts at the newest leaf). Its cursor is a full page
+		// above the page's top seq; ListRecords clamps seq <= cursor with LIMIT
+		// pageSize, so an over-large cursor simply lands on the newest page — the
+		// newer link can never error or skip the newest run.
+		if hasFrom {
 			data.HasNewer = true
 			data.NewerFrom = records[0].Seq + uint64(pageSize)
 		}
 		// An older page exists when a record sits below the smallest seq shown; its
 		// cursor is one below that smallest seq. oldest == 0 means the page already
-		// reached seq 0 (the first record), so there is nothing older. This is a
-		// conservative live/dead signal under contiguous leaf seqs (the projection
-		// writer indexes one row per accepted leaf), and never produces a broken link.
+		// reached seq 0 (the oldest record), so there is nothing older. When oldest is
+		// 1 the cursor is 0, a real cursor now (not the start-at-newest sentinel), so
+		// the older chain reaches seq 0. This is a conservative live/dead signal under
+		// contiguous leaf seqs (the projection writer indexes one row per accepted
+		// leaf), and never produces a broken link.
 		if oldest > 0 {
 			data.HasOlder = true
 			data.OlderFrom = oldest - 1
@@ -803,7 +824,11 @@ func selectSeq(seqs []uint64, index string) (uint64, bool) {
 }
 
 // parseUint parses a base-10 unsigned index, rejecting any non-digit input so a
-// malformed index becomes a 400 rather than a silent default.
+// malformed index becomes a 400 rather than a silent default. It also rejects a value
+// that would overflow uint64 (the accumulator n*10 + digit wraps silently otherwise),
+// so an over-large index never aliases a small one — the same error type as a
+// non-numeric input, so the shared callers (selectSeq / serveInclusion / serveEntries /
+// serveRecords) treat overflow exactly as they treat a malformed value.
 func parseUint(s string) (uint64, error) {
 	var n uint64
 	if s == "" {
@@ -813,7 +838,12 @@ func parseUint(s string) (uint64, error) {
 		if c < '0' || c > '9' {
 			return 0, errors.New("non-numeric index")
 		}
-		n = n*10 + uint64(c-'0')
+		d := uint64(c - '0')
+		// Reject before the multiply/add wraps: n*10 + d must stay <= math.MaxUint64.
+		if n > (math.MaxUint64-d)/10 {
+			return 0, errors.New("index overflow")
+		}
+		n = n*10 + d
 	}
 	return n, nil
 }

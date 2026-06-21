@@ -177,6 +177,178 @@ func TestRecordsRendersInMemoryStatus(t *testing.T) {
 	}
 }
 
+// countRecordLinks counts the per-record rows rendered in a /records body by counting
+// the per-record bytes links each row emits (one entries?index= link per row).
+func countRecordLinks(body string) int {
+	return strings.Count(body, "entries?index=")
+}
+
+// TestRecordsClampsHostilePageSize asserts a hostile n that wraps int(n) negative is
+// clamped to maxPageSize BEFORE the int() conversion, so the page renders at most
+// maxPageSize rows — never the whole index. n=9223372036854775808 (MaxInt64+1) wraps
+// int(n) negative; modernc SQLite reads a negative LIMIT as unlimited, so without the
+// pre-int() uint64 clamp the whole 300-leaf index would render.
+func TestRecordsClampsHostilePageSize(t *testing.T) {
+	m := buildMirror(t, mirrorLeaves)
+	h := Handler(m.store, m.hubID, nil)
+
+	code, body := getRecords(t, h, "n=9223372036854775808")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if got := countRecordLinks(body); got > maxPageSize {
+		t.Errorf("rendered %d record rows for a hostile n, want at most %d (clamp bypassed)", got, maxPageSize)
+	}
+	// The whole index (300) must never render — the anti-DoS clamp is the point.
+	if countRecordLinks(body) >= mirrorLeaves {
+		t.Errorf("a hostile n rendered the whole index (%d rows); the clamp was bypassed", mirrorLeaves)
+	}
+}
+
+// olderHref extracts the older-pagination link's query (the part after records?) from
+// a rendered /records body, or returns "" when no older link is live. It reads the
+// next href= after the "older &rarr;" anchor so the test follows the chain the page
+// actually emits rather than a hand-built URL.
+func olderHref(body string) string {
+	const marker = `older &rarr;</a>`
+	i := strings.Index(body, marker)
+	if i < 0 {
+		return "" // no live older link (the anchor is rendered as a <span>)
+	}
+	seg := body[:i]
+	j := strings.LastIndex(seg, `href="records?`)
+	if j < 0 {
+		return ""
+	}
+	q := seg[j+len(`href="records?`):]
+	end := strings.IndexByte(q, '"')
+	return strings.ReplaceAll(q[:end], "&amp;", "&")
+}
+
+// TestRecordsOlderLinkReachesSeq0 walks the older-link chain emitted by the page (with
+// n=1, so the chain emits a from=0 older link from the page ending at seq 1) all the
+// way to the oldest record and asserts seq 0 is reached. Before the from=0 un-overload,
+// the older link from a page ending at seq 1 emitted from=0, which ListRecords read as
+// "start at newest", so following it jumped back to the newest record and seq 0 was
+// unreachable via navigation (the reviewer-confirmed bug: from=1&n=1's older link
+// from=0&n=1 showed the newest seq, not seq 0).
+func TestRecordsOlderLinkReachesSeq0(t *testing.T) {
+	// A small mirror (seqs 0..3, n=1) so the chain emits a literal from=0 older link.
+	m := buildMirror(t, 4)
+	h := Handler(m.store, m.hubID, nil)
+
+	query := "n=1"
+	reached0 := false
+	// Bound the walk so a chain that loops (the old overloaded behaviour jumps back to
+	// the newest page forever) trips the cap instead of hanging.
+	for step := 0; step < 16; step++ {
+		code, body := getRecords(t, h, query)
+		if code != http.StatusOK {
+			t.Fatalf("step %d (%q) status = %d, want 200", step, query, code)
+		}
+		if strings.Contains(body, "entries?index=0") {
+			reached0 = true
+			// The page containing seq 0 is the bottom of the chain — no live older link.
+			if next := olderHref(body); next != "" {
+				t.Errorf("page containing seq 0 still offers an older link %q (broken chain)\n%s", next, body)
+			}
+			break
+		}
+		next := olderHref(body)
+		if next == "" {
+			t.Fatalf("step %d (%q): older chain ended before reaching seq 0\n%s", step, query, body)
+		}
+		query = next
+	}
+	if !reached0 {
+		t.Fatalf("older-link chain never reached seq 0 within the step cap (from=0 still overloaded)")
+	}
+}
+
+// TestRecordsCeilingHidesUnacceptedLeaves asserts the list caps at the accepted tree
+// size: a hub whose iscc_index holds projections at seq >= LastSize (a freeze/fault
+// leaves them, since ingest writes projections before AdvanceAccepted) lists ONLY the
+// accepted leaves, never the unaccepted ones whose entries?index= links would then 404.
+func TestRecordsCeilingHidesUnacceptedLeaves(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "ceiling.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	hubID, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	// Index six leaves (seq 0..5) but advance the accepted tree to only size 4, so
+	// seqs 4 and 5 are above the accepted ceiling — the frozen-hub-past-violation case.
+	recs := make([]store.ProjectionRecord, 6)
+	for i := range recs {
+		recs[i] = store.ProjectionRecord{HubID: hubID, Seq: uint64(i), IsccID: leafISCCID(i)}
+	}
+	if err := st.RecordProjections(ctx, recs); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+	if err := st.AdvanceFollowState(ctx, hubID, 4); err != nil {
+		t.Fatalf("AdvanceFollowState: %v", err)
+	}
+
+	h := Handler(st, hubID, nil)
+	code, body := getRecords(t, h, "")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	// Accepted leaves (seq < 4) list.
+	for _, want := range []string{"entries?index=3", "entries?index=0"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("accepted leaf link %q missing\n%s", want, body)
+		}
+	}
+	// Unaccepted leaves (seq >= 4) must NOT list — they are not vouched for and their
+	// entries?index= links would 404.
+	for _, banned := range []string{"entries?index=4", "entries?index=5"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("unaccepted leaf link %q rendered past the LastSize ceiling\n%s", banned, body)
+		}
+	}
+	// The honest total reflects only the accepted leaves.
+	if !strings.Contains(body, "of 4") {
+		t.Errorf("body total does not reflect the accepted-only count (of 4)\n%s", body)
+	}
+}
+
+// TestParseUintOverflow pins parseUint's contract, including the overflow guard: a
+// value that would wrap uint64 is rejected with the same error type as a non-numeric
+// input (so an over-large index never silently aliases a small one), while empty /
+// non-numeric still error and a valid value parses. MaxUint64 itself must parse;
+// MaxUint64+1 (the 20-digit "18446744073709551616") must be rejected.
+func TestParseUintOverflow(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    uint64
+		wantErr bool
+	}{
+		{"", 0, true},
+		{"12a", 0, true},
+		{"0", 0, false},
+		{"42", 42, false},
+		{"18446744073709551615", 18446744073709551615, false}, // MaxUint64 fits
+		{"18446744073709551616", 0, true},                     // MaxUint64+1 overflows
+		{"99999999999999999999999999", 0, true},               // far past MaxUint64
+	}
+	for _, c := range cases {
+		got, err := parseUint(c.in)
+		if (err != nil) != c.wantErr {
+			t.Errorf("parseUint(%q) err = %v, wantErr = %v", c.in, err, c.wantErr)
+			continue
+		}
+		if !c.wantErr && got != c.want {
+			t.Errorf("parseUint(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
 // TestRecordsNonGET asserts a non-GET method to /records is a 405 (the shared
 // method-gate at the top of Handler covers it).
 func TestRecordsNonGET(t *testing.T) {

@@ -86,26 +86,38 @@ type RecordRow struct {
 // so the page can render an honest "showing N of TOTAL" and decide which pagination
 // links are live. It is a leaf read returning plain []RecordRow (store stays a leaf).
 //
+// last is the accepted-tree ceiling — the monitor's accepted tree size (FollowState
+// .LastSize): only leaves with seq < last are listed, and total counts only those, so
+// the list never shows a leaf the accepted checkpoint does not cover. The guard is
+// exclusive (seq < last) because seq is 0-based and last is a count, matching the
+// seq >= size cap every other record route applies (serveEntries / serveInclusion /
+// serveVerify). On a freeze or fault ingest can leave iscc_index rows at seq >= last
+// (projections are written before AdvanceAccepted), so an uncapped list would imply
+// those unaccepted leaves are vouched for (coverage honesty, ADR-0001). last == 0
+// (followed-but-unpolled) yields an empty list, not an error — the empty-state path.
+//
 // Pagination uses a seq cursor, not OFFSET, so paging stays stable under concurrent
-// ingest: when from > 0 the page starts at the (inclusive) upper-bound seq from and
-// walks down; when from == 0 it starts at the newest leaf. n bounds the page size and
-// must be > 0 (the handler clamps it before calling). iscc_id_str / note_schema are
-// read through sql.NullString so a NULL column degrades to "" rather than an error,
-// and seq is scanned as int64 then uint64(seq) (symmetric with RecordProjections'
-// int64(r.Seq) write). A hub with no indexed records returns an empty slice, total 0,
-// and a nil error (an empty index is not an error — the empty-log case the record list
-// must render). The id and schema are listed verbatim and never interpreted (ADR-0008).
-func (s *Store) ListRecords(ctx context.Context, hubID int64, from uint64, n int) ([]RecordRow, int, error) {
+// ingest. hasFrom distinguishes "no cursor" (start at the newest leaf below the
+// ceiling) from an explicit from cursor (start at the inclusive upper-bound seq from
+// and walk down) — seq 0 is a valid cursor, so from is NOT overloaded as the
+// start-at-newest sentinel. n bounds the page size and must be > 0 (the handler clamps
+// it before calling). iscc_id_str / note_schema are read through sql.NullString so a
+// NULL column degrades to "" rather than an error, and seq is scanned as int64 then
+// uint64(seq) (symmetric with RecordProjections' int64(r.Seq) write). A hub with no
+// indexed records returns an empty slice, total 0, and a nil error (an empty index is
+// not an error — the empty-log case the record list must render). The id and schema
+// are listed verbatim and never interpreted (ADR-0008).
+func (s *Store) ListRecords(ctx context.Context, hubID int64, last uint64, hasFrom bool, from uint64, n int) ([]RecordRow, int, error) {
 	var total int
 	if err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM iscc_index WHERE hub_id = ?", hubID,
+		"SELECT COUNT(*) FROM iscc_index WHERE hub_id = ? AND seq < ?", hubID, int64(last),
 	).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("store.ListRecords: count hub %d: %w", hubID, err)
 	}
 
-	query := "SELECT seq, iscc_id_str, note_schema FROM iscc_index WHERE hub_id = ? "
-	args := []any{hubID}
-	if from > 0 {
+	query := "SELECT seq, iscc_id_str, note_schema FROM iscc_index WHERE hub_id = ? AND seq < ? "
+	args := []any{hubID, int64(last)}
+	if hasFrom {
 		query += "AND seq <= ? "
 		args = append(args, int64(from))
 	}
