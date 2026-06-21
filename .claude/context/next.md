@@ -1,91 +1,116 @@
 # Next Work Package
 
-## Step: Validate the ISCC-IDv1 Length nibble in `internal/index.Decode`
+## Step: Hub-List parser + `(realm, hub_id) → domain` resolver in `internal/registry`
 
 ## Advances
-Closes the open `normal` issue **"ISCC-IDv1 decoder accepts a nonzero Length nibble (fail-closed gap
-on the trust root)"** — Codex-found P2, reviewer-confirmed against the hub schema + golden vectors,
-and the explicit `**Next:**` in `handoff.md`. This preempts new milestone feature work because it is
-the trust root of the M-UI **certificate of inclusion** Verify criterion: the realm-wide certificate
-is "keyed by the self-describing ISCC-IDv1 — decode realm + 12-bit `hub_id`, resolve the issuing hub
-via the registry" (`target.md` M-UI Verify). A wrong/lenient decode routes a malformed id to a real
-hub and proves the wrong leaf, so the decoder must fail closed before the next sub-step (the
-`hub_id` → hub resolver) consumes it. The fix also restores the decoder's own fail-closed contract
-("a header that is not an ISCC-IDv1 ... must return a descriptive error").
+M-UI (Evidence Ledger frontend) Verify criterion — the **realm-wide certificate**:
+
+> "the **realm-wide certificate** (`/inclusion/{iscc_id}`, keyed by the self-describing
+> ISCC-IDv1 — decode realm + 12-bit `hub_id`, resolve the issuing hub via the registry) …"
+
+The certificate trust-root decoder (`internal/index.Decode`) is complete and PASS; it yields
+`{Realm, HubID 0-4095, Timestamp}`. This step lands the **next link in that chain**: the
+`(realm, hub_id) → hub domain` resolver ADR-0010 names ("Hub-id resolution adopts the iscc-hub
+Hub-List"). It is the intermediate slice the handoff `**Next:**` and `state.md` both name as the
+prerequisite before the `/inclusion/{iscc_id}` HTML page + proof-bundle assembler can be built.
 
 ## Goal
-Make `Decode` reject any ISCC-IDv1 whose header **Length nibble** (`raw[1] & 0xF`) is nonzero, so a
-non-canonical header like `MAIQAAAAAAAAAAAA` (byte1 = 0x11) is rejected instead of mis-read as a
-64-bit body. Both real golden vectors (Length nibble 0) must keep decoding unchanged.
+Add a pure, golden-tested Hub-List parser to `internal/registry` that reads the iscc-hub
+`hubs/<network>.yaml` schema (`{version, network, hubs:[{hub_id, url, active, pubkey?}]}`) and a
+`Resolve(hubID) → (domain, ok)` lookup, so a decoded `(realm, hub_id)` from `internal/index` can be
+mapped to the issuing hub's domain. This unblocks the certificate page without yet touching the live
+realm-file wiring.
 
 ## Scope
-- **Create**: (none)
-- **Modify**:
-  - `internal/index/iscc.go` (add the Length-nibble guard before reading the body; the file's own
-    docstring already lists Length as a header nibble it validates, so this also makes the doc true)
-  - `internal/index/iscc_test.go` (test — does not count against the ≤3 non-test/doc budget)
+- **Modify**: `internal/registry/registry.go` (add `ParseHubList`, the `Hub`/`HubList` types, and a
+  `Resolve` method — **purely additive**; leave the existing `Parse`/`Entry` domains-only path and its
+  package docstring intact).
+- **Modify**: `go.mod` (promote `gopkg.in/yaml.v3` to a direct dependency — it is already in `go.sum`
+  transitively; run `go mod tidy` so `go.mod`/`go.sum` stay consistent).
+- **Create**: `internal/registry/testdata/testnet.yaml` (golden Hub-List fixture for realm 0:
+  `hub_id 0 → https://sb0.iscc.id`, `hub_id 1 → https://sb1.amlet.id`, both `active: true`; these are
+  the existing testnet hubs, consistent with `realm.txt` and `derive_vkey.py`). *(testdata + tests are
+  excluded from the 3-file budget.)*
+- **Create**: `internal/registry/hublist_test.go` (table-driven golden + failure-mode tests).
 - **Reference**:
-  - `.claude/context/learnings/index.md` (layout facts; the open Length-gap note; the
-    "golden test tied to ground truth, not the symbol" rule)
-  - `.claude/context/learnings.md` (the always-loaded index — the `proof/verify` purity rule applies:
-    keep `internal/index` import-clean / WASM-shareable)
+  - `/workspace/iscc-monitor/.claude/adr/0010-evidence-ledger-frontend.md` (lines 83-119 — the
+    ISCC-IDv1 layout, the `hubs/<network>.yaml` schema, `pubkey` deprecated/ignored, realm→network map).
+  - `/workspace/iscc-monitor/.claude/context/learnings/registry.md` (the domains-only `Parse` leaf
+    conventions this must sit beside — fail-closed, no I/O, import-clean).
+  - `/workspace/iscc-monitor/.claude/context/learnings/index.md` (the decoder's `{Realm, HubID,
+    Timestamp}` output shape the resolver consumes; HubID is 0-4095).
+  - `/workspace/iscc-monitor/internal/registry/registry.go` (existing `Parse`/`Entry` style to match).
+  - `/workspace/iscc-monitor/.claude/hublist-schema-proposal.md` (the SUPERSEDED `valid_from` key
+    proposal — confirms `pubkey` is ignored; do NOT implement the `keys` list).
 
 ## Not In Scope
-- The 12-bit-`hub_id` → issuing-hub resolver (registry / ADR-0010 Hub-List) — the next sub-step *after*
-  this lands and pushes; do not start it here.
-- The `/inclusion/{iscc_id}` HTML certificate page or the downloadable proof-bundle assembler (the
-  oracle-gate slice) — later iterations.
-- Exporting `encode` or widening the public surface beyond `Decode` + `ISCCID` (YAGNI, per
-  `learnings/index.md`).
-- Refactoring the hardcoded header-nibble constants is optional polish; adding a single `lengthV1`
-  const next to `versionV1` for the literal `0` is fine, but keep the change minimal — do not rework
-  the existing constants.
-- The `low` "single-record label test is vacuous" issue and the other 5 `low` items — loop-skipped.
+- **Do NOT migrate the live wiring.** Leave `cmd/iscc-monitor/main.go`, `internal/config`, and the
+  dashboard callers reading `realm.txt` via `Parse` exactly as they are. Swapping the live registry
+  source from domains-only `realm.txt` to the Hub-List is a **separate, backward-incompatible step**
+  that `state.md` + the latest `review` flag as possibly warranting a STOP for human sign-off — keep
+  this step additive and reversible so that decision is not forced here. (registry is consumed only by
+  `cmd/iscc-monitor/main.go` + its test, verified — but the migration still changes config + the
+  public-ish realm-file contract.)
+- **Do NOT remove `realm.txt`, `Parse`, or `Entry`.** They stay until the migration step.
+- **Do NOT build the `/inclusion/{iscc_id}` HTML page or the proof-bundle assembler** — they are the
+  next slices and re-engage the oracle/conformance gate (out of scope for this pure-leaf step).
+- **Do NOT implement the `keys`/`valid_from` rotation list** (SUPERSEDED by ADR-0009 — did:web is the
+  key source; `pubkey` in the Hub-List is deprecated and ignored).
+- **Do NOT add a `mainnet.yaml` fixture or cross-network/realm-selection logic** beyond what one
+  network needs; the realm→network selection lives in the wiring/cmd step, not this leaf.
 
 ## Implementation Notes
-- **The guard.** After the existing Version check in `internal/index/iscc.go` (currently lines 91-94)
-  and before `realm := raw[0] & 0xF` / the body read `binary.BigEndian.Uint64(raw[2:10])`
-  (lines 95-96), add a check on the low nibble of `raw[1]`:
-  - a canonical ISCC-IDv1 has **Length nibble 0** (a 64-bit body); reject `raw[1] & 0xF != 0` with a
-    descriptive `fmt.Errorf` in the same style as the MainType/Version errors (include the offending
-    nibble value and the `isccID`), e.g.
-    `"index: ISCC-IDv1 Length nibble %d is unsupported (want 0): %q"`.
-  - This is a ≤1-line guard plus the error return; do not touch the body-decode arithmetic.
-- **Test (mirror `TestDecodeWrongVersion`'s shape — it is the right ground-truth pattern).** Add a
-  focused test (e.g. `TestDecodeRejectsNonzeroLength`) that:
-  1. constructs the malformed header bytes directly:
-     `raw := []byte{0x60, 0x11, 0, 0, 0, 0, 0, 0, 0, 0}` (MainType 6, Version 1, **Length 1**),
-     `s := iscBase32.EncodeToString(raw)`, and asserts `Decode(s)` returns a non-nil error. Building
-     from raw bytes ties the test to the header contract, not to a string literal. You may also add the
-     `"MAIQAAAAAAAAAAAA"` literal as a second sub-case since the issue/handoff name it explicitly.
-  2. as a sanity counterpart (same pattern as the Version test), flip `raw[1]` to `0x10` (Length 0),
-     re-encode, and assert `Decode` now succeeds — proving the rejection is specifically the Length
-     check, not a codec/length error.
-  - Do **not** add this case into `TestDecodeGoldenVectors` (those assert decoded *fields*); the
-    rejection belongs with the other reject/version tests.
-- **Keep both existing golden vectors passing** — they have byte1 = 0x10 (Length nibble 0), so the
-  guard must not affect them. `TestDecodeGoldenVectors` and `TestDecodeRoundTrip` stay green
-  (`encode` always writes `raw[1] = versionV1 << 4 = 0x10`, Length nibble 0).
-- **Mutation check (do this, don't just claim it).** Temporarily flip the guard's condition
-  (`!= 0` → `== 0`, or comment the guard out) and confirm a test FAILS; then restore. A guard with no
-  failing test is vacuous — `learnings/index.md` explicitly warns the golden test alone does not
-  exercise every header field.
-- **Purity / WASM rule (always-loaded learnings).** `internal/index` is a pure leaf shared with the
-  future WASM verifier — add no imports beyond what is already present (`encoding/base32`,
-  `encoding/binary`, `fmt`, `strings`). Confirm `GOOS=js GOARCH=wasm go build ./internal/index` still
-  succeeds.
+- **Keep `internal/registry` a pure, WASM-shareable leaf.** `ParseHubList([]byte) (*HubList, error)`
+  (or `(HubList, error)`) parses bytes already in hand — **no file I/O** (the caller reads the file,
+  matching `Parse`). After adding `yaml.v3`, verify the import closure still has no `net`/`net/http`/
+  `database/sql`/`os` directly (yaml.v3 is pure-Go; `os` may appear transitively via `fmt`, which is
+  fine — see the didweb purity nuance in `learnings.md`).
+- **Types.** `Hub{ HubID uint16; URL string; Active bool }` (HubID is the embedded 12-bit field 0-4095,
+  NOT the surrogate `hubs.hub_id` PK from `store.UpsertHub`). `HubList{ Version int; Network string;
+  Hubs []Hub }`. Use `yaml:"…"` struct tags. **Ignore `pubkey`** — do not add a field for it (ADR-0009;
+  it would invite the wrong key source).
+- **Resolver returns the domain, not the URL.** The certificate page needs the **domain** for the
+  `/<domain>/log/…` mount, so `(hl *HubList) Resolve(hubID uint16) (domain string, ok bool)` should
+  strip the scheme (host of the URL — `strings.TrimPrefix(url, "https://")`, or `net/url.Parse` then
+  `.Host`; both stdlib + WASM-safe, `net/url` does NOT pull `net/http`). Pick one and document it. A
+  linear scan over `Hubs` is fine.
+- **Inactive hubs still resolve.** Per ADR-0010 the monitor follows/mirrors inactive hubs and the badge
+  marks them `inactive` — prefer resolving an `active: false` hub (returning its domain, `ok == true`)
+  rather than treating it as "not found"; let the downstream badge convey inactivity. Document this and
+  test it (a resolved inactive hub). `ok == false` is reserved for an **unknown** slot.
+- **Fail closed, like `Parse`.** Reject a malformed document with a wrapped error naming the fault:
+  invalid YAML, a `hub_id` outside 0-4095, a duplicate `hub_id`, or a `url` that is empty/path-bearing.
+  Return `nil`/zero alongside the error (the `Parse` convention). Decide and test the empty-`hubs:`
+  boundary: prefer mirroring `Parse`'s all-comment→empty-slice behavior (a document with zero hubs is
+  valid, not an error).
+- **Authoring the golden fixture.** No `hubs/<network>.yaml` exists in `cauldron/` to copy — author
+  `testnet.yaml` from the ADR-0010 schema (lines 96-99): `version: 1`, `network: testnet`, `hub_id 0` =
+  `https://sb0.iscc.id`, `hub_id 1` = `https://sb1.amlet.id`, both `active: true`. These hubs match the
+  existing `realm.txt` / `derive_vkey.py` HUBS, so the fixture is grounded, not invented (note this in
+  the test, like the registry learnings note the realm-file hubs are real). You MAY include a
+  `pubkey:` line in the fixture (to prove it is parsed-and-ignored), but assert no `pubkey` is read into
+  any type.
+- **Test ground-truth, not the symbol** (per the index/registry learnings and the open `low` vacuous-
+  test issue): assert `Resolve(1) == ("sb1.amlet.id", true)` against a **hard-coded** expected domain
+  string, not a value re-derived from the parser. Add a small synthetic in-test YAML string exercising a
+  `hub_id` like `4095` (pins the full 12-bit range) and an unknown-slot miss (`ok == false`), plus a
+  `hub_id: 4096` reject (over-range) and a duplicate-`hub_id` reject.
 
 ## Verification
-- `mise run check` is green (build + vet + all packages + `gofmt -l .` empty).
-- `go test -count=1 ./internal/index` passes (all existing sub-tests + the new Length-nibble case).
-- Assertion: `Decode("MAIQAAAAAAAAAAAA")` returns a **non-nil** error (byte1 = 0x11, Length nibble 1).
-- Assertion: `Decode("MAIGHFECJMOPMIAB")` still returns `{Realm:0, HubID:1, Timestamp:1751831876325218}`
-  with nil error, and `Decode("MEIGHFECJMOPMIAC")` still returns `{Realm:1, HubID:2, ...}` (both
-  Length-0 golden vectors unchanged).
-- `GOOS=js GOARCH=wasm go build ./internal/index` succeeds (still WASM-shareable; no new imports).
-- Mutation proof: flipping/removing the Length guard makes a test in `./internal/index` FAIL (the
-  guard is non-vacuous); restored clean before commit.
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
+- `go test -count=1 ./internal/registry` passes uncached (existing `Parse` tests + the new Hub-List
+  golden/failure tests).
+- `ParseHubList(testnet.yaml)` then `Resolve(0) == ("sb0.iscc.id", true)` and
+  `Resolve(1) == ("sb1.amlet.id", true)` (hard-coded expectations).
+- `Resolve(<unknown slot, e.g. 9>)` returns `("", false)` — the documented not-found path.
+- A malformed Hub-List (invalid YAML, or `hub_id > 4095`, or a duplicate `hub_id`) returns a non-nil
+  error and a nil/zero list.
+- `GOOS=js GOARCH=wasm go build ./internal/registry` succeeds (still WASM-shareable; no
+  `net/http`/`database/sql` in the closure).
+- `go mod tidy` leaves `go.mod`/`go.sum` consistent (a second `go mod tidy` is a no-op); `yaml.v3` is a
+  direct `require`.
 
 ## Done When
-`internal/index.Decode` rejects any nonzero Length nibble with a descriptive error, both golden
-vectors still decode, the new test fails if the guard is flipped, and `mise run check` is green.
+`internal/registry` parses the iscc-hub Hub-List YAML and resolves a 12-bit `hub_id` to its hub domain
+(inactive resolves; unknown misses) with golden + fail-closed tests, `mise run check` is green, and the
+live `realm.txt` wiring is untouched — all Verification criteria pass.
