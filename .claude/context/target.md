@@ -96,7 +96,9 @@ dossier** (incl. the frozen Exhibit), **log-browser record list** (paginated ove
 **single record**, and the **certificate of inclusion** (HTML proof result + downloadable proof
 bundle). Make the full five-status taxonomy (`verified`/`unresolvable`/`unverified`/`frozen`/`inactive`)
 store-provable so the badge renders it honestly. SSR + no-JS is the hard baseline; WASM is the next
-milestone.
+milestone. Each surface is built to **named-region parity** with its specific mockup — the served HTML
+must carry that mockup's landmark regions, affordances, and cross-surface navigation (the design-parity
+bar below), so the surfaces resemble the design and form one navigable whole, not just pass behaviorally.
 **Verify** (all asserted at the HTTP seam against fixtures — observable no-JS HTML, never handler
 internals; the rendering path's oracle gate is N/A, but the proof-bundle assembler shares the crypto
 path and MUST keep the conformance/oracle gate green):
@@ -126,11 +128,63 @@ milestone); status stays legible in grayscale + colorblind-safe (icon+label+silh
 `mise run check` green; any new store status-derivation stays a leaf read (store keeps no
 `net/http`/web dependency).
 
+**Design parity (named-region — the layout/affordance bar, ADR-0010 handoff).** Beyond behaving
+correctly, each SSR surface must render the **landmark regions and affordances of its specific mockup**,
+asserted at the HTTP seam by the presence of those regions in the served **no-JS** HTML — a region
+checklist, **never a pixel diff**. The mockup is **authoritative for layout and affordances** but
+**subordinate to the hard constraints above** (no-JS / no-CDN / self-hosted fonts+tokens / grayscale-safe
+/ store-leaf): where a mockup conflicts — it links `fonts.css` at jsDelivr and ships a JS component
+runtime — the constraint wins (we self-host + SSR; an interactive control becomes its plain-link/`GET`-form
+equivalent) and the deviation is flagged, not silently dropped. Visual polish below the named-region
+level (exact spacing, weight, "feel") is a **human review checkpoint, not a loop gate**. Two cross-cutting
+requirements hold on every surface:
+- **Document chrome + instance identity.** Every surface carries the shared handoff header: the ISCC logo
+  + "Trust & Transparency Monitor" mark, the **instance-identity** block (this instance's domain +
+  operator + realm), and the **`verify ↗ monitor.iscc.codes`** tier-2 link — legible instance identity
+  (handoff invariant 9) and the tier-1/tier-2 split present on the page itself.
+- **Navigation closure.** The `/` → hub dossier → log browser → single record → certificate chain is
+  fully traversable with **JavaScript disabled**: forward links *and* `←` breadcrumb back-links both
+  present, so the index is enterable and no surface is a dead end (this is what the realm-index→dossier
+  row link, today absent, must restore).
+
+Per-surface landmark regions (each keyed to its mockup file under `.claude/design/`):
+- **`/` realm index** — `ISCC Monitor - Realm Index.dc.html`: the **claim-lookup hero** foregrounded
+  *above* the register (ISO-24138 eyebrow + plain-language explainer + ISCC-ID lookup → certificate); the
+  **realm register** table (`#` · hub·domain · coverage-since + size · checkpoint size · Bitcoin-anchor
+  dot+label · status badge) with a "N hubs followed & mirrored" count, **every row a link to that hub's
+  dossier**, and frozen rows visibly tinted; the coverage footnote.
+- **hub dossier** — `ISCC Monitor - Hub Dossier.dc.html`: `← Realm index` back-link; the trust-document
+  head (eyebrow "Hub dossier", hub name + domain, `md` `HubStatusBadge`, "Compiled by <instance> ·
+  <time>"); the numbered sections **§1 Identity** (did:web), **§2 Coverage** (since + size), **§3 Latest
+  checkpoint** (size + time), **§4 Bitcoin anchor** (dot + label + "run `ots verify`"); the **§5
+  observation log**; the frozen **Exhibit** (required above) above the sections; the two actions ("Prove
+  an ISCC-ID in this hub →" certificate, "Browse the log →").
+- **log browser / record list** — `ISCC Monitor - Log Browser.dc.html`: `← <hub> dossier` back-link; the
+  head (eyebrow "Log browser", hub name, "<domain> · N records mirrored"); the **plain-link pager**
+  (newer/older + "seq X–Y of Z" range, disabled at the ends — the no-JS `?from=…` form of the mockup's
+  buttons); the record table (`Seq · Type · ISCC-ID · Logged`) with a per-row **type badge**
+  (declaration/deletion/unknown) and **every row a link to its single record**; the append-only footnote.
+- **single record** — `ISCC Monitor - Single Record.dc.html`: `← Log browser` breadcrumb; the older/newer
+  record **link** stepper; the record head (eyebrow "Log record · seq N", id, type badge); the gated
+  **deletion** and **unknown-type** notices; the field grid (ISCC-ID, type + `note.$schema`, hub,
+  position, logged, **raw bytes** block); the actions ("Prove this record's inclusion →", "Back to list").
+- **certificate of inclusion** — `ISCC Monitor - Certificate.dc.html`: `← Realm index` back-link; the
+  certificate head (ref + issued + instance) and subject banner ("<id> is included in … at position N");
+  the numbered clauses **§1 Subject · §2 Checkpoint (size, root) · §3 Inclusion proof
+  (leaf→siblings→root) · §4 Signing key (did:web) · §5 Bitcoin anchor · §6 Record history** (incl. any
+  deletion); the **two-tier honesty** panel (Tier 1 "the monitor's account" vs Tier 2 "you verify
+  yourself"); the **Download proof bundle** primary action + "Verify independently →" link; the "Cite as
+  / verifiable cache" footer.
+
+The `HubStatusBadge` partial follows `HubStatusBadge.dc.html`; Surface C's verifier app follows
+`ISCC Monitor - Independent Verification.dc.html` in the WASM milestone below.
+
 ### WASM verifier upgrade  `[not started]`
 
 `internal/proof/verify` → `GOOS=js GOARCH=wasm`, lazy-loaded progressive enhancement that elevates the
 Evidence Ledger's **tier-2** result ("your browser verified…") on the M-UI certificate/dossier, plus the
-standalone **Independent Verification** verifier app (Surface C) at `monitor.iscc.codes` (monitor-agnostic
+standalone **Independent Verification** verifier app (`ISCC Monitor - Independent Verification.dc.html`,
+Surface C) at `monitor.iscc.codes` (monitor-agnostic
 via `?monitor=<url>`); reproducible build + published hash + SRI pin (ADR-0003, ADR-0010). **Verify:**
 identical vectors yield identical verdicts (WASM vs server); the verifier artifact hash matches the
 published value; a `(size, root)` mismatch renders the guided split-view alert, not a dead error.
