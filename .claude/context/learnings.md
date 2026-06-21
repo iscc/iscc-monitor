@@ -249,6 +249,32 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   there is the real fabricated-checksum oracle. Combine with `go mod why -m` (proves a require-graph
   module never reaches a monitor package) to confirm a go.sum addition is legitimately graph-only.
 
+## Entry-bundle leaf hasher (`internal/logclient/leafhasher.go`)
+
+- **`LeafHashes(bundle []byte) ([][]byte, error)` is a verbatim-in-shape port of `runfsck`'s
+  `leafHasher`** (`cauldron/iscc-hub/conformance/runfsck/main.go:24-35`) — `api.EntryBundle{}.
+  UnmarshalText` then `rfc6962.DefaultHasher.HashLeaf(e)` per entry, taking `h[:]`, pre-sized `out`.
+  The ONLY deviation from the reference is the error wrap: `%w` + qualified prefix (`logclient.
+  LeafHashes: unmarshal entry bundle: %w`) instead of runfsck's `%v` — strictly better (preserves the
+  `errors.Is/As` chain) and exactly what `next.md` asked. It is the hasher `fsck.New(...)` takes, so
+  the signature must stay `func([]byte) ([][]byte, error)` for the deferred `fsck`-rebuild slice.
+- **The truncated/empty edge cases map straight onto `EntryBundle.UnmarshalText`'s framing loop**
+  (`tessera@v1.0.2/api/state.go:74-92`, reviewer read source): `len(raw)==0` → loop body never runs →
+  zero entries + nil err (nil and `{}` both); a 2-byte prefix promising `size` data bytes where
+  `dataIndex+size > len(raw)` returns "require N bytes" — so `{0x00,0x05,0x01}` (claims 5, has 1) errs;
+  a zero-length entry (`size==0`) hashes an empty slice fine. The test exercises all three.
+- **Oracle gate APPLIES (RFC-6962 leaf-hash crypto) and is satisfied by independent ground truth.** The
+  test's `encodeBundle` (manual `binary.BigEndian.PutUint16` framing) is a THIRD code path distinct from
+  the decode (`UnmarshalText`) and hash (`HashLeaf`) paths under test; the cross-check is non-circular.
+  Reviewer mutation-proved it: `h[0] ^= 0xff` before append → all 3 records FAIL the golden (then
+  reverted) — a green-but-wrong hasher cannot ship. `notecheck`/`derive_vkey.py`/`fsck` ground-truth
+  oracles are correctly N/A for THIS slice (no signature/did:web/tile-rebuild path introduced); they
+  re-arm at the real `fsck.New(...).Check(...)` slice. `LeafHashes` is an intentional unused-until-wired
+  export seam (like the consistency triggers, `IsFull`, `LookupHubKey`) — `go vet` clean, not dead code.
+  go.mod/go.sum byte-identical (both `tessera/api` + `merkle/rfc6962` already in the closure via
+  `proofbuilder.go`); file-level WASM purity holds (`GOOS=js GOARCH=wasm go build ./internal/logclient`
+  exits 0, imports are exactly `fmt`+those two).
+
 ## tlog-tiles layout seam (`internal/tiles`)
 
 - **`internal/tiles` is a thin re-export of `tessera/api/layout`, not a reimplementation** — wrappers
