@@ -208,6 +208,26 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   the tree size). Dropping the ephemeral-node check is correct too: `proof.Consistency`'s IDs only ever
   map to real tile nodes, and `nodes.Rehash` supplies the one ephemeral node itself — `getNode` is never
   asked for it.
+- **`InclusionProofFromTiles(ctx, fetch, index, size)` is the inclusion sibling — structurally
+  byte-identical to `ConsistencyProofFromTiles` with exactly two swaps: `proof.Inclusion(index, size)`
+  (vs `proof.Consistency`) and `size` as the `getNode` `logSize` (vs `larger`).** Same per-call tile
+  cache + `getNode` loop + `nodes.Rehash`; error wraps mirror the sibling (`compute node list` /
+  `get node` / `rehash proof`, all `%w`). `ConsistencyProofFromTiles`/`getNode`/`tileKey`/`TileFetcher`
+  stayed byte-identical (additive diff). No new import → go.mod/go.sum unchanged (`proof.Inclusion` was
+  already in the closure). It is an unwired-until-M2 export seam (no production caller — the inclusion
+  cross-check vs the hub's real `IsccLogInclusionProof` needs captured fixtures + the tile-ingestion
+  writer, neither exists yet). Unlike tessera's `ConsistencyProof`, neither builder has an explicit
+  `index < size` / `max > treeSize` guard before the `proof.*` call — they lean on `proof.Inclusion`/
+  `proof.Consistency`'s own precondition (verified: `index == size` errors cleanly, never panics, never
+  reaches the fetcher).
+- **Oracle gate APPLIES (RFC-6962 inclusion crypto), mutation-proven non-vacuous by the reviewer.** The
+  golden reuses the same 300-leaf `testonly.Tree` boundary fixture; for `{0,5,200,255,256,260,299}` it
+  asserts byte-equality vs `tree.InclusionProof(index,300)` AND `proof.VerifyInclusion(hasher, index,
+  300, tree.LeafHash(index), got, tree.HashAt(300))` — three independent merkle paths. Note the arg
+  order `(hasher, index, size, leafHash, proof, root)`: `leafHash` precedes `proof`, unlike
+  `VerifyConsistency`'s `(…, proof, root1, root2)`. Two mutations (reverted) both FAILED the golden: (1)
+  `proof.Inclusion(index+1, size)` (wrong leaf → root mismatch at 256/260, out-of-bounds at 299); (2)
+  corrupting every fetched node hash in the shared `getNode` loop. A green-but-wrong builder cannot ship.
 - **The `TileFetcher` signature is byte-identical to `store.SQLiteFetcher.ReadTile`** (`func(ctx
   context.Context, level, index uint64, p uint8) ([]byte, error)`), so the follower's equivocation wiring
   can pass `SQLiteFetcher.ReadTile` straight in — verified both signatures side by side. `larger` (not
