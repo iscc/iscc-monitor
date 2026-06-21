@@ -1,72 +1,64 @@
 # Handoff
 
-## 2026-06-21 — Pure `internal/metrics` leaf — counters/gauges + Prometheus text rendering
+## 2026-06-21 — Review of: Pure `internal/metrics` leaf — counters/gauges + Prometheus text rendering
 
-**Done:** Landed `internal/metrics` as a pure, stdlib-only leaf: a `*Registry` (guarded by a
-`sync.RWMutex`) holding the monitor's alert-worthy series and rendering them in Prometheus
-text-exposition format via `WriteText(io.Writer)` / `String()`. Modeled four families — the two
-required counters `iscc_monitor_violations_total{hub_id,kind}` and
-`iscc_monitor_poll_failures_total{hub_id}`, plus the gauges `iscc_monitor_hub_status{hub_id,status}`
-and `iscc_monitor_last_observed_at{hub_id}`. No HTTP handler, no follower wiring, no new dependency.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/metrics/metrics.go` (new): `Registry`/`New`, mutators `IncViolation(hubID, kind)`,
-  `IncPollFailure(hubID)`, `SetHubStatus(hubID, status)` (sets the active status to 1 and clears the
-  hub's other statuses to 0), `SetLastObservedAt(hubID, unixSeconds)` (caller-supplied, no clock
-  read), and the `WriteText`/`String` renderer. Imports are stdlib-only: `fmt io sort strconv strings
-  sync`. Per-family `# HELP`/`# TYPE` headers; sample lines sorted lexically so output is byte-stable.
-- `internal/metrics/metrics_test.go` (new): full golden block (byte-equality), the minimal
-  `violations_total{kind="fork"}` + `poll_failures_total` contract, a 50× determinism check, the
-  single-active-status invariant, the empty-registry headers-only render, and a concurrent
-  mutate-while-render test (8 writers × 1000 + 2 renderers) asserting exact final counts.
+**Summary:** `advance` landed `internal/metrics` as a pure, stdlib-only Prometheus text-exposition
+renderer exactly as `next.md` scoped — a `*Registry` (RWMutex-guarded) over four families (the two
+required counters `violations_total{hub_id,kind}` / `poll_failures_total{hub_id}` plus the gauges
+`hub_status{hub_id,status}` / `last_observed_at{hub_id}`), with no HTTP handler, no follower wiring,
+and no new dependency. All gates are green, the golden test is mutation-proven non-vacuous, and the
+leaf is net-/db-/log-/clock-free with `go.mod`/`go.sum` byte-identical to HEAD.
 
-**Verification:** `mise run check` (build + vet + test, all 9 packages) → green. Per-criterion:
-- [x] `gofmt -l internal/metrics` — empty.
+**Verification:**
+- [x] `mise run check` (build + vet + test, all 9 packages) — green; full `go test -count=1 ./...`
+      (uncached) also green.
+- [x] `gofmt -l internal/metrics` empty; `gofmt -l .` (whole tree) empty.
 - [x] `go test -count=1 ./internal/metrics` — PASS.
-- [x] `go list -deps ./internal/metrics | grep -E '^(net/http|database/sql|log/slog)$'` — empty
-      (leaf is net-free, db-free, log-free). Direct `.Imports` are exactly `fmt io sort strconv
-      strings sync` (no `net`/`os`/`time`). The `time`/`os` that appear in the *transitive* closure
-      ride in via `fmt` only (same nuance the learnings note for `internal/didweb`); load-bearing
-      invariant holds and `GOOS=js GOARCH=wasm go build ./internal/metrics` succeeds.
-- [x] `git diff --quiet HEAD -- go.mod go.sum` exit 0 (stdlib-only; no new dep).
-- [x] Golden test byte-equals an expected Prometheus block with `# TYPE` lines and deterministically
-      sorted samples over `violations_total{kind="fork"}` + `poll_failures_total`.
-- Oracle/conformance gate correctly **N/A**: this is a pure formatting leaf with no
-  signature/RFC-6962/Merkle/did:web/proof/tile path. The trust-root gate re-arms at the `fsck`-rebuild
-  slice (unchanged from the prior several slices).
+- [x] `go list -deps ./internal/metrics | grep -E '^(net/http|database/sql|log/slog)$'` — empty.
+      Direct `.Imports` are exactly `[fmt io sort strconv strings sync]` (no `net`/`os`/`time`); the
+      `os`/`time` in the transitive closure ride in via `fmt` only. `GOOS=js GOARCH=wasm go build
+      ./internal/metrics` — OK.
+- [x] `git diff --quiet HEAD -- go.mod go.sum` exit 0 (stdlib-only; no new dep). Also unchanged across
+      the advance commit (`HEAD~1..HEAD`).
+- [x] Golden test byte-equals an expected Prometheus block (`# HELP`/`# TYPE` lines, deterministically
+      sorted samples) over `violations_total{kind="fork"}` + `poll_failures_total`. **Mutation-proven:**
+      reverse-sort → `TestRenderGolden` fails on ordering; double-count `IncViolation` → three tests
+      fail. A green-but-wrong renderer cannot ship. (Both mutations reverted; tree restored
+      byte-identical.)
+- [x] Scope discipline — diff is exactly `internal/metrics/metrics.go` + `metrics_test.go` (+ handoff);
+      no `follower.go`/`loop.go`/`main.go`/`cmd/` touched, honoring `## Not In Scope`.
+- [x] Quality-gate integrity — scanned all unpushed commits (`@{upstream}..HEAD`): no
+      `//nolint`/`t.Skip`/build-tag/swallowed-error gate dodges. The two `_ =` blanks are legitimate
+      (`String()`'s `strings.Builder.Write` never errors — documented inline; the test reader discards
+      render output intentionally).
+- [x] Oracle/conformance gate **correctly N/A** — pure formatter, no
+      signature/RFC-6962/Merkle/did:web/proof/tile path. Confirmed the diff touches none of those paths;
+      the trust-root gate re-arms at the `fsck`-rebuild slice (unchanged).
 
-**Next:** The natural follow-on is the `/metrics` HTTP slice: a `net/http` handler that calls
-`Registry.WriteText` with `Content-Type: text/plain; version=0.0.4`, wired at the composition layer
-(`loop.go`/`main.go`), plus threading a `*metrics.Registry` handle into `follower.PollHub`/`Tick` so
-the increment sites fire. The metric method shapes already match the call sites: `IncViolation(hubID,
-string(kind))` at `freeze`, `IncPollFailure(hubID)` on `PollHub`'s error return in `Tick`, and
-`SetHubStatus(hubID, status.String())` / `SetLastObservedAt(hubID, observedAt.Unix())` on the verdict
-path. After that, the bigger `fsck` root-rebuild conformance slice (M2 Verify) remains, which is also
-the place to resolve the open `go mod tidy` go.sum divergence and wire CI/`notecheck`.
+**Issues found:** (none) — both pre-existing `normal` issues (go.sum tidy divergence; no CI/`notecheck`
+oracle) remain open and untouched, which is correct: this slice added no dep and wired no CI.
+
+**Next:** The `/metrics` HTTP slice — a `net/http` handler calling `Registry.WriteText` with
+`Content-Type: text/plain; version=0.0.4`, wired at the composition layer (`loop.go`/`main.go`), plus
+threading a `*metrics.Registry` into `follower.PollHub`/`Tick` so the increment sites fire
+(`IncViolation` at freeze, `IncPollFailure` on `PollHub`'s error return in `Tick`, `SetHubStatus` /
+`SetLastObservedAt` on the verdict path). After that, the `fsck` root-rebuild conformance slice (M2
+Verify), which is also where the open go.sum divergence + CI/`notecheck` should be resolved.
 
 **Notes:**
-- **`hub_status` label values are the glossary set, not `Status.String()`.** The glossary hub-status
-  set is `verified|unresolvable|unverified|frozen|inactive`, but `logclient.Status.String()` returns
-  `verified|unverified|unresolvable|rotated`. The leaf does not validate the `status` string (it just
-  renders what it's given), so the wiring slice must map the follower verdict to a glossary status
-  (notably: a `rotated` verdict and a frozen hub are not directly the same axis). `hub_status` and
-  `last_observed_at` were modeled beyond the required two because they golden-test cleanly and map to
-  existing call sites — `next.md` left them optional; YAGNI is respected (no series with no eventual
-  call site was added; `lag_seconds` was deliberately *not* modeled this slice — it needs a `now`
-  the leaf must not read, so it belongs at the wiring layer that already injects `observedAt`).
-- **`kind` label reuses the real strings.** `IncViolation`'s `kind` is the
-  `store.Violation.Kind`/`logclient.ViolationKind` value (`shrink`/`fork`/`equivocation`) verbatim —
-  the golden asserts `kind="fork"`/`"shrink"`/`"equivocation"`, no synonyms invented at the seam.
-- **`SetHubStatus` keeps exactly one active status per hub** by clearing the hub's other status
-  samples to 0 (so superseded statuses render `… 0`, not stale 1s); `TestSetHubStatusSingleActive`
-  pins this. An alternative (drop the old sample entirely) was rejected so Prometheus sees a continuous
-  0→1 transition rather than a vanishing series.
-- **Concurrency is real, not theoretical.** The follower is single-writer per DB, but the future
-  `/metrics` HTTP read renders concurrently with follower writes, so the `RWMutex` is load-bearing.
-  Note `CGO_ENABLED=0` ⇒ no `-race`, so `TestConcurrentMutateAndRender` proves safety by exact final
-  counts (no lost increment) rather than via the race detector.
-- **`String()` swallows the `WriteText` error deliberately and safely** — it renders into a
-  `strings.Builder`, whose `Write` never returns an error, so the `_ =` is correct (not a gate dodge);
-  a one-line comment says so. `WriteText` itself propagates every `io.Writer` error.
-- The two pre-existing `normal` issues remain open and untouched (no dependency added, no CI wired):
-  the `go mod tidy` 22-line go.sum divergence and the absent `notecheck`/CI oracle.
+- **Wiring-slice gotcha (carried forward, now also in learnings): the `status` label set is the
+  GLOSSARY set, not `Status.String()`.** The leaf renders `status` verbatim without validating it; the
+  glossary set is `verified|unresolvable|unverified|frozen|inactive` but `logclient.Status.String()`
+  returns `verified|unverified|unresolvable|rotated` (`rotated` and `frozen` are different axes). The
+  wiring slice MUST map follower verdict → glossary status before calling `SetHubStatus`. `kind` is
+  safe (reuses the real `violations.kind` strings verbatim, golden-asserted).
+- `lag_seconds` was deliberately NOT modeled (it needs a `now` the leaf must not read) — YAGNI
+  respected; no series without an eventual call site was added.
+- `CGO_ENABLED=0` ⇒ no `-race`, so `TestConcurrentMutateAndRender` proves safety by exact final counts
+  (8 writers × 1000, no lost increment) rather than via the race detector — sound given the constraint.
+- The rendered output is well-formed Prometheus text-exposition format (independently inspected): per-
+  family `# HELP`/`# TYPE`, `name{labels} value` samples, and `escapeLabelValue` correctly
+  backslash-escapes `\`/`"`/`\n` so the renderer stays total.

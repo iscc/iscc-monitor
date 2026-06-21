@@ -469,6 +469,33 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   unwired into `PollHub`/verification (deliberate next slice). Oracle gate correctly N/A — pure CRUD,
   `go.mod`/`go.sum`/`schema.sql` byte-identical (`git diff --quiet HEAD~1..HEAD` exit 0).
 
+## Metrics leaf (`internal/metrics`)
+
+- **`internal/metrics` is a pure, stdlib-only Prometheus text-exposition renderer** — direct imports
+  are exactly `{fmt io sort strconv strings sync}` (no `net`/`os`/`time`; the `os`/`time` in the
+  transitive closure ride in via `fmt` only, same nuance as `internal/didweb`). WASM build is green and
+  `net/http`/`database/sql`/`log/slog` are absent from the closure. A `*Registry` (RWMutex-guarded)
+  holds four families: counters `iscc_monitor_violations_total{hub_id,kind}` /
+  `iscc_monitor_poll_failures_total{hub_id}` and gauges `iscc_monitor_hub_status{hub_id,status}` /
+  `iscc_monitor_last_observed_at{hub_id}`. `WriteText`/`String` render fixed-order families with
+  lexically-sorted sample lines for byte-stable output. `go.mod`/`go.sum` byte-identical (stdlib-only).
+- **The golden is mutation-proven, not asserted.** Reviewer ran two compiling mutations (reverted):
+  (1) reverse the sort → `TestRenderGolden` fails on ordering; (2) double-count `IncViolation` →
+  `TestRenderGolden`+`TestRenderMinimalRequired`+`TestConcurrentMutateAndRender` all fail. A
+  no-sort mutation is a *compile* error (unused `sort`) — use an inverting/reverse mutation to prove
+  the sort is load-bearing. The leaf is a pure formatter with no signature/RFC-6962/Merkle/did:web/
+  proof/tile path, so the **oracle/conformance gate is correctly N/A** (trust root re-arms at `fsck`).
+- **Wiring-slice gotcha: the `status` label set is the GLOSSARY set, not `Status.String()`.** The leaf
+  renders `status` verbatim without validating it; the glossary set is
+  `verified|unresolvable|unverified|frozen|inactive`, but `logclient.Status.String()` returns
+  `verified|unverified|unresolvable|rotated` (note `rotated` and `frozen` are different axes). The
+  `/metrics` wiring slice MUST map the follower verdict → glossary status, else the gauge emits a
+  non-glossary `status` value. `kind` is safe — it reuses the real `violations.kind` strings verbatim.
+- **`String()`'s `_ = WriteText(&b)` is a correct swallow, not a gate dodge** — `strings.Builder.Write`
+  never returns an error, documented inline. `WriteText(io.Writer)` itself propagates every writer
+  error. `escapeLabelValue` backslash-escapes `\`/`"`/`\n` so the renderer is total (verified an inline
+  `weird"kind\nwith-newline` label renders as well-formed escaped text).
+
 ## Realm registry (`internal/registry`)
 
 - **`Parse([]byte) ([]Entry, error)` is the pure domains-only membership leaf (ADR-0009).** Line-based,
