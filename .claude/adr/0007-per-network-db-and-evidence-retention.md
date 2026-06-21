@@ -29,3 +29,37 @@ mirror.**
 
 The active follow set is the only thing reconciliation adds to or removes from;
 the irreplaceable evidence (ADR-0001, ADR-0005) is forever.
+
+**Why network-level and not hub-level (considered, deferred).** The same
+file-level-failure-isolation argument that splits networks would, taken one step
+further, split *each hub* into its own file. We stop at the network for now: the
+realm is 10s–100s of hubs, so per-hub file lifecycle (create-on-join, never-delete
+per the retention rule above) and the fan-out of every cross-hub read buy nothing
+the `hub_id` namespacing inside a network doesn't already give us. Building it now
+would be over-engineering.
+
+The decision is deferred, not foreclosed, because the design keeps the migration
+clean *by construction* — and that is the property to preserve, not the single
+file:
+
+- **Writes are hub-scoped.** The store's only transaction (`AdvanceAccepted`)
+  touches exactly one `hub_id`; every data-access method is keyed by `hubID`.
+  There is no cross-hub transaction, so splitting hubs across files preserves
+  every atomicity guarantee ADR-0005 relies on. *This is the load-bearing
+  invariant: never introduce a write or transaction that spans hubs.*
+- **The `both`-mode multi-file/multi-writer pattern is the precedent.** Per-hub
+  files extend an existing shape (independent single-writer goroutines per file),
+  not a new one.
+- **BLOB keys are storage-agnostic** (`(hub_id, level, index, width)`), and reads
+  already go through the `client.Fetcher` seam — so the high-volume axis (a single
+  hub at millions of records/day) has a *second*, independent clean migration:
+  tier the **rebuildable** bulk (tiles, entry bundles, `iscc_index`) onto a
+  different backend while the small **irreplaceable** evidence stays in SQLite.
+  Per-hub files *isolate* a hot hub; tiering the rebuildable bulk *subdivides* it.
+- **Rebuildability lowers migration risk.** A future split need not copy the bulk
+  at all — stand up the new backend, hand-copy only the irreplaceable evidence
+  tables, and let the follower backfill tiles/index by re-fetch + fsck.
+
+A trip-wire on writer-wait time and per-network file size (tracked in
+`.claude/context/issues.md`) gives the early signal to revisit this before the
+single writer or file size actually binds.
