@@ -829,3 +829,33 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   always injects a real `observedAt`). Wiring lives ONLY on the verified, non-violation `PollHub` path
   (between `RecordCheckpoint` and `AdvanceFollowState`), kept out of `freeze`, so a contradictory
   observation never starts coverage (ADR-0001) — the fork/unverified tests assert `cov.Set == false`.
+
+## Live tile/bundle ingestion writer (`internal/follower/ingest.go`)
+
+- **`ingestTiles` is the first production caller binding the four M2 seams** (`tiles.TileCoords`/
+  `BundleCoords` → `logclient.FetchTile`/`FetchEntryBundle` → `store.RecordTile`/`RecordEntryBundle`),
+  wired into `PollHub` AFTER `cacheHubKey`, BEFORE the final `recordVerdict` — on the verified,
+  non-violation path only (not in `freeze`, not on non-verified verdicts). A fetch/store fault is a
+  genuine transport error wrapped `follower.PollHub: hub %d: ingest tiles: %w` and surfaced (NOT a
+  violation, NOT a freeze) — the checkpoint is already recorded/advanced above, so the next poll
+  re-completes the mirror via the idempotent upsert (ADR-0005/0006). Follower prod imports stay
+  `{context, fmt, logclient, metrics, store, tiles, log/slog}`; store stays a leaf (no `net/http`, no
+  reverse dep). go.mod/go.sum byte-identical (`tessera/api/layout` already in closure via `tiles`).
+- **The `widthForP` p↔width translation is the load-bearing bug surface and is triple-pinned.** The
+  follower re-derives the store's unexported one-liner (`p==0 → tiles.TileWidth (256)`, else `int(p)`) —
+  store's copy stays private, store package byte-untouched. Reviewer mutation-proved it: breaking the
+  `p==0 → 256` mapping (return `int(p)` always) FAILS `TestWidthForP` + `TestIngestTilesWidthMapping`
+  (full tile invisible at width 256, *readable* at width 0) + `TestPollHubMirrorsTiles`
+  (`SQLiteFetcher.ReadTile(0,0,p0)` round-trip fails). A green-but-wrong width map cannot ship.
+- **Both ingestion tests are non-vacuous (mutation-verified).** Neutering `ingestTiles` to a no-op FAILS
+  `TestIngestTilesWidthMapping` and `TestPollHubMirrorsTiles` (no mirrored rows, full-tile round-trip
+  fails) — so the green is real, not existence-vacuous. Tests assert only on observable store outputs
+  (`ReadTileBlob`/`ReadEntryBundleBlob` `found==true` + exact synthetic bytes), never follower internals.
+  Tree 300 enumerates exactly 5 coords (tiles `{0,0,full}`,`{0,1,p44}`,`{1,0,p1}` + bundles
+  `{0,full}`,`{1,p44}`), independently re-derived against `tiles.TileCoords/BundleCoords` — the table is
+  ground truth, and the `len(urls)==5` assert pins the enumeration count.
+- **Oracle gate correctly N/A for this slice** — transport + CRUD only, no signature/RFC-6962/Merkle/
+  did:web/fsck path; the equivocation branch it un-dormants is already golden-tested and unchanged.
+  `derive_vkey.py` still reproduces `40b74463`/`22b08f3e` (the did:web cache path through `PollHub` is
+  composed, not modified). Trust root re-arms at the `fsck`-over-`SQLiteFetcher` slice (next), which is
+  where the mirrored tiles first face the RFC-6962 root-rebuild oracle.
