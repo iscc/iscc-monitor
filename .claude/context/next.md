@@ -1,106 +1,95 @@
 # Next Work Package
 
-## Step: CORS middleware on every public GET (M3 cross-cutting HTTP slice — part 1)
+## Step: Cache-Control on the tlog-tiles mirror (immutable full tiles/bundles vs. revalidating partials + checkpoint)
 
 ## Goal
-Add a single CORS middleware leaf that wraps the monitor's one public mux, so every served
-surface (`/metrics`, `/healthz`, `/inclusion`, `/consistency`, `/entries`, and the raw tlog-tiles
-mirror) answers cross-origin browser GETs uniformly. This is the first piece of M3's
-"CORS on every public GET" requirement (target.md M3) and the prerequisite for the in-browser
-verifier app (`monitor.iscc.codes`) and the dashboard fetching a monitor instance's data client-side.
+Make the raw tlog-tiles mirror cacheable correctly: serve content-addressed **full**
+tiles/entry-bundles with a long-lived immutable `Cache-Control` and serve **partials** and the
+size-varying **checkpoint** with a revalidating (`no-cache`) policy. This is the next M3 cross-cutting
+HTTP slice (review handoff `**Next:**`) and it respects the partial-tile discipline (ADR-0005): only a
+full resource is immutable, partials are overwritten every poll and must never be cached as immutable.
 
 ## Scope
-- **Create**: `internal/corsmw/corsmw.go` — a `Handler(next http.Handler) http.Handler` middleware
-  that sets `Access-Control-Allow-Origin: *` on every response and answers `OPTIONS` preflights with
-  `204 No Content`.
-- **Modify**: `cmd/iscc-monitor/main.go` — wrap the assembled mux in `buildMux` (the single place all
-  public routes converge) with `corsmw.Handler(...)` so the wrap applies once, uniformly. Add the
-  `internal/corsmw` import.
-- **Create (test, not counted toward the 3-file limit)**: `internal/corsmw/corsmw_test.go`.
+- **Modify**: `internal/tilesserve/handler.go` (the only production file — set `Cache-Control` per
+  route, using the cacheability signal already in hand at each handler).
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/metricshttp/handler.go` — the canonical tiny-leaf-package shape
-    (package docstring, single exported `Handler`, stdlib-only import) to mirror.
-  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` — `buildMux` (lines 145-150) is the wrap point;
-    `serveMetrics` (line 123) hands `buildMux(...)` straight to `http.Server.Handler`, so one wrap
-    covers the single listener and every mounted subtree.
-  - `/workspace/iscc-monitor/internal/proofserve/handler.go` and
-    `/workspace/iscc-monitor/internal/tilesserve/handler.go` — both already document
-    "CORS … intentionally out of scope for this slice"; this step is what those notes defer to. Do NOT
-    change those handlers — CORS belongs in the one middleware, never duplicated per handler.
-  - `/workspace/iscc-monitor/.claude/context/target.md` — M3 line "REST surface (CORS on every public GET)".
-  - `/workspace/iscc-monitor/cmd/iscc-monitor/main_test.go` — `TestMirrorRouter` /
-    `TestMirrorInclusionRoute` / `TestMirrorEntriesRoute` exercise the mux; they must stay green
-    through the wrapped mux.
+  - `/workspace/iscc-monitor/internal/tilesserve/handler.go` — current routes; `serveCheckpoint` /
+    `serveTile` / `serveEntries` / `writeBlob`; the parsed `width` (tessera path-API: `0 == full`,
+    `>0 == partial` leaf count) is available in `serveTile`/`serveEntries` before `writeBlob`.
+  - `/workspace/iscc-monitor/internal/store/fetcher.go` — confirms the `p`/`width` convention
+    (`p == 0 → full width 256`) and the partial→full promotion semantics this policy must honor.
+  - `/workspace/iscc-monitor/internal/tiles/layout.go` — `IsFull(width int) bool == width == TileWidth`
+    and `TileWidth == 256`. NOTE the two vocabularies: in the tessera *path-API* a full resource is
+    `width 0`, while the *store* uses `width 256` for full. This slice works in the path-API vocabulary
+    (the parsed `width` from `layout.ParseTile*`), so "full" here is `width == 0`. Do not confuse them.
+  - `/workspace/iscc-monitor/internal/corsmw/corsmw.go` — the existing single CORS leaf, to confirm the
+    `buildMux` wrap only sets `Access-Control-*` (never `Cache-Control`), so per-route `Cache-Control`
+    here neither duplicates nor conflicts with it.
 
 ## Not In Scope
-- Caching / `Cache-Control` / conditional-GET (`ETag` / `If-None-Match` / `Last-Modified`) headers —
-  those are the SECOND M3 cross-cutting slice, deliberately separated to keep this ≤2 production files
-  and one concern.
-- The `verify-for-me` verdict surface, the `/` landing page, the server-rendered dashboard, or the log
-  browser — later M3 feature slices.
-- Per-origin allow-listing, `Access-Control-Allow-Credentials`, or `Vary: Origin` — the monitor serves
-  public, credential-free, read-only data, so wildcard `*` is the correct and simplest policy. Do NOT
-  combine `Allow-Credentials: true` with `*` (the browser rejects that pairing).
-- Touching `proofserve` / `tilesserve` / `metricshttp` / `healthz` handlers or their "out of scope"
-  doc comments — the middleware wraps them; it does not edit them.
-- Draining any open `normal` issue (`TestPollHubFork` cleanup, frozen-advance, `AcceptCheckpoint`
-  context reuse, tile-writer `p` vocab, `AdvanceAccepted`, `CheckConsistency` collapse) — weighed and
-  deferred to land the coherent M3 HTTP-plumbing arc first.
+- **Conditional GET** — no `ETag` / `If-None-Match` / `Last-Modified` / `If-Modified-Since` and no 304
+  responses this slice. That is a deliberately separate follow-up slice (the review handoff lists both;
+  keep this step to `Cache-Control` only so it stays one small, single-file change).
+- The computed-proof surfaces (`proofserve`: `/inclusion`, `/consistency`, `/entries`) — their
+  cacheability is size-dependent and tied to `LastSize`; leave them uncached here (a later slice).
+- `/metrics`, `/healthz`, and any change to `corsmw` or `cmd/iscc-monitor/main.go` wiring.
+- Draining any `normal` issue (`TestPollHubFork` cleanup, frozen-advance, `AcceptCheckpoint` context
+  reuse, tile-writer `p` vocab, `AdvanceAccepted`, `CheckConsistency` collapse) — weighed and deferred
+  to finish the coherent M3 HTTP-plumbing arc first.
 
 ## Implementation Notes
-- **Single middleware, applied once.** Mirror `metricshttp`'s package shape: a file-level docstring
-  explaining why CORS lives in its own leaf (the policy is defined in exactly one place and rides
-  every route from `buildMux`, never duplicated per handler), and one exported function
-  `func Handler(next http.Handler) http.Handler`. It imports only `net/http`.
-- **Behavior:**
-  - On EVERY request, set `Access-Control-Allow-Origin: *` BEFORE delegating, so the header is present
-    on 200, 404, 405, and 500 alike.
-  - If `r.Method == http.MethodOptions`: treat as a preflight — also set
-    `Access-Control-Allow-Methods: "GET, OPTIONS"` and `Access-Control-Allow-Headers: "*"`, then
-    `w.WriteHeader(http.StatusNoContent)` and RETURN without calling `next` (the inner handlers only
-    speak GET and would 405 an `OPTIONS`; the preflight must succeed so the browser proceeds to the
-    real GET).
-  - Otherwise delegate to `next.ServeHTTP(w, r)` unchanged — GET/HEAD/POST flow through to the
-    existing 405/404/200 logic untouched. Only `OPTIONS` is short-circuited; a non-GET non-OPTIONS
-    request still reaches the inner handler and gets the existing 405.
-- **Header order matters with `http.Error`.** Set `Access-Control-Allow-Origin` BEFORE `next.ServeHTTP`:
-  the inner handlers call `w.WriteHeader` (via `http.Error` or the first body write), after which header
-  mutations are ignored. Setting it in the middleware first guarantees it lands on every response,
-  including error bodies.
-- **Wire point.** In `main.go`'s `buildMux`, return `corsmw.Handler(mux)` instead of the bare `mux`
-  (keep `buildMux`'s return type `http.Handler` — it already is). This is the lone convergence point:
-  `serveMetrics` feeds `buildMux(...)`'s result directly to `http.Server.Handler`, so one wrap covers
-  the single listener and every mounted subtree (metrics, healthz, and all per-hub mirror/proof routes).
-- **Relevant Correctness rule (learnings.md, "HTTP leaf" pattern + `proof/verify` purity rule):** keep
-  new leaf packages import-clean — `corsmw` must import only `net/http` (no `store`, no `logclient`),
-  preserving the one-directional dependency graph the other HTTP leaves (`metricshttp`, `healthz`,
-  `tilesserve`) maintain. It is NOT on the WASM-shared verifier path (that rides `internal/didweb`), but
-  staying stdlib-only keeps it trivially correct.
-- **No new dependency:** `net/http` is already in the closure, so `go.mod` / `go.sum` / `schema.sql`
-  stay byte-unchanged. The oracle/conformance gate is correctly N/A here (pure HTTP header wiring; no
-  signature / RFC-6962 / Merkle / did:web / fsck / proof path) — the same posture the `tilesserve` and
-  `metricshttp` wiring slices took.
+- **Cacheability is known at the route — no new store lookup needed.** The checkpoint is always
+  size-varying; tiles/bundles carry the parsed partial `width` already (`layout.ParseTileLevelIndexPartial`
+  returns `width`; `layout.ParseTileIndexPartial` returns `width`). In the tessera path-API vocabulary a
+  **full** resource parses to `width == 0` and a **partial** parses to its actual leaf count (`> 0`) —
+  the same convention `store.SQLiteFetcher` documents (`p == 0 → full`). So the predicate is simply
+  `full := width == 0`.
+- **Plumb a cacheability bool into `writeBlob`**, e.g. `writeBlob(w, data, immutable bool)`:
+  - `serveCheckpoint` → `immutable == false` (the checkpoint is overwritten as the tree grows).
+  - `serveTile` / `serveEntries` → `immutable := (width == 0)` (full = immutable; partial = revalidate).
+  Keep the change minimal: add the one parameter and set the header before the existing `w.Write`.
+- **Header values** (define fixed, documented `const`s in the file):
+  - Immutable: `Cache-Control: public, max-age=31536000, immutable` (one year; content-addressed full
+    tiles/bundles never change — the RFC-8246 `immutable` directive lets browsers skip revalidation).
+  - Revalidate: `Cache-Control: no-cache` (cache may store but must revalidate before reuse; correct for
+    partials that are overwritten in place and for the size-varying checkpoint). Do **not** use
+    `no-store` — we *want* the response cacheable-with-revalidation, just not reusable-without-checking.
+- **Header-write order**: set `Content-Type` and `Cache-Control` BEFORE the first `w.Write` (the 200 is
+  sent on first write and freezes the header map) — mirror the existing `writeBlob` comment about the
+  status being sent on first write. Error paths (`http.Error` 400/404/405/500) need no `Cache-Control`.
+- **Correctness rule (learnings.md → "Partial-tile discipline", ADR-0005):** "Mark a tile/bundle BLOB
+  `is_full` (immutable) only at `width == 256`; re-fetch partials every poll and overwrite. Never
+  promote a partial." The HTTP cache policy must mirror that exactly: a partial response must NOT carry
+  the `immutable` directive, or a client would cache a soon-overwritten partial forever. A wrong
+  predicate here (marking partials immutable) is the load-bearing bug this step guards against — pin it
+  with an explicit partial-tile assertion.
+- **Oracle/conformance gate is N/A** for this slice: pure HTTP header wiring on opaque BLOBs, no
+  signature / RFC-6962 / Merkle / did:web / fsck path touched. Do not add `//nolint`, `t.Skip`, or weaken
+  any check. No new import (`net/http` + `strings` + `tessera/api/layout` are already in the closure), so
+  `go.mod` / `go.sum` / `schema.sql` must stay byte-unchanged.
+- **Tests** (`internal/tilesserve/handler_test.go` already seeds a full tile, a 44-leaf partial tile, a
+  full bundle, and a checkpoint over `httptest`): extend the existing `200` subtests to read
+  `resp.Header.Get("Cache-Control")` and assert the per-route policy. Reuse `newServer`; assert on HTTP
+  output only (per PRD testing decisions), never on handler internals. Keep the body-equality assertions
+  intact. Note `get()` currently discards the response header — either widen it to return the header or
+  add a small sibling that does; do not assert headers on the existing body-only path by guessing.
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass; `gofmt -l .`
   empty).
-- `go test ./internal/corsmw` passes with table cases asserting:
-  - a GET response carries `Access-Control-Allow-Origin: *` and the inner handler's status/body are
-    delegated through unchanged;
-  - an `OPTIONS` request returns `204 No Content` with `Access-Control-Allow-Origin: *` and an
-    `Access-Control-Allow-Methods` containing `GET`, and the inner handler is NOT invoked (assert via a
-    sentinel handler that records whether it ran);
-  - the `Access-Control-Allow-Origin: *` header is present even when the inner handler writes a
-    non-200 (an inner `http.Error(w, ..., 404)` still carries the CORS header).
-- `go test -run TestMirror ./cmd/iscc-monitor` passes — the existing router tests still go green through
-  the now-wrapped mux (proves the wrap did not break routing or change GET responses).
-- `grep -rn "Access-Control" internal/proofserve internal/tilesserve internal/metricshttp internal/healthz`
-  is empty (no per-handler duplication; the header is set only in `internal/corsmw`).
-- `git diff --quiet HEAD -- go.mod go.sum internal/store/schema.sql` exits 0 (no dependency/schema change).
-- `go list -deps ./internal/corsmw | grep -E 'iscc-monitor/internal/(store|logclient)'` is empty (leaf
-  stays import-clean).
+- `go test -count=1 ./internal/tilesserve` passes.
+- Full tile `GET tile/0/000` response carries `Cache-Control: public, max-age=31536000, immutable`
+  (asserted in the test).
+- Full entry bundle `GET tile/entries/000` response carries
+  `Cache-Control: public, max-age=31536000, immutable`.
+- Partial tile `GET tile/0/001.p/44` response carries `Cache-Control: no-cache` (NOT `immutable`) — the
+  load-bearing partial-tile assertion.
+- Checkpoint `GET checkpoint` response carries `Cache-Control: no-cache`.
+- `git diff --quiet -- go.mod go.sum internal/store/schema.sql` exits 0 (no dependency/schema change).
+- `grep -rn "immutable" internal/tilesserve/handler.go` shows the directive in exactly one place (the
+  immutable branch), and `grep -rn "no-store" internal/tilesserve/handler.go` is empty.
 
 ## Done When
-`corsmw.Handler` wraps the public mux once via `buildMux`, every public GET (and error) response
-carries `Access-Control-Allow-Origin: *`, `OPTIONS` preflights succeed with `204`, and all
-Verification checks above pass with `mise run check` green.
+`mise run check` is green and the four route-level `Cache-Control` assertions (full tile + full bundle =
+immutable; partial tile + checkpoint = `no-cache`) pass in `go test ./internal/tilesserve`, with
+`go.mod` / `go.sum` / `schema.sql` byte-unchanged.
