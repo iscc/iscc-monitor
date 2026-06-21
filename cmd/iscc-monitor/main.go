@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iscc/iscc-monitor/internal/certificate"
 	"github.com/iscc/iscc-monitor/internal/config"
 	"github.com/iscc/iscc-monitor/internal/corsmw"
 	"github.com/iscc/iscc-monitor/internal/dashboard"
@@ -126,8 +127,16 @@ func run() error {
 		return err
 	}
 
+	// hubList maps a decoded ISCC-IDv1 hub_id slot to the issuing hub's domain for
+	// the realm-wide certificate (internal/certificate). Production has no Hub-List
+	// document path yet (realm.txt is line-based domains, a different format), so for
+	// now the slot mapping is the interim realm-entry-order mapping (slot i = entry
+	// i), which matches the testnet fixture (sb0 = slot 0, sb1 = slot 1). Swapping in
+	// a real Hub-List source later replaces only this construction.
+	hubList := hubListFromEntries(entries)
+
 	m := metrics.New()
-	go serveMetrics(ctx, cfg.Addr, st, routes, m, logger)
+	go serveMetrics(ctx, cfg.Addr, st, routes, hubList, m, logger)
 
 	loop := &follower.Loop{
 		Store:   st,
@@ -155,8 +164,8 @@ func run() error {
 // (mirroring how Run treats context.Canceled as clean) and is logged, not
 // surfaced; any other listen error is logged so a misconfigured address is never
 // silent.
-func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hubRoute, m *metrics.Registry, logger *slog.Logger) {
-	srv := &http.Server{Addr: addr, Handler: buildMux(st, routes, m)}
+func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hubRoute, hubList *registry.HubList, m *metrics.Registry, logger *slog.Logger) {
+	srv := &http.Server{Addr: addr, Handler: buildMux(st, routes, hubList, m)}
 
 	go func() {
 		<-ctx.Done()
@@ -174,19 +183,24 @@ func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hu
 
 // buildMux assembles the monitor's single request multiplexer: GET / (the
 // server-rendered hub-list dashboard), GET /metrics, GET /healthz (liveness +
-// store readiness), the GET /_ds/ subtree (the shared ISCC Design System v2 token
-// stylesheet, the self-hosted @font-face stylesheet, and the woff2 font binaries
-// every SSR page links), plus every hub's mirror subtree AND bare-domain dossier
-// from mirrorHandler. The dashboard mounts at the exact path "/" —
-// http.ServeMux's most-specific match means it never shadows /metrics, /healthz,
-// the /_ds/ subtree, any /<domain>/log/ subtree, or any /<domain> dossier (the
-// dashboard.Handler itself 404s any path other than "/"). The static assets mount
-// at the web.Prefix subtree ("/_ds/"), so the token stylesheet, the fonts
-// stylesheet, and every /_ds/fonts/<file>.woff2 route to the one web.Handler; it
-// is isolated and never shadows "/" or the per-hub subtrees. The same metrics
-// registry m the /metrics handler exposes is also passed to the dashboard as its
-// in-memory status overlay (the StatusSource), so the page can render the live
-// unresolvable / unverified verdicts the store cannot prove. Both /metrics and
+// store readiness), the GET /inclusion/ subtree (the realm-wide Certificate of
+// Inclusion, keyed on the self-describing ISCC-IDv1), the GET /_ds/ subtree (the
+// shared ISCC Design System v2 token stylesheet, the self-hosted @font-face
+// stylesheet, and the woff2 font binaries every SSR page links), plus every hub's
+// mirror subtree AND bare-domain dossier from mirrorHandler. The dashboard mounts
+// at the exact path "/" — http.ServeMux's most-specific match means it never
+// shadows /metrics, /healthz, the /inclusion/ subtree, the /_ds/ subtree, any
+// /<domain>/log/ subtree, or any /<domain> dossier (the dashboard.Handler itself
+// 404s any path other than "/"). The certificate mounts at the /inclusion/
+// subtree, disjoint from every /<domain>/log/ mirror subtree and every /<domain>
+// dossier exact mount (the per-hub JSON proof route stays /<domain>/log/inclusion,
+// a different mount), so it never shadows them. The static assets mount at the
+// web.Prefix subtree ("/_ds/"), so the token stylesheet, the fonts stylesheet, and
+// every /_ds/fonts/<file>.woff2 route to the one web.Handler; it is isolated and
+// never shadows "/" or the per-hub subtrees. The same metrics registry m the
+// /metrics handler exposes is also passed to the dashboard and the certificate as
+// their in-memory status overlay (the StatusSource), so the pages can render the
+// live unresolvable / unverified verdicts the store cannot prove. Both /metrics and
 // /healthz mount as exact paths next to the per-hub mirror subtrees on the same
 // mux, so the single-listener invariant holds (no second socket). The assembled
 // mux is wrapped once in corsmw.Handler — the lone convergence point all public
@@ -195,13 +209,34 @@ func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hu
 // succeed with 204) without per-handler CORS code. It is factored out of
 // serveMetrics so the full routing is unit-testable against an
 // httptest.ResponseRecorder without binding a socket.
-func buildMux(st *store.Store, routes []hubRoute, m *metrics.Registry) http.Handler {
+func buildMux(st *store.Store, routes []hubRoute, hubList *registry.HubList, m *metrics.Registry) http.Handler {
 	mux := mirrorHandler(st, routes, m)
 	mux.Handle("/", dashboard.Handler(st, m))
 	mux.Handle("/metrics", metricshttp.Handler(m))
 	mux.Handle("/healthz", healthz.Handler(st))
+	mux.Handle(certificate.PathPrefix, certificate.Handler(hubList, st, m))
 	mux.Handle(web.Prefix, web.Handler())
 	return corsmw.Handler(mux)
+}
+
+// hubListFromEntries builds the interim realm-wide Hub-List for the certificate
+// route from the realm document's entries, assigning each entry's slot from its
+// document order (slot i = entry i). Production has no Hub-List document path yet
+// (realm.txt is line-based domains, a different format from the YAML Hub-List), so
+// this order mapping stands in until a real Hub-List source lands; it matches the
+// testnet fixture (sb0 = slot 0, sb1 = slot 1). The certificate decodes an
+// ISCC-IDv1's 12-bit hub_id and resolves it through this list to the issuing hub's
+// domain. The hubs carry only the slot and a https://<domain> base url (no key —
+// keys come from did:web, ADR-0009); Active is true since realm.txt lists only
+// followed domains. TODO: replace with a real Hub-List source (its own decision,
+// not this skeleton's) once production carries one.
+func hubListFromEntries(entries []registry.Entry) *registry.HubList {
+	hubs := make([]registry.Hub, 0, len(entries))
+	for i, e := range entries {
+		slot := uint16(i)
+		hubs = append(hubs, registry.Hub{HubID: &slot, URL: e.BaseURL, Active: true})
+	}
+	return &registry.HubList{Version: 1, Hubs: hubs}
 }
 
 // mirrorHandler builds the per-hub mirror router: for each route it mounts a

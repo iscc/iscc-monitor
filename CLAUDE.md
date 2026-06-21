@@ -60,6 +60,11 @@ After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSO
 - `GET /<domain>` — server-rendered HTML hub dossier (e.g. `/sb0.iscc.id`): one hub's five-status
   badge (same overlay as `GET /`) and honest coverage window (`monitored_since` size + RFC-3339 time, or
   "no coverage yet"), plus a link into its mirrored log browser. Same no-JS, no-CDN DS shell.
+- `GET /inclusion/<iscc_id>` — realm-wide HTML Certificate of Inclusion keyed on the self-describing
+  ISCC-IDv1 (decode realm + 12-bit `hub_id`, resolve the issuing hub via the Hub-List): renders the §1
+  Subject clause + subject banner (subject id, resolved hub domain, position) for a known id, or the
+  honest "cannot certify" state (200, never 5xx) for a malformed / unresolvable / not-followed / not-in-log
+  id. Clauses §2-§6 and the downloadable proof bundle are later sub-steps. Same no-JS, no-CDN DS shell.
 - `GET /_ds/tokens.css` — the shared ISCC Design System v2 token stylesheet (CDN-free, build-pinned);
   the one no-JS, no-CDN style shell every server-rendered surface links.
 - `GET /healthz` — liveness + store readiness.

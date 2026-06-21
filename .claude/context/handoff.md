@@ -1,74 +1,73 @@
-## 2026-06-21 — Review of: Harden the two Hub-List resolver fail-opens (path-bearing url + missing hub_id)
+## 2026-06-21 — Certificate-of-inclusion skeleton — realm-wide `/inclusion/{iscc_id}` page (§1 Subject + decode→resolve chain)
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Stood up a new `internal/certificate` package serving `GET /inclusion/{iscc_id}`: it
+decodes the self-describing ISCC-IDv1 (`index.Decode`), resolves the issuing hub's domain via the
+Hub-List (`registry.HubList.Resolve`), finds that hub's store row (`ListHubs`), and looks up the id's
+indexed leaf seqs (`SeqsForISCCID`, ADR-0008), then renders an Evidence-Ledger certificate whose §1
+SUBJECT clause + subject banner (subject id, resolved hub domain, position seqs[0]) are real. Every
+malformed / unresolvable / not-followed / not-in-log id renders the documented "cannot certify" 200
+state, never a 5xx. This is the first real caller wiring both the decoder and the resolver.
 
-**Summary:** The advance closed the two `normal` Hub-List resolver fail-opens exactly as `next.md`
-prescribed — `hubDomain` now rejects path/query/fragment-bearing urls and `Hub.HubID` is a `*uint16`
-so an absent `hub_id` is rejected instead of silently mapping to slot 0. Both guards are
-mutation-proven non-vacuous (I independently reverted each and watched the matching test fail), the
-golden fixture still resolves, and the resolver stays WASM-pure. Codex surfaced one genuine residual
-edge in the same fail-open class (`url.URL.ForceQuery`: a trailing `?` slips the new guard) — confirmed
-real and filed as a new `normal` issue; it does not block progress (live wiring still deferred,
-resolved domain is still correct), so PASS_WITH_NOTES rather than NEEDS_WORK.
+**Files changed:**
+- `internal/certificate/handler.go` (new): the realm-wide handler + the decode→resolve→store-lookup
+  chain (`buildData`), fail-closed (every cannot-certify branch is a 200; only a DB/template fault is a
+  500, detected via buffer-then-200). Accepts `(*registry.HubList, *store.Store, StatusSource)`;
+  `StatusSource` taken for forward-compat wiring (not consulted by the §1 skeleton). Exports
+  `PathPrefix = "/inclusion/"`.
+- `internal/certificate/cert.html` (new): embedded DS-shell template (dossier shell verbatim — `/_ds/`
+  links, self-hosted fonts, NO CDN body; unquoted `[data-status=…]` n/a since no badge inlined yet),
+  rendering the mockup landmarks: chrome + `verify ↗ monitor.iscc.codes` tier-2 link, `← Realm index`
+  back-link, certificate head, subject banner, §1 SUBJECT clause, two-tier honesty panel, disabled
+  "Download proof bundle (coming soon)" placeholder, static "Verify independently →" link, "Cite as /
+  verifiable cache" footer. §2–§6 are `{{if .HasClauseX}}` placeholders that render nothing.
+- `cmd/iscc-monitor/main.go` (modify): mount `certificate.Handler` at the `/inclusion/` subtree in
+  `buildMux`; build the interim `*registry.HubList` from realm entries (slot i = entry i,
+  `hubListFromEntries`) — no config/env change, matches the testnet fixture (sb0=slot0, sb1=slot1).
+  `buildMux` / `serveMetrics` gained a `*registry.HubList` param.
+- `CLAUDE.md` (docs): added the `GET /inclusion/<iscc_id>` route to the HTTP-surface bullet list.
+- `internal/certificate/handler_test.go` (new test): golden HTTP-seam tests (see Verification).
+- `cmd/iscc-monitor/main_test.go` (test): `TestCertificateRouteMounted` (route mounted + interim
+  Hub-List wired end-to-end through `buildMux`); updated the 6 existing `buildMux` calls for the new param.
 
-**Verification:**
-- [x] `mise run check` green — build + vet + all 20 packages pass; `gofmt -l .` empty.
-- [x] `go test -count=1 ./internal/registry` — passes uncached.
-- [x] Scheme'd path-bearing url fails closed — `https://sb0.iscc.id/log` → non-nil error ("not a bare
-  host base url") + nil `*HubList` (test asserts hard-coded fragment + `got != nil`).
-- [x] Missing-`hub_id` entry fails closed — only `url`/`active` → non-nil error ("hub_id is required")
-  + nil `*HubList`; no silent slot-0.
-- [x] Golden fixture unchanged — `Resolve(0) == ("sb0.iscc.id", true)`, `Resolve(1) ==
-  ("sb1.amlet.id", true)`; `testnet.yaml` urls have empty paths (read + confirmed).
-- [x] `GOOS=js GOARCH=wasm go build ./internal/registry` succeeds — resolver stays WASM-shareable; no
-  new imports; `go.mod`/`go.sum` byte-unchanged.
-- [x] Non-vacuity (reviewer-reproduced) — deleting the `u.Path/RawQuery/Fragment` guard → scheme'd-path
-  test FAILS (parser returns the host-stripped hub); replacing the nil-HubID reject with a 0-coercion →
-  missing-`hub_id` test FAILS. Tree restored clean, re-run green.
-- [x] Trailing-slash edge (reviewer-checked) — `https://host/` (`u.Path == "/"`) is rejected.
-- [x] Gate-integrity scan over unpushed commits — no `//nolint`, `t.Skip`, build-tag exclusion, or
-  deleted assertion added; the only test edits add cases and adapt the struct-literal comparison.
-- [x] Scope discipline — exactly 1 non-test source file (`registry.go`) + 1 test + the handoff; nothing
-  from `## Not In Scope` touched (ADR-0011 bump untouched; no wiring; `KnownFields(false)` kept;
-  domains-only `Parse`/`Entry`/`realm.txt` untouched).
-- [x] Oracle/conformance gate correctly N/A — pure registry leaf, no signature-verify / RFC-6962 /
-  Merkle / proof / didweb code touched; `go.mod`/`go.sum` byte-identical (no new deps).
+**Verification:** `mise run check` → green (build + vet + all 22 packages, including the new
+`internal/certificate`; `gofmt -l .` empty). Per-criterion:
+- Known-id golden chain — `TestCertificateKnownID`: `GET /inclusion/MAIGHFECJMOPMIAB` → 200 text/html;
+  body has the id, the **resolved** `sb1.amlet.id`, position 24815, `§1 SUBJECT`, `← Realm index`,
+  `monitor.iscc.codes`, the two-tier panel, the `/_ds/` links, no third-party CDN host. PASS.
+- Unknown-id (resolves, not in log) — `TestCertificateNotInLog` → 200 "not found in log". PASS.
+- Malformed-id — `TestCertificateMalformedID` (`NOTANISCCID`) → 200 "not a valid ISCC-ID". PASS.
+- Unresolvable slot — `TestCertificateUnresolvableSlot` (`MEIGHFECJMOPMIAC`, hub_id 2) → 200 "not found
+  in this realm". PASS. (Plus `TestCertificateResolvedButNotFollowed`, `TestCertificateEmptyID`,
+  `TestCertificateNilHubList`.)
+- Method guard — `TestCertificateNonGET` → 405. PASS.
+- Non-vacuity — `TestCertificateResolvedDomainTracksHubList`: remapping slot 1 → sb0.iscc.id renders
+  sb0.iscc.id (not sb1), proving Resolve is load-bearing. I also reproduced two mutations: (a)
+  `Resolve(id.HubID+1)` → `TestCertificateKnownID` + `TestCertificateRouteMounted` FAIL; (b) bypassing
+  the `Decode` error → `TestCertificateMalformedID` FAILS. Tree restored, re-run green.
 
-**Issues found:** One new (`normal`, filed): `hubDomain` accepts a trailing `?`
-(`https://sb0.iscc.id?`) because `net/url` represents it as `ForceQuery == true` with `RawQuery == ""`,
-so the new guard does not fire and `u.String()` round-trips the delimiter. Same fail-open class as the
-two just-closed; not exploitable yet (wiring deferred, fixture clean, resolved domain still correct).
-Fix: add `|| u.ForceQuery` to the reject + a `https://host?` test case. The two original fail-open
-issues are verified-fixed and deleted from `issues.md`.
-
-**Codex second opinion:** One finding, [P2] "Reject empty query delimiters" (registry.go:188) —
-`https://sb0.iscc.id?` sets `ForceQuery` with empty `RawQuery`, so the guard misses it.
-**Confirmed real** by independent test (`hubDomain("https://sb0.iscc.id?")` returns `("sb0.iscc.id",
-nil)`; `u.String()` round-trips the `?`). Filed as a new `normal` `issues.md` entry (not NEEDS_WORK —
-degenerate edge, not progress-blocking, domain still resolves correctly). Codex's own bg process was
-still finishing when the verdict landed; verdict was complete (verdict + one tagged finding) so no
-graceful-degradation needed.
-
-**Next:** Two viable threads, in priority order:
-(a) **Knock out the new `ForceQuery` fail-open** — it is the cheapest, most self-contained slice
-(one `|| u.ForceQuery` clause + one test case) and fully closes the bare-host-base-url contract before
-the certificate page consumes `Resolve`. Could be folded into the certificate-page slice's prelude.
-(b) **The `/inclusion/{iscc_id}` HTML certificate page + proof-bundle assembler** — the next M-UI
-Verify-closing feature; now safely consumes `Resolve` (`decode realm + 12-bit hub_id → issuing hub`)
-and re-engages the oracle conformance gate.
-The ADR-0011 Go 1.26 / iscc-lib bump stays toolchain-gated (local is go1.24.13) — needs an iteration
-where mise can provision Go 1.26; do not flip `go.mod`'s `go` directive before then.
+**Next:** The same arc continues with the §2/§3 clause sub-step (Checkpoint + Inclusion proof). That
+is where the **oracle/conformance gate RE-ENGAGES** — `define-next` should call it out: the §3 inclusion
+proof reuses `proofserve`'s `InclusionProofFromTiles` against the accepted tree (LastSize / CheckpointAt)
+and the reviewer must mutation-prove the served proof non-vacuous (corrupt a hash / bump leafIndex → the
+test FAILS), with `notecheck`/golden-vector parity considered. The §2/§3 slice is also the natural home
+for the deferred `ForceQuery` fail-open fix in `registry.go` (it consumes the resolved domain). The
+proof-bundle assembler + the Download action remain a distinct later oracle-gated step.
 
 **Notes:**
-- `Hub.HubID` is now `*uint16` — a public-shape change to the `Hub` struct, but `Resolve` is the only
-  reader and it is in-package (registry→`HubTarget` wiring still deferred), so blast radius is the one
-  test struct-literal comparison the advance updated. Option A from `next.md` (minimal, YAML-idiomatic,
-  WASM-pure) over a custom `UnmarshalYAML` — correct call.
-- `Resolve` defensively skips a nil `HubID` even though a parsed `*HubList` never carries one — keeps
-  the method fail-closed for any hand-built list; documented in the `Hub` docstring. Good.
-- General lesson recorded in `learnings/registry.md`: a `url.URL` "host only" guard must enumerate ALL
-  shape-carrying fields (`Path RawQuery ForceQuery Fragment Opaque User`), not just the obvious three —
-  this is exactly the field the advance (and `next.md`) missed.
-- No remote push issues anticipated; remote `origin` configured, tracking `origin/develop`. Pushing on
-  this PASS_WITH_NOTES.
+- **Interim Hub-List wiring (flag for review):** `hubListFromEntries` maps realm.txt order to slots
+  (slot i = entry i). Production has no real Hub-List document path yet; `realm.txt` is line-based
+  domains, NOT the YAML Hub-List. This is the KISS interim called for in `next.md` (no new env var) and
+  matches the testnet fixture exactly. A real Hub-List source is its own decision; documented with a
+  TODO in `hubListFromEntries`. The `*registry.HubList` is hand-built from the exported `HubList`/`Hub`
+  shape (`HubID *uint16`), so `registry.go` and `internal/config` are untouched.
+- **Scope:** 3 non-test/non-doc files (handler.go + cert.html created, main.go modified); CLAUDE.md is
+  docs; two `_test.go` are tests. Nothing from `## Not In Scope` touched: no proof-bundle assembler
+  (button is a disabled placeholder), §2–§6 are empty gated placeholders, the `ForceQuery` fix is left
+  for the §2/§3 slice, no ADR-0011 Go-1.26 bump (local go1.24.13), no WASM tier-2 result, no config field.
+- **Oracle/conformance gate correctly N/A here:** pure HTML render of decode + registry resolve + a
+  store `SeqsForISCCID` lookup — no signature / RFC-6962 / Merkle / proof / did:web path, no new crypto,
+  `go.mod`/`go.sum` byte-unchanged. It APPLIES to the §3 proof sub-step (see Next).
+- **Resolved-domain link discipline:** §1 derives `<domain>` from the real resolve, never hardcoded;
+  later clauses linking into `/<domain>/log/...` should derive Origin the same way ("Origin =
+  `<domain>/log`", learnings index).
+- No new dependencies; `internal/certificate` imports only `index`, `registry`, `store` + stdlib.

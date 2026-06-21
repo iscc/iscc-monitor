@@ -162,7 +162,7 @@ func TestBuildMuxReservedDomainNoPanic(t *testing.T) {
 		}
 	}()
 	routes := []hubRoute{{HubID: 1, Domain: "metrics", Origin: "metrics/log"}}
-	if mux := buildMux(st, routes, metrics.New()); mux == nil {
+	if mux := buildMux(st, routes, nil, metrics.New()); mux == nil {
 		t.Fatal("buildMux returned nil")
 	}
 }
@@ -193,7 +193,7 @@ func TestMirrorRouter(t *testing.T) {
 	}
 
 	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
-	mux := buildMux(st, routes, metrics.New())
+	mux := buildMux(st, routes, nil, metrics.New())
 
 	// GET /sb0.iscc.id/log/checkpoint -> 200 byte-equal to the seeded BLOB.
 	t.Run("checkpoint at origin prefix is 200 byte-equal", func(t *testing.T) {
@@ -324,7 +324,7 @@ func TestMirrorInclusionRoute(t *testing.T) {
 	}
 
 	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
-	mux := buildMux(st, routes, metrics.New())
+	mux := buildMux(st, routes, nil, metrics.New())
 
 	// GET /sb0.iscc.id/log/inclusion?iscc_id=<seeded> -> 200 JSON whose proof verifies.
 	t.Run("inclusion proof at origin prefix is 200 verifiable JSON", func(t *testing.T) {
@@ -406,7 +406,7 @@ func TestMirrorEntriesRoute(t *testing.T) {
 	}
 
 	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
-	mux := buildMux(st, routes, metrics.New())
+	mux := buildMux(st, routes, nil, metrics.New())
 
 	// GET /sb0.iscc.id/log/entries?index=2 -> 200 byte-equal to the seeded record.
 	t.Run("entries at origin prefix returns the record bytes", func(t *testing.T) {
@@ -470,7 +470,7 @@ func TestMirrorRecordsRoute(t *testing.T) {
 	}
 
 	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
-	mux := buildMux(st, routes, metrics.New())
+	mux := buildMux(st, routes, nil, metrics.New())
 
 	// GET /sb0.iscc.id/log/records -> 200 HTML listing the indexed records.
 	t.Run("records at origin prefix returns the HTML list", func(t *testing.T) {
@@ -542,7 +542,7 @@ func TestMirrorRecordRoute(t *testing.T) {
 	}
 
 	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
-	mux := buildMux(st, routes, metrics.New())
+	mux := buildMux(st, routes, nil, metrics.New())
 
 	// GET /sb0.iscc.id/log/record?index=2 -> 200 HTML page for the leaf.
 	t.Run("record at origin prefix returns the HTML page", func(t *testing.T) {
@@ -569,6 +569,64 @@ func TestMirrorRecordRoute(t *testing.T) {
 			t.Errorf("status = %d, want 200", rec.Code)
 		}
 	})
+}
+
+// TestCertificateRouteMounted proves the realm-wide certificate route is mounted in
+// buildMux and wired to the interim slot Hub-List (slot i = realm entry i): with the
+// two testnet hubs registered and a leaf indexed for the golden id under the slot-1
+// hub (sb1.amlet.id), GET /inclusion/MAIGHFECJMOPMIAB renders the §1 SUBJECT clause
+// resolving to sb1.amlet.id — the full decode -> resolve -> store-lookup chain
+// through the real mux, not the certificate package in isolation. A non-GET is 405.
+func TestCertificateRouteMounted(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "cert-route.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	// Register the two testnet hubs in realm order (sb0 = slot 0, sb1 = slot 1).
+	entries := []registry.Entry{
+		{Domain: "sb0.iscc.id", BaseURL: "https://sb0.iscc.id"},
+		{Domain: "sb1.amlet.id", BaseURL: "https://sb1.amlet.id"},
+	}
+	_, routes, err := registerHubs(ctx, st, entries)
+	if err != nil {
+		t.Fatalf("registerHubs: %v", err)
+	}
+	// Index the golden id (hub_id 1 -> slot 1 -> sb1.amlet.id) under sb1's hub_id.
+	var sb1 int64
+	for _, r := range routes {
+		if r.Domain == "sb1.amlet.id" {
+			sb1 = r.HubID
+		}
+	}
+	if err := st.RecordProjections(ctx, []store.ProjectionRecord{
+		{HubID: sb1, Seq: 24815, IsccID: "MAIGHFECJMOPMIAB", NoteSchema: "iscc-note-0.8.0"},
+	}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+
+	mux := buildMux(st, routes, hubListFromEntries(entries), metrics.New())
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/inclusion/MAIGHFECJMOPMIAB", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"§1 SUBJECT", "sb1.amlet.id", "24815"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("certificate body missing %q\n%s", want, body)
+		}
+	}
+
+	// A non-GET to the realm-wide route is a 405 (the certificate method gate).
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/inclusion/MAIGHFECJMOPMIAB", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("non-GET status = %d, want 405", rec.Code)
+	}
 }
 
 // frameEntryBundle frames raw records into a tlog-tiles entry bundle (big-endian
