@@ -14,7 +14,9 @@
 package tilesserve
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -54,9 +56,12 @@ const (
 //
 // Each 200 carries a Cache-Control policy keyed on cacheability: a content-
 // addressed FULL tile/entry-bundle (path-API width == 0) is immutable, while a
-// PARTIAL tile/bundle and the size-varying checkpoint revalidate (no-cache). CORS
-// is set once by the corsmw wrap; conditional GET (ETag / If-None-Match) is
-// intentionally out of scope for this slice.
+// PARTIAL tile/bundle and the size-varying checkpoint revalidate (no-cache).
+// Every 200 also carries a strong content ETag (quoted hex of the BLOB's SHA-256,
+// no W/ prefix); an If-None-Match request whose value is the wildcard "*" or that
+// exact tag short-circuits to 304 Not Modified with an empty body, letting caches
+// and verifiers revalidate without re-downloading the BLOB. CORS is set once by
+// the corsmw wrap.
 func Handler(f store.SQLiteFetcher) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -91,7 +96,7 @@ func serveCheckpoint(w http.ResponseWriter, r *http.Request, f store.SQLiteFetch
 		writeReadError(w, err)
 		return
 	}
-	writeBlob(w, data, false)
+	writeBlob(w, r, data, false)
 }
 
 // serveTile parses rest as "<L>/<index...>" (the chunked index may itself contain
@@ -115,7 +120,7 @@ func serveTile(w http.ResponseWriter, r *http.Request, f store.SQLiteFetcher, re
 	}
 	// In the tessera path-API vocabulary width == 0 is a FULL tile (immutable);
 	// any width > 0 is a partial that is overwritten every poll (revalidate).
-	writeBlob(w, data, width == 0)
+	writeBlob(w, r, data, width == 0)
 }
 
 // serveEntries parses index as the chunked bundle index (with optional ".p/<W>"
@@ -134,7 +139,7 @@ func serveEntries(w http.ResponseWriter, r *http.Request, f store.SQLiteFetcher,
 	}
 	// width == 0 is a FULL entry bundle (immutable); width > 0 is a partial that
 	// is overwritten every poll (revalidate).
-	writeBlob(w, data, width == 0)
+	writeBlob(w, r, data, width == 0)
 }
 
 // writeReadError maps a fetcher read error to its HTTP status: the
@@ -147,19 +152,37 @@ func writeReadError(w http.ResponseWriter, err error) {
 	http.Error(w, "internal error", http.StatusInternalServerError)
 }
 
-// writeBlob sets the octet-stream content type, the Cache-Control policy, and
-// writes the raw BLOB bytes. immutable selects the long-lived immutable policy
-// for content-addressed full tiles/bundles; false selects the revalidating
-// policy for partials and the size-varying checkpoint. Both headers are set
-// before the first write because the 200 is sent on first write and freezes the
-// header map.
-func writeBlob(w http.ResponseWriter, data []byte, immutable bool) {
+// writeBlob sets the octet-stream content type, the Cache-Control policy, and a
+// strong content ETag, then either short-circuits to 304 or writes the raw BLOB
+// bytes. immutable selects the long-lived immutable policy for content-addressed
+// full tiles/bundles; false selects the revalidating policy for partials and the
+// size-varying checkpoint.
+//
+// The ETag is the quoted hex of the BLOB's SHA-256 — a STRONG validator (no W/
+// prefix) since it is derived from the exact bytes. If the request's
+// If-None-Match is the wildcard "*" (which always matches an existing resource)
+// or echoes this exact tag, the response is 304 Not Modified with no body; per
+// RFC 7232 §4.1 the 304 still carries the validating ETag (and Cache-Control),
+// which is why all three headers are set BEFORE the conditional branch. All
+// headers are set before the first write because the 200/304 status is sent on
+// first write and freezes the header map.
+func writeBlob(w http.ResponseWriter, r *http.Request, data []byte, immutable bool) {
 	w.Header().Set("Content-Type", contentType)
 	if immutable {
 		w.Header().Set("Cache-Control", cacheImmutable)
 	} else {
 		w.Header().Set("Cache-Control", cacheRevalidate)
 	}
+	etag := fmt.Sprintf("\"%x\"", sha256.Sum256(data))
+	w.Header().Set("ETag", etag)
+
+	// A client echoes back the exact ETag the server sent, so an exact-token match
+	// (or the "*" wildcard) is sufficient — no comma-separated list parser needed.
+	if inm := r.Header.Get("If-None-Match"); inm == "*" || inm == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
 	// The 200 is sent on the first write; a mid-write error cannot un-send it and
 	// the only failure mode here is a broken client connection, so it is dropped
 	// deliberately rather than writing a misleading second status (matching

@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +93,28 @@ func getWithHeader(t *testing.T, base, path string) (int, http.Header, []byte) {
 	resp, err := http.Get(base + "/" + path)
 	if err != nil {
 		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body %s: %v", path, err)
+	}
+	return resp.StatusCode, resp.Header, body
+}
+
+// getWithIfNoneMatch issues a GET for path with an If-None-Match request header
+// and returns the status, response header, and full body bytes — the seam for
+// exercising the conditional-GET / 304 short-circuit.
+func getWithIfNoneMatch(t *testing.T, base, path, inm string) (int, http.Header, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, base+"/"+path, nil)
+	if err != nil {
+		t.Fatalf("new request %s: %v", path, err)
+	}
+	req.Header.Set("If-None-Match", inm)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s (If-None-Match %q): %v", path, inm, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
@@ -211,6 +234,93 @@ func TestHandlerServesSeededBytes(t *testing.T) {
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusMethodNotAllowed {
 			t.Errorf("status = %d, want 405", resp.StatusCode)
+		}
+	})
+}
+
+// TestHandlerConditionalGet covers the strong-ETag + If-None-Match → 304 path:
+// every 200 carries a quoted, strong (no W/) content ETag; re-requesting with
+// that exact tag yields a 304 with an empty body and the same ETag; a
+// non-matching tag still returns the full body; and two distinct resources
+// produce distinct ETags (proving the tag is content-derived, not a constant).
+func TestHandlerConditionalGet(t *testing.T) {
+	srv, sd := newServer(t)
+
+	fullTilePath := tiles.TilePath(0, 0, 0) // tile/0/000
+	bundlePath := tiles.EntriesPath(0, 0)   // tile/entries/000
+
+	t.Run("200 carries a strong quoted ETag", func(t *testing.T) {
+		status, header, _ := getWithHeader(t, srv.URL, fullTilePath)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		etag := header.Get("ETag")
+		if etag == "" {
+			t.Fatalf("ETag is empty, want a non-empty strong tag")
+		}
+		if strings.HasPrefix(etag, "W/") {
+			t.Errorf("ETag = %q is weak (W/ prefix), want a strong validator", etag)
+		}
+		if !strings.HasPrefix(etag, `"`) || !strings.HasSuffix(etag, `"`) {
+			t.Errorf("ETag = %q is not quoted, want a quoted token per RFC 7232", etag)
+		}
+	})
+
+	t.Run("If-None-Match with the exact ETag returns 304 with empty body", func(t *testing.T) {
+		// First fetch the resource to learn its ETag and body.
+		status, header, body := getWithHeader(t, srv.URL, fullTilePath)
+		if status != http.StatusOK {
+			t.Fatalf("priming GET status = %d, want 200", status)
+		}
+		etag := header.Get("ETag")
+		if !bytes.Equal(body, sd.fullTile) {
+			t.Fatalf("priming GET body mismatch")
+		}
+		// Re-issue the same GET conditionally with that exact ETag.
+		status, header2, body2 := getWithIfNoneMatch(t, srv.URL, fullTilePath, etag)
+		if status != http.StatusNotModified {
+			t.Fatalf("status = %d, want 304", status)
+		}
+		if len(body2) != 0 {
+			t.Errorf("304 body = %q, want empty", body2)
+		}
+		if got := header2.Get("ETag"); got != etag {
+			t.Errorf("304 ETag = %q, want %q echoed back", got, etag)
+		}
+	})
+
+	t.Run("If-None-Match wildcard returns 304", func(t *testing.T) {
+		status, _, body := getWithIfNoneMatch(t, srv.URL, fullTilePath, "*")
+		if status != http.StatusNotModified {
+			t.Fatalf("status = %d, want 304", status)
+		}
+		if len(body) != 0 {
+			t.Errorf("304 body = %q, want empty", body)
+		}
+	})
+
+	t.Run("non-matching If-None-Match returns 200 with the full body", func(t *testing.T) {
+		status, _, body := getWithIfNoneMatch(t, srv.URL, fullTilePath, `"deadbeef"`)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		if !bytes.Equal(body, sd.fullTile) {
+			t.Errorf("non-matching tag suppressed the body for %s", fullTilePath)
+		}
+	})
+
+	t.Run("distinct resources produce distinct ETags", func(t *testing.T) {
+		_, tileHdr, _ := getWithHeader(t, srv.URL, fullTilePath)
+		_, bundleHdr, _ := getWithHeader(t, srv.URL, bundlePath)
+		tileTag := tileHdr.Get("ETag")
+		bundleTag := bundleHdr.Get("ETag")
+		if tileTag == "" || bundleTag == "" {
+			t.Fatalf("missing ETag: tile=%q bundle=%q", tileTag, bundleTag)
+		}
+		// The seeded full tile and bundle are distinct byte streams, so a
+		// content-derived ETag must differ; a constant tag would fail here.
+		if tileTag == bundleTag {
+			t.Errorf("ETags collide (%q) — tag is not content-derived", tileTag)
 		}
 	})
 }
