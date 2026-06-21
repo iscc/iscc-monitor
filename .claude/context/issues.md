@@ -18,21 +18,6 @@ filed it and does **not** affect priority.
 
 ---
 
-## `AcceptCheckpoint` discards resolved context, so verified polls re-fetch did.json
-- **Priority:** normal
-- **Source:** [review]
-- **What / where / how to verify:** `internal/logclient/accept.go:84-105`
-  `AcceptCheckpoint` resolves the did:web verifier key and origin, then returns only
-  `(Status, CheckpointInfo, error)`. The verified path in `internal/follower/follower.go:187` and
-  `:206` therefore re-fetches the same `did.json`: cold polls resolve in `AcceptCheckpoint`,
-  `cacheHubKeyResolve`, and `fsckMirror`; warm polls still resolve in `AcceptCheckpoint` and
-  `fsckMirror`. Widen the verified result to include the resolved per-poll context needed by cache
-  refresh and fsck (`vkey`, origin, and DID key metadata), while preserving ADR-0009's per-poll
-  validity-window check. Verify fixed by updating `TestPollHubCacheHitSkipsDidFetch`: cold and warm
-  verified polls should each require one did.json fetch, and cache rows / fsck should still use the
-  same verified key context.
-- **Spec:** ADR-0009 (DID document remains the source of truth; reuse only within one verified poll).
-
 ## `cmd/notecheck`'s `run` has a vestigial `out io.Writer` parameter
 - **Priority:** low
 - **Source:** [review]

@@ -124,6 +124,23 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   verdict**. Contract gotcha for the follower: a non-`ErrUnverified` `VerifyCheckpoint` error (a
   verified-but-garbled body) is returned as a non-nil `error` alongside `StatusUnverified`'s zero —
   **callers must check `err` before the status**, mirroring `VerifyCheckpoint`.
+- **`AcceptCheckpoint` now returns a 4-tuple `(Status, CheckpointInfo, VerifiedContext, error)`; the
+  `VerifiedContext{VKey, Key}` is the resolved did:web key context, populated ONLY on `StatusVerified`
+  and zero on every non-verified verdict (incl. `StatusRotated`, which resolved a key but failed
+  `ValidAt` — accept.go:124-125 still returns the zero context, so a rotated key never leaks into the
+  follower's cache/fsck reuse).** `PollHub` threads `vctx` into `cacheHubKeyResolve` (cold cache-miss
+  upsert) and `fsckMirror`, which dropped their own `ResolveVerifierKey` calls. The reuse is in-bounds
+  because the context was resolved + `ValidAt`-checked *this poll* (ADR-0009); it is never cached
+  across polls. After this, a cold verified poll resolves `did.json` once (was 3); production has **no**
+  `ResolveVerifierKey` caller left in `follower.go` (verified by grep).
+- **A verified poll CANNOT make "0" warm-path did.json fetches — `next.md` asked for the physically
+  impossible.** `AcceptCheckpoint` has no internal cache and unconditionally calls `ResolveVerifierKey`
+  (accept.go:108), and the `cacheHubKeyFast` cache-hit is consulted only *after* `AcceptCheckpoint`
+  returns. So every verified poll (cold or warm) irreducibly fetches `did.json` exactly once. The
+  advance author correctly implemented the true value (`TestPollHubCacheHitSkipsDidFetch`: cold = 1,
+  warm window = +1) and documented the `next.md` "0" as an arithmetic slip in the handoff — a
+  legitimate physically-driven deviation, NOT a gate dodge. The load-bearing win is removing the
+  *extra* cold resolves in `cacheHubKeyResolve` + `fsckMirror` (3→1), which the test does pin.
 
 ## Checkpoint signed-note verification (`logclient/verify.go`)
 
