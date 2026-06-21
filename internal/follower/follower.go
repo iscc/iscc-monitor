@@ -5,14 +5,15 @@
 //
 // This file holds PollHub, the single-observation wiring: for one hub it fetches
 // the latest signed checkpoint, runs the four-way AcceptCheckpoint verdict, runs
-// the dep-free RFC-6962 self-consistency checks (shrink/fork) against the prior
-// accepted checkpoint, and then either freezes the hub on a violation or advances
-// the follow cursor — but only a StatusVerified observation may advance accepted
-// state (ADR-0009). On that verified, non-violation path it also records the hub's
-// coverage start once (ADR-0001, set-once) and caches the resolved did:web signing
-// key (ADR-0009, hub_keys). The merkle-backed equivocation trigger and the poll
-// loop are each their own later steps; PollHub does exactly one observation per
-// call and returns.
+// the three RFC-6962 self-consistency checks (shrink/fork/equivocation) against the
+// prior accepted checkpoint, and then either freezes the hub on a violation or
+// advances the follow cursor — but only a StatusVerified observation may advance
+// accepted state (ADR-0009). On that verified, non-violation path it also records
+// the hub's coverage start once (ADR-0001, set-once) and caches the resolved
+// did:web signing key (ADR-0009, hub_keys). The merkle-backed equivocation trigger
+// sources its consistency proof from the local mirror (a store.SQLiteFetcher), never
+// re-hitting the hub. The poll loop is its own later step; PollHub does exactly one
+// observation per call and returns.
 //
 // Record-only-on-verified: only a StatusVerified observation is persisted, since
 // the non-verified verdicts carry a zero CheckpointInfo and therefore no
@@ -23,9 +24,11 @@
 //
 // Freeze on violation (ADR-0006): when a verified observation contradicts the
 // prior accepted checkpoint for the same hub (a strict tree-size decrease =
-// shrink, or the same size with a different root = fork), PollHub records the
-// violation as irreplaceable evidence, freezes the hub, and fires the injected
-// alert exactly once on the not-frozen -> frozen transition. A frozen hub does
+// shrink, the same size with a different root = fork, or a growing pair whose
+// RFC-6962 consistency proof fails to relate the prior accepted root to the new
+// root = equivocation), PollHub records the violation as irreplaceable evidence,
+// freezes the hub, and fires the injected alert exactly once on the not-frozen ->
+// frozen transition. A frozen hub does
 // not advance its cursor; the violation freezes, never crashes, so the verdict
 // status is still returned with a nil error. Re-detecting on a later poll records
 // the violation again (re-detection is itself evidence) but never re-alerts.
@@ -223,16 +226,36 @@ func cacheHubKeyResolve(ctx context.Context, st *store.Store, fetcher logclient.
 	})
 }
 
-// checkConsistency runs the dep-free shrink/fork triggers against the prior
-// accepted checkpoint for a hub. prevSize is FollowState.LastSize; the CheckShrink
-// and CheckFork prevSize>0 guards mean a fresh-store zero never trips a violation,
-// so a never-advanced hub is always clean. The prior root and raw bytes come from
-// a checkpoints lookup at prevSize, since follow_state does not persist the root;
-// if no checkpoint is stored at that size (a hub that advanced before this code
-// existed), the fork check is skipped while the size-only shrink check still runs.
-// On a true verdict it returns the matching violation kind and the prior raw bytes
-// (RawA evidence). Shrink and fork are mutually exclusive by size, so shrink is
-// evaluated first and its kind used when true.
+// checkConsistency runs the three RFC-6962 self-consistency triggers against the
+// prior accepted checkpoint for a hub. prevSize is FollowState.LastSize; the
+// CheckShrink/CheckFork/CheckEquivocation prevSize>0 guards mean a fresh-store zero
+// never trips a violation, so a never-advanced hub is always clean. The prior root
+// and raw bytes come from a checkpoints lookup at prevSize, since follow_state does
+// not persist the root; if no checkpoint is stored at that size (a hub that advanced
+// before this code existed), the root-dependent fork/equivocation checks are skipped
+// while the size-only shrink check still runs. On a true verdict it returns the
+// matching violation kind and the prior raw bytes (RawA evidence). The three
+// triggers are mutually exclusive by size — shrink is next<prev, fork is
+// next==prev, equivocation is the growing-pair next>prev case — so they are
+// evaluated in shrink → fork → equivocation order and the first true kind is used.
+//
+// Equivocation sources its RFC-6962 consistency proof from the LOCAL mirror only —
+// ConsistencyProofFromTiles over a store.SQLiteFetcher — and never re-hits the hub.
+// The roots compared are the prior ACCEPTED root at prevSize and the new
+// observation's root (info.Root), never the contradicting-evidence row (ADR-0006).
+//
+// Error vs. violation discipline (ADR-0006 "freeze, never crash"): CheckEquivocation
+// already turns a non-verifying proof into a (violated=true, err=nil) verdict. But
+// ConsistencyProofFromTiles returns a genuine Go error on a tile-fetch/parse fault —
+// most commonly a missing tile (a wrapped os.ErrNotExist), since production does not
+// yet mirror tiles (that is M2 work). Such an error is NOT an equivocation verdict:
+// freezing on a missing tile would be a false positive, and aborting the poll would
+// break the loop. So a proof-build error is treated as "cannot evaluate equivocation
+// this poll" — the equivocation branch is skipped (no violation, no crash) and the
+// poll proceeds. The branch only becomes load-bearing once M2 mirrors tiles. This
+// swallow is deliberately narrow: it suppresses only the proof-build error so a
+// missing tile cannot freeze a hub; a genuine st failure surfaces via CheckpointAt
+// above.
 func checkConsistency(ctx context.Context, st *store.Store, hubID int64, prevSize uint64, info logclient.CheckpointInfo) (violated bool, kind logclient.ViolationKind, prevRaw []byte, err error) {
 	if prevSize == 0 {
 		return false, "", nil, nil
@@ -252,6 +275,26 @@ func checkConsistency(ctx context.Context, st *store.Store, hubID int64, prevSiz
 	case fork:
 		return true, logclient.ViolationFork, prevRaw, nil
 	default:
+		// Equivocation: the only growing-pair trigger (info.TreeSize > prevSize),
+		// reached only when the prior accepted checkpoint is on record (prevFound) so
+		// prevRoot is the real prior root, not a zero placeholder.
+		if !prevFound || info.TreeSize <= prevSize {
+			return false, "", nil, nil
+		}
+		fetcher := store.SQLiteFetcher{Store: st, HubID: hubID}
+		proofHashes, perr := logclient.ConsistencyProofFromTiles(ctx, fetcher.ReadTile, prevSize, info.TreeSize)
+		if perr != nil {
+			// Cannot build the proof from the mirror (most often: tiles not mirrored
+			// yet). Skip the equivocation branch — never freeze on a missing tile.
+			return false, "", nil, nil
+		}
+		eq, eerr := logclient.CheckEquivocation(prevSize, prevRoot, info.TreeSize, info.Root, proofHashes)
+		if eerr != nil {
+			return false, "", nil, fmt.Errorf("check equivocation at sizes %d->%d: %w", prevSize, info.TreeSize, eerr)
+		}
+		if eq {
+			return true, logclient.ViolationEquivocation, prevRaw, nil
+		}
 		return false, "", nil, nil
 	}
 }

@@ -1,85 +1,79 @@
 # Handoff
 
-## 2026-06-21 — Review of: Pure `ConsistencyProofFromTiles` builder over the tile-fetch seam (`internal/logclient`)
+## 2026-06-21 — Wire `CheckEquivocation` into `follower.checkConsistency` as the third self-consistency trigger
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Closed the last open M1 self-consistency trigger end-to-end. `checkConsistency` now evaluates
+shrink → fork → **equivocation**: on the growing-pair case (`info.TreeSize > prevSize`, prior accepted
+checkpoint on record) it builds the RFC-6962 consistency proof from the LOCAL mirror via
+`ConsistencyProofFromTiles(ctx, store.SQLiteFetcher{Store, HubID}.ReadTile, prevSize, info.TreeSize)`,
+feeds the hashes to `CheckEquivocation(prevSize, prevRoot, info.TreeSize, info.Root, proof)`, and freezes
+the hub (kind `"equivocation"`) on a true verdict. A proof-build error (most often a missing tile —
+production does not mirror tiles yet, that is M2) is treated as "cannot evaluate this poll" and skips the
+branch — never a false-positive freeze, never an aborted poll (ADR-0006 "freeze, never crash").
 
-**Summary:** `internal/logclient/proofbuilder.go` adds `ConsistencyProofFromTiles(ctx, fetch
-TileFetcher, smaller, larger uint64) ([][]byte, error)` — a faithful, otel-/net-free port of tessera's
-`ProofBuilder.ConsistencyProof + fetchNodes + nodeCache.GetNode` that sources every proof node from
-mirrored hash tiles via an injected fetcher whose signature is byte-identical to
-`store.SQLiteFetcher.ReadTile`. Correct, scope-disciplined (1 production + 1 test file), golden-tested
-as ground truth against a 300-leaf `testonly.Tree` across the 256-leaf tile boundary, and WASM-clean.
-The two notes are pre-existing/metadata-only (a `next.md` criterion unsatisfiable for this package
-since the did:web resolver landed; `go mod tidy` divergence that no CI enforces yet).
+**Files changed:**
+- `internal/follower/follower.go`: extended `checkConsistency`'s `switch` with the equivocation branch
+  (proof sourced from the mirror, compared against the prior accepted root, missing-tile error swallowed
+  narrowly + documented); updated the package + `PollHub` + freeze doc comments to name the third trigger.
+  Production imports unchanged (`{context, fmt, time}` + internal `logclient`/`store`).
+- `internal/follower/equivocation_test.go` (new, test-only): ports `buildTree`/`nodeHash`/tile-synthesis
+  from `proofbuilder_test.go`, records a real ~300-leaf `testonly.Tree`'s level-0 hash tiles into the
+  store (full tile index 0 width 256, partial index 1 width 44), then drives both the freeze case
+  (wrong root → `checkConsistency` + `freeze`) and the non-vacuous happy path (correct root → no freeze),
+  plus a missing-tiles-does-not-freeze case.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green, all 8 packages; `logclient` re-ran uncached after
-      my doc edit and passed.
-- [x] `gofmt -l .` — empty.
-- [x] `go test -count=1 -run TestConsistencyProofFromTiles ./internal/logclient` — PASS (3 tests:
-      golden, empty-boundaries, missing-tile).
-- [x] Golden is ground truth: tile-built proof byte-equals `tree.ConsistencyProof` AND verifies via
-      `proof.VerifyConsistency` for all 5 growing pairs incl. boundary-crossing `(5,300)`/`(260,300)`
-      into the partial tile index 1. Reviewer instrumented proof lengths independently — 9/7/10/6/8
-      hashes, so the byte-match is substantive, not empty-vs-empty.
-- [x] Non-vacuousness proven by reviewer: a one-byte corruption injected into `getNode`'s returned hash
-      made the golden FAIL (then reverted). A green-but-wrong builder cannot ship.
-- [x] Port fidelity: `getNode` diffed line-for-line against tessera's `nodeCache.GetNode`; the dropped
-      `m > pb.treeSize` bounds guard and the dropped ephemeral-node check are both correct to drop in a
-      stateless builder (`larger` IS the tree size; `Rehash` supplies the ephemeral node, `getNode` is
-      never asked for it).
-- [x] `GOOS=js GOARCH=wasm go build ./internal/logclient` — succeeds (purity preserved); the new file
-      imports only `context`+`fmt`+`merkle/{proof,compact,rfc6962}`+`tessera/api{,/layout}`.
-- [x] `git diff --quiet HEAD~1..HEAD -- go.mod go.sum` exits 0 (advance committed no dep churn) and the
-      working tree go.mod/go.sum is clean. Build is reproducible under `-mod=readonly` (verified) and
-      `go mod verify` passes.
-- [~] `go list -deps ./internal/logclient | grep -E '^net/http$|^database/sql$'` — `net/http` IS
-      present. PRE-EXISTING via `didresolve.go` (the networked did:web resolver), not introduced here —
-      confirmed it lands at baseline. The new file is net-free; the load-bearing invariant (WASM build)
-      holds. The criterion as worded is unsatisfiable for this package and has been since the resolver
-      slice.
-- [x] Gate-integrity scan over the 3 unpushed commits (`@{upstream}..HEAD`): no `//nolint`, `t.Skip`,
-      build-tag exclusions, swallowed errors, deleted assertions, or loosened gates.
-- [x] Oracle gate APPLIES (RFC-6962 crypto) and is satisfied by three independent merkle paths (prover
-      `tree.ConsistencyProof`, verifier `VerifyConsistency`, builder) + the corrupt-node mutation.
-      `notecheck`/`derive_vkey.py`/`fsck` are correctly N/A (tiles synthesized in-test; no signature/
-      did:web/on-disk-tile/fsck-rebuild path, as scoped).
+**Verification:** `mise run check` → green, all 8 packages; `gofmt -l .` empty.
+- [x] `go test -run TestPollHubEquivocation ./internal/follower` — PASS (freeze + happy path + restart).
+- [x] `go test -run 'TestPollHubFork|TestPollHubShrink|TestPollHubVerifiedAdvances' ./internal/follower`
+      — PASS (other two triggers + clean advance unregressed).
+- [x] Equivocation freeze asserts: `violations.kind == "equivocation"`, `follow_state.frozen == 1`,
+      cursor did NOT advance (stays at prevSize 5), exactly one alert, re-detection records a 2nd
+      violation without re-alerting, evidence survives a store reopen.
+- [x] Non-vacuous happy path: a correct-root growing observation over the SAME mirrored tiles does NOT
+      freeze (0 violations on the clean store).
+- [x] Missing-tiles case: no tiles mirrored → proof-build error → branch skipped → no violation, nil
+      error (the ADR-0006 false-positive guard).
+- [x] `GOOS=js GOARCH=wasm go build ./internal/logclient` — succeeds (pure proof builder untouched).
+- [x] go.mod/go.sum byte-identical (test reuses already-required merkle/testonly/tessera-api deps).
+- [x] Production follower imports = `{context, fmt, time}` + internal; `go list -deps ./internal/store`
+      has no `net/http` (store stays a leaf).
 
-**Issues found:** (none open). One minor doc inaccuracy fixed directly: the `proofbuilder.go`
-file-comment claimed `os` was imported "for the os.ErrNotExist sentinel" — it never was (the sentinel
-rides the `%w` wrap; the file never references `os`). Corrected to describe the actual import set. No
-behavior change.
+**Mutation evidence (non-vacuousness proven both directions, then reverted byte-clean):**
+- Forced `eq` always false → the freeze case FAILED (`want (true, "equivocation")`).
+- Forced `eq` always true → the happy path FAILED (`want clean`). So a "never freezes" or "always
+  freezes" wiring cannot ship green.
 
-**Next:** Wire `CheckEquivocation` into `follower.checkConsistency` as the third self-consistency
-trigger — the slice this one unblocks. Source the proof via `ConsistencyProofFromTiles(ctx,
-SQLiteFetcher.ReadTile, prevSize, nextSize)` (the `TileFetcher` signature was made byte-identical to
-`SQLiteFetcher.ReadTile` for exactly this), feed its `[][]byte` to `CheckEquivocation`, and on a true
-verdict `RecordViolation`("equivocation") + `RecordCheckpoint`(evidence) + `Freeze` + alert-once,
-mirroring the fork/shrink branches. Honor "compare against the prior accepted root, not the
-contradicting evidence" (learnings) and the shrink→fork→equivocation order in `checkConsistency`. This
-needs real on-disk tile fixtures under `testdata/live/` (deferred from here) so the end-to-end follower
-test mirrors tiles and proves a real-tree equivocation freezes — and it is the slice where the mirror
-path first faces the `fsck` root-rebuild conformance oracle, so wire that cross-check at the same time
-if feasible.
+**Next:** The `fsck` root-rebuild conformance slice — `fsck.New(...).Check(...)` over the
+`SQLiteFetcher` + the inclusion cross-check vs the hub's `IsccLogInclusionProof`. It is explicitly the
+*next* conformance step (Not In Scope here): it needs the heavy `fsck`/otel/klog dep, which cannot land
+in a leaf package, and it wants real on-disk tile fixtures under `testdata/live/` (this step synthesizes
+tiles in-test). That slice is where the mirror path first faces the truly-independent trust-root oracle.
+Also still pending (separate later slices, untouched here): mirroring tiles inside `PollHub`'s production
+path (M2 — only then does this equivocation branch become load-bearing against real hub data), the sb1
+stale-key fixture refresh (`22b08f3e`→`069d0f14`), and CI/`notecheck` + `go mod tidy` go.sum divergence
+wiring.
 
 **Notes:**
-- **`go mod tidy` divergence (metadata-only, non-blocking).** Confirmed: `go mod tidy` adds 22 go.sum
-  lines (module-graph checksums for tessera's transitive requires — otel/klog/x-crypto/formats/backoff
-  — that **never compile**; `go list -deps tessera/api` is stdlib-only). The committed go.sum is
-  byte-identical to HEAD and the build is fully reproducible under `-mod=readonly`. There is **no CI yet**
-  (`.github/workflows/` absent), so nothing enforces tidy-cleanliness today. But a future `go mod tidy &&
-  git diff --exit-code` CI step WOULD fail on these 22 lines — resolve before CI/notecheck lands (a
-  deliberate go.sum-only commit, or a tidy step scoped to compiled deps). This is the first slice where
-  tidy actually diverges (importing `tessera/api`, not just `tessera/api/layout`, widened the require
-  footprint). Recorded in learnings and filed as a `normal` issue so define-next can sequence it before
-  CI.
-- **CI / `notecheck` still unwired.** No `.github/workflows/` in the repo, so the external
-  signature-parity oracle (`notecheck`) and any tidy/format gate are not yet enforced in CI. Pre-existing
-  across several iterations, N/A to this crypto-via-in-test-ground-truth slice, but should be wired before
-  the `fsck`-rebuild conformance slice so the trust root has CI coverage when the mirror path first faces
-  it. Tracked in issues.
-- **M1 status:** the equivocation trigger is now fully prerequisite-complete (verifier `CheckEquivocation`
-  + proof source `ConsistencyProofFromTiles` both pure and golden-tested) but still **unwired into the
-  follower** — M1's third self-consistency trigger is not yet end-to-end. Not DONE.
+- **The equivocation branch is wired but DORMANT in production until M2 mirrors tiles.** Today
+  `PollHub` never writes tiles, so the live path always hits the missing-tile → skip case (no freeze).
+  This is the deliberate conservative choice (`next.md` Implementation Notes): freezing on a missing
+  tile would be a false positive. The branch is fully proven correct against synthesized mirrored tiles
+  in-test; it becomes load-bearing the instant the M2 tile-ingestion writer lands. Reviewer should treat
+  the in-test tile seeding (`seedMirrorTiles` via `RecordTile`) as the stand-in for that future writer.
+- **Error-vs-violation discipline is the load-bearing subtlety.** `CheckEquivocation` turns a
+  non-verifying proof into `(true, nil)` (the proof failing IS the evidence), but
+  `ConsistencyProofFromTiles` returns a genuine Go error on a tile fault. The branch swallows ONLY the
+  proof-build error (documented inline); a genuine `st` query failure still surfaces via `CheckpointAt`
+  above, and `CheckEquivocation`'s own (currently unreachable-by-type) error is propagated, not swallowed.
+- **"Compare against the prior accepted root, not the contradicting evidence" is honored.** `prevRoot`/
+  `prevSize` come from `CheckpointAt(prevSize)` (the prior accepted checkpoint, `LIMIT 1` = lower-rowid
+  prior root after a freeze records the contradiction at the same size); `info.Root`/`info.TreeSize` are
+  the new observation. The freeze evidence row is never the proof/root source.
+- **Test seam decision:** the equivocation case calls the unexported `checkConsistency` + `freeze`
+  directly (package-internal) rather than driving `PollHub` end-to-end, because `PollHub` needs a
+  genuinely `StatusVerified` signed checkpoint whose signature encodes the synthesized tree's root — no
+  such fixture exists, and forging one is out of scope. Assertions remain on observable store outputs
+  only (`violations`/`follow_state`/alert count via the shared `countRows`/`assertViolation` inspectors),
+  never on follower internals, per the PRD seam rule. This mirrors how the fork/shrink tests would not
+  meaningfully differ driven through `PollHub` vs the helpers.
+- Exactly 2 files touched (1 production + 1 test), within the ≤3 scope. No out-of-scope changes.
