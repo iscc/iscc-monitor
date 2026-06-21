@@ -391,6 +391,115 @@ func TestAdvanceFollowStateNoAutoUnfreeze(t *testing.T) {
 	}
 }
 
+// TestAdvanceAccepted proves the store-owned advance transaction performs all
+// three writes (checkpoint record, set-once coverage, follow-cursor advance)
+// atomically: (1) one call records the checkpoint row, sets monitored_since_size,
+// and sets follow_state.last_size; (2) a second call with the same (hub, size,
+// root) is idempotent — exactly one checkpoints row, last_size unchanged; (3) a
+// later call at a larger size advances last_size but never moves the coverage
+// start (ADR-0001, set-once coverage).
+func TestAdvanceAccepted(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	t0 := time.Unix(1_700_000_000, 0)
+	rec := CheckpointRecord{
+		HubID:      hubID,
+		Status:     "verified",
+		TreeSize:   100,
+		Root:       []byte("advance-accepted-root-padding-32"),
+		Raw:        []byte("sb0.iscc.id/log\n100\n<root>\n"),
+		ObservedAt: t0,
+	}
+
+	// (1) One AdvanceAccepted records the checkpoint, sets coverage, advances cursor.
+	if err := s.AdvanceAccepted(ctx, rec); err != nil {
+		t.Fatalf("first AdvanceAccepted: %v", err)
+	}
+	if n := countRows(t, s, "checkpoints"); n != 1 {
+		t.Errorf("checkpoints row count = %d, want 1", n)
+	}
+	cov, err := s.Coverage(ctx, hubID)
+	if err != nil {
+		t.Fatalf("Coverage: %v", err)
+	}
+	if !cov.Set || cov.Size != 100 || !cov.Since.Equal(t0) {
+		t.Errorf("Coverage = %+v, want {Size:100 Since:%v Set:true}", cov, t0)
+	}
+	fs, err := s.FollowState(ctx, hubID)
+	if err != nil {
+		t.Fatalf("FollowState: %v", err)
+	}
+	if fs.LastSize != 100 || fs.Frozen {
+		t.Errorf("FollowState = %+v, want {LastSize:100 Frozen:false}", fs)
+	}
+
+	// (2) A second AdvanceAccepted with the same (hub, size, root) is idempotent:
+	// exactly one checkpoints row, last_size and coverage unchanged.
+	if err := s.AdvanceAccepted(ctx, rec); err != nil {
+		t.Fatalf("idempotent AdvanceAccepted: %v", err)
+	}
+	if n := countRows(t, s, "checkpoints"); n != 1 {
+		t.Errorf("checkpoints row count after re-poll = %d, want 1", n)
+	}
+	fs, err = s.FollowState(ctx, hubID)
+	if err != nil {
+		t.Fatalf("FollowState after re-poll: %v", err)
+	}
+	if fs.LastSize != 100 {
+		t.Errorf("LastSize after re-poll = %d, want 100 (unchanged)", fs.LastSize)
+	}
+
+	// (3) A later observation at a larger size advances last_size but does NOT move
+	// the set-once coverage start (ADR-0001).
+	t1 := time.Unix(1_700_009_999, 0)
+	rec2 := CheckpointRecord{
+		HubID:      hubID,
+		Status:     "verified",
+		TreeSize:   500,
+		Root:       []byte("advance-accepted-root2-paddng-32"),
+		Raw:        []byte("sb0.iscc.id/log\n500\n<root>\n"),
+		ObservedAt: t1,
+	}
+	if err := s.AdvanceAccepted(ctx, rec2); err != nil {
+		t.Fatalf("growth AdvanceAccepted: %v", err)
+	}
+	if n := countRows(t, s, "checkpoints"); n != 2 {
+		t.Errorf("checkpoints row count after growth = %d, want 2", n)
+	}
+	fs, err = s.FollowState(ctx, hubID)
+	if err != nil {
+		t.Fatalf("FollowState after growth: %v", err)
+	}
+	if fs.LastSize != 500 {
+		t.Errorf("LastSize after growth = %d, want 500", fs.LastSize)
+	}
+	cov, err = s.Coverage(ctx, hubID)
+	if err != nil {
+		t.Fatalf("Coverage after growth: %v", err)
+	}
+	if cov.Size != 100 || !cov.Since.Equal(t0) {
+		t.Errorf("Coverage after growth = %+v, want {Size:100 Since:%v} (set-once)", cov, t0)
+	}
+
+	// Independently confirm the raw coverage columns were not overwritten by growth.
+	var size, since int64
+	err = s.db.QueryRow(
+		"SELECT monitored_since_size, monitored_since_time FROM hubs WHERE hub_id = ?", hubID,
+	).Scan(&size, &since)
+	if err != nil {
+		t.Fatalf("read raw coverage columns: %v", err)
+	}
+	if size != 100 || since != t0.Unix() {
+		t.Errorf("raw (size, since) = (%d, %d), want (100, %d)", size, since, t0.Unix())
+	}
+}
+
 // TestCoverageSetOnce proves SetCoverage records the coverage start on the first
 // call and never moves it (ADR-0001, coverage honesty): after SetCoverage(100, t0)
 // then SetCoverage(500, t1), Coverage reports size 100 / since t0, ignoring the

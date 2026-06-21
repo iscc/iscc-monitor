@@ -209,6 +209,53 @@ func (s *Store) AdvanceFollowState(ctx context.Context, hubID int64, lastSize ui
 	return nil
 }
 
+// AdvanceAccepted commits the whole "advance accepted state" invariant for one
+// verified, non-violation observation as a single transaction so its ordering and
+// partial-write atomicity live at the storage boundary (ADR-0005 single-writer
+// locality), not in the follower. It performs, against one *sql.Tx, the three
+// writes the follower used to sequence by hand: dedupe-insert the observed
+// checkpoint (ON CONFLICT(hub_id, tree_size, root) DO NOTHING — an idempotent
+// re-poll is a no-op), the set-once coverage UPDATE (guarded by
+// monitored_since_size IS NULL so the start never moves, ADR-0001), and the
+// follow-cursor upsert (omitting frozen so a frozen hub stays frozen, ADR-0006).
+// On any error the transaction rolls back, leaving accepted state unchanged; the
+// runs on the store's single capped connection and opens no second connection.
+func (s *Store) AdvanceAccepted(ctx context.Context, c CheckpointRecord) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store.AdvanceAccepted: begin: %w", err)
+	}
+	// After a successful Commit, Rollback returns sql.ErrTxDone, which is safe to
+	// ignore; on any early return it rolls the transaction back.
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO checkpoints (hub_id, tree_size, root, raw, observed_at) "+
+			"VALUES (?, ?, ?, ?, ?) ON CONFLICT(hub_id, tree_size, root) DO NOTHING",
+		c.HubID, int64(c.TreeSize), c.Root, c.Raw, unixOrNil(c.ObservedAt),
+	); err != nil {
+		return fmt.Errorf("store.AdvanceAccepted: record checkpoint: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE hubs SET monitored_since_size = ?, monitored_since_time = ? "+
+			"WHERE hub_id = ? AND monitored_since_size IS NULL",
+		int64(c.TreeSize), unixOrNil(c.ObservedAt), c.HubID,
+	); err != nil {
+		return fmt.Errorf("store.AdvanceAccepted: set coverage: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO follow_state (hub_id, last_size) VALUES (?, ?) "+
+			"ON CONFLICT(hub_id) DO UPDATE SET last_size = excluded.last_size",
+		c.HubID, int64(c.TreeSize),
+	); err != nil {
+		return fmt.Errorf("store.AdvanceAccepted: advance follow state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store.AdvanceAccepted: commit: %w", err)
+	}
+	return nil
+}
+
 // Violation is one self-consistency violation to persist permanently into the
 // violations table (irreplaceable evidence, ADR-0006). Kind carries the trigger
 // the consistency check supplies ("fork"/"shrink"/"equivocation") as a plain

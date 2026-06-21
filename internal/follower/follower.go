@@ -214,16 +214,12 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 		Raw:        raw,
 		ObservedAt: observedAt,
 	}
-	if _, _, err := st.RecordCheckpoint(ctx, rec); err != nil {
-		return status, fmt.Errorf("follower.PollHub: hub %d: record checkpoint: %w", hubID, err)
-	}
-	// Record coverage start once on the first verified, non-violation observation
-	// (ADR-0001); SetCoverage is set-once, so a later poll never moves it.
-	if err := st.SetCoverage(ctx, hubID, info.TreeSize, observedAt); err != nil {
-		return status, fmt.Errorf("follower.PollHub: hub %d: set coverage: %w", hubID, err)
-	}
-	if err := st.AdvanceFollowState(ctx, hubID, info.TreeSize); err != nil {
-		return status, fmt.Errorf("follower.PollHub: hub %d: advance follow state: %w", hubID, err)
+	// Advance accepted state as one store-owned transaction (ADR-0005): the
+	// dedupe-insert (idempotent re-poll), the set-once coverage UPDATE (ADR-0001,
+	// the start never moves), and the follow-cursor advance commit together or not
+	// at all, so a partial write can never leave accepted state inconsistent.
+	if err := st.AdvanceAccepted(ctx, rec); err != nil {
+		return status, fmt.Errorf("follower.PollHub: hub %d: advance accepted: %w", hubID, err)
 	}
 	// Cache the resolved did:web signing key (ADR-0009). Only a verified,
 	// non-violation observation writes a cache row, mirroring coverage: a
