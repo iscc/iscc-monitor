@@ -106,6 +106,17 @@ func glossaryStatus(st logclient.Status, frozen bool) string {
 // seam stays small. alert is fired exactly once per not-frozen -> frozen
 // transition; pass a no-op to ignore it.
 //
+// An already-frozen hub is re-polled evidence-only and never advances accepted
+// state (ADR-0006, frozen = evidence-only until a manual unfreeze, of which v1 has
+// none). After the self-consistency check, if the hub is already frozen and this
+// poll did NOT re-detect a fresh violation, PollHub records the verdict metric (as
+// the glossary "frozen" status) and returns WITHOUT recording the checkpoint,
+// setting coverage, advancing the follow cursor, caching the key, or running the
+// fsck root-rebuild. A frozen hub that re-serves a fresh contradiction still flows
+// through the violation branch above (re-detection is itself evidence). The
+// candidate tiles ingested earlier are left mirrored — they are rebuildable
+// evidence, not accepted state.
+//
 // m is the optional metrics registry: on every non-error verdict PollHub records
 // the hub's glossary status and the observation timestamp, and on a freeze it
 // increments the violations counter. m may be nil (metrics disabled), in which
@@ -181,6 +192,18 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 			m.IncViolation(hubID, string(kind))
 		}
 		return status, freeze(ctx, st, hubID, kind, prevRaw, raw, info, fs.Frozen, observedAt, alert)
+	}
+
+	// Already-frozen hub, clean re-poll (no fresh violation above): short-circuit to
+	// evidence-only (ADR-0006). The signature was valid (StatusVerified) but a frozen
+	// hub never advances accepted state, so we record the verdict metric as the
+	// glossary "frozen" status and return WITHOUT RecordCheckpoint / SetCoverage /
+	// AdvanceFollowState / cacheHubKey / fsckMirror. The candidate tiles ingested above
+	// stay mirrored (rebuildable evidence, not accepted state). Returns (status, nil):
+	// freezing is a separate axis from the signature verdict.
+	if fs.Frozen {
+		recordVerdict(m, hubID, status, true, observedAt)
+		return status, nil
 	}
 
 	rec := store.CheckpointRecord{

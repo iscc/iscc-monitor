@@ -391,6 +391,103 @@ func TestPollHubShrink(t *testing.T) {
 	}
 }
 
+// TestPollHubFrozenCleanRepollIsEvidenceOnly pins the ADR-0006 frozen =
+// evidence-only contract: an already-frozen hub re-polled cleanly (a verified
+// observation at a size that does NOT re-trigger a violation) must never advance
+// accepted state. One clean verified poll first advances the cursor, caches the
+// key, and starts coverage; the hub is then frozen directly via store.Freeze
+// (capturing the pre-repoll LastSize / coverage / hub_keys count). A second poll
+// over the SAME mirror (same size, same signed root — no shrink, fork, or
+// equivocation) is verified-and-clean, so the new short-circuit fires: after it the
+// follow cursor, coverage, and hub_keys count are all unchanged, the hub stays
+// frozen, and the metric maps to the glossary "frozen" status, never "verified".
+func TestPollHubFrozenCleanRepollIsEvidenceOnly(t *testing.T) {
+	ctx := context.Background()
+	s, path := openTemp(t)
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	m := buildVerifiedMirror(t, mirrorLeaves)
+	fetcher := m.fetcher
+	observedAt := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+
+	// One clean verified poll first establishes accepted state: it advances the
+	// cursor to the mirror size, caches the key, and starts coverage.
+	if status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert, nil); err != nil {
+		t.Fatalf("seed PollHub: %v", err)
+	} else if status != logclient.StatusVerified {
+		t.Fatalf("seed poll status = %s, want verified", status)
+	}
+
+	// Freeze the hub directly (ADR-0006: a self-consistency violation freezes; here
+	// we exercise the already-frozen re-poll path, so the freeze is seeded directly).
+	if err := s.Freeze(ctx, hubID); err != nil {
+		t.Fatalf("Freeze: %v", err)
+	}
+
+	// Capture the accepted state that the clean frozen re-poll must NOT change.
+	preFS, err := s.FollowState(ctx, hubID)
+	if err != nil {
+		t.Fatalf("FollowState before re-poll: %v", err)
+	}
+	if !preFS.Frozen {
+		t.Fatalf("hub not frozen after Freeze, want frozen")
+	}
+	preCov, err := s.Coverage(ctx, hubID)
+	if err != nil {
+		t.Fatalf("Coverage before re-poll: %v", err)
+	}
+	preKeys := countRows(t, path, "hub_keys")
+
+	// Re-poll the SAME mirror (same size, same signed root): verified AND clean (no
+	// shrink/fork/equivocation), so the already-frozen short-circuit must fire.
+	reg := metrics.New()
+	later := observedAt.Add(24 * time.Hour)
+	status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", later, noopAlert, reg)
+	if err != nil {
+		t.Fatalf("frozen clean re-poll PollHub: %v", err)
+	}
+	// The signature was valid, so the verdict is StatusVerified with a nil error;
+	// freezing is a separate axis (ADR-0006).
+	if status != logclient.StatusVerified {
+		t.Fatalf("status = %s, want verified (freezing is a separate axis)", status)
+	}
+
+	// Accepted state must be untouched by the clean frozen re-poll.
+	postFS, err := s.FollowState(ctx, hubID)
+	if err != nil {
+		t.Fatalf("FollowState after re-poll: %v", err)
+	}
+	if postFS.LastSize != preFS.LastSize {
+		t.Errorf("LastSize = %d after a clean frozen re-poll, want %d (a frozen hub must not advance)", postFS.LastSize, preFS.LastSize)
+	}
+	if !postFS.Frozen {
+		t.Errorf("Frozen cleared on a clean re-poll, want still frozen (no auto-unfreeze)")
+	}
+
+	postCov, err := s.Coverage(ctx, hubID)
+	if err != nil {
+		t.Fatalf("Coverage after re-poll: %v", err)
+	}
+	if postCov.Set != preCov.Set || postCov.Size != preCov.Size || !postCov.Since.Equal(preCov.Since) {
+		t.Errorf("coverage moved on a clean frozen re-poll: got (set %v, size %d, since %v), want (%v, %d, %v)",
+			postCov.Set, postCov.Size, postCov.Since, preCov.Set, preCov.Size, preCov.Since)
+	}
+
+	if postKeys := countRows(t, path, "hub_keys"); postKeys != preKeys {
+		t.Errorf("hub_keys rows = %d after a clean frozen re-poll, want %d (a frozen hub must not refresh the key cache)", postKeys, preKeys)
+	}
+
+	// The metric maps to the glossary "frozen" status, never "verified".
+	assertMetric(t, reg, `iscc_monitor_hub_status{hub_id="1",status="frozen"} 1`)
+	rendered := reg.String()
+	if strings.Contains(rendered, `iscc_monitor_hub_status{hub_id="1",status="verified"}`) {
+		t.Errorf("a frozen re-poll emitted status=\"verified\", want only status=\"frozen\"\n--- rendered ---\n%s", rendered)
+	}
+}
+
 // TestGlossaryStatus is the golden table for the verdict -> glossary-status
 // mapper. It pins the load-bearing remaps: a frozen observation is "frozen" even
 // though its enum is StatusVerified, and StatusRotated folds into "unverified"
