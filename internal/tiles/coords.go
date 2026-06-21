@@ -15,7 +15,7 @@ import "github.com/transparency-dev/tessera/api/layout"
 // is the bundle's position in tile space; Partial is the path-API "0 == full"
 // qualifier — the same p argument EntriesPath takes (0 for a full 256-leaf
 // bundle, else the partial leaf count). The store's width column is a different
-// encoding (widthForP(Partial): 0 -> 256), translated downstream, not here.
+// encoding (0 -> 256); the store translates Partial to that width on write, not here.
 type BundleCoord struct {
 	// Index is the entry bundle's index in tile space.
 	Index uint64
@@ -45,8 +45,7 @@ func BundleCoords(treeSize uint64) []BundleCoord {
 // tile's position within that level. Partial is the path-API "0 == full"
 // qualifier — the same p argument TilePath takes (0 for a full 256-hash tile,
 // else the partial hash count). The store's width column is a different encoding
-// (widthForP(Partial): 0 -> 256), translated downstream by the ingestion writer,
-// not here.
+// (0 -> 256); the store translates Partial to that width on write, not here.
 type TileCoord struct {
 	// Level is the tile-level (0, 1, 2, …); tile-level L spans tree-level L*8.
 	Level uint64

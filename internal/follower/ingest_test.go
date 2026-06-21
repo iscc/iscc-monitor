@@ -2,8 +2,8 @@
 // PollHub-level integration. The unit test (TestIngestTilesWidthMapping) drives
 // ingestTiles directly over a boundary tree size (300) through a recording fetcher
 // and asserts the exact (level, index, width) BLOBs land in the store — pinning the
-// load-bearing widthForP translation (a full coord, Partial == 0, stored at width
-// 256; a 44-leaf partial at width 44). The integration test (TestPollHubMirrorsTiles)
+// load-bearing p→width translation the store now owns (a full coord, Partial == 0,
+// stored at width 256; a 44-leaf partial at width 44). The integration test (TestPollHubMirrorsTiles)
 // drives a verified PollHub over the in-process byte-accurate mirror
 // (buildVerifiedMirror) and asserts the enumerated coords are mirrored — all on
 // observable store outputs (ReadTileBlob / ReadEntryBundleBlob), never follower
@@ -97,7 +97,7 @@ func TestIngestTilesWidthMapping(t *testing.T) {
 			t.Fatalf("ReadTileBlob L%d I%d W%d: %v", tc.level, tc.index, tc.wantWidth, err)
 		}
 		if !found {
-			t.Errorf("tile L%d I%d not found at width %d (widthForP(%d) mismatch?)", tc.level, tc.index, tc.wantWidth, tc.partial)
+			t.Errorf("tile L%d I%d not found at width %d (p=%d -> width mismatch?)", tc.level, tc.index, tc.wantWidth, tc.partial)
 			continue
 		}
 		if string(data) != "body:"+wantURL {
@@ -129,7 +129,7 @@ func TestIngestTilesWidthMapping(t *testing.T) {
 			t.Fatalf("ReadEntryBundleBlob I%d W%d: %v", bc.index, bc.wantWidth, err)
 		}
 		if !found {
-			t.Errorf("bundle I%d not found at width %d (widthForP(%d) mismatch?)", bc.index, bc.wantWidth, bc.partial)
+			t.Errorf("bundle I%d not found at width %d (p=%d -> width mismatch?)", bc.index, bc.wantWidth, bc.partial)
 			continue
 		}
 		if string(data) != string(recordingBundleBody(wantURL)) {
@@ -143,26 +143,20 @@ func TestIngestTilesWidthMapping(t *testing.T) {
 	}
 }
 
-// TestWidthForP pins the unexported width translation directly: a full qualifier
-// (p == 0) maps to tiles.TileWidth (256), any partial to int(p). This is the
-// re-derived store one-liner (the store's copy is unexported and must not be
-// exported); a wrong p==0 mapping (e.g. to 0) would make full tiles unreadable by
-// the SQLiteFetcher.
-func TestWidthForP(t *testing.T) {
-	cases := []struct {
-		p    uint8
-		want int
-	}{
-		{0, tiles.TileWidth}, // full -> 256, NOT 0
-		{1, 1},
-		{44, 44},
-		{255, 255},
+// readWidth maps a tlog-tiles partial qualifier p (path-API "0 == full") to the
+// store's width column so a test can read a mirrored coord back at the width the
+// store wrote it (a full coord, p == 0, lands at tiles.TileWidth (256); a partial at
+// int(p)). The translation itself now lives solely in internal/store (the production
+// p→width authority RecordTile / SQLiteFetcher share); this test-local mirror exists
+// only to address the read-side helpers, which still take width int. The
+// load-bearing "full coord must be readable at width 256, not 0" invariant is pinned
+// directly by TestIngestTilesWidthMapping over the public RecordTile / ReadTileBlob
+// surface.
+func readWidth(p uint8) int {
+	if p == 0 {
+		return tiles.TileWidth
 	}
-	for _, tc := range cases {
-		if got := widthForP(tc.p); got != tc.want {
-			t.Errorf("widthForP(%d) = %d, want %d", tc.p, got, tc.want)
-		}
-	}
+	return int(p)
 }
 
 // TestPollHubMirrorsTiles drives a verified PollHub over the in-process byte-accurate
@@ -191,10 +185,10 @@ func TestPollHubMirrorsTiles(t *testing.T) {
 		t.Fatalf("status = %s, want verified", status)
 	}
 
-	// Every enumerated hash tile is mirrored at its widthForP width, with the exact
-	// byte-accurate bytes the fetcher served for that coord's canonical path.
+	// Every enumerated hash tile is mirrored at the width its p qualifier maps to,
+	// with the exact byte-accurate bytes the fetcher served for that coord's path.
 	for _, c := range tiles.TileCoords(m.size) {
-		width := widthForP(c.Partial)
+		width := readWidth(c.Partial)
 		want := m.fetcher.byPath[tiles.TilePath(c.Level, c.Index, c.Partial)]
 		data, found, err := s.ReadTileBlob(ctx, hubID, c.Level, c.Index, width)
 		if err != nil {
@@ -209,9 +203,9 @@ func TestPollHubMirrorsTiles(t *testing.T) {
 		}
 	}
 
-	// Every enumerated entry bundle is mirrored at its widthForP width.
+	// Every enumerated entry bundle is mirrored at the width its p qualifier maps to.
 	for _, c := range tiles.BundleCoords(m.size) {
-		width := widthForP(c.Partial)
+		width := readWidth(c.Partial)
 		want := m.fetcher.byPath[tiles.EntriesPath(c.Index, c.Partial)]
 		data, found, err := s.ReadEntryBundleBlob(ctx, hubID, c.Index, width)
 		if err != nil {

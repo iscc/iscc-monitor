@@ -111,7 +111,13 @@ func seedMirrorTiles(t *testing.T, st *store.Store, hubID int64, tree *testonly.
 			break
 		}
 		raw, width := level0TileBytes(t, tree, tileIndex, equivTreeLeaves)
-		if err := st.RecordTile(ctx, hubID, 0, tileIndex, width, raw, observedAt); err != nil {
+		// Translate the leaf width to the tlog-tiles partial qualifier the store now
+		// takes: a full tile (width 256) is p == 0, a trailing partial is p == width.
+		p := uint8(width)
+		if width == tiles.TileWidth {
+			p = 0
+		}
+		if err := st.RecordTile(ctx, hubID, 0, tileIndex, p, raw, observedAt); err != nil {
 			t.Fatalf("RecordTile (index %d, width %d): %v", tileIndex, width, err)
 		}
 	}

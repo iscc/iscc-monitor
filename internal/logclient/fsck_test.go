@@ -103,7 +103,7 @@ func seedMirror(t *testing.T) (store.SQLiteFetcher, string, uint64) {
 	// Seed the partial entry bundle at index 0 (width == size), framing the SAME
 	// preimages the tree was built from.
 	bundle := encodeBundle(preimages)
-	if err := s.RecordEntryBundle(ctx, hubID, 0, int(size), bundle, now); err != nil {
+	if err := s.RecordEntryBundle(ctx, hubID, 0, uint8(size), bundle, now); err != nil {
 		t.Fatalf("RecordEntryBundle: %v", err)
 	}
 
@@ -117,7 +117,7 @@ func seedMirror(t *testing.T) (store.SQLiteFetcher, string, uint64) {
 	if err != nil {
 		t.Fatalf("HashTile.MarshalText: %v", err)
 	}
-	if err := s.RecordTile(ctx, hubID, 0, 0, int(size), tileRaw, now); err != nil {
+	if err := s.RecordTile(ctx, hubID, 0, 0, uint8(size), tileRaw, now); err != nil {
 		t.Fatalf("RecordTile: %v", err)
 	}
 
@@ -177,7 +177,7 @@ func TestRunFsck(t *testing.T) {
 		corrupt := make([]byte, len(raw))
 		copy(corrupt, raw)
 		corrupt[0] ^= 0xff
-		if err := f.Store.RecordTile(ctx, f.HubID, 0, 0, int(size), corrupt, time.Unix(2, 0)); err != nil {
+		if err := f.Store.RecordTile(ctx, f.HubID, 0, 0, uint8(size), corrupt, time.Unix(2, 0)); err != nil {
 			t.Fatalf("RecordTile corrupt: %v", err)
 		}
 
@@ -199,7 +199,7 @@ func TestRunFsck(t *testing.T) {
 		corrupt := make([]byte, len(raw))
 		copy(corrupt, raw)
 		corrupt[2] ^= 0xff
-		if err := f.Store.RecordEntryBundle(ctx, f.HubID, 0, int(size), corrupt, time.Unix(2, 0)); err != nil {
+		if err := f.Store.RecordEntryBundle(ctx, f.HubID, 0, uint8(size), corrupt, time.Unix(2, 0)); err != nil {
 			t.Fatalf("RecordEntryBundle corrupt: %v", err)
 		}
 

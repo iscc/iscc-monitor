@@ -222,7 +222,7 @@ func TestMirrorInclusionRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HashTile.MarshalText: %v", err)
 	}
-	if err := st.RecordTile(ctx, hub, 0, 0, leaves, raw, at); err != nil {
+	if err := st.RecordTile(ctx, hub, 0, 0, uint8(leaves), raw, at); err != nil {
 		t.Fatalf("RecordTile: %v", err)
 	}
 	if err := st.RecordProjections(ctx, []store.ProjectionRecord{
@@ -309,7 +309,7 @@ func TestMirrorEntriesRoute(t *testing.T) {
 		records[i] = []byte(fmt.Sprintf("record-%d", i))
 	}
 	at := time.Unix(1700000000, 0)
-	if err := st.RecordEntryBundle(ctx, hub, 0, leaves, frameEntryBundle(records), at); err != nil {
+	if err := st.RecordEntryBundle(ctx, hub, 0, uint8(leaves), frameEntryBundle(records), at); err != nil {
 		t.Fatalf("RecordEntryBundle: %v", err)
 	}
 	if _, _, err := st.RecordCheckpoint(ctx, store.CheckpointRecord{

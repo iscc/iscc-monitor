@@ -75,7 +75,7 @@ func TestRecordTileRoundTrip(t *testing.T) {
 	hub := newHub(t, s)
 
 	data := bytes.Repeat([]byte{0xab}, 8192)
-	if err := s.RecordTile(ctx, hub, 0, 0, 256, data, time.Unix(1700000000, 0)); err != nil {
+	if err := s.RecordTile(ctx, hub, 0, 0, 0, data, time.Unix(1700000000, 0)); err != nil {
 		t.Fatalf("RecordTile: %v", err)
 	}
 
@@ -106,7 +106,7 @@ func TestRecordTilePartialIsNotFull(t *testing.T) {
 	hub := newHub(t, s)
 
 	data := bytes.Repeat([]byte{0xcd}, 44*32)
-	if err := s.RecordTile(ctx, hub, 0, 1, 44, data, time.Unix(1700000001, 0)); err != nil {
+	if err := s.RecordTile(ctx, hub, 0, 1, uint8(44), data, time.Unix(1700000001, 0)); err != nil {
 		t.Fatalf("RecordTile partial: %v", err)
 	}
 
@@ -131,10 +131,10 @@ func TestRecordTilePartialOverwrite(t *testing.T) {
 
 	first := bytes.Repeat([]byte{0x01}, 64)
 	second := bytes.Repeat([]byte{0x02}, 96)
-	if err := s.RecordTile(ctx, hub, 0, 0, 100, first, time.Unix(1, 0)); err != nil {
+	if err := s.RecordTile(ctx, hub, 0, 0, uint8(100), first, time.Unix(1, 0)); err != nil {
 		t.Fatalf("first RecordTile: %v", err)
 	}
-	if err := s.RecordTile(ctx, hub, 0, 0, 100, second, time.Unix(2, 0)); err != nil {
+	if err := s.RecordTile(ctx, hub, 0, 0, uint8(100), second, time.Unix(2, 0)); err != nil {
 		t.Fatalf("second RecordTile: %v", err)
 	}
 
@@ -174,11 +174,11 @@ func TestRecordEntryBundleRoundTrip(t *testing.T) {
 	hub := newHub(t, s)
 
 	full := bytes.Repeat([]byte{0xee}, 4096)
-	if err := s.RecordEntryBundle(ctx, hub, 0, 256, full, time.Unix(1700000002, 0)); err != nil {
+	if err := s.RecordEntryBundle(ctx, hub, 0, 0, full, time.Unix(1700000002, 0)); err != nil {
 		t.Fatalf("RecordEntryBundle full: %v", err)
 	}
 	partial := bytes.Repeat([]byte{0xff}, 512)
-	if err := s.RecordEntryBundle(ctx, hub, 1, 44, partial, time.Unix(1700000003, 0)); err != nil {
+	if err := s.RecordEntryBundle(ctx, hub, 1, uint8(44), partial, time.Unix(1700000003, 0)); err != nil {
 		t.Fatalf("RecordEntryBundle partial: %v", err)
 	}
 

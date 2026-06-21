@@ -88,8 +88,14 @@ func buildEntriesMirror(t *testing.T, leaves int) entriesMirror {
 			recs = append(recs, recordBytes(i))
 		}
 		width := last - first
+		// Translate the leaf width to the tlog-tiles partial qualifier RecordEntryBundle
+		// now takes: a full bundle (width 256) is p == 0, a trailing partial is p == width.
+		p := uint8(width)
+		if width == tiles.TileWidth {
+			p = 0
+		}
 		bundleIndex := uint64(first / tiles.TileWidth)
-		if err := st.RecordEntryBundle(ctx, hubID, bundleIndex, width, frameBundle(recs), at); err != nil {
+		if err := st.RecordEntryBundle(ctx, hubID, bundleIndex, p, frameBundle(recs), at); err != nil {
 			t.Fatalf("RecordEntryBundle (index %d width %d): %v", bundleIndex, width, err)
 		}
 	}

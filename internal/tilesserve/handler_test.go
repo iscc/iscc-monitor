@@ -54,16 +54,16 @@ func newServer(t *testing.T) (*httptest.Server, seeded) {
 		checkpoint: []byte("sb0.iscc.id/log\n300\nrootbytes==\n\n— sb0 sig\n"),
 	}
 	now := time.Unix(1700000000, 0)
-	// Full tile at (level 0, index 0), width 256.
-	if err := s.RecordTile(ctx, hub, 0, 0, tiles.TileWidth, sd.fullTile, now); err != nil {
+	// Full tile at (level 0, index 0): p == 0 (the full qualifier), stored at width 256.
+	if err := s.RecordTile(ctx, hub, 0, 0, 0, sd.fullTile, now); err != nil {
 		t.Fatalf("RecordTile full: %v", err)
 	}
-	// Partial tile at (level 0, index 1), width 44 (the 300-leaf-tree leftover).
-	if err := s.RecordTile(ctx, hub, 0, 1, 44, sd.partTile, now); err != nil {
+	// Partial tile at (level 0, index 1), p == 44 (the 300-leaf-tree leftover).
+	if err := s.RecordTile(ctx, hub, 0, 1, uint8(44), sd.partTile, now); err != nil {
 		t.Fatalf("RecordTile partial: %v", err)
 	}
-	// One full entry bundle at index 0.
-	if err := s.RecordEntryBundle(ctx, hub, 0, tiles.TileWidth, sd.bundle, now); err != nil {
+	// One full entry bundle at index 0: p == 0 (the full qualifier).
+	if err := s.RecordEntryBundle(ctx, hub, 0, 0, sd.bundle, now); err != nil {
 		t.Fatalf("RecordEntryBundle: %v", err)
 	}
 	// One checkpoint at tree_size 300.

@@ -339,7 +339,7 @@ func TestPollHubFsck(t *testing.T) {
 		corrupt := make([]byte, len(raw))
 		copy(corrupt, raw)
 		corrupt[0] ^= 0xff
-		if err := s.RecordTile(ctx, hubID, 0, 0, int(m.size), corrupt, time.Unix(2, 0)); err != nil {
+		if err := s.RecordTile(ctx, hubID, 0, 0, uint8(m.size), corrupt, time.Unix(2, 0)); err != nil {
 			t.Fatalf("RecordTile corrupt: %v", err)
 		}
 

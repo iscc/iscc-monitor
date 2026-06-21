@@ -42,7 +42,7 @@ func TestFetcherReadTileFull(t *testing.T) {
 	f := SQLiteFetcher{Store: s, HubID: hub}
 
 	data := bytes.Repeat([]byte{0x7a}, 8192)
-	if err := s.RecordTile(ctx, hub, 0, 0, 256, data, time.Unix(1, 0)); err != nil {
+	if err := s.RecordTile(ctx, hub, 0, 0, 0, data, time.Unix(1, 0)); err != nil {
 		t.Fatalf("RecordTile: %v", err)
 	}
 
@@ -64,7 +64,7 @@ func TestFetcherReadTilePartial(t *testing.T) {
 	f := SQLiteFetcher{Store: s, HubID: hub}
 
 	data := bytes.Repeat([]byte{0x44}, 44*32)
-	if err := s.RecordTile(ctx, hub, 0, 1, 44, data, time.Unix(1, 0)); err != nil {
+	if err := s.RecordTile(ctx, hub, 0, 1, uint8(44), data, time.Unix(1, 0)); err != nil {
 		t.Fatalf("RecordTile partial: %v", err)
 	}
 
@@ -102,7 +102,7 @@ func TestFetcherReadTilePartialFallsBackToFull(t *testing.T) {
 	f := SQLiteFetcher{Store: s, HubID: hub}
 
 	full := bytes.Repeat([]byte{0xfa}, 8192)
-	if err := s.RecordTile(ctx, hub, 0, 0, 256, full, time.Unix(1, 0)); err != nil {
+	if err := s.RecordTile(ctx, hub, 0, 0, 0, full, time.Unix(1, 0)); err != nil {
 		t.Fatalf("RecordTile full: %v", err)
 	}
 
@@ -139,10 +139,10 @@ func TestFetcherReadEntryBundle(t *testing.T) {
 
 	full := bytes.Repeat([]byte{0xb0}, 4096)
 	partial := bytes.Repeat([]byte{0xb1}, 512)
-	if err := s.RecordEntryBundle(ctx, hub, 0, 256, full, time.Unix(1, 0)); err != nil {
+	if err := s.RecordEntryBundle(ctx, hub, 0, 0, full, time.Unix(1, 0)); err != nil {
 		t.Fatalf("RecordEntryBundle full: %v", err)
 	}
-	if err := s.RecordEntryBundle(ctx, hub, 1, 44, partial, time.Unix(1, 0)); err != nil {
+	if err := s.RecordEntryBundle(ctx, hub, 1, uint8(44), partial, time.Unix(1, 0)); err != nil {
 		t.Fatalf("RecordEntryBundle partial: %v", err)
 	}
 

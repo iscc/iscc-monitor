@@ -4,6 +4,12 @@
 // are the write side; ReadTileBlob / ReadEntryBundleBlob / LatestCheckpointRaw the
 // read side composed by fetcher.go.
 //
+// The write side speaks the tlog-tiles partial qualifier p (path-API "0 == full"):
+// RecordTile / RecordEntryBundle take p uint8 and translate it to the stored width
+// via the package-private widthForP (fetcher.go) — the single p→width authority,
+// shared with the SQLiteFetcher read side, so the translation can never drift in two
+// places.
+//
 // Partial-tile discipline (ADR-0005): a row is keyed by width. is_full is set to 1
 // only for a full tile (width == 256, per tiles.IsFull); a partial is width < 256
 // with is_full = 0. Partials are re-fetched and overwritten in place every poll via
@@ -29,12 +35,16 @@ import (
 )
 
 // RecordTile upserts one mirrored hash tile BLOB into the tiles table, keyed by
-// (hub_id, level, index, width). is_full is set to 1 only when tiles.IsFull(width)
-// (width == 256); a partial (width < 256) stores is_full = 0 and is overwritten in
-// place on a re-fetch via the composite-PK upsert. sha256 is the SHA-256 of data
-// (for fsck cross-checks) and updated_at the caller-supplied observedAt (zero →
-// NULL via unixOrNil). A re-write of identical full-tile bytes is idempotent.
-func (s *Store) RecordTile(ctx context.Context, hubID int64, level, index uint64, width int, data []byte, observedAt time.Time) error {
+// (hub_id, level, index, width). It takes the tlog-tiles partial qualifier p (path-
+// API "0 == full") and translates it to the stored width via the package-private
+// widthForP (the single p→width authority, shared with the SQLiteFetcher read
+// side). is_full is set to 1 only when tiles.IsFull(width) (width == 256); a partial
+// (width < 256) stores is_full = 0 and is overwritten in place on a re-fetch via the
+// composite-PK upsert. sha256 is the SHA-256 of data (for fsck cross-checks) and
+// updated_at the caller-supplied observedAt (zero → NULL via unixOrNil). A re-write
+// of identical full-tile bytes is idempotent.
+func (s *Store) RecordTile(ctx context.Context, hubID int64, level, index uint64, p uint8, data []byte, observedAt time.Time) error {
+	width := widthForP(p)
 	sum := sha256.Sum256(data)
 	_, err := s.db.ExecContext(ctx,
 		"INSERT INTO tiles (hub_id, level, tile_index, width, data, is_full, sha256, updated_at) "+
@@ -51,9 +61,12 @@ func (s *Store) RecordTile(ctx context.Context, hubID int64, level, index uint64
 }
 
 // RecordEntryBundle upserts one mirrored entry bundle BLOB into the entry_bundles
-// table, keyed by (hub_id, bundle_index, width). Same partial-tile discipline as
-// RecordTile: is_full = 1 only at width == 256; partials overwrite in place.
-func (s *Store) RecordEntryBundle(ctx context.Context, hubID int64, bundleIndex uint64, width int, data []byte, observedAt time.Time) error {
+// table, keyed by (hub_id, bundle_index, width). It takes the tlog-tiles partial
+// qualifier p and translates it to the stored width via widthForP (the single
+// p→width authority). Same partial-tile discipline as RecordTile: is_full = 1 only
+// at width == 256; partials overwrite in place.
+func (s *Store) RecordEntryBundle(ctx context.Context, hubID int64, bundleIndex uint64, p uint8, data []byte, observedAt time.Time) error {
+	width := widthForP(p)
 	sum := sha256.Sum256(data)
 	_, err := s.db.ExecContext(ctx,
 		"INSERT INTO entry_bundles (hub_id, bundle_index, width, data, is_full, sha256, updated_at) "+

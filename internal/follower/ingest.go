@@ -33,7 +33,9 @@ import (
 // tree of treeSize must hold into the local store. It walks tiles.TileCoords then
 // tiles.BundleCoords (both pure coordinate enumerations), fetches each over the
 // injected Fetcher via the logclient transport primitives, and writes the raw
-// bytes through the store CRUD keyed by the widthForP-translated width.
+// bytes through the store CRUD, passing each coord's p qualifier straight through —
+// the store owns the single p→width translation, so the follower no longer holds
+// its own copy.
 //
 // observedAt is the verified observation time (injected by PollHub, never
 // time.Now()) and is recorded as each row's updated_at. A fetch or store fault is
@@ -48,16 +50,17 @@ func ingestTiles(ctx context.Context, st *store.Store, fetcher logclient.Fetcher
 }
 
 // ingestHashTiles fetches every hash tile named by tiles.TileCoords(treeSize) and
-// records it in the store at the width the coord's Partial maps to (widthForP). A
-// full tile (Partial == 0) is stored at width tiles.TileWidth (256), a partial at
-// its leaf count.
+// records it in the store, passing the coord's Partial qualifier straight to
+// RecordTile. The store maps p→width (a full tile, Partial == 0, lands at width
+// tiles.TileWidth (256); a partial at its leaf count) — the follower performs no
+// translation of its own.
 func ingestHashTiles(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string, treeSize uint64, observedAt time.Time) error {
 	for _, c := range tiles.TileCoords(treeSize) {
 		raw, err := logclient.FetchTile(ctx, fetcher, baseURL, c.Level, c.Index, c.Partial)
 		if err != nil {
 			return fmt.Errorf("ingest tile level %d index %d p %d: %w", c.Level, c.Index, c.Partial, err)
 		}
-		if err := st.RecordTile(ctx, hubID, c.Level, c.Index, widthForP(c.Partial), raw, observedAt); err != nil {
+		if err := st.RecordTile(ctx, hubID, c.Level, c.Index, c.Partial, raw, observedAt); err != nil {
 			return fmt.Errorf("record tile level %d index %d: %w", c.Level, c.Index, err)
 		}
 	}
@@ -65,8 +68,9 @@ func ingestHashTiles(ctx context.Context, st *store.Store, fetcher logclient.Fet
 }
 
 // ingestEntryBundles fetches every entry bundle named by
-// tiles.BundleCoords(treeSize) and records it in the store at the widthForP width,
-// mirroring ingestHashTiles for the entry-bundle table. After mirroring each bundle
+// tiles.BundleCoords(treeSize) and records it in the store, passing the coord's
+// Partial qualifier straight to RecordEntryBundle (the store owns the p→width
+// translation), mirroring ingestHashTiles for the entry-bundle table. After mirroring each bundle
 // it folds the same raw bytes into the schema-agnostic iscc_index projection
 // (ADR-0008) via projectEntryBundle, so a verified poll populates iscc_index for the
 // later iscc_id -> leafIndex inclusion cross-check.
@@ -76,7 +80,7 @@ func ingestEntryBundles(ctx context.Context, st *store.Store, fetcher logclient.
 		if err != nil {
 			return fmt.Errorf("ingest entry bundle index %d p %d: %w", c.Index, c.Partial, err)
 		}
-		if err := st.RecordEntryBundle(ctx, hubID, c.Index, widthForP(c.Partial), raw, observedAt); err != nil {
+		if err := st.RecordEntryBundle(ctx, hubID, c.Index, c.Partial, raw, observedAt); err != nil {
 			return fmt.Errorf("record entry bundle index %d: %w", c.Index, err)
 		}
 		if err := projectEntryBundle(ctx, st, hubID, c.Index, raw); err != nil {
@@ -114,17 +118,4 @@ func projectEntryBundle(ctx context.Context, st *store.Store, hubID int64, bundl
 		return fmt.Errorf("project entry bundle index %d: %w", bundleIndex, err)
 	}
 	return nil
-}
-
-// widthForP maps a tlog-tiles partial qualifier p (path-API "0 == full") to the
-// store's width column (the actual leaf count: tiles.TileWidth for full, int(p)
-// for a partial). This re-derives the store's unexported widthForP one-liner (the
-// store's copy is private and must not be exported): the load-bearing translation
-// is that a full coord (Partial == 0) must be stored at width 256, not 0, or the
-// SQLiteFetcher (which looks a full tile up at width 256) cannot read it back.
-func widthForP(p uint8) int {
-	if p == 0 {
-		return tiles.TileWidth
-	}
-	return int(p)
 }

@@ -135,11 +135,7 @@ func buildMirror(t *testing.T, leaves int) mirrorTree {
 		if err != nil {
 			t.Fatalf("HashTile.MarshalText (level %d index %d): %v", c.Level, c.Index, err)
 		}
-		width := int(c.Partial)
-		if width == 0 {
-			width = tiles.TileWidth
-		}
-		if err := st.RecordTile(ctx, hubID, c.Level, c.Index, width, raw, at); err != nil {
+		if err := st.RecordTile(ctx, hubID, c.Level, c.Index, c.Partial, raw, at); err != nil {
 			t.Fatalf("RecordTile (level %d index %d): %v", c.Level, c.Index, err)
 		}
 	}
