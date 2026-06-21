@@ -594,7 +594,10 @@ func TestCertificateRouteMounted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("registerHubs: %v", err)
 	}
-	// Index the golden id (hub_id 1 -> slot 1 -> sb1.amlet.id) under sb1's hub_id.
+	// Index the golden id (hub_id 1 -> slot 1 -> sb1.amlet.id) under sb1's hub_id,
+	// in the production storage form (ISCC:-prefixed, verbatim — matching
+	// logclient/projection.go), and accept a checkpoint covering it so the
+	// accepted-tree cap (seqs[0] < LastSize) certifies it.
 	var sb1 int64
 	for _, r := range routes {
 		if r.Domain == "sb1.amlet.id" {
@@ -602,9 +605,17 @@ func TestCertificateRouteMounted(t *testing.T) {
 		}
 	}
 	if err := st.RecordProjections(ctx, []store.ProjectionRecord{
-		{HubID: sb1, Seq: 24815, IsccID: "MAIGHFECJMOPMIAB", NoteSchema: "iscc-note-0.8.0"},
+		{HubID: sb1, Seq: 24815, IsccID: "ISCC:MAIGHFECJMOPMIAB", NoteSchema: "iscc-note-0.8.0"},
 	}); err != nil {
 		t.Fatalf("RecordProjections: %v", err)
+	}
+	if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+		HubID:    sb1,
+		TreeSize: 24816, // accepted checkpoint covers the leaf at seq 24815
+		Root:     []byte("root"),
+		Raw:      []byte("raw"),
+	}); err != nil {
+		t.Fatalf("AdvanceAccepted: %v", err)
 	}
 
 	mux := buildMux(st, routes, hubListFromEntries(entries), metrics.New())

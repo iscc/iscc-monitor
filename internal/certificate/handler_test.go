@@ -54,9 +54,30 @@ func testnetHubList() *registry.HubList {
 }
 
 // fixtureStore opens a fresh store, registers the two testnet hubs (sb0 then sb1,
-// matching the slot order), and indexes one leaf under indexedID for the hub at the
-// given domain. It returns the store; the caller drives the handler against it.
+// matching the slot order), indexes one leaf for the hub at the given domain under
+// the PRODUCTION storage form (ISCC:-prefixed, matching logclient/projection.go),
+// and seeds an accepted checkpoint covering that leaf (LastSize = seq+1) so the
+// accepted-tree cap certifies it. indexedID is the BARE golden id; fixtureStore
+// prefixes it with "ISCC:" before writing the projection, grounding the fixture in
+// the wire format rather than in the handler's lookup. It returns the store; the
+// caller drives the handler against it. To exercise the cannot-certify states a
+// caller uses fixtureStoreUnaccepted instead.
 func fixtureStore(t *testing.T, indexDomain, indexedID string, seq uint64) *store.Store {
+	t.Helper()
+	lastSize := uint64(0)
+	if indexedID != "" {
+		lastSize = seq + 1 // accept a checkpoint covering the leaf at seq
+	}
+	return fixtureStoreUnaccepted(t, indexDomain, indexedID, seq, lastSize)
+}
+
+// fixtureStoreUnaccepted is fixtureStore with an explicit accepted LastSize, so a
+// test can seed a leaf at seq >= lastSize (or lastSize == 0, no accepted checkpoint)
+// to exercise the accepted-tree cap's cannot-certify states. The leaf is indexed
+// under the ISCC:-prefixed form; the accepted checkpoint is committed through the
+// store's real accept path (AdvanceAccepted, the same call checkpoints_test.go
+// uses to set LastSize) only when lastSize > 0.
+func fixtureStoreUnaccepted(t *testing.T, indexDomain, indexedID string, seq, lastSize uint64) *store.Store {
 	t.Helper()
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "certificate.db"))
@@ -80,9 +101,21 @@ func fixtureStore(t *testing.T, indexDomain, indexedID string, seq uint64) *stor
 	}
 	if indexedID != "" {
 		if err := st.RecordProjections(ctx, []store.ProjectionRecord{
-			{HubID: target, Seq: seq, IsccID: indexedID, NoteSchema: "iscc-note-0.8.0.json"},
+			// Index under the production form: ISCC:-prefixed, verbatim
+			// (logclient/projection.go), not the bare decode input.
+			{HubID: target, Seq: seq, IsccID: "ISCC:" + indexedID, NoteSchema: "iscc-note-0.8.0.json"},
 		}); err != nil {
 			t.Fatalf("RecordProjections: %v", err)
+		}
+	}
+	if lastSize > 0 {
+		if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+			HubID:    target,
+			TreeSize: lastSize,
+			Root:     []byte("root"),
+			Raw:      []byte("raw"),
+		}); err != nil {
+			t.Fatalf("AdvanceAccepted: %v", err)
 		}
 	}
 	return st
@@ -96,11 +129,15 @@ func get(t *testing.T, h http.Handler, id string) *httptest.ResponseRecorder {
 	return rec
 }
 
-// TestCertificateKnownID asserts the golden known-id chain: GET /inclusion/<golden>
-// returns 200 text/html and the body carries the subject id, the RESOLVED hub
-// domain (sb1.amlet.id, from decoding hub_id 1 -> slot 1), the position (seqs[0]),
-// the §1 SUBJECT clause marker, the back-link, the tier-2 verify link, the two-tier
-// honesty panel, and no external CDN URL outside the same-origin /_ds/ links.
+// TestCertificateKnownID asserts the golden known-id chain over the PRODUCTION path:
+// the leaf is indexed under the ISCC:-prefixed form and covered by an accepted
+// checkpoint, so the bare-suffix request GET /inclusion/<golden> certifies through
+// the real index.Decode → registry.Resolve → SeqsForISCCID(prefixed) → seqs[0] <
+// LastSize chain. It returns 200 text/html and the body carries the subject id, the
+// RESOLVED hub domain (sb1.amlet.id, from decoding hub_id 1 -> slot 1), the position
+// (seqs[0]), the §1 SUBJECT clause marker, the back-link, the tier-2 verify link,
+// the two-tier honesty panel, and no external CDN URL outside the same-origin /_ds/
+// links.
 func TestCertificateKnownID(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815)
 	h := Handler(testnetHubList(), st, nil)
@@ -199,6 +236,73 @@ func TestCertificateNotInLog(t *testing.T) {
 	if strings.Contains(body, "is included in the transparency log") {
 		t.Errorf("not-in-log id rendered a certifiable subject banner\n%s", body)
 	}
+}
+
+// TestCertificatePrefixedLookup asserts the canonicalization: with the leaf indexed
+// under the production ISCC:-prefixed form, the bare-suffix request /inclusion/<id>
+// AND the prefixed request /inclusion/ISCC:<id> both certify the same leaf. Reverting
+// the lookup to the bare rawID makes the first request report "not found in log".
+func TestCertificatePrefixedLookup(t *testing.T) {
+	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815)
+	h := Handler(testnetHubList(), st, nil)
+
+	for _, id := range []string{goldenID, "ISCC:" + goldenID} {
+		rec := get(t, h, id)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("id %q: status = %d, want 200", id, rec.Code)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "is included in the transparency log") {
+			t.Errorf("id %q did not certify the prefixed leaf\n%s", id, body)
+		}
+		if !strings.Contains(body, "24815") {
+			t.Errorf("id %q missing the subject position\n%s", id, body)
+		}
+	}
+}
+
+// TestCertificateUnacceptedLeaf asserts the accepted-tree cap: a leaf indexed at a
+// seq >= LastSize (a frozen/failed poll left an unaccepted projection above the
+// accepted checkpoint) AND a hub with no accepted checkpoint yet (LastSize == 0)
+// both render the cannot-certify state, NOT the affirmative subject banner.
+// Reverting the seqs[0] < LastSize cap makes this FAIL.
+func TestCertificateUnacceptedLeaf(t *testing.T) {
+	t.Run("above accepted tree", func(t *testing.T) {
+		// Leaf at seq 24815, accepted checkpoint only at size 24815, so
+		// seqs[0] (24815) >= LastSize (24815): indexed but not yet accepted.
+		st := fixtureStoreUnaccepted(t, "sb1.amlet.id", goldenID, 24815, 24815)
+		h := Handler(testnetHubList(), st, nil)
+
+		rec := get(t, h, goldenID)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "not in accepted tree") {
+			t.Errorf("body missing the not-in-accepted-tree state\n%s", body)
+		}
+		if strings.Contains(body, "is included in the transparency log") {
+			t.Errorf("an unaccepted leaf rendered a certifiable subject banner\n%s", body)
+		}
+	})
+
+	t.Run("no accepted checkpoint yet", func(t *testing.T) {
+		// Leaf indexed, but no accepted checkpoint (LastSize == 0).
+		st := fixtureStoreUnaccepted(t, "sb1.amlet.id", goldenID, 24815, 0)
+		h := Handler(testnetHubList(), st, nil)
+
+		rec := get(t, h, goldenID)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "no accepted checkpoint yet") {
+			t.Errorf("body missing the no-accepted-checkpoint-yet state\n%s", body)
+		}
+		if strings.Contains(body, "is included in the transparency log") {
+			t.Errorf("a hub with no accepted checkpoint rendered a certifiable subject banner\n%s", body)
+		}
+	})
 }
 
 // TestCertificateMalformedID asserts a non-decodable id renders the documented

@@ -1,69 +1,63 @@
-## 2026-06-21 — Review of: Certificate-of-inclusion skeleton — realm-wide `/inclusion/{iscc_id}` page (§1 Subject + decode→resolve chain)
+## 2026-06-21 — Make the certificate §1 inclusion claim sound — accepted-tree cap + ISCC:-prefixed lookup
 
-**Verdict:** NEEDS_WORK
-**Loop:** CONTINUE
+**Done:** Closed the two open `critical` certificate defects in ONE slice: `buildData` now (a)
+canonicalizes the lookup id to the stored `ISCC:`-prefixed form before `SeqsForISCCID`, and (b) gates
+the affirmative inclusion claim on the accepted-tree cap (`len(seqs) > 0 && seqs[0] < LastSize`),
+rendering honest cannot-certify states ("no accepted checkpoint yet" / "not in accepted tree")
+otherwise. `LastSize` is carried out of the existing `ListHubs` scan via `followedHub` (now returns the
+matched `store.HubSummary`) with no second store round-trip. Fixtures re-grounded to the production wire
+format (prefixed id + an accepted checkpoint via `AdvanceAccepted`).
 
-**Summary:** The skeleton stands up `internal/certificate` cleanly — a new `GET /inclusion/{iscc_id}`
-route wiring the decode→resolve→ListHubs→SeqsForISCCID chain, fail-closed 200 verdicts, buffer-then-200,
-non-vacuous seam tests, tidy scope (3 source files), gates green. But Codex (confirmed by me against the
-code) surfaced TWO real correctness defects in the page's HEADLINE behavior: it certifies inclusion of
-leaves OUTSIDE the accepted tree (no `LastSize` cap), and its bare path-suffix lookup key is mismatched
-against production's `ISCC:`-prefixed stored id, so real declarations report "not found". The skeleton's
-tests pass only because the fixture certifies with `LastSize == 0` and seeds the bare id form — both
-fixture-matched-to-code. The §1 SUBJECT clause makes an affirmative inclusion claim it cannot back, so
-this blocks PASS.
+**Files changed:**
+- `internal/certificate/handler.go` (only non-test source file, 1 of ≤3): `followedHub` returns
+  `store.HubSummary` (carries `HubID` + `LastSize`); `buildData` builds `lookupID := "ISCC:" +
+  strings.TrimPrefix(rawID, "ISCC:")`, looks up the prefixed form, and applies the accepted-tree cap
+  before setting `Certifiable`. Package/`buildData`/`certData.Certifiable` doc comments updated to match.
+- `internal/certificate/handler_test.go` (test, not counted): `fixtureStore` now indexes under
+  `"ISCC:"+indexedID` and seeds an accepted checkpoint (`LastSize = seq+1`); new
+  `fixtureStoreUnaccepted` helper takes an explicit `LastSize`. Added `TestCertificatePrefixedLookup`
+  (bare + prefixed request both certify) and `TestCertificateUnacceptedLeaf` (above-accepted-tree +
+  no-checkpoint subtests render cannot-certify). Updated `TestCertificateKnownID` docstring.
+- `cmd/iscc-monitor/main_test.go` (test, not counted): re-grounded `TestCertificateRouteMounted` —
+  indexes the golden id as `"ISCC:MAIGHFECJMOPMIAB"` and accepts a checkpoint at size 24816 — so the
+  end-to-end mux route still certifies under the new (correct) gating.
 
-**Verification:**
-- [x] `mise run check` green — build + vet + all 22 packages (incl. new `internal/certificate`); `gofmt -l .` empty.
-- [x] `go test -count=1 ./internal/certificate` — passes uncached.
-- [x] `go test -count=1 -run TestCertificateRouteMounted ./cmd/iscc-monitor` — route mounted, passes uncached.
-- [x] `go build ./...` (server build) — new package compiles + mounts.
-- [x] Known-id golden chain (`TestCertificateKnownID`) — 200 text/html, resolved `sb1.amlet.id`, position 24815, §1 SUBJECT, back-link, tier-2 link, two-tier panel, `/_ds/` links, no third-party CDN. PASS *as written* — but the fixture is mis-grounded (see Issues): it certifies with no accepted checkpoint and seeds the bare (not prefixed) id.
-- [x] Unknown-id / malformed / unresolvable-slot / not-followed / empty-id / nil-HubList — all honest 200 states. PASS.
-- [x] Method guard — non-GET → 405. PASS.
-- [x] Non-vacuity (reviewer-reproduced) — mutation (a) `Resolve(id.HubID+1)` → `TestCertificateKnownID` FAILS; mutation (b) swallow the `Decode` error → `TestCertificateMalformedID` FAILS. Tree restored, re-run green.
-- [x] Scope discipline — 3 non-test/doc source files (handler.go, cert.html, main.go); CLAUDE.md docs; 2 `_test.go`. Nothing from `## Not In Scope` done (no proof-bundle assembler, §2-§6 are gated empty placeholders, ForceQuery untouched, no Go-1.26 bump, no config field).
-- [x] Gate-integrity scan over unpushed commits — no `//nolint`, `t.Skip`, build-tag exclusion, deleted assertion, or swallowed error. The `_, _ = buf.WriteTo(w)` is the documented post-200 write-drop (matches dossier/proofserve), not a gate dodge.
-- [x] Oracle/conformance gate correctly N/A — pure HTML render of decode + resolve + a store lookup; no signature/RFC-6962/Merkle/did:web/fsck/proof path; `go.mod`/`go.sum` byte-unchanged (no new deps).
-- [ ] Accepted-tree coverage of the inclusion claim — **FAILS**: §1 certifies any indexed projection with no `LastSize` cap (see Issue 1).
-- [ ] Production-realistic id lookup — **FAILS**: bare path suffix never matches the stored `ISCC:`-prefixed `iscc_id` (see Issue 2).
+**Verification:** `mise run check` → green (build + vet + all 22 packages; `gofmt -l .` empty).
+- `go test -count=1 ./internal/certificate` → pass uncached.
+- `TestCertificateKnownID` → pass: bare-suffix request certifies the prefixed leaf within the accepted
+  tree, position 24815, §1 SUBJECT, sb1.amlet.id.
+- `TestCertificateUnacceptedLeaf` → pass (both subtests): seq >= LastSize → "not in accepted tree";
+  LastSize == 0 → "no accepted checkpoint yet"; neither shows the subject banner.
+- `TestCertificatePrefixedLookup` → pass: `/inclusion/MAIGHFECJMOPMIAB` and
+  `/inclusion/ISCC:MAIGHFECJMOPMIAB` both certify the same leaf.
+- Mutation checks (reviewer-reproducible, tree restored after each):
+  (a) removing the `seqs[0] >= LastSize` / `LastSize == 0` cap → `TestCertificateUnacceptedLeaf` FAILS
+  (renders the certifiable banner);
+  (b) reverting `lookupID` to bare `rawID` → `TestCertificateKnownID` + `TestCertificatePrefixedLookup`
+  FAIL ("not found in log"). Both non-vacuous.
 
-**Issues found:** Two `critical` filed (both confirmed real):
-1. **Certificate §1 certifies leaves outside the accepted tree (no LastSize cap)** — `buildData` sets
-   `Certifiable` on `len(seqs) > 0` alone. `PollHub` writes projections before consistency/freeze and
-   `AdvanceAccepted`, so unaccepted rows can be certified; the golden test certifies with `LastSize == 0`.
-   Fix: gate on `seqs[0] < FollowState.LastSize`, like every sibling record route.
-2. **Path-suffix id mismatched against the stored `ISCC:`-prefixed key** — production stores `iscc_id`
-   prefixed (`logclient/projection.go:32`); the handler looks up the bare suffix, so real declarations
-   report "not found in log". Tests pass only because the fixture seeds the bare form. Fix: canonicalize
-   to the stored prefixed form after decode.
-
-**Codex second opinion:** Verdict produced (exit 0). Two findings, BOTH confirmed real and filed as
-`critical` issues — I verified each against the code/gates rather than taking them on faith:
-- **[P1] Gate certificates on accepted tree coverage** (handler.go:210-212) → **confirmed**: matches the
-  documented http-surface trap (iscc_index holds projections above LastSize) and every sibling route's
-  `>= size` cap; the certificate omits it. Filed as Issue 1.
-- **[P2] Normalize bare ISCC-IDs before the lookup** (handler.go:196) → **confirmed**: `logclient`
-  stores `ISCC:`-prefixed ids verbatim; the path-suffix exact-match misses them. Filed as Issue 2.
-On the trust root the hard oracles weren't in play here (no proof/Merkle path); these are store-contract
-correctness, which I cross-checked directly against `projection.go`/`proofserve`.
-
-**Next:** Fix the two `critical` defects — they belong together in ONE slice and align with the planned
-§2 Checkpoint sub-step (which reads `FollowState`/`LastSize`/`CheckpointAt` anyway): (a) add the
-`seqs[0] < fs.LastSize` accepted-tree cap (render the cannot-certify "not in accepted tree" / "no
-accepted checkpoint yet" state otherwise), and (b) canonicalize the lookup id to the stored prefixed
-form, RE-GROUNDING the fixtures: index the leaf under `"ISCC:MAIG..."` (matching `projection.go`) and
-seed an accepted checkpoint covering it, so the golden test proves the real production path. Then §2/§3
-(Checkpoint + Inclusion proof) re-engages the oracle gate. The deferred `ForceQuery` registry fail-open
-still rides that slice.
+**Next:** §1 is now sound — proceed to the §2 Checkpoint clause (`HasClause2`), which reads
+`FollowState`/`CheckpointAt(hubID, LastSize)` to render the accepted `(size, root)` the cap already
+keys on. The accepted-checkpoint plumbing this slice introduced (the `HubSummary.LastSize` carry) is
+the same data §2 displays, so it should reuse it. After §2, §3 Inclusion proof re-engages the
+oracle/conformance gate (the proof bundle must be mutation-proven non-vacuous against the hub's
+`IsccLogInclusionProof`).
 
 **Notes:**
-- The skeleton's structure is sound (mux mount, fail-closed branching, html/template escaping,
-  StatusSource forward-wiring, interim `hubListFromEntries`); only the two certify-correctness bugs
-  block it. The fix is small and localized to `buildData` + the fixtures — no architecture change.
-- Root cause is partly in `define-next`: next.md's chain (step 4) specified `len(seqs)==0 → not found,
-  else seqs[0]` with NO `LastSize` cap and used a bare path-suffix golden id — so the plan itself missed
-  the accepted-tree gate and the prefixed-storage contract. The next define-next must call both out.
-- New learnings file `learnings/certificate.md` created (+ index pointer row) capturing the chain seam
-  and both open traps. http-surface.md is at-budget (~155 lines) so the cert surface got its own file.
-- No push (NEEDS_WORK). Commits are local on `develop`; the next cycle fixes the two issues first.
+- The oracle/conformance gate is still N/A this slice: it remains a pure HTML render of decode +
+  registry resolve + store reads (no signature/RFC-6962/Merkle/did:web/fsck/proof path). `go.mod`/
+  `go.sum` byte-unchanged (no new deps). The gate APPLIES starting at §3.
+- No template edit was needed (as next.md predicted): both new cannot-certify states route through the
+  existing `cert.html` `{{else}}` not-found branch via `data.Reason`. `data.Domain = domain` is set on
+  every post-resolve branch so the page names the hub.
+- `cmd/iscc-monitor/main_test.go` was an unavoidable third file to touch, but it is a TEST file
+  (scope counts non-test source files; only `handler.go` is source). It was a pre-existing
+  fixture-matched-to-code instance of the SAME two bugs (bare id, no accepted checkpoint) — re-grounding
+  it to ground truth was required to keep `mise run check` green and is exactly the fix this slice is
+  about.
+- The frozen-hub edge case needs no separate branch: a frozen hub's `LastSize` is its last *accepted*
+  size (freeze stops advance, ADR-0006), so the `seqs[0] < LastSize` cap already caps a frozen hub at
+  its accepted window. Documented in the code comment.
+- The two `critical` issues in `issues.md` are now closed by this change (review should delete them).
+- `learnings/certificate.md` has two OPEN (review-blocking) bullets describing exactly these fixes;
+  they can be marked resolved.

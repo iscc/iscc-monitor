@@ -2,10 +2,18 @@
 // /inclusion/{iscc_id}. The certificate is keyed on the self-describing ISCC-IDv1
 // alone (ADR-0010): the handler decodes the id (realm + 12-bit hub_id), resolves
 // the issuing hub's domain via the Hub-List (internal/registry), finds that hub's
-// store row, and looks up the id's indexed leaf seqs (ADR-0008 one-to-many). It
-// then renders the Evidence-Ledger certificate page whose §1 SUBJECT clause and
-// subject banner are real — the subject id, the resolved hub domain, and the
-// subject position (seqs[0]).
+// store row, and looks up the id's indexed leaf seqs (ADR-0008 one-to-many) under
+// the canonical ISCC:-prefixed key the log writes (projection.go). It then renders
+// the Evidence-Ledger certificate page whose §1 SUBJECT clause and subject banner
+// are real — the subject id, the resolved hub domain, and the subject position
+// (seqs[0]).
+//
+// The §1 inclusion claim is gated on the accepted tree (ADR-0001 coverage
+// honesty): an id is only certified when its earliest indexed seq falls below the
+// hub's accepted checkpoint size (seqs[0] < LastSize), mirroring every sibling
+// record route. A leaf indexed above the accepted checkpoint (a frozen/failed poll
+// left an unaccepted projection) or a hub with no accepted checkpoint yet renders
+// an honest cannot-certify state, never an affirmative claim.
 //
 // This is the verifiable skeleton of the certificate: §1 Subject plus the
 // documented honesty states. Clauses §2-§6 (checkpoint, inclusion proof, signing
@@ -80,9 +88,11 @@ type certData struct {
 	// IsccID is the subject id as supplied by the caller (echoed verbatim, never
 	// interpreted beyond the decode). It is shown even on a not-found.
 	IsccID string
-	// Certifiable is true only when the id decoded, resolved to a followed hub, and
-	// had at least one indexed leaf — the state the subject banner and §1 clause
-	// render against. When false the page renders the honest not-found state.
+	// Certifiable is true only when the id decoded, resolved to a followed hub, had
+	// at least one indexed leaf under the canonical ISCC:-prefixed key, AND that
+	// earliest leaf falls within the hub's accepted checkpoint (seqs[0] < LastSize,
+	// the accepted-tree cap, ADR-0001). It is the state the subject banner and §1
+	// clause render against. When false the page renders the honest not-found state.
 	Certifiable bool
 	// Domain is the resolved issuing-hub domain (e.g. sb1.amlet.id), shown in the
 	// subject banner and §1 clause. Empty until the id resolves to a followed hub.
@@ -159,8 +169,13 @@ func Handler(hubList *registry.HubList, st *store.Store, statuses StatusSource) 
 //  1. Decode the id — a decode error → "not a valid ISCC-ID".
 //  2. Resolve the hub_id slot via the Hub-List — an unknown slot → "not in this realm".
 //  3. Find the resolved domain's followed-hub row — none → "hub not followed by this monitor".
-//  4. Look up the id's indexed seqs — none → "not found in log"; else the subject
-//     position is seqs[0] (ascending, the deterministic default, ADR-0008).
+//  4. Look up the id's indexed seqs under the canonical ISCC:-prefixed key — none →
+//     "not found in log".
+//  5. Gate the affirmative claim on the accepted tree (ADR-0001 coverage honesty):
+//     no accepted checkpoint yet (LastSize == 0) → "no accepted checkpoint yet";
+//     seqs[0] >= LastSize (indexed but above the accepted checkpoint) → "not in
+//     accepted tree"; only seqs[0] < LastSize certifies, with subject position
+//     seqs[0] (ascending, the deterministic default, ADR-0008).
 func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawID string) (certData, int) {
 	if rawID == "" {
 		return certData{Reason: "no ISCC-ID supplied"}, http.StatusOK
@@ -183,7 +198,7 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 		return data, http.StatusOK
 	}
 
-	hubID, ok, err := followedHub(r, st, domain)
+	hub, ok, err := followedHub(r, st, domain)
 	if err != nil {
 		return certData{}, http.StatusInternalServerError
 	}
@@ -192,14 +207,40 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 		data.Reason = "hub not followed by this monitor"
 		return data, http.StatusOK
 	}
+	data.Domain = domain
 
-	seqs, err := st.SeqsForISCCID(r.Context(), hubID, rawID)
+	// Canonicalize the lookup id to the stored form: logclient writes iscc_id
+	// VERBATIM and ISCC:-prefixed (projection.go:31-32), so a PATH route must query
+	// the prefixed form. TrimPrefix accepts either /inclusion/MAIG… or
+	// /inclusion/ISCC:MAIG… and never double-prefixes; index.iscPrefix is unexported,
+	// so the literal "ISCC:" is used here (matching how cert.html carries literal
+	// /_ds/ paths). rawID is still echoed as data.IsccID for display.
+	lookupID := "ISCC:" + strings.TrimPrefix(rawID, "ISCC:")
+	seqs, err := st.SeqsForISCCID(r.Context(), hub.HubID, lookupID)
 	if err != nil {
 		return certData{}, http.StatusInternalServerError
 	}
 	if len(seqs) == 0 {
-		data.Domain = domain
 		data.Reason = "not found in log"
+		return data, http.StatusOK
+	}
+
+	// Accepted-tree cap (Correctness rule: coverage honesty, ADR-0001). PollHub
+	// writes iscc_index projections BEFORE the consistency/freeze checks and
+	// AdvanceAccepted, so iscc_index can hold projections ABOVE the accepted
+	// LastSize (the documented http-surface trap). Gate the affirmative inclusion
+	// claim on the accepted checkpoint, mirroring every sibling record route
+	// (serveInclusion/serveEntries/serveRecord cap at leafIndex/seq >= size). A
+	// frozen hub's LastSize is its last ACCEPTED size (freeze stops advance,
+	// ADR-0006), so the same cap correctly caps a frozen hub at its accepted window.
+	if hub.LastSize == 0 {
+		data.Reason = "no accepted checkpoint yet"
+		return data, http.StatusOK
+	}
+	// seqs is ascending (SeqsForISCCID ORDER BY seq), so seqs[0] is the earliest
+	// indexed candidate — the right one to gate on.
+	if seqs[0] >= hub.LastSize {
+		data.Reason = "not in accepted tree"
 		return data, http.StatusOK
 	}
 
@@ -208,25 +249,27 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 	// default (seqs ascending), matching serveVerify. Nothing about the id is
 	// interpreted.
 	data.Certifiable = true
-	data.Domain = domain
 	data.Position = seqs[0]
 	return data, http.StatusOK
 }
 
-// followedHub maps a resolved hub domain to the monitor's store hub_id, reporting
-// ok=false when no followed hub matches that domain (a resolved-but-not-followed
-// hub, the honest "hub not followed" verdict). It reads every hub summary (the same
-// read the dossier uses) and matches on Domain. A store read error returns a
-// non-nil error the caller maps to a 500.
-func followedHub(r *http.Request, st *store.Store, domain string) (int64, bool, error) {
+// followedHub maps a resolved hub domain to the monitor's store hub summary,
+// reporting ok=false when no followed hub matches that domain (a
+// resolved-but-not-followed hub, the honest "hub not followed" verdict). It reads
+// every hub summary (the same read the dossier uses) and matches on Domain. The
+// matched HubSummary carries both the HubID and the accepted LastSize the
+// accepted-tree cap reads, so buildData gates the inclusion claim with no second
+// store round-trip. A store read error returns a non-nil error the caller maps to
+// a 500.
+func followedHub(r *http.Request, st *store.Store, domain string) (store.HubSummary, bool, error) {
 	summaries, err := st.ListHubs(r.Context())
 	if err != nil {
-		return 0, false, err
+		return store.HubSummary{}, false, err
 	}
 	for _, s := range summaries {
 		if s.Domain == domain {
-			return s.HubID, true, nil
+			return s, true, nil
 		}
 	}
-	return 0, false, nil
+	return store.HubSummary{}, false, nil
 }
