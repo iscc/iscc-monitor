@@ -1,84 +1,128 @@
 # Next Work Package
 
-## Step: Port the M2 fsck leaf-hasher (`LeafHashes`) — entry-bundle → RFC-6962 leaf hashes
+## Step: Wire `LeafHashes` + `SQLiteFetcher` into `fsck.New(...).Check(...)` — the M2 root-rebuild conformance slice
 
 ## Goal
-Land the pure entry-bundle leaf hasher that `fsck.New(...)` takes as its hasher argument — the
-foundational, dep-clean unit of the M2 root-rebuild conformance. It decodes a tlog-tiles entry bundle
-and RFC-6962-hashes each entry, so a later slice can feed it (plus the `SQLiteFetcher`) into the real
-`fsck` integrity check. This is the smallest verifiable step toward M2's "fsck rebuilds each accepted
-root" Verify bar, and it adds no new dependency.
+Land `logclient.RunFsck(...)`, the wiring that runs tessera's `fsck.New(origin, verifier, fetcher,
+LeafHashes, opts).Check(ctx)` over a mirror fetcher, and prove it end-to-end: a conformance test
+synthesizes a small tlog-tiles log in-process, seeds its checkpoint + entry bundles + hash tiles into
+a real `store.SQLiteFetcher`, and asserts `RunFsck` rebuilds the signed root (and *fails* when a
+mirrored BLOB is corrupted). This is the first slice to re-arm the trust-root oracle gate for the
+**mirror path** and delivers the first half of M2's Verify bar ("fsck rebuilds each accepted root from
+the `SQLiteFetcher`").
 
 ## Scope
-- **Create**: `internal/logclient/leafhasher.go` — one exported pure function (plus its file docstring).
-- **Create**: `internal/logclient/leafhasher_test.go` — table-driven golden test.
-- **Modify**: (none — no non-test/doc source file changes; `go.mod`/`go.sum` stay byte-identical)
+- **Create**: `internal/logclient/fsck.go` — `RunFsck(ctx, vkey, origin string, f fsck.Fetcher) error`
+  (the only non-test source file).
+- **Modify**: `go.mod` + `go.sum` — run `go mod tidy` so `github.com/transparency-dev/tessera/fsck`
+  and its require-graph enter the closure (verified by a throwaway probe: importing `tessera/fsck`
+  forces a tidy; `tessera@v1.0.2` is already a direct require and `formats` is in the module cache).
+- **Create**: `internal/logclient/fsck_test.go` — the conformance test, in external `package
+  logclient_test` so it may import both `logclient` and `internal/store` without adding any production
+  import edge.
 - **Reference**:
-  - `cauldron/iscc-hub/conformance/runfsck/main.go` — the `leafHasher(bundle []byte) ([][]byte, error)`
-    reference (lines 24–35): `api.EntryBundle{}.UnmarshalText` then `rfc6962.DefaultHasher.HashLeaf(e)`
-    per entry, returning `h[:]`. This is *exactly* the `fsck.New(...)` hasher signature.
-  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/api/state.go` — `EntryBundle`
-    (lines 66–93): `UnmarshalText` parses the C2SP framing (2-byte big-endian length prefix + data per
-    entry) into `Entries [][]byte`. Use this to write the in-test bundle encoder (mirror it:
-    `binary.BigEndian.PutUint16(prefix, uint16(len(rec)))` then `prefix || rec`, concatenated).
-  - `cauldron/iscc-hub/iscc_hub/log_tree.py` — `_leaf_hashes` / `merkle.leaf_hash` (lines 69–81): the
-    hub-side ground truth that each committed record is RFC-6962-leaf-hashed in index order.
-  - `internal/logclient/proofbuilder.go` — the in-package precedent that already imports
-    `tessera/api` + `merkle/rfc6962` and documents the WASM-purity invariant; match its import style and
-    file-docstring conventions.
+  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/fsck/fsck.go` — the real `fsck`
+    package: `Fetcher` interface (3 methods, byte-identical to `SQLiteFetcher`), `New(origin string,
+    verifier note.Verifier, f Fetcher, bundleHasher func([]byte) ([][]byte, error), opts Opts) *Fsck`,
+    `(*Fsck).Check(ctx) error`, `Opts{N uint}`. `Check` fetches the checkpoint via the fetcher's
+    `ReadCheckpoint`, re-hashes bundles with `bundleHasher`, re-derives tiles, and compares the rebuilt
+    root to `cp.Hash` (line 158).
+  - `cauldron/iscc-hub/conformance/runfsck/main.go` — the reference invocation (`fsck.New(*origin, v,
+    src, leafHasher, fsck.Opts{N: 1})`, lines 64–68); `RunFsck` ports this minus the HTTP fetcher +
+    flag/`os` glue, passing the existing `logclient.LeafHashes` as `bundleHasher`.
+  - `internal/logclient/leafhasher.go` — `LeafHashes(bundle []byte) ([][]byte, error)`, already the
+    exact `func([]byte) ([][]byte, error)` shape `fsck.New` wants.
+  - `internal/store/fetcher.go` — `SQLiteFetcher{Store,HubID}` already satisfies `fsck.Fetcher`
+    structurally (`ReadCheckpoint`/`ReadTile(ctx,l,i,p)`/`ReadEntryBundle(ctx,i,p)`); the test passes
+    it straight in. Note the p↔width map: `p==0→256`, else `int(p)` (`widthForP`).
+  - `internal/store/tiles.go` — `RecordTile`/`RecordEntryBundle` (+ `RecordCheckpoint` in
+    `checkpoints.go`) are the test's seed-side writes (BLOB + width + observedAt).
+  - `internal/logclient/proofbuilder_test.go` — the in-test ground-truth pattern to reuse: build a
+    `testonly.New(rfc6962.DefaultHasher)` tree, derive hash-tile BLOBs via
+    `api.HashTile{Nodes:…}.MarshalText()` and the `nodeHash` helper. This slice *additionally* needs
+    entry-bundle BLOBs (`api.EntryBundle{Entries:…}.MarshalText()`) and a signed checkpoint.
+  - `internal/logclient/verify.go` — mirror its `note.NewVerifier(vkey)` construction; the body framing
+    `"<origin>\n<size>\n<base64(root)>\n"` is the exact text the test must sign.
+  - `cauldron/iscc-hub/conformance/notecheck/main.go` — confirms `note.NewVerifier` / `note.Open` are
+    the signed-note tooling; the test signs with `note.NewSigner`/`note.Sign` over a generated keypair.
 
 ## Not In Scope
-- **No `fsck.New(...).Check(...)`**, no `tessera/fsck` / `tessera/client` import, no `cmd/fsck` wrapper.
-  (`cauldron/tessera/fsck` is not even vendored here — only `cauldron/tessera/client` is — and `fsck`
-  pulls `net/http`/`otel`/`klog`: a separate, heavier slice with its own go.mod cost. This step stays
-  dep-clean.)
-- No new conformance package, no `internal/conformance`, no real on-disk tile/entry-bundle fixtures
-  under `testdata/live/` (the fixture slice is its own later step).
-- No inclusion cross-check against the hub's `IsccLogInclusionProof` (the other half of the M2 Verify
-  bar — a later slice).
-- No CI / `notecheck` wiring (the open `normal` issue — a separate slice; this step touches no
-  signature/proof CI surface).
-- No follower wiring; `LeafHashes` is an intentional unused-until-wired export seam (like the
-  consistency triggers and `IsFull`), consumed by the future `fsck` slice. Do not add a caller.
+- **The inclusion cross-check against the hub's own `evidence.IsccLogInclusionProof`** (the *second
+  half* of M2's Verify bar). It needs real captured `IsccLogInclusionProof` fixtures and an inclusion
+  `ProofBuilder` path — its own later slice. This step delivers only the root-rebuild half.
+- **Live tile-ingestion writer** — making `PollHub` mirror real tiles/bundles from a hub is a separate
+  M2 slice; this step seeds the store synthetically in-test, never over the network.
+- **Calling `RunFsck` from the follower / a periodic fsck loop** — `RunFsck` lands as an
+  unused-until-wired export seam (like the consistency triggers, `IsFull`, `LeafHashes`), `go
+  vet`-clean. Do not add a production caller.
+- **Capturing real on-disk `testdata/live/` tile fixtures** — not required once the log is synthesized
+  in-process; defer real-hub capture to the live-ingestion slice.
+- **CI / `notecheck` workflow** (the open `normal` issue) — its natural companion, but a separate step;
+  define-next will pick it next so the mirror path faces the external oracle in CI.
 
 ## Implementation Notes
-- **Port `runfsck`'s `leafHasher` verbatim in shape**, exporting it. Suggested signature, matching the
-  `fsck` hasher contract exactly:
-  `func LeafHashes(bundle []byte) ([][]byte, error)`.
-  Body: `eb := &api.EntryBundle{}; if err := eb.UnmarshalText(bundle); err != nil { return nil, fmt.Errorf("logclient.LeafHashes: unmarshal entry bundle: %w", err) }`,
-  then for each `e := range eb.Entries` append `h := rfc6962.DefaultHasher.HashLeaf(e); out = append(out, h[:])`.
-  Pre-size `out := make([][]byte, 0, len(eb.Entries))`.
-- **Purity (Correctness rule: `proof/verify` is pure — keep WASM-shareable).** Import ONLY
-  `fmt` + `github.com/transparency-dev/tessera/api` + `github.com/transparency-dev/merkle/rfc6962`. Do
-  NOT import `net`/`net/http`/`database/sql`/`os`. The `logclient` *package* already pulls `net/http`
-  via `didresolve.go`, so the load-bearing invariant is the **file-level** import cleanliness plus the
-  `GOOS=js GOARCH=wasm go build ./internal/logclient` still building — both `tessera/api` and
-  `merkle/rfc6962` are already proven WASM-clean by `proofbuilder.go`.
-- **`HashLeaf` returns a 32-byte `[]byte`**; take `h[:]` to get the `[]byte` element exactly as
-  `runfsck` does. Each returned hash is 32 bytes.
-- **Error edge cases** (assert at least one): an empty bundle (`len == 0`) decodes to zero entries →
-  `(len == 0, err == nil)` (non-nil-empty or nil slice both fine; assert on `len`). A truncated bundle
-  (a 2-byte length prefix promising more bytes than remain) must surface the wrapped `UnmarshalText`
-  error — feed `[]byte{0x00, 0x05, 0x01}` (claims 5 data bytes, only 1 present) and assert `err != nil`.
-- **Oracle/conformance gate APPLIES (this is RFC-6962 leaf-hash crypto)** and must be satisfied by
-  independent ground truth, not a tautology. Build the in-test entry bundle by encoding raw record
-  bytes with the C2SP framing yourself (the encoder above), then assert each `LeafHashes(bundle)[i]`
-  equals `rfc6962.DefaultHasher.HashLeaf(records[i])` computed independently in the test. The decode
-  path (`api.EntryBundle.UnmarshalText`) and the hash path are distinct from the test's encode path, so
-  the cross-check is not circular. Use ≥3 entries of differing lengths (including a zero-length entry)
-  so the framing-walk is non-vacuous, and assert each hash is exactly 32 bytes.
+- **`RunFsck` is thin glue.** Signature: `func RunFsck(ctx context.Context, vkey, origin string, f
+  fsck.Fetcher) error`. Body: `v, err := note.NewVerifier(vkey)` (wrap on error, mirroring
+  `VerifyCheckpoint`), then `return fsck.New(origin, v, f, LeafHashes, fsck.Opts{N: 1}).Check(ctx)`
+  wrapped with `%w`. Imports are exactly `context` + `fmt` + `golang.org/x/mod/sumdb/note` +
+  `github.com/transparency-dev/tessera/fsck` (+ same-package `LeafHashes`). **Take the `fsck.Fetcher`
+  interface, NOT the concrete `store.SQLiteFetcher`**, so production `logclient` gains no `store`
+  import edge; the test supplies the concrete fetcher.
+- **Correctness rule (learnings — entry-bundle leaf hasher + SQLiteFetcher).** `fsck` re-hashes each
+  entry bundle with `LeafHashes`, re-derives the lower tiles, and compares the rebuilt root to the
+  checkpoint's `cp.Hash`. Seed entry bundles whose `LeafHashes` output matches the tree's leaf hashes,
+  and hash tiles whose bottom row equals `rfc6962.DefaultHasher`'s node hashes — else `Check`
+  legitimately fails. Use ONE `testonly.Tree` as the single source of truth for both leaf and node
+  hashes (the `nodeHash` helper from `proofbuilder_test.go`), so prover and verifier stay independent
+  of the fetcher under test.
+- **Entry-bundle BLOB framing.** `LeafHashes` decodes via `api.EntryBundle{}.UnmarshalText`, so encode
+  the seed bundles with `api.EntryBundle{Entries: [][]byte{…}}.MarshalText()`. Each `e` in `Entries`
+  is the raw leaf *preimage*; `fsck` runs `rfc6962.DefaultHasher.HashLeaf(e)`. Build the
+  `testonly.Tree` from those SAME preimages (`tree.AppendData(e)`), so the tree's leaf hashes equal
+  `HashLeaf(e)` and the rebuilt root matches `tree.Hash()`.
+- **Width discipline (learnings — tlog-tiles layout + SQLiteFetcher).** Start with a small
+  within-one-tile log (e.g. 3–10 leaves): one partial entry bundle at index 0 and one partial level-0
+  hash tile at index 0, both `width == n`. Seed with `RecordEntryBundle(…, width=n, …)` and
+  `RecordTile(…, level=0, index=0, width=n, …)`. The `SQLiteFetcher` p↔width map means `fsck`
+  requesting partial `p=n` resolves to `width=n`. A within-one-tile log avoids the 256-leaf boundary
+  for the first green; an optional second case crossing 256 (full tile 0 + partial tile 1, the
+  `proofbuilder_test.go` shape) strengthens it but is not required for the Done bar.
+- **Signed checkpoint.** Generate an Ed25519 keypair + the C2SP vkey in-test (`note.GenerateKey(rand,
+  name)` returns `(skey, vkey)`; `name` = `origin`). Sign the body `"<origin>\n<n>\n<base64(tree.Hash())>\n"`
+  with `note.Sign(&note.Note{Text: body}, signer)`; seed the signed bytes via `RecordCheckpoint`.
+  `RunFsck` verifies with that same `vkey`. `origin` is any stable name (e.g. `"sb0.iscc.id/log"`); it
+  need not be a live hub since the key is synthetic. **Do not reuse the real testnet checkpoint
+  fixtures** — their root commits a ~10183-leaf tree whose tiles are not mirrored here.
+- **Oracle gate APPLIES (RFC-6962 root-rebuild crypto) — make the test non-vacuous (learnings: "a
+  green-but-wrong verify must not ship").** Assert BOTH, as two subtests: (1) `RunFsck` returns `nil`
+  over the correctly-seeded store; (2) `RunFsck` returns a non-nil error after corrupting one mirrored
+  tile OR entry-bundle BLOB (flip a byte, re-`RecordTile`/`RecordEntryBundle` at the same key),
+  proving the rebuild genuinely compares against the checkpoint root rather than trivially passing.
+  This mutation is baked into the committed test, not a throwaway. Document in the test that `fsck` is
+  an in-process structural **self-check** (it shares the monitor's code); the fully-independent oracle
+  (`notecheck`) is the deferred CI companion.
+- **go.mod cost (learnings — tessera/merkle dep hygiene).** `go mod tidy` will add `tessera/fsck`'s
+  require-graph (`k8s.io/klog/v2`, `go.opentelemetry.io/otel*`, `golang.org/x/sync`,
+  `transparency-dev/formats`) to the `// indirect` block + `go.sum`. Keep the `go` directive at `go
+  1.24.0` with **no** `toolchain` line (drop any auto-injected one). Confirm `go mod tidy && git diff
+  --exit-code -- go.mod go.sum` is idempotent after the commit.
+- **WASM nuance (learnings).** `logclient` already pulls `net/http` via `didresolve.go`, so file-level
+  WASM purity is the invariant for the OTHER files, not `fsck.go` — `fsck` is a server-side mirror
+  check, never WASM. Do not attempt to keep `fsck.go` WASM-clean.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -run TestLeafHashes ./internal/logclient` passes.
-- `GOOS=js GOARCH=wasm go build ./internal/logclient` exits 0 (file-level purity invariant holds).
-- `go build ./... && git diff --exit-code -- go.mod go.sum` exits 0 (no new dependency added).
-- Assertion: for a 3-entry bundle with records `r0,r1,r2`, `LeafHashes(encode(r0,r1,r2))` returns 3
-  hashes, each 32 bytes, with `out[i]` byte-equal to `rfc6962.DefaultHasher.HashLeaf(ri)`.
-- Assertion: `LeafHashes(nil)` (or empty bundle) → `len == 0`, `err == nil`; a truncated bundle
-  (`[]byte{0x00,0x05,0x01}`) → `err != nil`.
+- `mise run check` is green (`go build ./...` + `go vet ./...` + `go test ./...`, all packages `ok`).
+- `gofmt -l .` is empty.
+- `go test -count=1 -run TestRunFsck ./internal/logclient` passes uncached, with at least two
+  subtests: one asserting `RunFsck` returns `nil` over the correctly-seeded `SQLiteFetcher`, one
+  asserting it returns a non-nil error after a one-byte corruption of a mirrored tile/bundle BLOB.
+- `go mod tidy && git diff --exit-code -- go.mod go.sum` exits 0 (tidy is idempotent after the commit).
+- `grep -c '^go 1.24.0$' go.mod` is 1 and `grep -c '^toolchain' go.mod` is 0 (no toolchain pin).
+- The trust-root goldens still reproduce: `go test -count=1 -run 'VerifierKey|Origin'
+  ./internal/didweb/ ./internal/logclient/` passes (verifier-key + origin goldens unchanged).
 
 ## Done When
-`internal/logclient/leafhasher.go` exports the pure entry-bundle leaf hasher, every Verification check
-passes (including the WASM build and the byte-identical go.mod/go.sum), and the golden test
-cross-checks against independently-computed `rfc6962` leaf hashes.
+`mise run check` is green and `go test -run TestRunFsck ./internal/logclient` passes with both the
+correctly-seeded `nil` case and the corrupted-BLOB non-nil case, `go mod tidy` is idempotent, and the
+existing trust-root goldens are unchanged — proving `fsck.New(...).Check(...)` rebuilds the signed
+root from the local `SQLiteFetcher` and rejects a tampered mirror.
