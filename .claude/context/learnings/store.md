@@ -29,30 +29,23 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## iscc_index writer/reader (`internal/store/iscc_index.go`)
 
-- **`RecordProjections` (per-row `ON CONFLICT(seq) DO UPDATE`) + `SeqsForISCCID` (BLOB-column
-  `WHERE hub_id=? AND iscc_id=? ORDER BY seq`) are the store half of the M2 projection (ADR-0008),
-  and both load-bearing surfaces are mutation-proven non-vacuous.** Reviewer ran two mutations
-  (reverted): (1) drop the `hub_id` filter from `SeqsForISCCID` → `TestSeqsForISCCIDScopedByHub`
-  FAILS (`[10 20]` vs `[10]`); (2) `DO UPDATE` → `DO NOTHING` → `TestRecordProjectionsIdempotent`
-  FAILS on "second write wins" (`note_schema`+`record_sha256` both stale). So a green-but-wrong
-  upsert/scope cannot ship. The idempotency test asserts BOTH `COUNT(*) WHERE seq==1` AND the
-  updated fields round-trip — the count alone would pass `DO NOTHING`, the field-compare is what
-  catches it.
-- **`iscc_id` is bound BOTH as the BLOB (`[]byte(r.IsccID)`) and the TEXT (`r.IsccID`) column, and
-  the reader queries the BLOB** (`WHERE iscc_id = ? [as []byte]`) so the `iscc_index_by_iscc_id`
-  index drives the lookup — no ISCC-ID codec, ADR-0008's "interpret nothing" intact (the only
-  `maintype/subtype` mention is the docstring saying it is *not* done). An empty `IsccID` is an
-  empty BLOB + empty string (not NULL), looked up verbatim via `SeqsForISCCID("")` — the test pins
-  this. Scan side reads the INTEGER `seq` into `int64` then `uint64(seq)`, symmetric with the
-  `int64(r.Seq)` write bind.
-- **`next.md` proposed imports `context, database/sql, errors, fmt`; advance correctly shipped only
-  `context + fmt`.** The reader's absent case is the natural empty `rows.Next()` result, not an
-  `sql.ErrNoRows` sentinel, so `database/sql`/`errors` are genuinely unneeded (unlike
-  `checkpoints.go`'s `LookupHubKey` which consults `sql.ErrNoRows`). Dropping unused imports is
-  required (gofmt/vet reject them), not a deviation worth flagging. Store stays a leaf (verified:
-  `.Imports` has no `internal/logclient`/`net/http`), `schema.sql`/`go.mod`/`go.sum` byte-unchanged.
-  Unwired-until-M2 seam (no production caller; first caller is the `PollHub` `iscc_id → leafIndex →
-  VerifyInclusionEvidence` slice), `go vet` clean, not dead code.
+- **settled:** `RecordProjections` writer + the two readers (`SeqsForISCCID` one-to-many BLOB lookup,
+  `RecordAt` single-row `(hub_id, seq)` PK read) are the store half of the M2 projection (ADR-0008),
+  store stays a leaf (no `internal/logclient`/`net/http`), schema/go.mod/go.sum byte-unchanged. Writer
+  is per-row `ON CONFLICT(seq) DO UPDATE` (second write wins; mutation `DO NOTHING` → idempotency test
+  FAILS on stale fields). `iscc_id` is bound as BOTH the BLOB and TEXT column; readers query the BLOB
+  so the index drives it (no ISCC-ID codec). `RecordAt` maps `sql.ErrNoRows → (RecordRow{}, false, nil)`
+  (absent projection is a plain miss, not an error — the leaf's mirrored BYTES are the source of truth);
+  reads `iscc_id_str`/`note_schema` through `sql.NullString` (NULL→""); scans `seq` int64→uint64.
+  Hub-scoping is load-bearing for both readers (mutation dropping `hub_id` → scope test FAILS). (Detail
+  in git history at-2026-06-21.) One durable trap below.
+- **The stored `note.$schema` is the VERBATIM wire value — a full URI, NOT a short name.** Production
+  records carry `http://purl.org/iscc/schema/iscc-note-0.8.0.json` (declaration) /
+  `…iscc-note-delete-0.8.0.json` (deletion); the golden `projection_test.go` and `follower/fsck_test.go`
+  pin exactly these, and every realistic store fixture uses the `…-0.8.0.json` form. Any consumer that
+  matches `note_schema` against a literal (e.g. a kind-label map) MUST use the full URI, and its test
+  MUST seed the URI, not a glossary short form — CLAUDE.md's `iscc-note-0.8.0` is prose shorthand, never
+  the wire value (the open `proofserve` kind-label issue is exactly this trap shipped).
 
 ## SQLite store (`internal/store`)
 

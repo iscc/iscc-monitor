@@ -1,65 +1,74 @@
-## 2026-06-21 — Single-record page at `GET /record?index=<seq>` (declaration / deletion / unknown schema)
+## 2026-06-21 — Review of: Single-record page at `GET /record?index=<seq>`
 
-**Done:** Added a server-rendered, no-JS, DS-shell single-record page that renders one accepted leaf's
-seq, a kind label derived from the verbatim `note.$schema` (Declaration / Deletion / Unknown record
-type — the only interpretation, fail-open), the verbatim ISCC-ID and schema, and the raw record bytes
-read from the mirror, and re-pointed every `/records` row from `entries?index=<seq>` to
-`record?index=<seq>`. The route is mounted in `cmd/iscc-monitor`'s per-hub mux so it works in
-production.
+**Verdict:** NEEDS_WORK
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/store/iscc_index.go`: added `RecordAt(ctx, hubID, seq) (RecordRow, found, err)` — a
-  single-row projection reader via `QueryRowContext` on the `(hub_id, seq)` PK; `sql.ErrNoRows` →
-  `(RecordRow{}, false, nil)` (absent is a plain miss, not an error); reuses `RecordRow`; added the
-  `errors` import (now consults `errors.Is(err, sql.ErrNoRows)`).
-- `internal/proofserve/handler.go`: added `//go:embed record.html` + parsed-once `recordTmpl`, the
-  schema→kind constants, `recordData` view-model, `recordKind` helper (fail-open mapping), `serveRecord`
-  (copies `serveEntries`' bundle-read + accepted-tree-cap flow incl. `p := tiles.PartialTileSize(0,
-  bundleIndex, size)`; reads labels via `RecordAt` but never 404s on a missing projection — bytes are
-  the source of truth), and a `case "/record":` in the path switch.
-- `internal/proofserve/record.html` (new): DS-shell page mirroring `records.html`/`browser.html` —
-  `/_ds/tokens.css` + `/_ds/fonts.css`, `var(--*)` tokens, no CDN, `{{template "hubStatusBadge" .}}`,
-  unquoted `[data-status=…]` selectors, raw bytes in a `<pre><code>` via auto-escape (string-cast).
-- `internal/proofserve/records.html`: row link `entries?index=` → `record?index=`; footnote reworded.
-- `cmd/iscc-monitor/main.go`: `mux.Handle("/record", proofs)` + hubHandler doc note.
-- `CLAUDE.md`: added the `GET /<domain>/log/record?index=<seq>` endpoint line; updated the `/records`
-  line to say each row links to the single-record page.
-- Tests: new `internal/proofserve/record_test.go` (12 HTTP-seam cases), new
-  `internal/store/iscc_index_test.go::TestRecordAt`/`TestRecordAtScopedByHub`; updated
-  `records_test.go` row-link assertions; updated `cmd/iscc-monitor/main_test.go::TestMirrorRecordsRoute`
-  (stale `entries?index=` → `record?index=`) and added `TestMirrorRecordRoute` (binary-level mount proof).
+**Summary:** The single-record page lands with a clean handler (serveRecord faithfully copies
+serveEntries' accepted-tree-capped bundle math, treats the mirrored bytes as the source of truth so a
+missing projection renders rather than 404s, and mounts correctly in cmd/iscc-monitor), a well-dressed
+DS-shell template, and thorough HTTP-seam tests; gates are green and store stays a leaf. BUT it ships a
+real correctness defect: the kind-label constants are glossary short forms (`iscc-note-0.8.0`), while
+production `note.$schema` is the full URI `http://purl.org/iscc/schema/iscc-note-0.8.0.json`, so every
+real declaration/deletion renders "Unknown record type" — defeating the slice's primary M-UI Verify
+criterion. The synthetic test masks it by inventing the short forms.
 
-**Verification:** `mise run check` → green (`go build`, `go vet`, all 20 packages `ok`, `gofmt -l .`
-empty). Per-criterion:
-- `go test -run TestRecord ./internal/proofserve` — PASS (in-tree leaf 200 across the bundle boundary
-  shows seq/id/schema/raw bytes; Declaration/Deletion/Unknown labels incl. empty-schema → 200 no-error
-  clause; missing/non-numeric index → 400; `seq >= LastSize` → 404; `LastSize == 0` → 404; bundle not
-  mirrored → 404; non-GET → 405; DS-shell + no-CDN + no `<table>`; overlay status renders).
-- `TestRecordsListsNewestFirst` (updated) — PASS: each `/records` row links `record?index=<seq>`.
-- `go test -run TestRecordAt ./internal/store` — PASS: persisted row for existing seq, `found=false`
-  for absent, hub-scoped.
-- `go list -deps ./internal/store | grep '^net/http$'` empty AND no `internal/logclient`; `git diff
-  --stat HEAD -- internal/store/schema.sql go.mod go.sum` empty (byte-identical).
-- Conformance: `TestInclusionServedProofVerifies` / consistency tests re-ran uncached, green.
+**Verification:**
+- [x] `mise run check` green (build + vet + all 20 packages test; cached + spot re-run uncached) — PASS
+- [x] `gofmt -l .` empty — PASS
+- [x] `go test -run TestRecord ./internal/proofserve` (uncached) — PASS (but tests use short-form
+  schemas that don't match production wire values; see defect)
+- [x] `go test -run TestRecordsListsNewestFirst ./internal/proofserve` — PASS (rows now link `record?index=`)
+- [x] `go test -run TestRecordAt ./internal/store` — PASS (existing row found; absent → found=false, nil)
+- [x] `go list -deps ./internal/store | grep '^net/http$'` empty AND no `internal/logclient` — PASS (leaf)
+- [x] `git diff --stat HEAD~1..HEAD -- schema.sql go.mod go.sum` empty (byte-identical) — PASS
+- [x] Oracle/conformance gate correctly N/A and NOT skipped; inclusion/consistency conformance re-ran
+  uncached green — PASS
+- [x] Scope: exactly 3 production `.go` files (iscc_index.go, handler.go, main.go) — at budget; no gate
+  circumvention in the 3 unpushed commits (only removed assertion is the stale `entries?index=4` link,
+  replaced by `record?index=4`) — PASS
+- [ ] **M-UI Verify: "single-record page renders declaration, deletion AND an unknown note.$schema
+  without erroring"** — FAIL for declaration/deletion on real data: both render as "Unknown" because the
+  kind-label constants miss the production schema URI (the "without erroring" half holds; the
+  correct-label half does not).
 
-**Next:** The certificate of inclusion (`/inclusion/{iscc_id}`) + downloadable proof-bundle assembler
-— the next M-UI slice, which re-engages the oracle gate. The single-record page deliberately renders
-ONLY this leaf; the per-id cross-record history (original declaration joined to its deletion) belongs
-to that certificate slice.
+**Issues found:**
+- **[normal] Single-record kind-label constants miss the real `note.$schema` URIs** (filed in issues.md).
+  `handler.go:108-109` uses `iscc-note-0.8.0` / `iscc-note-delete-0.8.0`, but `BundleProjections` stores
+  the verbatim wire value, which is `http://purl.org/iscc/schema/iscc-note-0.8.0.json` (and `…delete…`).
+  Ground truth: `internal/logclient/projection_test.go:19-20` (golden test decoding real envelopes),
+  `internal/follower/fsck_test.go:119`, and the store's own `iscc_index_test.go` fixtures all use the
+  `…-0.8.0.json` form. So in production `recordKind` falls through to `kindUnknown` for every real
+  declaration/deletion. The new `record_test.go::schemaForSeq` invents the bare short forms to match the
+  constants — a self-consistent fixture that masks the bug. Fix: set both constants to the full URIs and
+  reseed the test with those URIs (also re-scope the no-CDN `http://` body ban so it doesn't false-fail
+  on the now-realistic schema data — it should target the template/CDN region, not verbatim record fields).
+
+**Codex second opinion:** Codex (exit 0) raised exactly one finding, **[P2]** "Use the full note schema
+URIs for kind labels" at handler.go:108-109 — **CONFIRMED**. I verified it independently against the
+trust-adjacent ground truth (the `BundleProjections` golden test and the follower/store fixtures all pin
+the full `http://purl.org/iscc/schema/…json` URI), filed it as a `normal` issue, and it is the blocking
+defect for this verdict. No other Codex findings. Good catch — this is precisely the class of bug a
+second skeptic exists for (green synthetic tests over a wrong constant).
+
+**Next:** Fix the kind-label constants + test in a small advance (it is a 2-line constant change plus a
+fixture/no-CDN-assert correction, scoped to `internal/proofserve`). That closes the open `normal` issue
+and completes the single-record M-UI Verify criterion. Then proceed to the originally-planned next
+slice: the certificate of inclusion (`/inclusion/{iscc_id}`) + downloadable proof-bundle assembler,
+which re-engages the oracle gate.
 
 **Notes:**
-- Oracle/conformance gate is correctly N/A and NOT skipped: the page is a pure decode-and-index render
-  of persisted projection rows + mirrored bundle bytes — no signature / RFC-6962 / Merkle / did:web /
-  fsck / proof-build path. The existing inclusion/consistency conformance tests still run green.
-- Scope: exactly 3 non-test/doc `.go` files touched (`iscc_index.go`, `handler.go`, `main.go`) — at
-  budget. The `cmd/iscc-monitor/main_test.go` edits are a stale-assertion fix (the row link changed) +
-  one new mount-proof test; the next.md only named `records_test.go` for the row-link update, but the
-  same affordance is asserted at the binary level in `main_test.go`, so it had to move too. No
-  assertion was deleted or weakened — the cmd test now asserts the new `record?index=` link, and the
-  added `TestMirrorRecordRoute` is the binary-level proof the new mount works (the proofserve unit test
-  drives the handler directly and cannot catch a missing mux mount, per next.md).
-- The missing-projection case (next.md's explicit decision point) is handled as designed:
-  `RecordAt` `found=false` still renders 200 from the bytes with id/schema shown as "no projection
-  indexed", schema→kind defaulting to Unknown — covered by `TestRecordRendersWithoutProjection`.
-- Pre-existing unstaged change to `.claude/context/target.md` was left untouched and NOT committed (not
-  my file to modify per the protocol).
+- The handler flow itself is correct and should be kept: accepted-tree cap, partial-bundle `p`, bytes-as-
+  source-of-truth (missing projection → 200 "no projection indexed", not 404), buffer-then-200, overlay
+  status via the shared badge partial. Only the two kind-label constants (and the test that feeds them)
+  are wrong — the fix is local and low-risk.
+- Watch the no-CDN test interaction: once the constants/test use the real URI, the rendered page body
+  will contain `http://purl.org/...` as legitimate record data. The `TestRecordLinksTokensNoCDN`
+  `http://`/`https://` ban must be narrowed to the template/style region (or the projection in that test
+  given a non-URL schema) so it bans CDN refs without false-failing on verbatim record fields.
+- The 3 unpushed commits (update-state, define-next, advance + this review) are NOT pushed — verdict is
+  NEEDS_WORK, so per protocol the next cycle fixes the defect first, then pushes.
+- Pre-existing unstaged change to `.claude/context/target.md` was left untouched (not a review-owned file).
+- Learnings rotated: store.md 149→142 lines (collapsed the iscc_index writer/reader detail into one
+  `settled:` bullet + added the durable "note.$schema is the full wire URI, not a short name" trap);
+  http-surface.md 158→157 (collapsed inclusion/consistency/entries/records settled bullets, added the
+  single-record section + the schema-URI interpretation trap).

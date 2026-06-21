@@ -19,14 +19,12 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## Computed inclusion proof HTTP surface (`internal/proofserve/handler.go`)
 
-- **settled:** the `/inclusion` RFC-6962 proof seam is landed + stable — strip discipline (`"/"+Origin`,
-  NOT `+"/"`, so the inner `ServeMux` keeps its leading slash and exact mounts beat the `/` subtree),
-  oracle gate APPLIES and was mutation-proven non-vacuous (`TestInclusionServedProofVerifies`: tree
-  prover vs `InclusionProofFromTiles` vs `proof.VerifyInclusion`; reverted-mutated `proof=nil` and
-  `leafIndex+1` both FAIL), and `notecheck`/`derive_vkey.py` correctly N/A (the served object omits
-  `checkpoint`; the client refetches `/checkpoint`; `AcceptCheckpoint` owns sig/root). (Detail in git
-  history pre-2026-06-21.) The one durable trap: strip leaves the leading slash so a nested mux does not
-  301-redirect.
+- **settled:** the `/inclusion` RFC-6962 proof seam is landed + stable; oracle gate APPLIES and was
+  mutation-proven non-vacuous (`TestInclusionServedProofVerifies`; `proof=nil`/`leafIndex+1` both FAIL),
+  `notecheck`/`derive_vkey.py` correctly N/A (served object omits `checkpoint`; client refetches it).
+  (Detail in git history pre-2026-06-21.) Durable trap: strip discipline is `"/"+Origin`, NOT `+"/"`, so
+  the inner `ServeMux` keeps its leading slash, exact mounts beat the `/` subtree, and a nested mux does
+  not 301-redirect.
 - **Default seq is `seqs[0]` and it is genuinely the lowest committed seq** because `SeqsForISCCID`
   is `ORDER BY seq` ASC — so the documented "first committed seq" default is deterministic, not
   arbitrary. An explicit `&index=<n>` must equal one of the committed seqs (else 400 via `selectSeq`),
@@ -40,13 +38,11 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 ## Computed consistency proof HTTP surface (`internal/proofserve` + `CheckpointAt ORDER BY rowid`)
 
 - **settled:** the `/consistency` RFC-6962 proof seam is landed + stable (oracle gate APPLIES, mutation-
-  proven by corrupting `encoded[0]`, reverted). Three durable traps survive: (1)
-  **`VerifyConsistency(hasher, size1, size2, proof, root1, root2)`** — `proof` precedes the two roots,
-  UNLIKE `VerifyInclusion` (`leafHash` precedes `proof`); (2) degenerate `from == 0` / `from == LastSize`
-  → 200 with empty `consistencyProof` (nil proof, fetcher untouched); `from == 0` SKIPS the
-  `CheckpointAt(from)` row requirement, `from == LastSize` still REQUIRES it. Status mapping (pinned):
-  missing/non-numeric → 400; `LastSize==0` → 404; `from>LastSize` → 400 (`M ≤ N`); unrecorded `from` →
-  404; tile-miss → 404. (Detail in git history pre-2026-06-21.)
+  proven by corrupting `encoded[0]`). Durable traps: (1) **`VerifyConsistency(hasher, size1, size2,
+  proof, root1, root2)`** — `proof` precedes the two roots, UNLIKE `VerifyInclusion`; (2) degenerate
+  `from == 0`/`from == LastSize` → 200 with empty proof (`from == 0` SKIPS the `CheckpointAt(from)` row
+  requirement, `from == LastSize` still REQUIRES it). Status: missing/non-numeric → 400; `LastSize==0` →
+  404; `from>LastSize` → 400; unrecorded `from`/tile-miss → 404. (Detail in git history pre-2026-06-21.)
 - **`CheckpointAt`'s `ORDER BY rowid LIMIT 1` is correct because `id INTEGER PRIMARY KEY` aliases `rowid`
   in SQLite — rowid is monotonic by insertion, so the first-recorded (prior accepted) row wins over a
   later same-`tree_size` contradicting-evidence row** (`RecordCheckpoint` dedupes on
@@ -55,23 +51,21 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## Computed record-bytes HTTP surface (`/entries` + `internal/logclient/entries.go`)
 
-- **settled:** `GET /entries?index=<seq>` completes M2's served proof surface (3-of-3) — a pure decode +
-  index, NOT crypto. `logclient.RecordBytesFromBundle` (`UnmarshalText` then `eb.Entries[offset]`, RAW)
-  is WASM-pure; `ErrLeafOutOfBundle` → 404 via `errors.Is`; served `application/octet-stream`. Three exact
-  mounts (`/inclusion`,`/consistency`,`/entries`) share one `proofserve.Handler` via the inner path switch.
-  Mutation-proven (extractor `eb.Entries[0]`) then reverted. (Detail in git history at-2026-06-21.) Two
-  durable traps survive below.
+- **settled:** `GET /entries?index=<seq>` is a pure decode + index, NOT crypto
+  (`RecordBytesFromBundle` is WASM-pure; `application/octet-stream`); the exact mounts share one
+  `proofserve.Handler` via the inner path switch. Mutation-proven, reverted. (Detail at-2026-06-21.)
 - **Bundle reads keyed on an absolute index must compute `p := tiles.PartialTileSize(0, bundleIndex,
   size)`, NEVER pass `p == 0` unconditionally.** The final bundle of any non-multiple-of-256 tree (and
   every tree < 256 leaves) is stored only at its partial width; `SQLiteFetcher`'s partial→full fallback
-  fires ONLY for `p > 0`, so `p == 0` would 404 a leaf that IS in the accepted tree. `serveEntries` AND
-  `serveVerify` both do this; copy it for any future bundle/tile read by absolute index.
-- **`serveEntries` accepted-tree guards mirror `serveInclusion` exactly (this is the contract every
-  record-facing route must follow):** `LastSize == 0` → 404; **`seq >= LastSize` → 404 "leaf not covered
-  by accepted checkpoint"**; bundle-miss `os.ErrNotExist` → 404; `ErrLeafOutOfBundle` → 404; missing/
-  non-numeric `index` → 400; non-GET → 405. The index is the absolute leaf **seq**, schema-agnostic
-  (ADR-0008) — nothing interpreted. **The `>= LastSize` accepted-tree cap is the contract EVERY
-  record-facing route must follow** — `serveRecords`/`ListRecords` now enforces it too (see below).
+  fires ONLY for `p > 0`, so `p == 0` would 404 a leaf that IS in the accepted tree. `serveEntries`,
+  `serveVerify`, AND `serveRecord` all do this; copy it for any future bundle/tile read by absolute index.
+- **The `>= LastSize` accepted-tree cap is the contract EVERY record-facing route must follow:**
+  `LastSize == 0` → 404; `seq >= LastSize` → 404 "leaf not covered by accepted checkpoint"; bundle-miss
+  `os.ErrNotExist` → 404; `ErrLeafOutOfBundle` → 404; missing/non-numeric `index` → 400; non-GET → 405.
+  Index is the absolute leaf **seq**, schema-agnostic (ADR-0008). `serveEntries`/`serveRecord` apply it
+  to one leaf; `serveRecords`/`ListRecords` apply it to the COUNT + windowed SELECT (`iscc_index` can
+  hold projections ABOVE `LastSize` — ingest writes them before accept — so an uncapped list shows
+  unaccepted leaves whose links 404).
   `iscc_index` can hold projections ABOVE `LastSize` (ingest writes them before accept; a freeze/fault
   leaves them), so any record route that omits the cap shows unaccepted leaves whose `entries?index=`
   links would then 404.
@@ -79,24 +73,30 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 ## HTML record list at `/records` (`serveRecords` + `store.ListRecords`)
 
 - **settled:** the no-JS, newest-first (`seq DESC`), seq-cursor-paginated record list is landed + correct
-  (DS shell, no `<table>`, no CDN, unquoted `[data-status=…]` CSS so the negative overlay assert stays
-  honest, badge partial reuse, render-into-buffer-then-200; pure store-read, oracle gate N/A; store stays
-  a leaf; go.mod/go.sum/schema byte-identical). All three record-list defects are closed (`ListRecords`
-  now takes `(…, last, hasFrom, from, n)`; `serveRecords` threads `fs.LastSize` + `hasFrom = fromErr ==
-  nil`). (1) `last` caps BOTH the
-  `COUNT(*)` total and the page `SELECT` with `AND seq < ?` so the list never shows a leaf the accepted
-  checkpoint omits; (2) the page-size clamp moved to `if n > maxPageSize { n = maxPageSize }` BEFORE the
-  `int(n)` conversion; (3) `from` is no longer overloaded — `hasFrom` carries present/absent so `from=0`
-  is a real seq-0 cursor. `parseUint` gained an overflow reject. All three mutation-proven (reviewer
-  re-ran each: drop-ceiling → `total 6 want 4`; post-`int()` clamp → whole 300-row index; re-overload
-  → seq 0 unreachable), reverted. Codex concurred (no findings). **Durable lessons for any seq-cursor
-  pagination here:** never overload `0` as both a cursor value and a sentinel (carry a `has-from` bool
-  or a 1-based/`+1` cursor); clamp page size while still `uint64` BEFORE the `int()` conversion (a huge
-  `n` wraps `int(n)` negative and modernc SQLite reads a negative `LIMIT` as UNLIMITED); apply the same
-  accepted-tree ceiling to the COUNT and the windowed SELECT (an uncapped total still lies in the
-  "showing N of TOTAL" line). `parseUint` had no overflow guard (it wrapped silently in `n = n*10 + …`),
-  so it now rejects overflow with its existing error type — every shared caller treats it as a malformed
-  value, no behaviour change for empty/non-numeric.
+  (DS shell, no `<table>`, no CDN, unquoted `[data-status=…]` CSS, badge partial reuse, buffer-then-200;
+  pure store-read, oracle gate N/A; store stays a leaf; byte-identical go.mod/go.sum/schema). All three
+  record-list defects mutation-proven closed, reverted; Codex concurred. (Detail at-2026-06-21.)
+  **Durable lessons for any seq-cursor pagination here:** never overload `0` as both a cursor value and a
+  sentinel (carry a `has-from` bool or a `+1` cursor); clamp page size while still `uint64` BEFORE the
+  `int()` conversion (a huge `n` wraps `int(n)` negative and modernc SQLite reads a negative `LIMIT` as
+  UNLIMITED); apply the accepted-tree ceiling to the COUNT and the windowed SELECT alike (an uncapped
+  total lies in the "showing N of TOTAL" line). `parseUint` rejects overflow with its existing error type.
+
+## HTML single-record page at `/record?index=<seq>` (`serveRecord` + `store.RecordAt`)
+
+- **landed but defective — the kind-label map misses the real `note.$schema`.** `serveRecord` copies
+  `serveEntries`' accepted-tree-capped bundle read verbatim (`p := tiles.PartialTileSize(0, bundleIndex,
+  size)`, `RecordBytesFromBundle`, `>= LastSize` → 404, bundle-miss/`ErrLeafOutOfBundle` → 404, missing/
+  non-numeric index → 400, non-GET → 405) and renders the bytes as the source of truth — a missing
+  `iscc_index` projection is NOT a 404 (renders "no projection indexed", `HasProjection=false`), matching
+  the ADR-0008 contract. That flow is correct. The DEFECT (open issue): the kind-label constants
+  (`schemaDeclaration`/`schemaDeletion`) are short forms, but production `note.$schema` is the full URI
+  `http://purl.org/iscc/schema/iscc-note-0.8.0.json`, so real declarations/deletions render "Unknown".
+- **Durable trap for any surface that interprets `note.$schema`:** match the FULL wire URI (see
+  `projection_test.go`/`fsck_test.go`), never CLAUDE.md's prose short name, and seed the test with the
+  URI so a synthetic short-form fixture can't make a green-but-wrong label ship. A no-CDN `http://` body
+  ban must be scoped to the template/CDN region, not the verbatim record fields, once a real schema URI
+  renders into the page.
 
 ## verify-for-me JSON verdict (`/verify` + `serveVerify`)
 
