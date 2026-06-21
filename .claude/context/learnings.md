@@ -81,3 +81,4 @@ touch it. Everything package-local stays in the detail file. See `README.md` for
 | `internal/web` + dashboard `<link>` | `learnings/web.md` | embedded DS token + self-hosted woff2 `go:embed` leaf; `/_ds/` SUBTREE mount (one handler, path switch); `no-cache`+strong-ETag+304 (no `immutable` on stable paths); `serveFont` traversal guard; `noExternalCDN` bans third-party origins only (same-origin `url(` OK); dashboard ban relies on scheme-less `h.origin` |
 | `internal/registry` | `learnings/registry.md` | domains-only ADR-0009 parser; fails closed on URL-shaped lines; preserves order, no dedupe |
 | `internal/config` | `learnings/config.md` | pure env-value leaf; DB/REALM required; Frozen>=Normal cross-check ties to the back-off |
+| `internal/index` | `learnings/index.md` | pure WASM-shareable ISCC-IDv1 decoder; 80-bit layout (realm=SubType nibble, hub_id=body&0xFFF, ts=body>>12); Length nibble must be 0 (open gap); golden vector grounded in hub schema.py example |
