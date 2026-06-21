@@ -1,112 +1,96 @@
 # Next Work Package
 
-## Step: Thread `*metrics.Registry` into `PollHub`/`Tick` and fire the increment sites
+## Step: Serve `/metrics` over HTTP and wire `metrics.New()` into the binary
 
 ## Goal
-Wire the pure `internal/metrics` leaf into the follower so the four metric series
-actually move on the live verdict path — mapping the follower verdict to the
-**glossary** hub-status set, not `Status.String()`. This is the first half of M1's
-remaining `/metrics` slice (the increment call sites); the HTTP handler + `main.go`
-server wiring is the deliberate next step.
+Close M1's last open `/metrics` Verify criterion: the follower already fires all four metric
+series, but nothing is exposed and `main.go` leaves `Loop.Metrics` nil. This step adds a
+testable `net/http` handler rendering the registry in Prometheus text format and wires a live
+`metrics.New()` registry into `cmd/iscc-monitor` so production both collects and serves metrics.
 
 ## Scope
-- **Modify**: `internal/follower/follower.go` (add a `*metrics.Registry` param to
-  `PollHub`; fire `SetHubStatus`/`SetLastObservedAt` on every verdict, `IncViolation`
-  in the freeze path; add the verdict→glossary status mapper)
-- **Modify**: `internal/follower/loop.go` (add a nil-safe `Loop.Metrics *metrics.Registry`
-  field; pass it to `PollHub`; fire `IncPollFailure` on `PollHub`'s error return in `Tick`)
-- **Tests (not counted against the 3-file budget)**: update the existing `PollHub(...)` call
-  sites in `internal/follower/*_test.go` for the new param; add assertions on the registry's
-  rendered output (`Registry.String()`) for the verified / fork / unverified cases; add a
-  `glossaryStatus` unit test. `cmd/iscc-monitor/main.go` is **NOT** touched this slice (it
-  constructs `&follower.Loop{…}` with named fields, so a new optional field compiles unchanged).
+- **Create**: `internal/metricshttp/handler.go` — a thin `net/http` wrapper:
+  `Handler(r *metrics.Registry) http.Handler` returning an `http.HandlerFunc` that sets
+  `Content-Type: text/plain; version=0.0.4; charset=utf-8` and calls `r.WriteText(w)`.
+- **Modify**:
+  - `cmd/iscc-monitor/main.go` — construct `metrics.New()`, pass it as `Loop.Metrics`, and start
+    an `http.Server` on the configured address serving `/metrics` via `metricshttp.Handler`, shut
+    down on the same signal-bound context. Must NOT block the follower loop.
+  - `internal/config/config.go` — add an optional `ISCC_MONITOR_ADDR` key (default `:9464`) as a
+    new `Config.Addr string` field so the listen address is configurable; document it in the
+    package doc comment alongside the existing keys.
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/metrics/metrics.go` — the mutator API
-    (`IncViolation(hubID, kind)`, `IncPollFailure(hubID)`, `SetHubStatus(hubID, status)`,
-    `SetLastObservedAt(hubID, unixSeconds)`) and the glossary `status`-label contract.
-  - `/workspace/iscc-monitor/internal/logclient/accept.go` — the `Status` enum
-    (`StatusVerified|StatusUnverified|StatusUnresolvable|StatusRotated`) the mapper consumes.
-  - `/workspace/iscc-monitor/internal/follower/follower.go` — `PollHub`/`checkConsistency`/`freeze`
-    (the increment call sites).
-  - `/workspace/iscc-monitor/internal/follower/loop.go` — `Loop`/`Tick` (the `IncPollFailure` site
-    and the field threading; mirror the nil-safe `Logger`/`logger()` pattern).
+  - `/workspace/iscc-monitor/internal/metrics/metrics.go` — `New()`, `WriteText(io.Writer) error`,
+    `String()` (the surface to wrap; do NOT add `net/http` here — it must stay WASM-pure).
+  - `/workspace/iscc-monitor/internal/follower/loop.go` — `Loop.Metrics *metrics.Registry` field
+    (the wiring point) and how `Tick`/`PollHub` already consume it nil-safely.
+  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` — current `run()`/`registerHubs` structure
+    and the existing `signal.NotifyContext` shutdown to hang the server off.
+  - `/workspace/iscc-monitor/internal/config/config.go` — the `required`/`duration` helpers, the
+    optional-key pattern, and the `Config` struct to extend with `Addr`.
+  - `/workspace/iscc-monitor/internal/logclient/didresolve.go` — the only existing `net/http`
+    consumer, for the import/idiom precedent (no new dependency; stdlib only).
 
 ## Not In Scope
-- The `/metrics` **HTTP handler** (`net/http` serving `Registry.WriteText` with
-  `Content-Type: text/plain; version=0.0.4`) and the `main.go` server + `Loop.Metrics`
-  construction — that is the immediate **next** slice. This step only fires the increment sites.
-- Real alert transport (email/webhook) — `alertFunc` stays the WARN slog placeholder.
-- A `lag_seconds` series (it needs a `now` the metrics leaf must not read — already deferred, YAGNI).
-- Persisting `hub_status`/`last_observed_at` to SQLite — the registry is in-memory only.
-- Changing the `metrics` leaf itself (no new metric families, no API changes).
+- Do NOT add `net/http` to `internal/metrics` — keep that leaf WASM-pure (verified by
+  `GOOS=js GOARCH=wasm go build ./internal/metrics`). The handler lives in the new
+  `internal/metricshttp` package only, never as a method on `*Registry`.
+- Do NOT add any other endpoint (`/`, `/healthz`, REST surface, dashboard, CORS) — those are M3.
+  This step serves exactly `/metrics`.
+- Do NOT change the metric names, label sets, or the `glossaryStatus` remap (all already landed
+  and golden-tested); this step only exposes what is already collected.
+- Do NOT wire CI / `notecheck` or resolve the `go mod tidy` go.sum divergence (both open `normal`
+  issues) — they belong with the later `fsck`-rebuild conformance slice, not here.
+- Do NOT change the alert transport (still the WARN slog placeholder) — a separate later step.
 
 ## Implementation Notes
-- **Glossary mapping is the load-bearing correctness rule (carried forward from review/learnings).**
-  The `status` label MUST be the glossary set `verified|unresolvable|unverified|frozen|inactive`,
-  **not** `logclient.Status.String()` (which returns `verified|unverified|unresolvable|`**`rotated`**).
-  Add a small pure mapper in `follower.go`, e.g. `glossaryStatus(st logclient.Status, frozen bool) string`:
-  - `frozen == true` → `"frozen"` (takes precedence — a violation froze the hub even though the
-    signature was `StatusVerified`).
-  - else `StatusVerified` → `"verified"`, `StatusUnverified` → `"unverified"`,
-    `StatusUnresolvable` → `"unresolvable"`, `StatusRotated` → `"unverified"`
-    (out-of-window key = internally-broken / non-accepted; the glossary has no `rotated`, and a
-    rotated checkpoint does not advance accepted state, so it folds into `unverified`).
-  - `"inactive"` is the realm-registry removed/paused state — **never produced by `PollHub`** (the
-    follower only polls active hubs); do not emit it here.
-- **Make the registry optional and nil-safe** so existing `&follower.Loop{…}` literals and the binary
-  keep compiling: add `Loop.Metrics *metrics.Registry`, and in `PollHub` accept an `m *metrics.Registry`
-  param; guard every mutator call with `if m != nil { … }` (mirror the nil-safe `Logger`/`logger()`
-  pattern already in `loop.go`). A nil registry = metrics disabled, no panic.
-- **Increment-site placement (match the existing verdict structure in `PollHub`):**
-  - `IncPollFailure(hubID)` fires in **`Tick`** on `PollHub`'s non-nil error return (the transport /
-    garbled-body fault path), alongside the existing `ErrorContext` log — NOT inside `PollHub`, because
-    a fetch/accept fault returns early before the verdict is known. Keep it on the same error branch.
-  - `SetHubStatus(hubID, glossaryStatus(status, frozen))` + `SetLastObservedAt(hubID, observedAt.Unix())`
-    fire on the **verdict path** in `PollHub` for the non-error outcomes: the early non-verified return
-    (`status != StatusVerified`), the freeze return, and the verified-advance tail. Use `observedAt.Unix()`
-    for the timestamp (the leaf is clock-free; the caller supplies the value — already injected, never
-    `time.Now()`).
-  - `IncViolation(hubID, string(kind))` fires in the **freeze** path (in or alongside `freeze`), keyed on
-    the same `kind` string already passed to `RecordViolation`/`alert`. It re-fires on every re-detection
-    (the counter is cumulative — that is correct; `alert` stays once-per-transition, `IncViolation` does not).
-- **Status-on-freeze ordering:** the freeze branch in `PollHub` returns `freeze(...)`; that helper still
-  returns `(StatusVerified, nil)`. Set `hub_status = glossaryStatus(status, /*frozen=*/true)` (→ `"frozen"`)
-  and `last_observed_at` on that branch — do not rely on the `Status` enum alone, since the enum is still
-  `StatusVerified` after a freeze. Pure registry writes, so placement before/after the `freeze` call is fine.
-- **Imports:** `internal/follower` already imports `logclient`/`store`/`time`; add
-  `github.com/iscc/iscc-monitor/internal/metrics`. The dependency direction stays
-  `follower → {logclient, store, metrics}` (metrics is a pure leaf), so `net/http`/`database/sql` never
-  enter the store/metrics closures. No `go.mod`/`go.sum` change (metrics is already an in-module package).
-- **Correctness rules honored:** ADR-0006 freeze-not-crash is unchanged (metrics writes never alter
-  control flow); the single-writer discipline holds (only `Tick`/`PollHub` in the one owning goroutine
-  write the registry; the future HTTP reader takes the registry's own RWMutex). `kind` reuses the real
-  `violations.kind` strings verbatim (safe per learnings); only `status` needs the glossary remap.
-  Oracle/conformance gate is **N/A** for this slice (no signature/RFC-6962/Merkle/did:web/proof/tile path
-  changes — only call-site wiring of an existing pure leaf); `go.mod`/`go.sum` stay byte-identical.
-- **Test seam:** assert on the **observable rendered output** (`Registry.String()` containing the
-  expected lines), never on follower internals (PRD seam-based testing). Construct a real `metrics.New()`
-  in the tests and pass it through `PollHub`/the `Loop`.
+- **No new dependency.** `net/http` is stdlib; `internal/metricshttp` imports only `net/http` +
+  `internal/metrics`. `go.mod`/`go.sum` must stay byte-identical
+  (`git diff --quiet HEAD -- go.mod go.sum` exits 0).
+- **Handler shape.** `Handler(r *metrics.Registry) http.Handler`. In the `HandlerFunc`: set the
+  header `Content-Type: text/plain; version=0.0.4; charset=utf-8` (the Prometheus text-exposition
+  content type) BEFORE writing the body, then `if err := r.WriteText(w); err != nil { ... }`. Since
+  `WriteText` writes directly to the `ResponseWriter`, a mid-write error cannot un-send the 200 —
+  handle it narrowly with an inline comment (do not swallow silently without a note). `Handler`
+  requires a non-nil registry — document that in the doc comment; the binary always passes a real
+  one, so no nil-guard branch is needed.
+- **`main.go` wiring.** Build `m := metrics.New()` once, pass `Metrics: m` into the
+  `&follower.Loop{…}` literal (it is an optional named field — just add one line). Start the metrics
+  server in a goroutine BEFORE `loop.Run(ctx)` so serving never blocks polling: build a
+  `*http.ServeMux` routing `/metrics` → `metricshttp.Handler(m)`, then
+  `srv := &http.Server{Addr: cfg.Addr, Handler: mux}`; run `srv.ListenAndServe()` in a goroutine and
+  on `ctx.Done()` call `srv.Shutdown(...)` with a short-timeout context.
+  `errors.Is(err, http.ErrServerClosed)` from `ListenAndServe` is the normal-shutdown signal, not an
+  error to surface — mirror how `Run`'s `context.Canceled` is treated as clean. The follower loop
+  stays the foreground blocker; the HTTP server is the background goroutine.
+- **Config.** Add `Addr string` to `Config` and an `ISCC_MONITOR_ADDR` key with default `:9464`
+  (an exotic non-standard port per the project port convention; pick this fixed value and keep it).
+  Reuse the existing optional-key pattern — absent/empty → default. No validation beyond the default
+  is required (a bad address surfaces at `ListenAndServe`). Update the package doc comment's
+  "Configuration keys" block and the `Config` struct doc to mention `Addr`. The `config` test must
+  assert the `:9464` default when the key is absent and the injected value when present.
+- **Correctness rule (learnings).** `internal/metrics` is the pure, stdlib-only WASM-shareable leaf
+  (the `proof/verify`-style purity rule) — `net/http` must not enter its closure. That is the reason
+  the handler is a separate package. Verify the leaf's WASM build stays green after the change.
+- **Oracle/conformance gate is N/A** for this slice: no signature / RFC-6962 / Merkle / did:web /
+  proof / tile logic line changes — it is pure HTTP plumbing over an already-tested renderer. Note
+  this in the handoff so `review` does not expect an oracle re-run.
 
 ## Verification
-- `mise run check` is green (`go build ./...` && `go vet ./...` && `go test ./...`), `gofmt -l .` empty.
-- `go test -run TestPollHub ./internal/follower` passes (all existing `PollHub` tests, updated for the
-  new param, still green).
-- `go test -run TestGlossaryStatus ./internal/follower` passes: asserts
-  `glossaryStatus(StatusVerified,false)=="verified"`, `glossaryStatus(StatusVerified,true)=="frozen"`,
-  `glossaryStatus(StatusUnverified,false)=="unverified"`,
-  `glossaryStatus(StatusUnresolvable,false)=="unresolvable"`, `glossaryStatus(StatusRotated,false)=="unverified"`.
-- A follower test drives a verified observation through `PollHub` with a real `metrics.New()` and asserts
-  `Registry.String()` contains `iscc_monitor_hub_status{hub_id="<id>",status="verified"} 1` and a non-zero
-  `iscc_monitor_last_observed_at{hub_id="<id>"}`.
-- A fork/freeze follower test asserts `Registry.String()` contains
-  `iscc_monitor_violations_total{hub_id="<id>",kind="fork"} 1` and `…hub_status{…,status="frozen"} 1`.
-- A `Tick`-level test driving a fetch fault asserts `Registry.String()` contains a non-zero
-  `iscc_monitor_poll_failures_total{hub_id="<id>"}`.
-- `go list -deps ./internal/store | grep '^net/http$'` stays empty (store remains a leaf; the new
-  follower→metrics edge does not leak into store).
-- `git diff --quiet HEAD -- go.mod go.sum` exits 0 (no dependency change — `metrics` is already in-module).
+- `mise run check` is green (`go build ./...` + `go vet ./...` + `go test ./...` all pass).
+- `gofmt -l .` lists nothing.
+- `go test ./internal/metricshttp` passes: an `httptest.NewServer(metricshttp.Handler(m))` round
+  trip, with `m` pre-populated (`m.SetHubStatus(1,"verified")`, `m.IncViolation(1,"fork")`), returns
+  HTTP 200, `Content-Type` header equal to `text/plain; version=0.0.4; charset=utf-8`, and a body
+  byte-equal to `m.String()` (so the served bytes match the renderer exactly).
+- `GOOS=js GOARCH=wasm go build ./internal/metrics` exits 0 (the metrics leaf stays WASM-pure; the
+  new `net/http` import did NOT land in it).
+- `go list -deps ./internal/metrics | grep '^net/http$'` is empty.
+- `go test ./internal/config` passes with the new `Addr`/`ISCC_MONITOR_ADDR` default (`:9464` when
+  the key is absent; the injected value when present).
+- `git diff --quiet HEAD -- go.mod go.sum` exits 0 (no new dependency).
 
 ## Done When
-`mise run check` is green and the follower fires all four metric series on the live verdict path with the
-glossary-status mapping (rotated→unverified, freeze→frozen) proven by `Registry.String()` assertions and
-the `glossaryStatus` unit test — with the registry threaded nil-safely so the binary still compiles unchanged.
+`internal/metricshttp.Handler` serves `metrics.Registry.WriteText` with the Prometheus content type,
+`cmd/iscc-monitor` constructs `metrics.New()`, passes it as `Loop.Metrics`, and serves it on the
+configured `ISCC_MONITOR_ADDR` without blocking the follower — and every Verification check passes.
