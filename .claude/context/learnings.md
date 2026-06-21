@@ -981,6 +981,20 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   always injects a real `observedAt`). Wiring lives ONLY on the verified, non-violation `PollHub` path
   (between `RecordCheckpoint` and `AdvanceFollowState`), kept out of `freeze`, so a contradictory
   observation never starts coverage (ADR-0001) — the fork/unverified tests assert `cov.Set == false`.
+- **`AdvanceAccepted(ctx, CheckpointRecord)` is the repo's first `*sql.Tx` and collapses the
+  verified-advance triad into one transaction (`checkpoints.go`).** Its three `tx.ExecContext`
+  statements are byte-for-byte the `RecordCheckpoint` insert (`ON CONFLICT … DO NOTHING`, dropping the
+  read-back-id branch the advance path doesn't need), the `SetCoverage` guarded UPDATE (`… IS NULL`,
+  set-once), and the `AdvanceFollowState` upsert (`frozen` omitted, no auto-unfreeze) — reviewer diffed
+  each against its source method, identical. The `defer func(){ _ = tx.Rollback() }()` is the standard
+  `database/sql` pattern, NOT a swallowed-error dodge: a post-`Commit` `Rollback` returns the benign
+  `sql.ErrTxDone`, and the real commit error is returned `%w`-wrapped. The three original methods stay
+  public (still seed helpers in `*_test.go` + `main_test.go` + the freeze-path `RecordCheckpoint` at
+  follower.go:434). Reviewer mutation-proved `TestAdvanceAccepted` non-vacuous two ways (both reverted):
+  drop the coverage `IS NULL` guard → case (3) FAILS (coverage moves 100→500); no-op the follow-cursor
+  upsert → case (1) FAILS (`last_size` stays 0). Store stays a leaf, go.mod/go.sum/schema byte-unchanged.
+  Oracle gate correctly N/A (plain transactional SQL; no signature/RFC-6962/Merkle/did:web/fsck path —
+  the verified-advance path's fsck/inclusion conformance tests re-ran uncached and stayed green).
 
 ## Live tile/bundle ingestion writer (`internal/follower/ingest.go`)
 

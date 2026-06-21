@@ -42,16 +42,3 @@ filed it and does **not** affect priority.
   Verify fixed by moving the full/partial width tests to the store API and ensuring ingest passes
   `c.Partial` directly while `SQLiteFetcher` round-trips full and partial mirrors.
 - **Spec:** ADR-0005 (mirror tile discipline); KISS / single source of truth for coordinate mapping.
-
-## Accepted checkpoint advancement is three caller-sequenced store writes
-- **Priority:** normal
-- **Source:** [review]
-- **What / where / how to verify:** `internal/follower/follower.go:165-183` owns the invariant
-  "advance accepted state" by sequencing `RecordCheckpoint`, `SetCoverage`, and
-  `AdvanceFollowState` directly. Those writes are separate store calls rather than one store-owned
-  operation, so ordering and partial-write behavior live in the orchestrator instead of the storage
-  boundary. Add a deep store method such as `AdvanceAccepted(hubID, info, raw, observedAt)` that
-  records the checkpoint, sets coverage once, and advances the follow cursor in one transaction; use
-  it from the verified, non-violation path. Verify fixed with a store-level test for the combined
-  operation, including idempotent re-poll behavior and coverage staying set-once.
-- **Spec:** ADR-0005 (single-writer mirror/follow-state discipline); KISS / locality.
