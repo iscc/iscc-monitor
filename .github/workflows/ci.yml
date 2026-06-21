@@ -1,0 +1,63 @@
+# CI for iscc-monitor: runs the same quality gate as `mise run check`
+# (build + vet + test under CGO_ENABLED=0, per ADR-0003) and shells out the
+# fully-independent external signature oracle `cmd/notecheck` against a captured
+# checkpoint. The notecheck reject step is load-bearing: a green-but-wrong
+# verifier must not ship on `mise run check` + an LLM review alone, so CI asserts
+# both that the oracle accepts the real checkpoint AND rejects a corrupted one.
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  check:
+    name: build + vet + test + notecheck oracle
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      # The quality gate — identical to `mise run check`, inlined so the runner
+      # does not need mise installed.
+      - name: build + vet + test (mise run check)
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
+      # The fully-independent external signature-parity oracle. The accept step
+      # asserts the exact output string (not just exit 0); the reject step flips
+      # one base64 char in the signature line and requires a non-zero (verify-fail)
+      # exit, so a spurious accept fails the build.
+      - name: notecheck signature-parity oracle
+        env:
+          VKEY: sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5
+        run: |
+          set -euo pipefail
+          go build -o notecheck ./cmd/notecheck
+
+          # accept: the real checkpoint verifies and prints "OK <name>".
+          got="$(./notecheck --vkey "$VKEY" < testdata/live/sb0.iscc.id_checkpoint)"
+          if [ "$got" != "OK sb0.iscc.id/log" ]; then
+            echo "ERROR: oracle output was '$got', expected 'OK sb0.iscc.id/log'"
+            exit 1
+          fi
+
+          # reject: a corrupted signature line must be rejected (exit 1). A guarded
+          # check turns a spurious accept into a CI failure.
+          if sed 's/QLdEY/QLdEZ/' testdata/live/sb0.iscc.id_checkpoint | ./notecheck --vkey "$VKEY"; then
+            echo "ERROR: oracle accepted a corrupted checkpoint"
+            exit 1
+          fi
+
+          echo "notecheck oracle: accept + reject-corrupted both held"
