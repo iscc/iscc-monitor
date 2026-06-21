@@ -495,6 +495,25 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   never returns an error, documented inline. `WriteText(io.Writer)` itself propagates every writer
   error. `escapeLabelValue` backslash-escapes `\`/`"`/`\n` so the renderer is total (verified an inline
   `weird"kind\nwith-newline` label renders as well-formed escaped text).
+- **Metrics wiring landed and is glossary-correct (verified, not asserted).** `glossaryStatus(st,
+  frozen)` folds `StatusRotated`→`"unverified"` and `frozen=true`→`"frozen"` (overrides the still-
+  `StatusVerified` enum after a freeze); its `default` arm is a defensive fold-to-`"unverified"` for a
+  future enum value (the four `logclient.Status` cases are all explicit) — not dead code. `recordVerdict`
+  is the single nil-safe mutation point funneling all THREE non-error verdict branches (early-non-
+  verified L126, freeze L146, verified-advance L178); the error-return paths deliberately do NOT fire it
+  (the verdict is unknown), so `IncPollFailure` instead fires in `Tick` on `PollHub`'s non-nil return,
+  on the same branch as the `ErrorContext` log. Reviewer mutation-proved both freeze metrics
+  (`frozen=true→false` → `TestPollHubFork` FAILS on missing `status="frozen"`; remove `IncViolation` →
+  FAILS on missing `violations_total`), reverted; tree clean. `hub_id="1"` in the asserts is the real
+  first-`UpsertHub` id (probed). Oracle gate correctly N/A — no verify/proof/consistency LOGIC line
+  changed (grep-confirmed), the existing equivocation/fork/shrink conformance tests still pass, go.mod/
+  go.sum byte-identical, metrics WASM build green.
+- **Freeze-branch metric records BEFORE the `freeze()` store call (pure registry writes, intentional).**
+  If `freeze()` later returns a store error, the same poll both records `status="frozen"` AND fires
+  `Tick`'s `IncPollFailure` — a benign double-signal (a store fault during freeze IS a real poll
+  failure, and "frozen" truthfully reflects the detected violation). Acceptable; the comment at
+  `follower.go:145` documents the ordering choice. Watch this only if a future slice makes `freeze`'s
+  error path mean "violation not actually recorded."
 
 ## Realm registry (`internal/registry`)
 
