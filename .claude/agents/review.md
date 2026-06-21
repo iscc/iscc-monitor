@@ -41,11 +41,18 @@ advance commit** with the `codex review` subcommand (at this point — before *y
 the advance commit, so `--commit HEAD` reviews exactly the increment under test):
 ```sh
 codex review --commit HEAD -c sandbox_mode="danger-full-access" -c approval_policy="never" \
-  > /tmp/codex-review.txt 2>&1
+  > /tmp/codex-review.txt 2>/tmp/codex-review.log
 ```
 The command **must begin with `codex review`** so it matches the pre-authorized `Bash(codex review:*)`
-allow-rule — do **not** wrap it in `timeout` (or any other command), which would break the prefix
-match. `sandbox_mode=danger-full-access` disables Codex's *own* bubblewrap sandbox: it can't create
+allow-rule — do **not** wrap it in `timeout`, or pipe it through `jq`/`sed` (or any other command),
+which would break the prefix match. **The redirect split is load-bearing:** `codex review` writes its
+clean final verdict to **stdout** and its full agentic transcript (every `git diff`/`sed`/`grep` it
+runs — hundreds of KB) to **stderr**, so sending stdout to `/tmp/codex-review.txt` and stderr to the
+separate `/tmp/codex-review.log` leaves the `.txt` holding **only the verdict**. Do **not** use `2>&1`:
+that merges the transcript back in (what previously made the file an unreadable ~250 KB dump). Both
+files use a truncating `>` redirect, so each run starts them empty — a stale verdict from a prior
+iteration can never be read. `sandbox_mode=danger-full-access` disables Codex's *own* bubblewrap
+sandbox: it can't create
 user namespaces inside the devcontainer, so every command Codex runs would otherwise fail with
 `bwrap: No permissions to create a new namespace`. The devcontainer is the real sandbox boundary, and
 a review only reads. Launch it as a background command and do **not** wait on it now. For a high-risk
@@ -86,8 +93,14 @@ and triage Codex's output in step 6.
    to dodge a check, build-tag exclusions, deleted assertions/tests, or loosened gates. Any of these
    (without a justifying comment) → verdict **NEEDS_WORK**; the fix is always the root cause.
 6. **Collect the Codex second opinion.** The background review you kicked off before step 1 should be
-   finished by now — read `/tmp/codex-review.txt`. If it is still running, wait briefly and check once;
-   do not block the loop.
+   finished by now — `Read` `/tmp/codex-review.txt`. Thanks to the stdout/stderr split it holds **only**
+   Codex's final verdict (its summary plus any `Review comment:` findings, each tagged `[P1]`–`[P3]`
+   with a `file:line`) — a handful of lines, never the transcript. **An empty file** means there is no
+   verdict yet: Codex is still running, or it errored before producing one — wait briefly and check
+   once. If it is still empty the run failed; `tail -40 /tmp/codex-review.log` (the transcript + error
+   stream) to capture the reason, then apply graceful degradation. Never treat an empty
+   `/tmp/codex-review.txt` as "clean" — a clean review writes an explicit "no issues" verdict. Do not
+   block the loop.
    - **Graceful degradation — never stall the loop.** If Codex is unavailable, unauthenticated, timed
      out, still unfinished, or exited non-zero (e.g. rate limit), record `Codex: unavailable — <reason>`
      in the handoff's **Codex second opinion** section and continue. A missing second opinion is a note,
