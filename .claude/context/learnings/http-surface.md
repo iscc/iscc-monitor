@@ -8,14 +8,12 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## tlog-tiles HTTP read surface (`internal/tilesserve/handler.go`)
 
-- **settled:** the static-BLOB mirror (`/checkpoint`, `/tile/...`, `/tile/entries/...`) is landed and
-  stable — pure opaque-byte read transport (oracle gate N/A), `tilesserve → store` (store stays a leaf,
-  `net/http` out of its closure), `strings.Cut`-on-first-slash routing with `tile/entries/` ordered
-  before `tile/`, per-route `Cache-Control` keyed on the parsed `width` (`immutable := width==0`,
-  partials `no-cache`), and a strong content ETag + `If-None-Match` → 304. All body-equality / 404 /
-  partial-immutable / ETag asserts were mutation-proven non-vacuous and reverted. (Detail in git
-  history pre-2026-06-21.) The one durable trap to remember: the path-API `width` vocab (`0 == full`)
-  differs from the store column's `256 == full`, so map deliberately.
+- **settled:** the static-BLOB mirror (`/checkpoint`, `/tile/...`, `/tile/entries/...`) is landed +
+  stable — opaque-byte read transport (oracle gate N/A), `tilesserve → store` (store a leaf),
+  `strings.Cut` routing with `tile/entries/` before `tile/`, per-route `Cache-Control` keyed on `width`
+  (`immutable := width==0`, partials `no-cache`), strong content ETag + `If-None-Match` → 304; all
+  mutation-proven, reverted. (Detail in git history pre-2026-06-21.) Durable trap: the path-API `width`
+  vocab (`0 == full`) differs from the store column's `256 == full`, so map deliberately.
 
 ## Computed inclusion proof HTTP surface (`internal/proofserve/handler.go`)
 
@@ -25,11 +23,10 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   (Detail in git history pre-2026-06-21.) Durable trap: strip discipline is `"/"+Origin`, NOT `+"/"`, so
   the inner `ServeMux` keeps its leading slash, exact mounts beat the `/` subtree, and a nested mux does
   not 301-redirect.
-- **Default seq is `seqs[0]` and it is genuinely the lowest committed seq** because `SeqsForISCCID`
-  is `ORDER BY seq` ASC — so the documented "first committed seq" default is deterministic, not
-  arbitrary. An explicit `&index=<n>` must equal one of the committed seqs (else 400 via `selectSeq`),
-  never a silently-substituted leaf; `parseUint` rejects any non-digit → 400, not a silent default.
-  `leafIndex >= size` is guarded before building → 404 (never a 500/panic) on a stale/racing size.
+- **Default seq is `seqs[0]`, the lowest committed seq** (`SeqsForISCCID` is `ORDER BY seq` ASC, so the
+  "first committed seq" default is deterministic). An explicit `&index=<n>` must equal a committed seq
+  (else 400 via `selectSeq`); `parseUint` rejects non-digits → 400; `leafIndex >= size` → 404 (never
+  500/panic) on a stale/racing size.
 - **Dep direction holds: `proofserve → {store, logclient}`, never the reverse.** `go list -deps
   ./internal/store | grep -E 'proofserve|net/http'` and `go list -deps ./internal/logclient | grep
   proofserve` both empty, so `net/http` stays out of the store/logclient closures. Proof is built from
@@ -63,12 +60,9 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `LastSize == 0` → 404; `seq >= LastSize` → 404 "leaf not covered by accepted checkpoint"; bundle-miss
   `os.ErrNotExist` → 404; `ErrLeafOutOfBundle` → 404; missing/non-numeric `index` → 400; non-GET → 405.
   Index is the absolute leaf **seq**, schema-agnostic (ADR-0008). `serveEntries`/`serveRecord` apply it
-  to one leaf; `serveRecords`/`ListRecords` apply it to the COUNT + windowed SELECT (`iscc_index` can
-  hold projections ABOVE `LastSize` — ingest writes them before accept — so an uncapped list shows
-  unaccepted leaves whose links 404).
-  `iscc_index` can hold projections ABOVE `LastSize` (ingest writes them before accept; a freeze/fault
-  leaves them), so any record route that omits the cap shows unaccepted leaves whose `entries?index=`
-  links would then 404.
+  to one leaf; `serveRecords`/`ListRecords` apply it to the COUNT + windowed SELECT. `iscc_index` can
+  hold projections ABOVE `LastSize` (ingest writes them before accept; a freeze/fault leaves them), so
+  any record route that omits the cap shows unaccepted leaves whose `entries?index=` links 404.
 
 ## HTML record list at `/records` (`serveRecords` + `store.ListRecords`)
 
@@ -84,19 +78,23 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## HTML single-record page at `/record?index=<seq>` (`serveRecord` + `store.RecordAt`)
 
-- **landed but defective — the kind-label map misses the real `note.$schema`.** `serveRecord` copies
-  `serveEntries`' accepted-tree-capped bundle read verbatim (`p := tiles.PartialTileSize(0, bundleIndex,
-  size)`, `RecordBytesFromBundle`, `>= LastSize` → 404, bundle-miss/`ErrLeafOutOfBundle` → 404, missing/
-  non-numeric index → 400, non-GET → 405) and renders the bytes as the source of truth — a missing
-  `iscc_index` projection is NOT a 404 (renders "no projection indexed", `HasProjection=false`), matching
-  the ADR-0008 contract. That flow is correct. The DEFECT (open issue): the kind-label constants
-  (`schemaDeclaration`/`schemaDeletion`) are short forms, but production `note.$schema` is the full URI
-  `http://purl.org/iscc/schema/iscc-note-0.8.0.json`, so real declarations/deletions render "Unknown".
+- **settled:** the `/record` page is landed + correct. `serveRecord` copies `serveEntries`'
+  accepted-tree-capped bundle read verbatim (`p := tiles.PartialTileSize(0, bundleIndex, size)`,
+  `RecordBytesFromBundle`, `>= LastSize` → 404, bundle-miss/`ErrLeafOutOfBundle` → 404, missing/
+  non-numeric index → 400, non-GET → 405), renders bytes as source of truth (missing `iscc_index`
+  projection → 200 "no projection indexed", not 404, ADR-0008), and the kind-label constants now hold
+  the FULL wire URIs (`http://purl.org/iscc/schema/iscc-note-0.8.0.json` + `…delete…`), byte-matching
+  `projection_test.go:19-20`, so real declarations/deletions label correctly. (Detail at-2026-06-21.)
 - **Durable trap for any surface that interprets `note.$schema`:** match the FULL wire URI (see
-  `projection_test.go`/`fsck_test.go`), never CLAUDE.md's prose short name, and seed the test with the
-  URI so a synthetic short-form fixture can't make a green-but-wrong label ship. A no-CDN `http://` body
-  ban must be scoped to the template/CDN region, not the verbatim record fields, once a real schema URI
-  renders into the page.
+  `projection_test.go`/`fsck_test.go`), never CLAUDE.md's prose short name. A no-CDN `http://` body ban
+  must be scoped to the template/CDN region (head up to `</style>`), not the verbatim record fields, once
+  a real schema URI renders into the page.
+- **Tie a schema-match test to GROUND TRUTH, not to the constant under test.** `record_test.go`'s
+  `schemaForSeq` returns the `schemaDeclaration`/`schemaDeletion` *constants*, and `recordKind` switches
+  on the same constants — so reverting both constants to the wrong value leaves the whole suite green
+  (mutation-verified). The label test cannot catch a constant regression. Any future test guarding a
+  `note.$schema`→label map must seed a HARDCODED literal URI (or compare the constant against the
+  `projection_test.go` literal) so the gate is non-vacuous. (Open `low` issue.)
 
 ## verify-for-me JSON verdict (`/verify` + `serveVerify`)
 

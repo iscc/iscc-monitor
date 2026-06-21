@@ -18,33 +18,25 @@ filed it and does **not** affect priority.
 
 ---
 
-## Single-record page kind-label constants miss the real `note.$schema` URIs
-- **Priority:** normal
-- **Source:** [review] (Codex P2 confirmed against ground-truth fixtures)
-- **What / where / how to verify:** `internal/proofserve/handler.go:108-109` defines
-  `schemaDeclaration = "iscc-note-0.8.0"` and `schemaDeletion = "iscc-note-delete-0.8.0"`, but the
-  production projection fold stores the VERBATIM inner `note.$schema`, which is the full URI
-  `http://purl.org/iscc/schema/iscc-note-0.8.0.json` (declaration) /
-  `http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json` (deletion). Ground truth: the
-  `BundleProjections` golden test pins exactly these URIs (`internal/logclient/projection_test.go:19-20`,
-  decoding hand-framed real envelopes), and `internal/follower/fsck_test.go:119` + the store's own
-  `internal/store/iscc_index_test.go` fixtures all use the `…-0.8.0.json` form. So in production EVERY
-  real declaration and deletion falls through `recordKind`'s `default` → "Unknown record type", defeating
-  the M-UI Verify criterion ("the single-record page renders `declaration`, `deletion` … without
-  erroring"). The new `record_test.go` masks this: its `schemaForSeq` invents the bare short forms to
-  match the constants, so the synthetic test is green while the real feature is broken — tests written to
-  the code, not to ground truth. Fix: set the two constants to the full
-  `http://purl.org/iscc/schema/iscc-note-(delete-)0.8.0.json` URIs (matching the logclient/fsck/store
-  fixtures), AND change `record_test.go`'s `schemaForSeq` to feed those realistic URIs so the test
-  exercises the production path (this also makes the no-CDN `http://` ban assertion exercise a real
-  schema value — confirm the ban still targets only template/CDN refs, not the rendered schema data
-  string; if it false-positives on the now-realistic data, scope the ban to the template/style region,
-  not the verbatim record fields). Decide whether to keep glossary short names anywhere — CLAUDE.md's
-  glossary uses the short forms as prose shorthand, which is fine, but the matching constant MUST be the
-  wire value. Verify fixed: a projection seeded with the full declaration URI renders the "Declaration"
-  label (and deletion → "Deletion"), proven by a test using the URIs from `projection_test.go`.
-- **Spec:** target.md M-UI single-record Verify criterion; ADR-0008 (raw verbatim `note.$schema`);
-  CLAUDE.md "Declaration"/"Deletion" glossary.
+## Single-record label test is vacuous on the kind-label constant value
+- **Priority:** low
+- **Source:** [review] (mutation-found in the constant-fix review)
+- **What / where / how to verify:** The constant-fix advance set `schemaDeclaration` /
+  `schemaDeletion` (`internal/proofserve/handler.go:111-112`) to the correct full wire URIs — verified
+  byte-equal to the golden `internal/logclient/projection_test.go:19-20` — so the production feature is
+  CORRECT. But the guarding test cannot prove it: `record_test.go`'s `schemaForSeq` (lines 40-52)
+  returns the `schemaDeclaration`/`schemaDeletion` *constants*, and `recordKind`
+  (`handler.go:838-847`) switches on the *same constants*, so reverting BOTH constants to the old short
+  forms leaves the entire proofserve record suite GREEN (reviewer mutation-verified: both reverts →
+  `go test -run TestRecord ./internal/proofserve` still `ok`). The test is tied to the symbol under
+  test, not to ground truth, so it would not catch a future regression of the constant value. Fix when
+  `record_test.go` is next touched: make `TestRecordKindLabels` (or a sibling) seed a HARDCODED literal
+  URI (`"http://purl.org/iscc/schema/iscc-note-0.8.0.json"` / `…delete…`) — or assert the constants
+  equal those literals — so the gate is non-vacuous. Verify fixed: reverting either constant to a short
+  form makes a proofserve test FAIL. Low — the production code is already correct; this only hardens the
+  regression gate.
+- **Spec:** target.md M-UI single-record Verify criterion; CLAUDE.md Testing ("tests covering
+  implemented functionality" + use ground-truth data, not fixtures matched to the code).
 
 ## `cmd/notecheck`'s `run` has a vestigial `out io.Writer` parameter
 - **Priority:** low
