@@ -9,6 +9,7 @@
   },
   "initializeCommand": "bash .devcontainer/init-host.sh",
   "remoteUser": "dev",
+  "runArgs": ["-p", "41464:41464"],
   "mounts": [
     "source=${localEnv:USERPROFILE}/.claude,target=/home/dev/.claude,type=bind",
     "source=${localEnv:USERPROFILE}/.claude.json,target=/home/dev/.claude.json,type=bind",

@@ -17,6 +17,45 @@ target by `/goal` or a scheduled task. Specs are the source of truth (`.claude/p
 `.claude/adr`); the loop's moving state lives in `.claude/context/`. See
 `.claude/skills/build/SKILL.md` and `.claude/skills/build/AUTOMATION.md`.
 
+## Running a local dev instance
+
+The monitor is a single binary (`cmd/iscc-monitor`) configured entirely through environment variables
+(`internal/config`):
+
+- `ISCC_MONITOR_DB` (required) — path to the network's SQLite file (one file per network, ADR-0007).
+- `ISCC_MONITOR_REALM` (required) — path to the realm-membership document (one hub domain per line).
+  `internal/registry/testdata/realm.txt` is the testnet pilot (`sb0.iscc.id` + `sb1.amlet.id`).
+- `ISCC_MONITOR_NORMAL` (optional, default `5m`) — clean-hub poll interval.
+- `ISCC_MONITOR_FROZEN` (optional, default `1h`) — frozen-hub evidence-only re-poll interval; must be
+  `>= NORMAL` (the freeze back-off, ADR-0006).
+- `ISCC_MONITOR_ADDR` (optional, default `:9464`) — HTTP listen address.
+
+Run it against the testnet realm with a short poll cadence:
+
+```sh
+go build -o /tmp/iscc-monitor ./cmd/iscc-monitor
+ISCC_MONITOR_DB=/tmp/monitor-dev.db \
+ISCC_MONITOR_REALM=internal/registry/testdata/realm.txt \
+ISCC_MONITOR_NORMAL=30s \
+ISCC_MONITOR_ADDR=0.0.0.0:41464 \
+/tmp/iscc-monitor
+```
+
+**Dev container:** `.devcontainer/devcontainer.json` publishes `41464:41464` (`runArgs`), so binding to
+`0.0.0.0:41464` (not `127.0.0.1`) makes the instance reachable from the host at `http://localhost:41464`
+after a container rebuild.
+
+After the first poll (~seconds) the HTTP surface is live. There is **no dashboard UI yet** (M3), so
+these are JSON / text / Prometheus endpoints and `/` returns 404:
+
+- `GET /healthz` — liveness + store readiness.
+- `GET /metrics` — Prometheus: hub status, last-observed, poll failures, violations.
+- `GET /<domain>/log/checkpoint` — mirrored signed checkpoint (e.g. `/sb0.iscc.id/log/checkpoint`).
+- `GET /<domain>/log/tile/...` — raw mirrored tlog-tiles BLOBs.
+- `GET /<domain>/log/entries?index=<seq>` — single-leaf record bytes from the local mirror.
+- `GET /<domain>/log/inclusion?iscc_id=<id>[&index=<n>]` — computed inclusion proof.
+- `GET /<domain>/log/consistency?from=<n>` — computed consistency proof.
+
 ## Language
 
 **Split view**:
