@@ -3,9 +3,10 @@
 // resolves hub_id 0/1 to their hard-coded domains; an inactive hub still resolves
 // (ok == true); an unknown slot misses (ok == false); the full 12-bit range
 // (4095) resolves; pubkey is parsed-and-ignored; and a malformed document
-// (invalid YAML, over-range hub_id, duplicate hub_id, empty/path-bearing url)
-// fails closed with a nil list. Expected domains are hard-coded ground truth, not
-// values re-derived from the parser.
+// (invalid YAML, missing hub_id, over-range hub_id, duplicate hub_id, empty url,
+// or a scheme-less/scheme'd path-bearing url) fails closed with a nil list.
+// Expected domains are hard-coded ground truth, not values re-derived from the
+// parser.
 package registry
 
 import (
@@ -106,9 +107,11 @@ func TestParseHubListIgnoresPubkey(t *testing.T) {
 		t.Fatalf("ParseHubList(testnet.yaml) error: %v", err)
 	}
 	// The Hub struct is exactly {HubID, URL, Active}; a pubkey-bearing fixture
-	// parses without error and the kept hub holds no key.
-	if hl.Hubs[0] != (Hub{HubID: 0, URL: "https://sb0.iscc.id", Active: true}) {
-		t.Errorf("Hubs[0] = %#v, want {0 https://sb0.iscc.id true}", hl.Hubs[0])
+	// parses without error and the kept hub holds no key. HubID is a *uint16
+	// (presence-tracked), so compare the dereferenced slot plus the other fields.
+	h := hl.Hubs[0]
+	if h.HubID == nil || *h.HubID != 0 || h.URL != "https://sb0.iscc.id" || !h.Active {
+		t.Errorf("Hubs[0] = %#v, want {hub_id 0, https://sb0.iscc.id, active}", h)
 	}
 }
 
@@ -179,7 +182,10 @@ hubs:
 			errFrag: "empty",
 		},
 		{
-			name: "path-bearing url",
+			// Scheme-less host/path: caught by the no-host branch (url.Parse puts
+			// "sb0.iscc.id/log" in Path with an empty Host). Kept for coverage of
+			// that branch; the scheme'd case below is the load-bearing path guard.
+			name: "scheme-less path-bearing url",
 			in: `version: 1
 network: testnet
 hubs:
@@ -188,6 +194,34 @@ hubs:
     active: true
 `,
 			errFrag: "no host",
+		},
+		{
+			// Scheme'd path-bearing url: url.Parse accepts this and would otherwise
+			// return host "sb0.iscc.id", silently dropping "/log". The non-vacuous
+			// guard is the u.Path check; reverting it makes this case pass parsing
+			// and so FAIL the test.
+			name: "scheme'd path-bearing url",
+			in: `version: 1
+network: testnet
+hubs:
+  - hub_id: 0
+    url: https://sb0.iscc.id/log
+    active: true
+`,
+			errFrag: "not a bare host base url",
+		},
+		{
+			// Missing hub_id: a plain uint16 would decode the absent key to slot 0;
+			// the *uint16 presence check rejects it. Reverting that check makes this
+			// entry silently become slot 0 and so FAIL the test.
+			name: "missing hub_id",
+			in: `version: 1
+network: testnet
+hubs:
+  - url: https://sb0.iscc.id
+    active: true
+`,
+			errFrag: "hub_id is required",
 		},
 	}
 	for _, tc := range cases {
