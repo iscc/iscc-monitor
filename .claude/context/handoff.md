@@ -1,64 +1,55 @@
-## 2026-06-21 — Review of: Frozen hubs are evidence-only — stop the clean re-poll from advancing accepted state
+## 2026-06-21 — Drive `TestPollHubFork` re-detection through a second `PollHub`
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Re-armed `TestPollHubFork`'s re-detection block to re-detect the fork through a real second
+`PollHub` (later `observedAt=time.Unix(2,0)`) instead of calling `freeze(...)` directly, proving the
+freeze + once-only-alert + evidence-accumulation invariants on the production code path now that
+`store.CheckpointAt`'s `ORDER BY rowid LIMIT 1` makes the prior-accepted root deterministic. Removed the
+stale "unordered LIMIT 1 … non-deterministic" comment that no longer described the code. No production
+file changed.
 
-**Summary:** `PollHub` now short-circuits an already-frozen hub to evidence-only on a clean verified
-re-poll: `if fs.Frozen { recordVerdict(m, hubID, status, true, observedAt); return status, nil }`,
-placed after `checkConsistency` + the `violated` branch and before `RecordCheckpoint`, so no
-checkpoint record, coverage, follow-cursor advance, key cache, or fsck runs (ADR-0006). The change is
-scope-clean (1 production file + its test + handoff), trust-root code is byte-unchanged, the new test
-is reviewer-mutation-proven non-vacuous, and the full gate is green.
+**Files changed:**
+- `internal/follower/follower_test.go`: replaced the direct `freeze(...)` re-detection driver (and its
+  stale ~6-line comment block) with a second `PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id",
+  time.Unix(2,0), alert, reg)`; asserted it returns `StatusVerified` with nil error, `violations` count
+  == 2, `alerts` == 1, the cumulative `iscc_monitor_violations_total{hub_id="1",kind="fork"} 2` metric,
+  the hub stays `Frozen`, and `LastSize` is still `m.size`.
 
-**Verification:**
-- [x] `mise run check` green — `go build`/`go vet`/`go test ./...` all 15 packages `ok`; re-ran
-  `go test -count=1 ./...` uncached → all `ok`.
-- [x] `gofmt -l .` empty — clean.
-- [x] `go test -count=1 -run TestPollHub ./internal/follower` — PASS (new frozen-clean-repoll test +
-  Fork/Shrink/VerifiedAdvances/Unverified/CacheHit/Fsck, no regression).
-- [x] `go test -count=1 -run TestTickFrozenUnaffected ./internal/follower` — PASS unchanged (the
-  re-violation re-poll path is untouched).
-- [x] New test asserts after the clean frozen re-poll: `LastSize` unchanged, `Coverage` unchanged,
-  `hub_keys` row count unchanged, hub stays `Frozen`, `hub_status{hub_id="1",status="frozen"} 1`
-  emitted and NO `status="verified"` line. Verbose run confirms the fsck log line fires once (seed
-  poll only) — the re-poll did not re-run fsck.
-- [x] `git diff --quiet HEAD~1..HEAD -- go.mod go.sum internal/store/schema.sql` exits 0 — no
-  dependency or schema change.
-- [x] Mutation check (reviewer-reproduced, reverted): deleting the short-circuit makes
-  `TestPollHubFrozenCleanRepollIsEvidenceOnly` FAIL on `status="verified"` (the hub re-advances). A
-  green-but-wrong implementation cannot ship.
-- [x] Oracle/conformance gate — correctly N/A for the trust-root math, but exercised anyway: this
-  slice touches only the freeze *decision wiring* (`checkConsistency`/`freeze`/`fsckMirror`/`RunFsck`/
-  `AcceptCheckpoint`/merkle/didweb all byte-unchanged). Fresh `TestPollHubFsck`/`Equivocation`/
-  `Inclusion` pass; `derive_vkey.py` reproduces both golden vectors (`40b74463`, `22b08f3e`). CI
-  `notecheck` signature-parity oracle is unaffected (checkpoint bytes + verification code untouched).
-- [x] Gate-integrity scan over unpushed commits (`@{upstream}..HEAD`) — no `//nolint`/`t.Skip`/
-  build-tag/swallowed-error/deleted-assertion in code (the only matches are context-doc prose).
-- [x] Scope discipline — only the two authorized files; nothing from `## Not In Scope` touched
-  (`freeze`, `CheckpointAt`, `TestPollHubFork`, metrics surface, HTTP surfaces all untouched). Purity
-  invariant holds (`GOOS=js GOARCH=wasm go build ./internal/didweb` OK; `internal/proof` not yet
-  born).
+**Verification:** `mise run check` → green (`go build ./...`, `go vet ./...`, `go test ./...` all 15
+packages `ok`; `gofmt -l .` empty). Per-criterion:
+- [x] `go test -count=1 -run TestPollHubFork ./internal/follower` PASSES.
+- [x] `grep -rn "unordered LIMIT 1" internal/` → no matches.
+- [x] No `freeze(` call inside `TestPollHubFork` (lines 185-345); re-detection driven by a second
+  `PollHub(...)`.
+- [x] After the second `PollHub`: `violations` == 2, `alerts` == 1, hub stays `Frozen`, `LastSize` ==
+  `m.size`.
+- [x] Mutation sanity (both reverted): (1) asserting `alerts == 2` → FAILS (`alerts=1`); (2) removing the
+  second `PollHub` → FAILS (`violations=1` at reopen, `kind="fork"} 1`). Re-detection drive is
+  non-vacuous and the once-only-alert invariant is genuinely exercised on the production path.
+- [x] Conformance/consistency tests pass uncached
+  (`TestPollHubFork|Shrink|Equivocation|Inclusion|Fsck` → `ok`); `derive_vkey.py` reproduces both
+  golden vectors (`40b74463`, `22b08f3e`). `.claude/.scratch` removed after.
+- [x] Production byte-unchanged: `git diff --quiet -- internal/follower/follower.go
+  internal/store/checkpoints.go` exits 0. Only `follower_test.go` in the diff.
 
-**Issues found:** (none) — the `normal` issue "Frozen hubs still advance accepted state on later
-clean-looking polls" is verified fixed and removed from `issues.md`.
-
-**Next:** Drain another ADR-0006 `normal` issue or begin the proof-surface cache arc. Highest-value
-candidates: (1) the `TestPollHubFork` re-detection-via-second-`PollHub` cleanup + stale "unordered
-LIMIT 1" comment removal (a quick win now that `CheckpointAt` is deterministic); (2) collapse the
-self-consistency decision into a pure `logclient.CheckConsistency`; (3) `AcceptCheckpoint` resolved-
-context reuse so verified polls stop re-fetching `did.json`; or (4) extend ETag/Cache-Control to the
-size-varying `/inclusion`/`/consistency`/`/entries` proof surfaces.
+**Next:** Drain another ADR-0006 `normal` issue. Remaining open `normal` issues (none `critical`):
+`AcceptCheckpoint` resolved-context reuse (verified polls re-fetch `did.json`); tile-writer
+`p`-vocabulary; deep `AdvanceAccepted`; collapse the self-consistency decision into a pure
+`logclient.CheckConsistency`. Or begin the proof-surface ETag/Cache-Control arc for the size-varying
+`/inclusion`/`/consistency`/`/entries` surfaces. The `AcceptCheckpoint` context-reuse one is the
+highest-value follower slice (cuts a redundant did.json fetch per verified poll).
 
 **Notes:**
-- 5 `normal` issues remain open (was 6); none is `critical`, none blocks this slice's PASS, all block
-  DONE. M3 (verify-for-me, dashboard, log browser), the WASM verifier, and OTS anchoring are the bulk
-  of the remaining v1 work — Loop is CONTINUE, not DONE.
-- Behavioral nuance confirmed correct: the short-circuit means `fsckMirror` no longer runs on a frozen
-  clean re-poll. That is right — the mirror rebuild already ran on the polls that established accepted
-  state, `ingestTiles` still runs (tiles stay mirrored for `fsck`-verifiability), and re-running fsck
-  would only re-verify already-accepted state on a hub that can no longer advance. Verbose test output
-  shows exactly one fsck log line (the seed poll), none on the re-poll.
-- The test seeds the freeze via `store.Freeze` directly rather than driving a first `PollHub` into a
-  violation — the cleanest isolation of the already-frozen re-poll path, and it sidesteps the
-  `TestPollHubFork` re-detection fragility (its own deferred issue).
-- Branch is `develop`, in sync with `origin/develop`; remote `origin` configured. Pushing on PASS.
+- Why the second `PollHub` re-detects (load-bearing, do not weaken): the first `freeze` did NOT advance
+  the cursor, so `fs.LastSize` stays `m.size` and `fs.Frozen` becomes true. On the second poll
+  `checkConsistency` runs BEFORE the `fs.Frozen` short-circuit, reads the prior accepted root via
+  `CheckpointAt(hubID, m.size)` — which deterministically returns the **seed** root (lowest rowid), not
+  the contradicting mirror root the first `freeze` persisted at a higher rowid — re-detects the fork, and
+  re-freezes with `wasFrozen=true` so `alert` is NOT fired a second time. `RecordViolation` has no
+  `ON CONFLICT`, so the re-detection records a fresh second row.
+- `freeze`, `rootArray`, and `m.checkpoint` are all still referenced elsewhere
+  (`equivocation_test.go`, `inclusion_test.go`), so dropping the direct `freeze(...)` call introduced no
+  unused-symbol problem — `go vet`/`gofmt` stay clean. `freeze` keeps its real production caller in
+  `follower.go:194`.
+- No new imports (`PollHub`, `metrics`, `logclient`, `store` already in scope). The closed `normal`
+  issue "`TestPollHubFork` re-detection still bypasses `PollHub`" is verified fixed.
+- Branch is `develop`. Committed implementation test + handoff only.

@@ -273,20 +273,38 @@ func TestPollHubFork(t *testing.T) {
 		t.Errorf("hub_keys rows after a fork freeze = %d, want 0 (a violation must not cache a key)", n)
 	}
 
-	// Re-detect on an already-frozen hub: re-detection is itself evidence, so a second
-	// violation row is recorded, but the alert must not fire again. This is driven
-	// through freeze directly (the deterministic contract) rather than a second PollHub:
-	// after the first freeze two checkpoint rows share the size, and CheckpointAt's
-	// unordered LIMIT 1 makes a re-poll's fork re-comparison non-deterministic (a
-	// pre-existing re-detection fragility, flagged for review — not introduced here).
-	if err := freeze(ctx, s, hubID, logclient.ViolationFork, []byte("prior-root-raw"), m.checkpoint, logclient.CheckpointInfo{TreeSize: m.size, Root: rootArray(t, m.tree.Hash())}, true, time.Unix(1, 0), alert); err != nil {
-		t.Fatalf("re-detect freeze: %v", err)
+	// Re-detect on an already-frozen hub through a second real PollHub. checkConsistency
+	// runs before the fs.Frozen short-circuit and reads the prior accepted root via
+	// CheckpointAt(hubID, m.size), which deterministically returns the seed root (lowest
+	// rowid), never the contradicting mirror root the first freeze persisted at a higher
+	// rowid — so the fork re-detects and re-freezes with wasFrozen=true (alert stays once).
+	// A later observedAt keeps the two detections distinguishable in detected_at. The
+	// signature is still valid, so the verdict is StatusVerified with a nil error.
+	status, err = PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", time.Unix(2, 0), alert, reg)
+	if err != nil {
+		t.Fatalf("re-detect PollHub: %v", err)
+	}
+	if status != logclient.StatusVerified {
+		t.Fatalf("re-detect status = %s, want verified (violation is a separate axis)", status)
 	}
 	if n := countRows(t, path, "violations"); n != 2 {
 		t.Errorf("violations after re-detection = %d, want 2 (re-detection is evidence)", n)
 	}
 	if alerts != 1 {
 		t.Errorf("alerts after re-detection = %d, want 1 (exactly-one-alert)", alerts)
+	}
+	// The cumulative violations counter re-fires on re-detection; the once-only alert
+	// does not. The hub stays frozen and the cursor still must not advance.
+	assertMetric(t, reg, `iscc_monitor_violations_total{hub_id="1",kind="fork"} 2`)
+	fsRe, err := s.FollowState(ctx, hubID)
+	if err != nil {
+		t.Fatalf("FollowState after re-detection: %v", err)
+	}
+	if !fsRe.Frozen {
+		t.Errorf("Frozen = false after re-detection, want true")
+	}
+	if fsRe.LastSize != m.size {
+		t.Errorf("LastSize = %d after re-detection, want %d (a frozen hub must not advance)", fsRe.LastSize, m.size)
 	}
 
 	// A clean verified poll of the second hub advances normally and stays unfrozen.
