@@ -1,119 +1,98 @@
 # Next Work Package
 
-## Step: Close M2's inclusion cross-check Verify bar with a conformance test over the real mirror
+## Step: Serve the raw tlog-tiles mirror (checkpoint / tile / entries) over HTTP from one hub's SQLiteFetcher
 
 ## Goal
-Satisfy M2's second Verify criterion — "computed inclusion proof matches the hub's
-`evidence.IsccLogInclusionProof` for sampled `iscc_id`s" — as an ordinary `go test`. After a verified
-`PollHub` populates the local mirror + `iscc_index`, resolve a sampled leaf's `iscc_id → leafIndex` via
-`SeqsForISCCID`, build that leaf's hub-side `IsccLogInclusionProof` from the fixture tree, and assert
-`logclient.VerifyInclusionEvidence` (recomputing the proof from the mirrored `SQLiteFetcher` tiles)
-byte-matches it. This re-arms the inclusion-cross-check oracle gate on the real verified path and
-completes M2's Verify bar.
+Stand up the canonical static read surface M2 requires — `GET /checkpoint`,
+`GET /tile/<L>/<K>`, `GET /tile/entries/<K>` (including `.p/<W>` partials) — served verbatim
+from the local mirror via the existing `store.SQLiteFetcher`, never re-hitting the hub. This is
+the spec-correct foundation of "serve proofs from the local store" (iscc-log §9: there are no
+proof-computing endpoints; a verifier computes proofs locally from the served tiles) and the
+inbound transport the later `consistency`/`inclusion` `verify-for-me` slices build on.
 
 ## Scope
-- **Create**: `internal/follower/inclusion_test.go` — the conformance test described below.
-- **Modify**: (none — see "Why test-only" in Implementation Notes; this is a deliberate, honest choice.)
-- **Reference** (exact paths):
-  - `/workspace/iscc-monitor/internal/logclient/inclusioncheck.go` — `VerifyInclusionEvidence(ctx,
-    fetch TileFetcher, ev InclusionEvidence) error`, `InclusionEvidence{Type, Checkpoint, TreeSize,
-    LeafIndex, InclusionProof []string}`, sentinel `ErrInclusionMismatch`. `Type` must be the const
-    value `"IsccLogInclusionProof"`; `InclusionProof` is base64-**Std**-encoded sibling hashes.
-  - `/workspace/iscc-monitor/internal/store/iscc_index.go` — `SeqsForISCCID(ctx, hubID, isccID)
-    ([]uint64, error)` (absent → nil slice, nil err; sorted ascending).
-  - `/workspace/iscc-monitor/internal/store/fetcher.go` — `SQLiteFetcher{Store, HubID}` + `ReadTile`
-    (the `TileFetcher` the cross-check fetches over; learnings: its signature is byte-identical to
-    `logclient.TileFetcher`).
-  - `/workspace/iscc-monitor/internal/follower/fsck_test.go` — `buildVerifiedMirror(t, leaves)
-    verifiedMirror`, the `verifiedMirror{fetcher, tree *testonly.Tree, checkpoint, size, keyID}` fields,
-    `leafISCCID(i)`, `mirrorLeaves = 300`, `openTemp`, `noopAlert`. `m.tree` is the hub: it owns the
-    real `InclusionProof`.
-  - `/home/dev/go/pkg/mod/github.com/transparency-dev/merkle@v0.0.2/testonly/tree.go:100` —
-    `(*Tree).InclusionProof(index, size uint64) ([][]byte, error)` (the hub-side prover).
-  - `/workspace/iscc-monitor/internal/follower/ingest_test.go:237` — `TestPollHubRecordsProjections`,
-    the exact "poll `buildVerifiedMirror`, read back via `SeqsForISCCID`" pattern to mirror.
-  - `/workspace/iscc-monitor/cauldron/iscc-hub/iscc_hub/log_tree.py:90` — `inclusion_proof(index, size)`
-    = `merkle.inclusion_proof(index, leaf_hashes)`; confirms the hub's evidence is the RFC-6962
-    inclusion proof over its leaf hashes, base64-encoded (matches `m.tree.InclusionProof`).
+- **Create**: `internal/tilesserve/handler.go` — a new package exporting
+  `Handler(f store.SQLiteFetcher) http.Handler` that routes the three canonical tlog-tiles paths
+  to `f.ReadCheckpoint` / `f.ReadTile` / `f.ReadEntryBundle` and writes the raw BLOB bytes.
+- **Create**: `internal/tilesserve/handler_test.go` — table-driven `httptest` test over a real
+  `store.Open(tmp)` seeded with one full tile, one partial tile, one entry bundle, and one
+  checkpoint via the existing store writers.
+- **Modify**: (none — binary wiring is a separate slice; see Not In Scope)
+- **Reference**:
+  - `/workspace/iscc-monitor/internal/metricshttp/handler.go` — the `Handler(...) http.Handler`
+    leaf-wrapping pattern and the mid-write `_ = w.Write(...)` swallow idiom to mirror.
+  - `/workspace/iscc-monitor/internal/store/fetcher.go` — `SQLiteFetcher.ReadCheckpoint` /
+    `ReadTile(ctx,l,i uint64,p uint8)` / `ReadEntryBundle(ctx,i uint64,p uint8)`; note the
+    `os.ErrNotExist` wrap on a missing row and the partial→full fallback already handled inside.
+  - `/workspace/iscc-monitor/internal/tiles/layout.go` — the build-side `TilePath`/`EntriesPath`
+    re-exports the test can use to construct request URLs without hand-building chunked paths.
+  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/api/layout/paths.go`
+    (lines 149–208) — `ParseTileLevelIndexPartial(level, index string) (uint64,uint64,uint8,error)`
+    and `ParseTileIndexPartial(index string) (uint64,uint8,error)`: the canonical parsers for the
+    `x###/###` chunked index and the `.p/<W>` partial suffix. Use these — do NOT hand-roll path math.
+  - `/workspace/iscc-monitor/internal/store/tiles.go` — `RecordTile`/`RecordEntryBundle` (the test's
+    seed writers) and the `width` they take (256 = full, else the partial leaf count).
 
 ## Not In Scope
-- **Do NOT add a tautological production caller in `PollHub`.** There is no inbound hub-evidence
-  transport on the follow path yet (no `FetchInclusionEvidence`; proof-serving / `verify-for-me` is a
-  later M2/M3 slice). A `PollHub` step that recomputed the monitor's OWN proof and checked it against
-  itself would be circular and is forbidden (target.md: a green-but-wrong verify must not ship). The
-  Verify-bar criterion is explicitly satisfiable "as ordinary `go test` / `mise run check`".
-- **Do NOT capture a live `IsccLogInclusionProof` fixture from sb0/sb1.** Live capture is Not In Scope
-  (same posture as the retired real-sb0 mirror); the `buildVerifiedMirror` `testonly.Tree` IS the hub
-  for this fixture, exactly as the fsck/equivocation slices synthesize their hub evidence in-process.
-- Do NOT serve `inclusion`/`consistency`/`entries` over HTTP — that is the next M2 slice.
-- Do NOT touch the open `normal` follower issues (`CheckpointAt` ordering, `AcceptCheckpoint` context
-  reuse, frozen-hub advance, tile `p`/`width` duplication, `AdvanceAccepted`, `CheckConsistency`
-  collapse). None are required here; each is its own store/refactor-touching slice.
-- Do NOT change `schema.sql`, `go.mod`, or `go.sum` (no new dep — `testonly.Tree`, `encoding/base64`,
-  `errors`, and `VerifyInclusionEvidence` are all already in the build/test closure of this package).
+- Binary wiring in `cmd/iscc-monitor/main.go` (mounting a per-hub route prefix, a hub→origin
+  router, a read-only connection pool). That needs a multi-hub routing design and is its own slice.
+- The `consistency` / `inclusion` proof-computing or `verify-for-me` REST surface — those are
+  later M2/M3 slices that consume `ConsistencyProofFromTiles` / `VerifyInclusionEvidence`; this
+  slice only serves the raw static bytes a verifier (or those later handlers) reads from.
+- CORS headers, `Cache-Control`, ETag, conditional GET, and any non-GET method handling beyond a
+  405/404 default — defer to the M3 REST-surface slice (target.md M3: "CORS on every public GET").
+- Any change to `store`, `logclient`, `tiles`, `schema.sql`, `go.mod`, or `go.sum`. If a tile-path
+  parse re-export feels cleaner in `internal/tiles`, resist it — import `api/layout` directly in the
+  new handler this slice (no new exported surface on the `tiles` leaf).
+- Resolving `iscc_id → seq` or serving an entry bundle by record index — `EntriesPath` indexes by
+  bundle, and that resolution belongs to the inclusion slice.
 
 ## Implementation Notes
-- **Why test-only is the honest scope here.** `VerifyInclusionEvidence` is the *consumer* of a
-  hub-supplied proof; M2's Verify bar is a conformance assertion ("computed proof matches the hub's
-  evidence"), and target.md's oracle-gate section says these run "as ordinary `go test` … once the
-  package exists." The package exists and is built-but-unwired; the missing piece is the conformance
-  test that drives it over a real verified-poll mirror. The follower production code already mirrors the
-  tiles (`ingestTiles`) and indexes the leaves (`projectEntryBundle`) — everything the cross-check reads.
-  No production line is needed to satisfy the bar without fabricating a circular caller. State this
-  reasoning in the test's file docstring so `review` and `advance` see the deliberate choice.
-- **Drive a real verified poll first.** `s, _ := openTemp(t)`; `hubID, _ := s.UpsertHub(ctx,
-  "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")`; `m := buildVerifiedMirror(t,
-  mirrorLeaves)`; `status, err := PollHub(ctx, s, m.fetcher, hubID, "https://sb0.iscc.id", time.Unix(1,
-  0), noopAlert, nil)` — assert `err == nil` and `status == logclient.StatusVerified`. This populates
-  the mirror BLOBs (so `SQLiteFetcher.ReadTile` works) and `iscc_index` (so `SeqsForISCCID` works).
-- **Resolve leaf index from the index (the production resolution path).** For each sampled
-  `leafIndex` in `{5, 260}` (one in bundle 0, one past the 256-leaf boundary): `seqs, _ :=
-  s.SeqsForISCCID(ctx, hubID, leafISCCID(leafIndex))`; assert `seqs == []uint64{uint64(leafIndex)}`.
-  This proves the `iscc_id → leafIndex` resolution the cross-check depends on.
-- **Build the hub's evidence from the tree (the oracle's hub side).** `proof, err :=
-  m.tree.InclusionProof(uint64(leafIndex), m.size)` (`[][]byte`); base64-Std-encode each hash into a
-  `[]string`. Construct `logclient.InclusionEvidence{Type: "IsccLogInclusionProof", Checkpoint:
-  string(m.checkpoint), TreeSize: m.size, LeafIndex: uint64(leafIndex), InclusionProof: encoded}`.
-- **The cross-check itself (the wired unit).** `f := store.SQLiteFetcher{Store: s, HubID: hubID}`;
-  `err := logclient.VerifyInclusionEvidence(ctx, f.ReadTile, ev)` → assert `err == nil`. This is
-  exactly the seam the inclusioncheck learnings predicted: "first caller … passes `SQLiteFetcher.
-  ReadTile` straight in." The recompute reads the mirror written by `ingestTiles` during the poll.
-- **Non-vacuousness (Correctness rule + target.md oracle gate APPLIES — RFC-6962 inclusion crypto).**
-  A green-but-wrong check that ignored the proof bytes must fail this test, so include two negatives:
-  (1) **wrong leaf** — build the valid proof for leaf 5 but set `ev.LeafIndex = 6`; assert
-  `errors.Is(err, logclient.ErrInclusionMismatch)` (the monitor recomputes leaf 6's different proof —
-  the sharp negative per the learnings). (2) **corrupted proof** — flip one byte of one decoded hash
-  (re-encode) and assert `errors.Is(err, logclient.ErrInclusionMismatch)`. Three independent paths keep
-  it non-circular: `m.tree.InclusionProof` (prover/hub), `InclusionProofFromTiles` inside
-  `VerifyInclusionEvidence` (monitor recompute over the mirror), and the base64 round-trip.
-- **Imports**: the new test file needs `context`, `encoding/base64`, `errors`, `testing`, `time`, plus
-  `internal/logclient` and `internal/store` (both already used by the package's other tests). No new
-  module dependency; `testonly` is reachable via `m.tree` without importing it directly (but importing
-  `merkle/testonly` is already done by `fsck_test.go`, so it is fine either way).
+- One package `tilesserve`, one exported `Handler(f store.SQLiteFetcher) http.Handler`. It is NOT a
+  WASM leaf (it imports `net/http` + `store`), so there is no purity constraint here — unlike
+  `internal/metrics`, the split exists only to keep routing out of `store` (store stays a leaf; the
+  new package depends on store, never the reverse).
+- Route on `r.URL.Path` with a small `switch`/prefix match. Canonical tlog-tiles paths (iscc-log §9,
+  served under the hub's `/log` origin, but THIS handler is mounted at the hub root so it sees the
+  suffix): `checkpoint`, `tile/<L>/<index...>`, `tile/entries/<index...>`. Trim a single leading
+  `/`. Match `tile/entries/` BEFORE `tile/` (entries is a sub-prefix of tile and a bare `tile/<L>`
+  parse of an `entries/...` path must not win).
+- For `tile/<L>/<index...>`: split off the level segment, pass `(level, rest)` to
+  `layout.ParseTileLevelIndexPartial`, then `f.ReadTile(ctx, level, index, width)`. tessera's
+  returned `width` IS the fetcher's `p` (0 = full, else partial leaf count) — they share the exact
+  convention (`store/fetcher.go` `widthForP`), so pass it straight through; do not re-map it.
+- For `tile/entries/<index...>`: pass the index remainder to `layout.ParseTileIndexPartial`, then
+  `f.ReadEntryBundle(ctx, index, width)`.
+- For `checkpoint`: `f.ReadCheckpoint(ctx)` with no path args.
+- Error mapping (the load-bearing contract): a parse failure → `400`; `errors.Is(err,
+  os.ErrNotExist)` (the `SQLiteFetcher` missing-row sentinel — Correctness: the fetcher wraps
+  `os.ErrNotExist`) → `404`; any other read error → `500`; method != GET → `405`; unmatched path →
+  `404`. On success write the raw bytes verbatim (the BLOB IS the canonical tlog-tiles body — these
+  are static files), `Content-Type: application/octet-stream`. Mirror metricshttp's deliberate
+  mid-write `_ = w.Write(...)` swallow (the 200 is already on the wire), documented inline — NOT a
+  gate dodge.
+- Use `r.Context()` for the fetcher calls. Keep the package docstring evergreen (purpose first line).
+- Test: `store.Open(t.TempDir()+"/x.db")`, `UpsertHub`, seed via `RecordTile`(full width 256 at
+  `(0,0)` and a partial e.g. width 44 at `(0,1)`), `RecordEntryBundle`(one bundle), and
+  `RecordCheckpoint`(raw bytes). Build request URLs with `tiles.TilePath`/`tiles.EntriesPath` so the
+  paths are tessera-canonical, not author-asserted. Assert: 200 + exact seeded bytes for each
+  served path (full, partial, entries, checkpoint), 404 for a never-mirrored tile, 400 for a
+  malformed index, 405 for POST. Drive through `httptest.NewServer` or call the handler with
+  `httptest.NewRecorder()` — either is fine; assert on observable HTTP outputs (status + body),
+  never on handler internals (PRD seam-testing rule).
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -run TestPollHubInclusion -count=1 ./internal/follower` passes: the verified poll yields
-  `StatusVerified`; for leaf 5 and leaf 260 `SeqsForISCCID` returns `[5]`/`[260]` and
-  `VerifyInclusionEvidence` over `SQLiteFetcher.ReadTile` returns nil.
-- The two negatives in the same test assert `errors.Is(err, logclient.ErrInclusionMismatch)` is true
-  for both the wrong-`LeafIndex` and corrupted-proof cases (the happy case returns nil) — so a verify
-  that ignored the proof bytes would fail. (`go test -run TestPollHubInclusion -count=1
-  ./internal/follower` covers these.)
-- `go test -run TestPollHub -count=1 ./internal/follower` still passes (no regression in the existing
-  verified-path / mirror / fsck / projection tests).
-- `git diff --quiet HEAD -- internal/store/schema.sql go.mod go.sum` exits 0 (no schema/dep change),
-  and `git status --porcelain` shows only the new `internal/follower/inclusion_test.go` (+ context).
-- `go list -deps ./internal/store | grep -E 'internal/logclient|net/http'` is empty (store stays a leaf).
-- Conformance/oracle re-run (slice exercises the inclusion crypto path): `go test -count=1
-  ./internal/logclient ./internal/follower ./internal/didweb` all pass; `python3 .claude/derive_vkey.py`
-  reproduces `40b74463`/`22b08f3e` (then `rm -rf .claude/.scratch`); `cmd/notecheck` accepts the real
-  sb0 checkpoint (`OK sb0.iscc.id/log`) and rejects a corrupted one.
-- `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (WASM purity invariant intact).
+- `go test -run TestHandler -count=1 ./internal/tilesserve` passes (all sub-cases).
+- `git diff --quiet HEAD -- internal/store/schema.sql go.mod go.sum` exits 0 (no schema/dep change).
+- `go list -deps ./internal/store | grep -E 'internal/tilesserve|net/http'` is empty (store stays a
+  leaf; the new package depends on store, never the reverse).
+- `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (WASM purity invariant untouched).
+- A `GET` for a full tile returns HTTP 200 with bytes byte-equal to the seeded `RecordTile` BLOB; a
+  `GET` for a never-mirrored tile index returns HTTP 404; a malformed tile index returns HTTP 400;
+  a `POST` returns HTTP 405.
 
 ## Done When
-A conformance test drives a verified `PollHub` over `buildVerifiedMirror`, resolves the sampled leaves
-via `SeqsForISCCID`, and proves `logclient.VerifyInclusionEvidence` over the real `SQLiteFetcher` mirror
-matches the tree-built `IsccLogInclusionProof` for both sampled leaves and rejects the wrong-leaf and
-corrupted-proof negatives with `ErrInclusionMismatch` — with `mise run check` green and no
-`schema.sql`/`go.mod`/`go.sum` change.
+`internal/tilesserve.Handler` serves the three canonical tlog-tiles paths (checkpoint / tile /
+entries, including `.p/<W>` partials) verbatim from one hub's `SQLiteFetcher` with correct
+400/404/405/500 status mapping, and all Verification criteria pass.
