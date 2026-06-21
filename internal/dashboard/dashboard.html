@@ -23,7 +23,7 @@
       <tr>
         <td>{{.Domain}}</td>
         <td>{{.Origin}}</td>
-        <td>{{.Status}}</td>
+        <td>{{template "hubStatusBadge" .}}</td>
         <td>{{.LastSize}}</td>
         <td>
           {{- if .HasCoverage}}

@@ -82,6 +82,28 @@ func TestUnknownStatusFailsClosed(t *testing.T) {
 	}
 }
 
+// TestLabelMatchesFixedTable asserts the exported Label accessor returns each
+// status's fixed-table label with ok==true, and fails closed (("", false)) on an
+// unknown or empty status — the same single source of truth a parent page uses to
+// precompute its row .Label, so the label can never be the caller's verbatim
+// string.
+func TestLabelMatchesFixedTable(t *testing.T) {
+	for _, f := range statusFixtures {
+		got, ok := Label(f.status)
+		if !ok {
+			t.Errorf("Label(%q): ok = false, want true", f.status)
+		}
+		if got != f.wantLabel {
+			t.Errorf("Label(%q) = %q, want %q", f.status, got, f.wantLabel)
+		}
+	}
+	for _, status := range []string{"", "pwned", "VERIFIED", "rotated", "<script>"} {
+		if got, ok := Label(status); ok || got != "" {
+			t.Errorf("Label(%q) = (%q, %v), want (\"\", false)", status, got, ok)
+		}
+	}
+}
+
 // TestPartialComposesIntoParent asserts a parent page template can associate
 // Source and invoke the partial by PartialName — the html/template
 // partial-include idiom later M-UI pages use to embed the badge inline.

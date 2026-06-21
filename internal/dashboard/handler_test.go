@@ -84,12 +84,20 @@ func TestDashboardRendersEveryHub(t *testing.T) {
 			t.Errorf("body missing %q\n%s", want, body)
 		}
 	}
-	// Both store-provable statuses must render.
-	if !strings.Contains(body, "verified") {
-		t.Errorf("body missing verified status\n%s", body)
+	// Both store-provable statuses must render through the hubStatusBadge partial,
+	// not as the bare status word: the wrapper, the fixed-table label, and the
+	// per-status distinguishing silhouette marker must all appear (icon + label +
+	// silhouette, never hue alone — ADR-0010 invariant 4).
+	if !strings.Contains(body, `class="hub-status-badge"`) {
+		t.Errorf("body missing hub-status-badge wrapper (partial not rendered)\n%s", body)
 	}
-	if !strings.Contains(body, "frozen") {
-		t.Errorf("body missing frozen status\n%s", body)
+	for _, want := range []string{
+		`data-status="verified"`, ">Verified<", "M8.4 12.3", // verified: badge + label + check-circle marker
+		`data-status="frozen"`, ">Frozen<", "M8.2 3.3h7.6", // frozen: badge + label + octagon-x marker
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing badge markup %q\n%s", want, body)
+		}
 	}
 	// The verified hub recorded coverage; the page must show its start size.
 	if !strings.Contains(body, "size 42") {

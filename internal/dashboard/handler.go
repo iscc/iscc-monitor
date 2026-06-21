@@ -23,6 +23,7 @@ import (
 	"html/template"
 	"net/http"
 
+	"github.com/iscc/iscc-monitor/internal/badge"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -32,17 +33,26 @@ import (
 //go:embed dashboard.html
 var pageTemplate string
 
-// tmpl is the parsed dashboard template. template.Must panics at init if the
-// embedded source fails to parse, surfacing a template bug at startup.
-var tmpl = template.Must(template.New("dashboard").Parse(pageTemplate))
+// tmpl is the parsed dashboard template with the HubStatusBadge partial
+// associated into the same set, so the page invokes {{template "hubStatusBadge"
+// .}} over each row (which exposes .Status and .Label). template.Must panics at
+// init if either source fails to parse, surfacing a template bug at startup.
+var tmpl = func() *template.Template {
+	t := template.Must(template.New("dashboard").Parse(pageTemplate))
+	return template.Must(t.Parse(badge.Source))
+}()
 
 // row is one hub's view-model for the template: the precomputed glossary status
-// string plus the raw summary fields the page renders. It is built from a
-// store.HubSummary so the template stays free of status logic.
+// string, its fixed-table badge label, plus the raw summary fields the page
+// renders. It is built from a store.HubSummary so the template stays free of
+// status logic. The hubStatusBadge partial reads .Label directly (it does not
+// re-derive the label from .Status), so the row carries a precomputed Label from
+// the badge package's single source of truth.
 type row struct {
 	Domain      string
 	Origin      string
 	Status      string
+	Label       string
 	LastSize    uint64
 	HasCoverage bool
 	SinceSize   uint64
@@ -93,14 +103,24 @@ func Handler(st *store.Store) http.Handler {
 }
 
 // buildRows maps the store summaries into template rows, precomputing each hub's
-// glossary status so the template carries no logic.
+// glossary status and its fixed-table badge label so the template carries no
+// logic. hubStatus only ever yields a store-provable status that is a valid
+// badge.Label key, so ok is always true here; the row still falls back to the
+// status string if badge.Label ever returns ok==false, so the page never renders
+// an unlabeled badge.
 func buildRows(summaries []store.HubSummary) []row {
 	rows := make([]row, 0, len(summaries))
 	for _, s := range summaries {
+		status := hubStatus(s)
+		label, ok := badge.Label(status)
+		if !ok {
+			label = status
+		}
 		rows = append(rows, row{
 			Domain:      s.Domain,
 			Origin:      s.Origin,
-			Status:      hubStatus(s),
+			Status:      status,
+			Label:       label,
 			LastSize:    s.LastSize,
 			HasCoverage: s.Coverage.Set,
 			SinceSize:   s.Coverage.Size,

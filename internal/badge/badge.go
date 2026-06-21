@@ -64,6 +64,17 @@ type view struct {
 	Label  string
 }
 
+// Label returns the fixed-table display label for status, with ok reporting
+// whether status is a supported badge status. A parent page that composes the
+// partial via {{template "hubStatusBadge" .}} precomputes its row's .Label from
+// this single source of truth, so the label stays single-sourced and fail-closed:
+// the caller's status string is never trusted verbatim for the label, and an
+// unknown status yields ("", false) rather than an attacker-controlled label.
+func Label(status string) (string, bool) {
+	label, ok := labels[status]
+	return label, ok
+}
+
 // Render writes the HubStatusBadge partial for status to w. It fails closed: an
 // unknown or empty status returns an error and writes nothing, so the caller can
 // never render an arbitrary attacker-controlled label or an unstyled status.
