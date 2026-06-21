@@ -18,20 +18,6 @@ filed it and does **not** affect priority.
 
 ---
 
-## No CI / `notecheck` signature-parity oracle wired (`.github/workflows/` absent)
-- **Priority:** normal
-- **Source:** [review]
-- **What / where / how to verify:** The repo has no `.github/workflows/`, so the external
-  signature-parity oracle (`notecheck`) and any build/test/format/tidy gate run only locally, never in
-  CI. The trust-root conformance gate (golden-vector parity, fsck root-rebuild, inclusion cross-check)
-  has no CI coverage. **Now UNBLOCKED** — `cmd/notecheck` compiles in-repo, so CI need only
-  `go build ./cmd/notecheck` and shell the binary out against a captured checkpoint (assert `OK <name>`
-  + exit 0, and exit 1 on a corrupted one). NOTE: CI doing `go build ./...` on a fresh checkout must
-  account for gitignored `cauldron/` (it never reaches CI, but `./cmd/notecheck` sidesteps it cleanly).
-  Wire before the inclusion-cross-check conformance slice. Verify fixed: a green CI run on `develop`
-  that builds + shells out to `notecheck` and runs `mise run check`.
-- **Spec:** build plan conformance/oracle gate; CLAUDE.md "CID loop … Specs are the source of truth".
-
 ## `cmd/notecheck`'s `run` has a vestigial `out io.Writer` parameter
 - **Priority:** low
 - **Source:** [review]
