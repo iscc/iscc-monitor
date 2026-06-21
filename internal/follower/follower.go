@@ -139,7 +139,7 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 		return logclient.StatusUnverified, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err)
 	}
 
-	status, info, err := logclient.AcceptCheckpoint(ctx, fetcher, baseURL, raw, observedAt)
+	status, info, vctx, err := logclient.AcceptCheckpoint(ctx, fetcher, baseURL, raw, observedAt)
 	if err != nil {
 		// A verified-but-garbled body is a genuine fault, returned alongside
 		// StatusUnverified's zero value; the error is checked before the status.
@@ -228,7 +228,9 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	// Cache the resolved did:web signing key (ADR-0009). Only a verified,
 	// non-violation observation writes a cache row, mirroring coverage: a
 	// contradictory or unverified observation must never populate the key cache.
-	if err := cacheHubKey(ctx, st, fetcher, hubID, baseURL, raw, observedAt); err != nil {
+	// vctx is the verifier-key context AcceptCheckpoint already resolved this poll,
+	// so the cache-miss fallback reuses it instead of re-fetching did.json.
+	if err := cacheHubKey(ctx, st, hubID, baseURL, raw, vctx, observedAt); err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: cache hub key: %w", hubID, err)
 	}
 	// Rebuild the accepted root from the mirrored tiles and cross-check it against
@@ -237,8 +239,10 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	// the consistency check), so the SQLiteFetcher has tiles to read. A mismatch is a
 	// genuine mirror/rebuild fault (NOT a self-consistency violation): it is surfaced
 	// without freezing the hub — the checkpoint is already recorded/advanced above, so
-	// a transient fault is re-attempted next poll.
-	if err := fsckMirror(ctx, st, fetcher, hubID, baseURL); err != nil {
+	// a transient fault is re-attempted next poll. The verifier key (vctx.VKey) and
+	// origin (info.Origin, <domain>/log) come from this poll's AcceptCheckpoint, so
+	// fsckMirror reuses them instead of re-resolving did.json.
+	if err := fsckMirror(ctx, st, hubID, vctx.VKey, info.Origin); err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err)
 	}
 	recordVerdict(m, hubID, status, false, observedAt)
@@ -272,20 +276,21 @@ func recordVerdict(m *metrics.Registry, hubID int64, status logclient.Status, fr
 // own identity; a name mismatch, a key-id-recovery miss, or a cache miss all fall
 // through to the resolve path below.
 //
-// The fallback resolves the key via ResolveVerifierKey, recovers the key id from
-// the vkey string's middle "+<hex>+" field (KeyIDFromVerifier), and maps the DIDKey
-// field-for-field into store.HubKey (PublicKey->PubkeyRaw, Multibase->PubkeyZ,
-// Revoked->Revoked); the injected observedAt is the resolution time. The first
-// verified poll always takes this fallback (the cache is cold), populating the row
-// so subsequent polls hit the fast path. The follower owns this mapping so store
-// stays a leaf (it never imports logclient/didweb).
-func cacheHubKey(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string, raw []byte, observedAt time.Time) error {
+// The fallback reuses the verifier-key context AcceptCheckpoint already resolved
+// this poll (vctx): it recovers the key id from the vkey string's middle "+<hex>+"
+// field (KeyIDFromVerifier) and maps the DIDKey field-for-field into store.HubKey
+// (PublicKey->PubkeyRaw, Multibase->PubkeyZ, Revoked->Revoked); the injected
+// observedAt is the resolution time. The first verified poll always takes this
+// fallback (the cache is cold), populating the row so subsequent polls hit the fast
+// path. The follower owns this mapping so store stays a leaf (it never imports
+// logclient/didweb).
+func cacheHubKey(ctx context.Context, st *store.Store, hubID int64, baseURL string, raw []byte, vctx logclient.VerifiedContext, observedAt time.Time) error {
 	if hit, err := cacheHubKeyFast(ctx, st, hubID, baseURL, raw, observedAt); err != nil {
 		return err
 	} else if hit {
 		return nil
 	}
-	return cacheHubKeyResolve(ctx, st, fetcher, hubID, baseURL, observedAt)
+	return cacheHubKeyResolve(ctx, st, hubID, vctx, observedAt)
 }
 
 // cacheHubKeyFast attempts the fetch-free cache refresh. It recovers the key id
@@ -333,36 +338,35 @@ func cacheHubKeyFast(ctx context.Context, st *store.Store, hubID int64, baseURL 
 	return true, nil
 }
 
-// cacheHubKeyResolve is the cache-miss fallback: it resolves the hub's did:web key
-// and upserts it. It re-runs ResolveVerifierKey (the second did.json fetch this poll
-// when no cache row exists yet), so a failure here is an unexpected fault on the
-// just-verified path and is returned to the caller rather than swallowed.
-func cacheHubKeyResolve(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string, observedAt time.Time) error {
-	vkey, didKey, err := logclient.ResolveVerifierKey(ctx, fetcher, baseURL)
-	if err != nil {
-		return fmt.Errorf("resolve verifier key: %w", err)
-	}
-	keyID, err := logclient.KeyIDFromVerifier(vkey)
+// cacheHubKeyResolve is the cache-miss fallback: it upserts the verifier-key
+// context AcceptCheckpoint already resolved this poll (vctx), so it makes NO
+// did.json fetch. It recovers the key id from vctx.VKey (KeyIDFromVerifier) and
+// maps vctx.Key into store.HubKey. A key-id-recovery failure here is unexpected on
+// the just-verified path (vctx.VKey came straight from the verified resolution) and
+// is returned to the caller rather than swallowed.
+func cacheHubKeyResolve(ctx context.Context, st *store.Store, hubID int64, vctx logclient.VerifiedContext, observedAt time.Time) error {
+	keyID, err := logclient.KeyIDFromVerifier(vctx.VKey)
 	if err != nil {
 		return fmt.Errorf("recover key id: %w", err)
 	}
 	return st.RecordHubKey(ctx, store.HubKey{
 		HubID:      hubID,
 		KeyID:      keyID,
-		PubkeyRaw:  didKey.PublicKey,
-		PubkeyZ:    didKey.Multibase,
-		Revoked:    didKey.Revoked,
+		PubkeyRaw:  vctx.Key.PublicKey,
+		PubkeyZ:    vctx.Key.Multibase,
+		Revoked:    vctx.Key.Revoked,
 		ResolvedAt: observedAt,
 	})
 }
 
 // fsckMirror rebuilds the hub's accepted root from the local mirror and verifies it
-// against the signed checkpoint root (ADR-0005). It resolves the verifier key
-// (ResolveVerifierKey — its validity was already checked by AcceptCheckpoint, so the
-// DIDKey is discarded) and the signed-note origin (Origin, <domain>/log), builds a
-// read-only store.SQLiteFetcher over the just-ingested tiles/bundles, and runs
-// logclient.RunFsck, which re-hashes each entry bundle, re-derives the lower hash
-// tiles, and compares the rebuilt RFC-6962 root to the checkpoint's claimed root.
+// against the signed checkpoint root (ADR-0005). The verifier key (vkey) and the
+// signed-note origin (origin, <domain>/log = info.Origin) come from this poll's
+// AcceptCheckpoint — the key's validity was already checked there — so fsckMirror
+// makes NO did.json fetch of its own. It builds a read-only store.SQLiteFetcher over
+// the just-ingested tiles/bundles and runs logclient.RunFsck, which re-hashes each
+// entry bundle, re-derives the lower hash tiles, and compares the rebuilt RFC-6962
+// root to the checkpoint's claimed root.
 //
 // RunFsck is an in-process STRUCTURAL self-check: it shares the monitor's own
 // LeafHashes / RFC-6962 code, so it catches mirror corruption and rebuild bugs but is
@@ -370,17 +374,9 @@ func cacheHubKeyResolve(ctx context.Context, st *store.Store, fetcher logclient.
 // is a root-rebuild mismatch or a mirror fault — NOT a self-consistency violation
 // (freezing is reserved for the three checkConsistency triggers). PollHub surfaces it
 // to the caller without freezing the hub; since the checkpoint is already
-// recorded/advanced, a transient mirror fault is simply re-attempted next poll. Each
-// step's error is wrapped with %w.
-func fsckMirror(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string) error {
-	vkey, _, err := logclient.ResolveVerifierKey(ctx, fetcher, baseURL)
-	if err != nil {
-		return fmt.Errorf("fsck: resolve verifier key: %w", err)
-	}
-	origin, err := logclient.Origin(baseURL)
-	if err != nil {
-		return fmt.Errorf("fsck: origin: %w", err)
-	}
+// recorded/advanced, a transient mirror fault is simply re-attempted next poll. The
+// RunFsck error is wrapped with %w.
+func fsckMirror(ctx context.Context, st *store.Store, hubID int64, vkey, origin string) error {
 	if err := logclient.RunFsck(ctx, vkey, origin, store.SQLiteFetcher{Store: st, HubID: hubID}); err != nil {
 		return fmt.Errorf("fsck: %w", err)
 	}

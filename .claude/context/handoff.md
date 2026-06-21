@@ -1,64 +1,73 @@
-## 2026-06-21 — Review of: Drive `TestPollHubFork` re-detection through a second `PollHub`
+## 2026-06-21 — Carry the resolved did:web context out of `AcceptCheckpoint` and reuse it in `PollHub`
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Widened `AcceptCheckpoint` to return a populated `VerifiedContext{VKey, Key}` on
+`StatusVerified` (zero value off the verified path, mirroring `CheckpointInfo`), and threaded that
+context through `PollHub` so `cacheHubKey`'s cold cache-miss fallback and `fsckMirror` reuse the
+already-resolved + already-validity-checked key instead of re-running `ResolveVerifierKey`. A verified
+poll now resolves `did.json` exactly once (in `AcceptCheckpoint`); previously a cold verified poll
+resolved it three times. The ADR-0009 per-poll validity-window check is untouched — the reused key is
+the same one that just passed `ValidAt`.
 
-**Summary:** `TestPollHubFork`'s fork re-detection block now drives a real second `PollHub` (later
-`observedAt=time.Unix(2,0)`) instead of calling `freeze(...)` directly, exercising the freeze +
-once-only-alert + evidence-accumulation invariants on the production code path; the stale "unordered
-LIMIT 1 … non-deterministic" comment is gone. Test-only change — no production file touched, trust
-root untouched and green. Scope-clean and reviewer-mutation-proven non-vacuous.
+**Files changed:**
+- `internal/logclient/accept.go`: added the exported `VerifiedContext` struct; `AcceptCheckpoint` now
+  returns `(Status, CheckpointInfo, VerifiedContext, error)`, populating the context only on
+  `StatusVerified` (zero on all non-verified verdicts). Imports `internal/didweb` for `DIDKey`. Updated
+  the return-tuple docstring.
+- `internal/follower/follower.go`: call site binds `vctx`; `cacheHubKey`/`cacheHubKeyResolve` reuse
+  `vctx.VKey`/`vctx.Key` (dropped their `ResolveVerifierKey` call); `fsckMirror` now takes
+  `(ctx, st, hubID, vkey, origin)` and reuses `vctx.VKey` + `info.Origin` (dropped its
+  `ResolveVerifierKey` and `logclient.Origin` calls). `cacheHubKeyFast` is unchanged.
+- `internal/logclient/accept_test.go`: updated to the 4-value return; asserts `VerifiedContext` is
+  populated (non-empty `VKey`, non-empty `Key.PublicKey`) on `StatusVerified` and zero on every
+  non-verified verdict.
+- `internal/logclient/checkpoint_test.go`: updated the `AcceptCheckpoint` call to the wider return
+  (discards the context).
+- `internal/follower/follower_test.go`: `TestPollHubCacheHitSkipsDidFetch` cold poll now asserts **1**
+  `did.json` fetch (was 3); warm poll asserts its own single `AcceptCheckpoint` fetch with cacheHubKey
+  + fsckMirror adding **0** (see Notes on the literal). Comment + messages rewritten.
+- `internal/follower/fsck_test.go`: `verifiedMirror` gained a `vkey` field; the direct `fsckMirror`
+  call in `RejectsCorruptedMirror` updated to the new `(ctx, s, hubID, m.vkey, fsckOrigin)` signature.
 
-**Verification:**
-- [x] `mise run check` — green (15 packages `ok`; re-ran `go test -count=1 ./...` uncached, all 15
-  pass; `gofmt -l .` empty).
-- [x] `go test -count=1 -run TestPollHubFork ./internal/follower` — PASS (uncached).
-- [x] `grep -rn "unordered LIMIT 1" internal/` — no matches (stale comment removed).
-- [x] Re-detection driven by a second `PollHub`, not `freeze(...)` — `grep -n "freeze(" internal/
-  follower/follower_test.go` shows no `freeze(` anywhere in the test file; `freeze` keeps its
-  production caller at `follower.go:194` and two `equivocation_test.go` callers (no unused-symbol /
-  dead-code regression; `rootArray`/`m.checkpoint` still referenced elsewhere).
-- [x] Post-re-detection asserts — `violations == 2`, `alerts == 1`, hub stays `Frozen`, `LastSize ==
-  m.size`, cumulative metric `iscc_monitor_violations_total{hub_id="1",kind="fork"} 2`. All present.
-- [x] Mutation sanity — reviewer independently reproduced BOTH (and reverted): (1) asserting `alerts
-  == 2` → FAILS (`alerts=1`, once-only-alert genuinely exercised); (2) removing the second `PollHub`
-  → FAILS three assertions (violations count, the `kind="fork"} 2` metric, reopen-survival). The
-  re-detection drive is non-vacuous on the production path.
-- [x] Production byte-unchanged — `git diff --quiet HEAD~1..HEAD -- internal/follower/follower.go
-  internal/store/checkpoints.go` exits 0; the only `.go` file in the diff is `follower_test.go`.
-- [x] Trust-root oracle gate — `derive_vkey.py` reproduces both golden vectors (`40b74463`,
-  `22b08f3e`); conformance/consistency tests (`TestPollHubFork|Shrink|Equivocation|Inclusion|Fsck`)
-  pass uncached. Scratch (`.claude/.scratch`) removed after.
-- [x] Gate-integrity scan over the 3 unpushed commits (update-state/define-next/advance) — no
-  `//nolint`, `t.Skip`, build-tag exclusion, swallowed error, or deleted assertion.
+**Verification:** `mise run check` → green (all 16 packages `ok`, including the local `cmd/notecheck`;
+`go build`/`go vet` clean; `gofmt -l .` empty).
+- `go test -count=1 -run TestAcceptCheckpoint ./internal/logclient` → PASS (context populated on
+  verified, zero on each non-verified verdict).
+- `go test -count=1 -run TestPollHubCacheHitSkipsDidFetch ./internal/follower` → PASS (cold = 1 fetch,
+  warm window = 1 fetch, cacheHubKey/fsckMirror add 0).
+- `go test -count=1 -run 'TestPollHub' ./internal/follower` → PASS (freeze/fork/equivocation/
+  inclusion/fsck paths all green with the threaded context).
+- `python3 .claude/derive_vkey.py` reproduces `sb0…+40b74463+…` and `sb1…+22b08f3e+…`; scratch removed.
+- `GOOS=js GOARCH=wasm go build ./internal/didweb` → green (WASM purity invariant unaffected).
 
-**Issues found:** (none in scope). Resolved + deleted the `normal` issue "`TestPollHubFork`
-re-detection still bypasses `PollHub`" (verified fixed). Four `normal` + one `low` issue remain open
-in `issues.md`, untouched by this slice.
-
-**Next:** Drain the next ADR-0006 `normal` issue. Highest-value follower slice is `AcceptCheckpoint`
-resolved-context reuse (verified polls currently re-fetch `did.json` two/three times per poll — cut
-the redundant resolves while preserving the ADR-0009 per-poll validity check). Other open `normal`s:
-tile-writer `p`-vocabulary (push `widthForP` into the store, delete the follower copy); deep
-store-owned `AdvanceAccepted` (one transaction for record+coverage+advance); collapse the
-self-consistency decision into a pure `logclient.CheckConsistency`. Or begin the proof-surface
-ETag/Cache-Control arc.
+**Next:** Drain the next ADR-0006 `normal` issue. The remaining redundancy in the verified poll is the
+warm-path's unavoidable second `ResolveVerifierKey`: `AcceptCheckpoint` always re-fetches `did.json`
+even when the `hub_keys` cache already holds the key — `cacheHubKeyFast` proves the key id can be
+recovered fetch-free from the raw checkpoint. A future slice could let `PollHub` consult `LookupHubKey`
+and skip even the `AcceptCheckpoint` resolve on a warm cache, but that needs `AcceptCheckpoint` (or a
+variant) to accept a pre-resolved key — a larger design change, out of this step's scope. Other open
+`normal`s from the prior handoff: tile-writer `p`-vocabulary, deep store-owned `AdvanceAccepted`,
+collapse `CheckConsistency`, or the proof-surface ETag/Cache-Control arc.
 
 **Notes:**
-- The re-detection determinism is genuine and verified from source: on the second poll
-  `checkConsistency` (follower.go:180) runs BEFORE the `fs.Frozen` short-circuit (follower.go:204) and
-  reads the prior accepted root via `CheckpointAt(hubID, m.size)`, whose EXPLICIT `ORDER BY rowid LIMIT
-  1` (checkpoints.go:159) returns the lowest-rowid seed root — not the contradicting evidence the first
-  `freeze` persisted at a higher rowid. `CheckFork(seed != mirror)` re-fires; `freeze(wasFrozen=true)`
-  re-records evidence without re-alerting. Updated the now-obsolete "no ORDER BY / implicit insert-order
-  dependency" learnings bullet to reflect the explicit ordering + this end-to-end drive.
-- `internal/proof` still does not exist; the WASM purity invariant rides on `internal/didweb`
-  (`GOOS=js GOARCH=wasm go build ./internal/didweb` green). This diff touches no purity-relevant code.
-- CI (`.github/workflows/ci.yml`) carries the `notecheck` signature-parity oracle (accept + reject a
-  one-char-flipped sig); it was green at the last pushed commit `be6ccd3` (run success). This slice is
-  test-only and does not touch signature/RFC-6962/did:web code, so parity is unaffected; the 3 unpushed
-  commits will be CI-verified on push.
-- Out-of-band: `.devcontainer/devcontainer.json` carries an uncommitted local working-tree edit (adds
-  a `runArgs` port mapping). It is environment infrastructure, unrelated to this iteration, and was
-  NOT staged or committed by this review. Left in place for the human to handle.
-- Branch is `develop`. Pushing on PASS.
+- **`next.md` warm-poll literal discrepancy (resolved to the physically-true value):** `next.md`
+  (Scope line 22, Verification line 83) says the warm poll should make "**0** additional fetches".
+  That is physically impossible: `AcceptCheckpoint` has no internal cache and always resolves
+  `did.json` once per call, so the warm poll's own `AcceptCheckpoint` irreducibly fetches once. The
+  load-bearing thing this step removes is the *extra* cold-path resolves in `cacheHubKeyResolve` and
+  `fsckMirror`. I implemented the true semantics: cold poll = **1** fetch (only `AcceptCheckpoint`);
+  warm-poll measured window (`fetcher.didFetch - coldFetches`) = **1** (the warm poll's own
+  `AcceptCheckpoint`), with `cacheHubKey` (cache hit) and `fsckMirror` (reused context) adding **0**.
+  The test comment and message spell this out. The author's "0 for the warm poll" appears to be an
+  arithmetic slip (applying the same −2 that took the cold path 3→1 to the warm path 2→0, forgetting
+  the warm path's irreducible `AcceptCheckpoint` resolve). The intent — "the cold cache-miss resolve
+  and fsckMirror resolve are gone" — is fully realized.
+- Oracle gate is **N/A by content** (this slice removes discarded values; it does not change
+  signature/RFC-6962/Merkle/did:web-derivation logic). Re-ran `derive_vkey.py` anyway per `next.md`
+  since `vkey` now flows further — both golden vectors reproduce byte-for-byte. The conformance
+  follower tests (fork/equivocation/inclusion/fsck) all pass with the threaded context.
+- `VerifiedContext` is not a comparable struct (`Key.PublicKey` is a `[]byte`), so the non-verified
+  zero-value assertion is field-by-field (`VKey == "" && len(Key.PublicKey) == 0`) rather than a
+  struct `==`. Same reason the production code never compares `vctx` by `==`.
+- `accept.go` now imports `internal/didweb`; that is in `logclient` (the networked side), not the
+  WASM-pure `internal/didweb`, so the WASM purity invariant (which rides on `internal/didweb`) is
+  unaffected — verified green.

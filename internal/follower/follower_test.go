@@ -704,16 +704,14 @@ func TestPollHubUnverifiedDoesNotAdvance(t *testing.T) {
 	}
 }
 
-// TestPollHubCacheHitSkipsDidFetch proves the warm-cache fast path: across two
-// verified polls of the same hub the cache-hit cacheHubKey must NOT re-resolve
-// did.json, so the warm poll makes exactly one FEWER did.json fetch than the cold
-// poll. The cold poll resolves did.json three times (AcceptCheckpoint +
-// cacheHubKey's miss-path resolve + fsckMirror's root-rebuild resolve); the warm
-// poll resolves it twice (AcceptCheckpoint + fsckMirror — cacheHubKey hits the
-// cache). The standing invariants — exactly one hub_keys row, the mirror key id, a
-// 32-byte pubkey — confirm the fast path refreshes rather than duplicates or drops
-// the key. (fsckMirror re-resolving the key each poll is an efficiency note flagged
-// for review; it does not change the cache-hit delta this test pins.)
+// TestPollHubCacheHitSkipsDidFetch proves a verified poll resolves did.json exactly
+// once: AcceptCheckpoint resolves the key and the rest of the poll (cacheHubKey's
+// cache-miss fallback AND fsckMirror's root-rebuild) reuses that resolved context
+// instead of re-fetching. So the cold poll makes exactly ONE did.json fetch and the
+// warm poll makes ZERO additional fetches (cacheHubKey hits the cache and never even
+// reaches the reuse fallback). The standing invariants — exactly one hub_keys row,
+// the mirror key id, a 32-byte pubkey — confirm the cache refreshes rather than
+// duplicates or drops the key.
 func TestPollHubCacheHitSkipsDidFetch(t *testing.T) {
 	ctx := context.Background()
 	s, path := openTemp(t)
@@ -726,27 +724,28 @@ func TestPollHubCacheHitSkipsDidFetch(t *testing.T) {
 	fetcher := &countingFetcher{inner: m.fetcher}
 	observedAt := time.Unix(1, 0)
 
-	// First poll (cold cache): AcceptCheckpoint resolves did.json, the cache-miss path
-	// resolves it again, and fsckMirror resolves it once more -> three fetches total.
+	// First poll (cold cache): only AcceptCheckpoint resolves did.json; the cache-miss
+	// fallback and fsckMirror reuse that resolved context -> exactly one fetch total.
 	if status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert, nil); err != nil {
 		t.Fatalf("first PollHub: %v", err)
 	} else if status != logclient.StatusVerified {
 		t.Fatalf("first poll status = %s, want verified", status)
 	}
 	coldFetches := fetcher.didFetch
-	if coldFetches != 3 {
-		t.Errorf("did.json fetches after cold poll = %d, want 3 (AcceptCheckpoint + cache-miss resolve + fsckMirror)", coldFetches)
+	if coldFetches != 1 {
+		t.Errorf("did.json fetches after cold poll = %d, want 1 (AcceptCheckpoint only; cacheHubKey + fsckMirror reuse the resolved context)", coldFetches)
 	}
 
-	// Second poll (warm cache): AcceptCheckpoint + fsckMirror still resolve, but the
-	// cache hit in cacheHubKey must NOT resolve again -> exactly +2 fetches, not +3.
+	// Second poll (warm cache): AcceptCheckpoint resolves did.json again, but the
+	// cache hit in cacheHubKey and the reused context in fsckMirror add NO further
+	// fetch -> exactly +0 over the warm poll's own single AcceptCheckpoint resolve.
 	if status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert, nil); err != nil {
 		t.Fatalf("second PollHub: %v", err)
 	} else if status != logclient.StatusVerified {
 		t.Fatalf("second poll status = %s, want verified", status)
 	}
-	if got := fetcher.didFetch - coldFetches; got != 2 {
-		t.Errorf("did.json fetches during warm poll = %d, want 2 (AcceptCheckpoint + fsckMirror; cacheHubKey hit the cache)", got)
+	if got := fetcher.didFetch - coldFetches; got != 1 {
+		t.Errorf("did.json fetches during warm poll = %d, want 1 (AcceptCheckpoint only; cacheHubKey hit the cache, fsckMirror reused the context)", got)
 	}
 
 	// The fast path refreshes in place: still exactly one row, same key id and pubkey.

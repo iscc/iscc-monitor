@@ -4,7 +4,9 @@
 // sb0 checkpoint fixture, asserting the four-way Status verdict on observable
 // outputs only — never on follower internals. Together they cover verified,
 // unverified, unresolvable (fetch failure AND fail-closed malformed timestamp),
-// and rotated (good signature by an out-of-window key).
+// and rotated (good signature by an out-of-window key). They also assert the
+// returned VerifiedContext is populated on StatusVerified and is the zero value on
+// every non-verified verdict (mirroring CheckpointInfo).
 package logclient
 
 import (
@@ -114,7 +116,7 @@ func TestAcceptCheckpoint(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, info, err := AcceptCheckpoint(context.Background(), tc.fetcher, "https://sb0.iscc.id", tc.raw, tc.observedAt)
+			got, info, vctx, err := AcceptCheckpoint(context.Background(), tc.fetcher, "https://sb0.iscc.id", tc.raw, tc.observedAt)
 			if err != nil {
 				t.Fatalf("AcceptCheckpoint error: %v", err)
 			}
@@ -131,8 +133,23 @@ func TestAcceptCheckpoint(t *testing.T) {
 				if isZeroRoot(info.Root) {
 					t.Errorf("CheckpointInfo.Root is all zero, want the verified root")
 				}
-			} else if info != (CheckpointInfo{}) {
-				t.Errorf("CheckpointInfo = %+v, want zero value on non-verified verdict", info)
+				// On the verified path the resolved verifier-key context is
+				// populated so the follower can reuse it without re-fetching did.json.
+				if vctx.VKey == "" {
+					t.Errorf("VerifiedContext.VKey is empty, want the resolved verifier-key string")
+				}
+				if len(vctx.Key.PublicKey) == 0 {
+					t.Errorf("VerifiedContext.Key.PublicKey is empty, want the resolved Ed25519 key")
+				}
+			} else {
+				if info != (CheckpointInfo{}) {
+					t.Errorf("CheckpointInfo = %+v, want zero value on non-verified verdict", info)
+				}
+				// The verifier-key context is the zero value off the verified path,
+				// mirroring CheckpointInfo (no trustworthy key to surface).
+				if vctx.VKey != "" || len(vctx.Key.PublicKey) != 0 {
+					t.Errorf("VerifiedContext = %+v, want zero value on non-verified verdict", vctx)
+				}
 			}
 		})
 	}

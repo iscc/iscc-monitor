@@ -12,6 +12,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/iscc/iscc-monitor/internal/didweb"
 )
 
 // Status is AcceptCheckpoint's four-way verdict for one observed checkpoint.
@@ -65,6 +67,21 @@ type CheckpointInfo struct {
 	Root     [rootBytes]byte
 }
 
+// VerifiedContext carries the did:web verifier-key context AcceptCheckpoint
+// resolved for one verified poll: the "<name>+<keyid>+<base64>" verifier-key
+// string and the parsed DIDKey (public key + CID 1.0 validity window) that the
+// signature just verified under.
+//
+// It is populated only on StatusVerified and is the zero value for every
+// non-verified verdict, mirroring CheckpointInfo. The follower reuses it to cache
+// the hub key and rebuild the mirror root within the same poll WITHOUT re-fetching
+// did.json — the key was resolved and validity-checked this poll (ADR-0009: reuse
+// only within one verified poll, never cache across polls).
+type VerifiedContext struct {
+	VKey string
+	Key  didweb.DIDKey
+}
+
 // AcceptCheckpoint decides the hub-status verdict for one observed checkpoint.
 //
 // It composes the three pure primitives in a load-bearing order:
@@ -81,25 +98,31 @@ type CheckpointInfo struct {
 // status outcome the returned error is nil; a non-nil error is reserved for a
 // genuine fault (a verified-but-garbled body) and pairs with the zero
 // CheckpointInfo and StatusUnverified's zero value — callers must check err first.
-func AcceptCheckpoint(ctx context.Context, fetcher Fetcher, baseURL string, raw []byte, observedAt time.Time) (Status, CheckpointInfo, error) {
+//
+// On StatusVerified it also returns a populated VerifiedContext (the resolved
+// verifier-key string + DIDKey it just verified under, already validity-checked
+// this poll); on every non-verified verdict the VerifiedContext is the zero value,
+// mirroring CheckpointInfo. The follower reuses the context to cache the hub key
+// and rebuild the mirror root within the same poll without a second did.json fetch.
+func AcceptCheckpoint(ctx context.Context, fetcher Fetcher, baseURL string, raw []byte, observedAt time.Time) (Status, CheckpointInfo, VerifiedContext, error) {
 	vkey, key, err := ResolveVerifierKey(ctx, fetcher, baseURL)
 	if err != nil {
 		if errors.Is(err, ErrUnresolvable) {
-			return StatusUnresolvable, CheckpointInfo{}, nil
+			return StatusUnresolvable, CheckpointInfo{}, VerifiedContext{}, nil
 		}
-		return StatusUnverified, CheckpointInfo{}, err
+		return StatusUnverified, CheckpointInfo{}, VerifiedContext{}, err
 	}
 	origin, treeSize, root, err := VerifyCheckpoint(vkey, raw)
 	if err != nil {
 		if errors.Is(err, ErrUnverified) {
-			return StatusUnverified, CheckpointInfo{}, nil
+			return StatusUnverified, CheckpointInfo{}, VerifiedContext{}, nil
 		}
 		// A valid signature over a malformed body: a real fault, kept separable
 		// from "signature didn't match" exactly as VerifyCheckpoint does.
-		return StatusUnverified, CheckpointInfo{}, err
+		return StatusUnverified, CheckpointInfo{}, VerifiedContext{}, err
 	}
 	if !key.ValidAt(observedAt) {
-		return StatusRotated, CheckpointInfo{}, nil
+		return StatusRotated, CheckpointInfo{}, VerifiedContext{}, nil
 	}
-	return StatusVerified, CheckpointInfo{Origin: origin, TreeSize: treeSize, Root: root}, nil
+	return StatusVerified, CheckpointInfo{Origin: origin, TreeSize: treeSize, Root: root}, VerifiedContext{VKey: vkey, Key: key}, nil
 }

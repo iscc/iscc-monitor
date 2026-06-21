@@ -99,7 +99,7 @@ func TestFetchCheckpointOverHTTP(t *testing.T) {
 	// StatusVerified rather than StatusRotated.
 	didFetcher := &fakeFetcher{data: readFixture(t, "sb0.iscc.id_did.json")}
 	observedAt := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
-	status, info, err := AcceptCheckpoint(context.Background(), didFetcher, "https://sb0.iscc.id", raw, observedAt)
+	status, info, _, err := AcceptCheckpoint(context.Background(), didFetcher, "https://sb0.iscc.id", raw, observedAt)
 	if err != nil {
 		t.Fatalf("AcceptCheckpoint error: %v", err)
 	}

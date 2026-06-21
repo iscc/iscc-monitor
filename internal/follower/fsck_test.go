@@ -187,17 +187,20 @@ func (f mirrorBundleFetcher) Fetch(_ context.Context, url string) ([]byte, error
 
 // verifiedMirror is one byte-accurate in-process verified-log fixture: the routing
 // fetcher, the underlying testonly.Tree (the single source of truth for roots), the
-// signed checkpoint bytes, the tree size, and the signed-note key id. The follower's
-// verified-path tests poll this fixture so the newly-wired fsckMirror can rebuild the
-// signed root from the mirror — the real sb0 checkpoint fixture cannot supply a
-// byte-accurate mirror (its leaf preimages are not captured), and real-sb0 signature
-// parity stays covered by the internal/logclient tests + the derive_vkey.py oracle.
+// signed checkpoint bytes, the tree size, the signed-note key id, and the
+// verifier-key string that signed the checkpoint. The follower's verified-path tests
+// poll this fixture so the newly-wired fsckMirror can rebuild the signed root from
+// the mirror — the real sb0 checkpoint fixture cannot supply a byte-accurate mirror
+// (its leaf preimages are not captured), and real-sb0 signature parity stays covered
+// by the internal/logclient tests + the derive_vkey.py oracle. vkey lets a test call
+// fsckMirror directly with the same verifier-key context AcceptCheckpoint resolves.
 type verifiedMirror struct {
 	fetcher    mirrorBundleFetcher
 	tree       *testonly.Tree
 	checkpoint []byte
 	size       uint64
 	keyID      uint32
+	vkey       string
 }
 
 // buildVerifiedMirror builds a consistent in-process log of `leaves` records over the
@@ -281,6 +284,7 @@ func buildVerifiedMirror(t *testing.T, leaves int) verifiedMirror {
 		checkpoint: signed,
 		size:       size,
 		keyID:      keyID,
+		vkey:       vkey,
 	}
 }
 
@@ -341,8 +345,10 @@ func TestPollHubFsck(t *testing.T) {
 
 		// fsckMirror is called directly (not through PollHub, whose ingestTiles would
 		// re-fetch and overwrite the corruption first) to prove the rebuild genuinely
-		// compares the re-derived root against the signed root.
-		if err := fsckMirror(ctx, s, m.fetcher, hubID, "https://sb0.iscc.id"); err == nil {
+		// compares the re-derived root against the signed root. It now takes the
+		// verifier key + origin from the poll's AcceptCheckpoint (here m.vkey +
+		// fsckOrigin), so it makes no did.json fetch.
+		if err := fsckMirror(ctx, s, hubID, m.vkey, fsckOrigin); err == nil {
 			t.Fatal("fsckMirror over a corrupted mirror = nil, want non-nil (the rebuild must compare against the signed root)")
 		}
 	})
