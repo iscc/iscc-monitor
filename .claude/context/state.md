@@ -1,56 +1,54 @@
-<!-- assessed-at: 6cb9880722691d54e326436908a9b34c2193d893 -->
+<!-- assessed-at: 47cc8c2fa53ac5e97075684a445fb5729c1a809b -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: M-UI (Evidence Ledger frontend, ADR-0010) in progress — the five-status badge now renders honestly on `/`.
-The `HubStatusBadge` partial renders all five glossary statuses (verified / unresolvable / unverified /
-frozen / inactive) on the `/` dashboard: the store proves the durable subset, and an in-memory
-`StatusSource` overlay (`*metrics.Registry.Status`) supplies the live `unresolvable`/`unverified`
-verdicts. M1/M2/M3 remain fully met. Remaining v1 work: the rest of M-UI (DS tokens/fonts, dossier,
-record list, certificate + proof-bundle, anchor panels), then the WASM verifier and OTS anchoring.
+## Phase: M-UI (Evidence Ledger frontend, ADR-0010) in progress — the five-status badge now renders honestly on BOTH `/` and the per-hub log browser.
+This iteration threaded the `StatusSource` interface + `overlayStatus` precedence into
+`proofserve.serveBrowser`, so `GET /<domain>/log/` now renders its hub status through the same
+five-status `hubStatusBadge` partial overlaid with the in-memory live verdict — the taxonomy is now
+consistent across both SSR surfaces (`/` and `/<domain>/log/`). M1/M2/M3 remain fully met. Remaining
+v1 work: the rest of M-UI (DS tokens/fonts, dossier, record list, certificate + proof-bundle, anchor
+panels), then the WASM verifier and OTS anchoring.
 
 ## Convergence
 - **Remaining Verify criteria:**
   - **M1: 0 open (met). M2: 0 open (met). M3: 0 open (met, 4/4).**
-  - **M-UI (Evidence Ledger frontend): ~8 still open** (in progress; this iteration closed the
-    five-status render). **Landed:** `HubStatusBadge` leaf (`internal/badge`, all five statuses,
-    distinct label + inline-SVG silhouette, golden + mutation + fail-closed) AND its **full
-    five-status wiring on `/`** — `overlayStatus` overlays the in-memory verdict
-    (`unresolvable`/`unverified`) on top of the store-provable subset, golden-tested with an
-    end-to-end render assertion for the in-memory-only statuses, mutation-proven (reverting to
-    `hubStatus`/`{{.Status}}` fails). The per-status M-UI render criterion on `/` is now **met for all
-    five statuses** (verified/unresolvable/unverified golden-asserted at the HTTP seam;
-    `frozen`/`inactive` from the store path). **Still open:** DS v2 tokens + self-hosted fonts
-    embedded (`go:embed`, no CDN); badge wired into the log browser / dossier / certificate; hub
-    dossier (+ categorically-distinct frozen **Exhibit**); paginated record list (`?from=…[&n=…]`,
-    no-JS, newest-first) + single-record page (declaration / deletion / unknown schema); certificate
-    of inclusion at `/inclusion/{iscc_id}` + **downloadable proof-bundle assembler**
-    (`{checkpoint, inclusion/consistency proof, record bytes, hub key, ots?}` — re-engages the
-    oracle/conformance gate; `serveVerify` discards the raw checkpoint bytes + resolved hub key the
-    bundle needs); separate Bitcoin-anchor vs comparison-anchor panels; tier-1/tier-2 affordance.
+  - **M-UI (Evidence Ledger frontend): ~8 still open** (in progress). **Landed:** the
+    `HubStatusBadge` leaf (`internal/badge`, all five statuses, distinct label + inline-SVG
+    silhouette, golden + mutation + fail-closed) AND its **five-status overlay wiring on BOTH `/` and
+    `/<domain>/log/`** — `overlayStatus` overlays the in-memory verdict (`unresolvable`/`unverified`)
+    on top of the store-provable subset, golden- + mutation-tested at the HTTP seam on each surface.
+    The per-surface five-status render criterion is now **met for `/` and the log browser**. **Still
+    open:** DS v2 tokens + self-hosted fonts embedded (`go:embed`, no CDN); badge wired into the
+    dossier / certificate; hub dossier (+ categorically-distinct frozen **Exhibit**); paginated
+    record list (`?from=…[&n=…]`, no-JS, newest-first) + single-record page (declaration / deletion /
+    unknown schema); certificate of inclusion at `/inclusion/{iscc_id}` + **downloadable proof-bundle
+    assembler** (`{checkpoint, inclusion/consistency proof, record bytes, hub key, ots?}` — re-engages
+    the oracle/conformance gate; `serveVerify` discards the raw checkpoint bytes + resolved hub key
+    the bundle needs); separate Bitcoin-anchor vs comparison-anchor panels; tier-1/tier-2 affordance.
   - **WASM verifier: 1/1 open** (not started — no `internal/proof`, no `syscall/js`, re-verified).
   - **OTS anchoring: 1/1 open** (not started — `nbd-wtf/opentimestamps` not imported, re-verified).
 - **Last ~10 iterations: ~6 milestone-Verify / ~4 refactor·polish·infra.** Healthy and on the Verify
   bar. The recent arc closed all four M3 criteria back-to-back (verify-for-me → `/` dashboard → log
-  browser), then opened M-UI leaf-first (`HubStatusBadge`), wired it into `/`, and now made the full
-  five-status taxonomy render honestly via the in-memory overlay. **No polish-streak drift** — each
-  leaf was wired into an observable HTTP-seam assertion in the same or next iteration. Watch-item:
-  M-UI is the largest remaining slice; keep converting screens into wired no-JS HTTP-seam Verify
-  criteria (dossier, record list, certificate) rather than accumulating unwired primitives.
+  browser), opened M-UI leaf-first (`HubStatusBadge`), wired it into `/`, made the full five-status
+  taxonomy render honestly on `/` via the in-memory overlay, and this iteration extended that same
+  overlay into the log browser for cross-surface consistency. **No polish-streak drift** — each leaf
+  is wired into an observable HTTP-seam assertion in the same or next iteration. Watch-item: M-UI is
+  the largest remaining slice; keep converting screens into wired no-JS HTTP-seam Verify criteria
+  (dossier, record list, certificate) rather than accumulating unwired primitives.
 
 ## M1 — Read-only Monitor
-**Status**: met — carried forward; no production change since the last assessment (the
-`3fc5d96..HEAD` diff touched only `internal/dashboard/*`, `internal/metrics/*` (new `Status` reader +
-test), `cmd/iscc-monitor/main.go` (overlay wiring), and context/spec docs). All Verify criteria
-remain satisfied: `origin`/`vkey` golden, all three triggers (fork/shrink/equivocation) golden-tested
-end-to-end with freeze + alert-once + restart survival, coverage tracked, structured logs, `/metrics`
-served over HTTP. **CI-gated & green.**
+**Status**: met — carried forward; no production change since the last assessment. The
+`6cb9880..HEAD` diff touched only `internal/proofserve/*` (log-browser overlay + tests),
+`cmd/iscc-monitor/main.go` (passes `StatusSource` into the proofserve handler), `CLAUDE.md`, and
+context docs. All Verify criteria remain satisfied: `origin`/`vkey` golden, all three triggers
+(fork/shrink/equivocation) golden-tested end-to-end with freeze + alert-once + restart survival,
+coverage tracked, structured logs, `/metrics` served over HTTP. **CI-gated & green.**
 
-- **Test totals at HEAD**: **230 `func Test`** across `cmd/` + `internal/`, **52** `_test.go` files
-  (up from 227 — the +3 tests are `metrics.Status` coverage + the new dashboard overlay/precedence
-  tests).
+- **Test totals at HEAD**: **231 `func Test`** across `cmd/` + `internal/`, **52** `_test.go` files
+  (up from 230 — the +1 is the new log-browser in-memory-status overlay test in `browser_test.go`).
 - **Packages present (re-verified)**: `cmd/{iscc-monitor,notecheck}`; **15 internal packages** —
   `badge, config, corsmw, dashboard, didweb, follower, healthz, logclient, metrics, metricshttp,
   proofserve, registry, store, tiles, tilesserve`. Module `github.com/iscc/iscc-monitor`, `go 1.24.0`
@@ -65,8 +63,8 @@ served over HTTP. **CI-gated & green.**
   sb0 checkpoint.
 - `store/*.go` — `modernc.org/sqlite`, ADR-0005/0007 single-writer discipline (WAL,
   `busy_timeout=5000`, `foreign_keys=ON`, `SetMaxOpenConns(1)`), embedded nine-table `schema.sql`.
-  `store.ListHubs` is a pure read LEFT JOINing `hubs` with `follow_state`, returning plain Go types so
-  store stays a leaf (no `net/http`/`logclient`/`metrics`).
+  `store.ListHubs` is a pure read LEFT JOINing `hubs` with `follow_state`; store stays a leaf (no
+  `net/http`/`logclient`/`metrics` — re-verified `go list -deps` clean).
 - **Missing (M1 connective tissue, outside the Verify bar):** real alert transport — `alertFunc` is a
   WARN `slog` emit; `AlertFunc func(int64,string)` seam unchanged. The warm-path's second `did.json`
   resolve is a larger design change, not on the Verify bar.
@@ -96,17 +94,18 @@ re-hitting the hub. **Nothing remains on the M2 Verify bar.**
   Merkle-verified against the accepted root. Every id-shaped fault → 200 non-verified. Golden +
   mutation non-vacuous.
 - **`GET /` dashboard** — `200 text/html` listing **every** realm hub with its status + ADR-0001
-  coverage window. The status cell now renders all five glossary statuses through the `hubStatusBadge`
-  partial via the `overlayStatus` overlay (`internal/dashboard` + `store.ListHubs` +
-  `StatusSource`). Golden + mutation-tested.
+  coverage window, status cell rendering all five glossary statuses through `hubStatusBadge` via the
+  `overlayStatus` overlay. Golden + mutation-tested.
 - **`GET /<domain>/log/` log browser** — `200 text/html` exposing accepted checkpoint `(size, root)` +
-  relative links into `entries`/`inclusion`/`consistency`/`verify`/`checkpoint`. `POST /` → 405;
-  unpolled hub → 200 "no accepted checkpoint yet". Golden + mutation + e2e-proven.
+  relative links into `entries`/`inclusion`/`consistency`/`verify`/`checkpoint`. Its status cell now
+  also renders through `hubStatusBadge` overlaid with the in-memory verdict (`serveBrowser` →
+  `overlayStatus`), so the five-status taxonomy is consistent with `/`. `POST /` → 405; unpolled hub
+  → 200. Golden + mutation + e2e-proven.
 
 **Known limitations (carried forward, off the M3 Verify bar — these become M-UI work):**
-- `proofserve.hubStatus` still resolves only the store-provable subset; the in-memory overlay has been
-  threaded into `dashboard` (`/`) but **not yet** into the per-hub log-browser status cell — that is
-  the next M-UI consistency step (review's "Next").
+- The overlay is now threaded into both `/` and the log browser; the dossier / certificate surfaces
+  don't exist yet (M-UI). The "log browser still on store-only subset" limitation from the prior
+  assessment is **RESOLVED** this iteration.
 - `inactive` is unreachable through the public store API (no `SetActive`/deactivation writer), so the
   `/` golden covers it via a fixture-deactivated hub at the store seam, but no registry-deactivation
   end-to-end path exists yet.
@@ -114,20 +113,21 @@ re-hitting the hub. **Nothing remains on the M2 Verify bar.**
   not a Verify criterion.
 
 ## M-UI — Evidence Ledger frontend
-**Status**: **in progress — the five-status badge render on `/` is met; the remaining screens + DS are open.**
-- **Landed (`internal/badge` + `internal/dashboard` + `internal/metrics`, review PASS `6cb9880`):**
-  a pure, stdlib-only, WASM-shareable `HubStatusBadge` partial (`Render`, `Label`, embedded
-  `badge.html`, `PartialName = "hubStatusBadge"`, `Source`). It renders all five statuses each with a
-  distinct text label + inline-SVG silhouette and fails closed on unknown/empty status. It is wired
-  into `/` and now renders all five statuses honestly: `overlayStatus(s, statuses)` overlays the live
-  `metrics.Registry` verdict (`unresolvable`/`unverified`) on store-`verified` hubs, with durable
-  `inactive`/`frozen` winning. The page golden asserts `data-status="unresolvable"`/`unverified` +
-  labels + per-status SVG markers at the HTTP seam; the overlay precedence is table-tested and
-  mutation-proven. `internal/dashboard` depends on the `StatusSource` interface, not `internal/metrics`
-  (verified `go list -deps` clean); `internal/store` stays a leaf.
+**Status**: **in progress — the five-status badge render is met on `/` and the log browser; the remaining screens + DS are open.**
+- **Landed (`internal/badge` + `internal/dashboard` + `internal/proofserve` + `internal/metrics`,
+  review PASS `47cc8c2`):** a pure, stdlib-only, WASM-shareable `HubStatusBadge` partial (`Render`,
+  `Label`, embedded `badge.html`, `PartialName = "hubStatusBadge"`, `Source`) rendering all five
+  statuses each with a distinct text label + inline-SVG silhouette, failing closed on unknown/empty
+  status. It is wired into both `/` (`internal/dashboard`) and `/<domain>/log/`
+  (`proofserve.serveBrowser`), each defining its own tiny local `StatusSource` interface +
+  `overlayStatus` precedence mirror — store `inactive`/`frozen` win; the in-memory verdict
+  (`unresolvable`/`unverified`) overlays a store-`verified` hub. Both surfaces golden-assert
+  `data-status`/labels/per-status SVG markers at the HTTP seam and are mutation-proven. `proofserve`
+  imports neither `internal/metrics` nor `internal/dashboard` (re-verified `go list -deps` clean);
+  `internal/store` stays a leaf.
 - **Still open on the M-UI Verify bar:** DS v2 tokens + self-hosted Readex Pro / JetBrains Mono fonts
-  embedded (`go:embed`, no CDN); badge overlay threaded into the log browser / dossier / certificate;
-  hub dossier (+ categorically-distinct frozen **Exhibit**); paginated record list (no-JS,
+  embedded (`go:embed`, no CDN); badge wired into the dossier / certificate (those surfaces don't
+  exist yet); hub dossier (+ categorically-distinct frozen **Exhibit**); paginated record list (no-JS,
   newest-first) + single-record page (declaration / deletion / unknown schema); certificate of
   inclusion at `/inclusion/{iscc_id}` (numbered evidence clauses) + **downloadable proof-bundle
   assembler** (re-engages the oracle/conformance gate; `serveVerify` discards the raw checkpoint bytes
@@ -149,13 +149,13 @@ are WASM-shareable primitives that the verifier app will reuse, but the verifier
 - **CI configured and passing.** `.github/workflows/ci.yml` runs the inlined `mise run check` gate
   (`go build`/`go vet`/`go test ./...`) + the `cmd/notecheck` oracle shell-out on push/PR to
   `develop`/`main`. Remote `origin` = `github.com/iscc/iscc-monitor.git`. **Latest run on `develop`:
-  `conclusion: success`** at HEAD `6cb9880` (run 27909481083). Local `develop` is in sync with
-  `origin/develop` (both at `6cb9880`).
-- Latest `review` handoff (2026-06-21, **PASS / CONTINUE**, for the five-status overlay on `/`) records
-  `mise run check` green (all 17 packages `ok`, `go vet`/`gofmt -l .` clean), leaf purity confirmed
-  (`go list -deps`), WASM build OK, golden + mutation-proven, no new deps / schema change,
-  gate-integrity scan clean, oracle gate correctly N/A (pure data plumbing + HTML composition). Codex
-  second opinion clean, no findings.
+  `conclusion: success`** (run 27909898002). Local `develop` is in sync with `origin/develop` (both
+  at `47cc8c2`).
+- Latest `review` handoff (2026-06-21, **PASS / CONTINUE**, for the log-browser five-status overlay)
+  records `mise run check` green (all 17 packages `ok`, `go vet`/`gofmt -l .` clean), leaf purity
+  confirmed (`go list -deps`), golden + mutation-proven (independent revert FAILs, restored PASS), no
+  new deps / schema change, gate-integrity scan clean, oracle gate correctly N/A (pure HTML
+  composition + in-memory status overlay). Codex second opinion clean (exit 0), no findings.
 - **No open `critical` or `normal` issue.** **Open `low` issue (loop-skipped, not a DONE blocker):** 1
   in `issues.md` — `cmd/notecheck`'s vestigial `out io.Writer` param.
 
@@ -163,13 +163,14 @@ are WASM-shareable primitives that the verifier app will reuse, but the verifier
 **M1/M2/M3 all met. The next v1 milestone is M-UI (Evidence Ledger frontend, ADR-0010), in progress.**
 CI green, no `critical`/`normal` open, so feature work proceeds.
 
-Convergence-driven order (the five-status render on `/` is now closed; carry the pattern outward):
-1. **Thread the `StatusSource`/`overlayStatus` overlay into the per-hub log-browser status cell**
-   (`proofserve.hubStatus`) so the richer taxonomy is consistent across M-UI surfaces (review's
-   "Next" — the `overlayStatus` precedence + `badge.Label` precompute is the reusable pattern).
-2. **DS v2 tokens + self-hosted fonts embedded** (`go:embed`, no CDN), then **hub dossier** (frozen
-   Exhibit), **paginated record list + single record**, and the **certificate + downloadable
-   proof-bundle assembler** (the slice that re-engages the oracle/conformance gate).
+Convergence-driven order (the five-status render is now consistent across `/` and the log browser;
+carry the pattern into the new screens):
+1. **DS v2 tokens + self-hosted fonts embedded** (`go:embed`, no CDN) — the shared shell every
+   remaining surface needs.
+2. **Hub dossier** (frozen Exhibit), then **paginated record list + single record**, and the
+   **certificate + downloadable proof-bundle assembler** (the slice that re-engages the
+   oracle/conformance gate — `serveVerify` currently discards the raw checkpoint bytes + resolved hub
+   key the bundle needs). Reuse the `StatusSource`/`overlayStatus`/`badge.Label`-precompute pattern.
 3. **WASM verifier → OTS anchoring** remain the last v1 milestones (each 1/1 Verify open).
 4. **Off the Verify bar:** sb1 fixture refresh (stale did.json key), real alert transport, and an
    end-to-end registry-deactivation `inactive` path once a public `SetActive` lands.
