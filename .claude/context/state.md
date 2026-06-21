@@ -1,17 +1,20 @@
-<!-- assessed-at: 8c5ccfb43c3d0e749485e66f2076e19dab57c099 -->
+<!-- assessed-at: 648158069b0e8a6fea407dd3da2faa75ae7760f8 -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: M1 Verify bar met; M2 prerequisites accumulating — last slice landed the `fsck` leaf-hasher, next is the real `fsck` root-rebuild conformance slice
+## Phase: M1 Verify bar met; M2 conformance gate landing — the `fsck` root-rebuild self-check (`RunFsck`) is now wired and oracle-mutation-proven, but M2's live ingestion / index / inclusion / served-proofs bar is still not started
 
-Since the prior assessment (`d837649`) the only source change is the **M2 `fsck` leaf-hasher slice**
-(`a260635`): `internal/logclient/leafhasher.go` + its test (+129 lines, 2 new files). `go.mod`,
-`go.sum`, `schema.sql`, and `testdata` are byte-unchanged (`git diff d837649..HEAD --stat` touches only
-those two files plus context). M1 still meets its full Verify bar; M2 remains not-started but gains a
-fourth prerequisite. The sole open `normal` issue (no CI / `notecheck` not wired) keeps the project off
-DONE.
+Since the prior assessment (`8c5ccfb`) the only source change is the **M2 `fsck` root-rebuild
+conformance slice** (`cc818c4`): `internal/logclient/fsck.go` + `fsck_test.go` (+254 lines, 2 new
+files), plus the `tessera/fsck` require-graph entering `go.mod`/`go.sum` (additive, tidy-idempotent).
+`RunFsck` rebuilds a hub-signed checkpoint root from a `SQLiteFetcher` mirror via `LeafHashes`; the
+test synthesizes a 5-leaf in-process log, seeds it into a real `store.SQLiteFetcher`, and proves the
+rebuild matches the signed root and rejects a one-byte corruption of either a tile or an entry-bundle
+BLOB. M1 still meets its full Verify bar. M2's structural self-check is now in place but its full
+Verify bar (live tile ingestion, `iscc_index`, served proofs, inclusion cross-check) remains
+not-started. The sole open `normal` issue (no CI / `notecheck` not wired) keeps the project off DONE.
 
 ## M1 — Read-only Monitor
 **Status**: met (all Verify criteria satisfied — `origin`/`vkey` golden, all three triggers
@@ -20,13 +23,13 @@ logs, `/metrics` served over HTTP and collected by the binary). A real (non-log)
 live tile ingestion (the latter an M2 dependency) remain as connective tissue but are outside M1's
 Verify bar.
 
-- **Verified incrementally** from the prior assessment at `d837649`. The diff `d837649..HEAD` on the
-  source side is exactly two new files (`internal/logclient/leafhasher.go` + `_test.go`); every other
-  cmd/follower/logclient/store/didweb/tiles/metrics/metricshttp/registry/config source, `go.mod`,
-  `go.sum`, and `schema.sql` is byte-unchanged and carried forward. **Test totals re-grepped**: 9
-  (didweb) + 32 (logclient, +3 `LeafHashes` tests) + 48 (store) + 14 (follower) + 3 (registry) + 4
-  (config) + 5 (tiles) + 6 (metrics) + 1 (metricshttp) + 1 (cmd/iscc-monitor) = **123 `func Test`**
-  across **10 packages**.
+- **Verified incrementally** from the prior assessment at `8c5ccfb`. The diff `8c5ccfb..HEAD` on the
+  source side is exactly two new files (`internal/logclient/fsck.go` + `_test.go`) plus additive
+  `go.mod`/`go.sum` entries; every other cmd/follower/logclient/store/didweb/tiles/metrics/metricshttp/
+  registry/config source and `schema.sql` is byte-unchanged and carried forward. **Test totals
+  re-grepped**: 9 (didweb) + 33 (logclient, +1 `TestRunFsck` with 3 subtests) + 48 (store) + 14
+  (follower) + 3 (registry) + 4 (config) + 5 (tiles) + 6 (metrics) + 1 (metricshttp) + 1
+  (cmd/iscc-monitor) = **124 `func Test`** across **10 packages**.
 
   - **`/metrics` served + wired** (carried forward, verified unchanged): `internal/metricshttp/
     handler.go` — `Handler(*metrics.Registry) http.Handler` sets the exposition Content-Type then
@@ -74,19 +77,23 @@ Verify bar.
     against seeded tiles), but it is why the live path can't yet detect a real equivocation.
 
 - **Fixtures**: `testdata/live/` holds **only the two checkpoints** (`sb0.iscc.id_checkpoint`,
-  `sb1.amlet.id_checkpoint`) — no tiles or entry bundles (verified `ls`, unchanged). The equivocation
-  and `LeafHashes` tests synthesize their inputs in-process; real on-disk tile/entry-bundle fixtures are
-  still needed for the `fsck` root-rebuild (M2). **Known stale-fixture drift, still not acted on:** the
-  `sb1.amlet.id_did.json` fixtures (both `internal/didweb/` and `internal/logclient/`) and
-  `derive_vkey.py` carry sb1's PRE-rotation key (`22b08f3e`); the live sb1 signer is `069d0f14`.
-  Captured in `verify_test.go` prose/tests (not green-but-wrong), but the did.json fixtures remain stale.
+  `sb1.amlet.id_checkpoint`) — no tiles or entry bundles (verified `ls`, unchanged). The equivocation,
+  `LeafHashes`, AND the new `RunFsck` tests all synthesize their inputs in-process (`testonly.Tree` +
+  manual bundle/tile framing); real on-disk tile/entry-bundle fixtures are still needed for the
+  inclusion cross-check vs the hub's `IsccLogInclusionProof` and a 256-crossing live `fsck` case (M2).
+  **Known stale-fixture drift, still not acted on:** the `sb1.amlet.id_did.json` fixtures (both
+  `internal/didweb/` and `internal/logclient/`) and `derive_vkey.py` carry sb1's PRE-rotation key
+  (`22b08f3e`); the live sb1 signer is `069d0f14`. Captured in `verify_test.go` prose/tests (not
+  green-but-wrong), but the did.json fixtures remain stale.
 
 - **Reuse imports wired**: `golang.org/x/mod/sumdb/note`, `modernc.org/sqlite`, `transparency-dev/merkle
-  v0.0.2`, `transparency-dev/tessera v1.0.2` (`tiles/layout.go`; `proofbuilder.go`; now also
-  `leafhasher.go` via `tessera/api` + `merkle/rfc6962`), stdlib `log/slog` + `net/http` (cmd/main.go +
-  metricshttp + didresolve.go). `internal/metrics` is stdlib-only. `SQLiteFetcher` conforms to
-  `tessera/fsck.Fetcher` **structurally** (local interface copy). **Not yet wired**: the rest of tessera
-  (`client`/`fsck`), `transparency-dev/formats`, `nbd-wtf/opentimestamps`.
+  v0.0.2`, `transparency-dev/tessera v1.0.2` (`tiles/layout.go`; `proofbuilder.go`; `leafhasher.go` via
+  `tessera/api` + `merkle/rfc6962`; and now **`tessera/fsck`** in `logclient/fsck.go`),
+  `transparency-dev/formats` (now an indirect via the `tessera/fsck` graph), stdlib `log/slog` +
+  `net/http` (cmd/main.go + metricshttp + didresolve.go). `internal/metrics` is stdlib-only.
+  `SQLiteFetcher` conforms to `tessera/fsck.Fetcher` **structurally** (store keeps a local interface
+  copy; `logclient/fsck.go` consumes the real `fsck.Fetcher` interface). **Not yet wired**: the rest of
+  tessera (`client` proof-builder), `nbd-wtf/opentimestamps`.
 
 - **Verify criteria status — ALL MET**: `origin("https://sb0.iscc.id") == "sb0.iscc.id/log"` and
   `VerifierKey` byte-match — met. All three triggers met end-to-end in golden tests (synthetic shrink,
@@ -95,19 +102,31 @@ Verify bar.
   set-once. Structured logs — met. `/metrics` — served over HTTP and collected by the binary.
 
 ## M2 — Aggregator
-**Status**: not started — but **four prerequisite slices have landed** (carried forward + one new):
-`internal/tiles` re-exports tessera's tlog-tiles layout math + the `IsFull` predicate;
-`internal/store/{tiles,fetcher}.go` provides the partial-tile mirror CRUD + `SQLiteFetcher`
-(structural `client.Fetcher`/`fsck.Fetcher`); `internal/logclient/proofbuilder.go` provides a pure
-`ConsistencyProofFromTiles` over the same tile-fetch seam; and **NEW** `internal/logclient/leafhasher.go`
-— `LeafHashes(bundle []byte) ([][]byte, error)`, a verbatim-in-shape port of `runfsck`'s `leafHasher`
-(`api.EntryBundle{}.UnmarshalText` then `rfc6962.DefaultHasher.HashLeaf` per entry), the hasher
-`fsck.New(...)` takes. Golden-tested with an independent third-path framer (mutation-proven non-vacuous).
-What remains for M2: tile/entry-bundle fixtures + the **live tile-ingestion writer** (which also
-un-dormants the equivocation branch), the actual `fsck.New(...).Check(...)` root-rebuild over
-`SQLiteFetcher` (wiring `LeafHashes` + `SQLiteFetcher` in), the inclusion cross-check vs the hub's
-`IsccLogInclusionProof`, the `iscc_index` projection writer, and `inclusion`/`consistency`/`entries`
-served via a full `ProofBuilder` from the local store.
+**Status**: not started — but **five prerequisite slices have now landed** (four carried forward + one
+new this iteration):
+- `internal/tiles` re-exports tessera's tlog-tiles layout math + the `IsFull` predicate;
+- `internal/store/{tiles,fetcher}.go` provides the partial-tile mirror CRUD + `SQLiteFetcher`
+  (structural `client.Fetcher`/`fsck.Fetcher`);
+- `internal/logclient/proofbuilder.go` provides a pure `ConsistencyProofFromTiles` over the same
+  tile-fetch seam;
+- `internal/logclient/leafhasher.go` — `LeafHashes(bundle []byte) ([][]byte, error)`, the per-entry
+  RFC-6962 leaf hasher `fsck.New(...)` takes;
+- **NEW** `internal/logclient/fsck.go` — `RunFsck(ctx, vkey, origin string, f fsck.Fetcher) error`,
+  thin glue over `note.NewVerifier(vkey)` + `fsck.New(origin, v, f, LeafHashes, fsck.Opts{N:1}).Check`.
+  This is the first slice where the **root-rebuild conformance gate re-arms for the mirror path** —
+  `RunFsck` rebuilds a checkpoint root from a `SQLiteFetcher` and is mutation-proven (review forced
+  `return nil` → both corruption subtests fail). It is an in-process **structural self-check** (shares
+  the monitor's own `LeafHashes`/RFC-6962 code), not the fully-independent oracle; `notecheck` remains
+  the truly-external oracle (still un-wired, still in CI). `RunFsck` has **no production caller yet** —
+  an intentional unused-until-wired seam (its first caller needs the live tile-ingestion writer).
+
+What remains for M2's Verify bar (all not-started): the **live tile-ingestion writer** (make `PollHub`
+mirror real tiles/bundles — also un-dormants the equivocation branch and enables a *production*
+`RunFsck` caller); the **inclusion cross-check** vs the hub's own `evidence.IsccLogInclusionProof`
+(needs real captured `IsccLogInclusionProof` fixtures + an inclusion `ProofBuilder` — the SECOND half
+of M2's Verify); the `iscc_index` projection writer (schema-agnostic, `iscc_id → seq` one-to-many);
+and `inclusion`/`consistency`/`entries` served via a full `ProofBuilder` from the local store (never
+re-hitting the hub).
 
 ## M3 — Trust API + dashboard
 **Status**: not started. (The binary has a `net/http` mux serving only `/metrics`; `/`, `/healthz`, and
@@ -120,43 +139,46 @@ the REST surface are explicitly out of scope until M3.)
 **Status**: green (as recorded by `review`; not re-run here)
 - `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.24.0`, no `toolchain` line; requires
   `merkle v0.0.2` + `tessera v1.0.2` + `x/mod v0.33.0` + `sqlite v1.46.1`); `mise run check` runnable.
-  Latest `review` handoff (2026-06-21, "Port the M2 fsck leaf-hasher (`LeafHashes`)", verdict
-  **PASS / CONTINUE**) records the gate green at HEAD `8c5ccfb`: `mise run check` green (build + vet +
-  test, all 10 packages `ok`); `gofmt -l .` empty; `GOOS=js GOARCH=wasm go build ./internal/logclient`
-  exits 0 (file-level WASM purity holds); `go test -run TestLeafHashes` 3 subtests PASS uncached;
-  `git diff HEAD~1..HEAD -- go.mod go.sum` exits 0 (no new dep). Oracle gate APPLIED (RFC-6962
-  leaf-hash crypto) and was satisfied by independent in-test ground truth (third framing path,
-  mutation-proven); `notecheck`/`derive_vkey.py`/`fsck` correctly N/A for this slice; trust-root
-  conformance (didweb/logclient/follower) unchanged and `derive_vkey.py` reproduces both vectors
-  (`40b74463`/`22b08f3e`).
-- **`go mod tidy` is idempotent** (resolved earlier, unchanged): the 22 tessera module-graph go.sum
-  lines are committed, `go mod tidy && git diff --exit-code -- go.sum` exits 0.
+  Latest `review` handoff (2026-06-21, "Wire `LeafHashes` + `SQLiteFetcher` into `fsck.New(...).
+  Check(...)`", verdict **PASS / CONTINUE**) records the gate green at HEAD `648158069`: `mise run
+  check` green (build + vet + test, all 10 packages `ok`); `gofmt -l .` empty; `go test -count=1 -run
+  TestRunFsck ./internal/logclient` PASS uncached (3 subtests — `RebuildsSignedRoot` nil,
+  `RejectsCorruptedTile`/`RejectsCorruptedBundle` non-nil; klog root `00d21829…`); `go mod tidy &&
+  git diff --exit-code -- go.mod go.sum` exits 0; `go mod verify` → all modules verified. Oracle gate
+  **APPLIED** (RFC-6962 root-rebuild crypto) and was satisfied + **independently mutation-proven** by
+  the reviewer (forced `RunFsck` → `return nil` ⇒ both corruption subtests fail); `notecheck`
+  (fully-independent oracle) still N/A only because it is un-wired. Trust-root goldens reproduce —
+  `derive_vkey.py` prints both vectors (`40b74463`/`22b08f3e`) byte-for-byte.
+- **`go mod tidy` is idempotent**: the `tessera/fsck` require-graph entered cleanly (klog/otel/formats
+  in go.mod indirect; testify-family testify/go-spew/difflib/yaml.v3 in go.sum only as transitive
+  test-deps). `go mod tidy && git diff --exit-code -- go.mod go.sum` exits 0.
 - **One open `normal` issue**: no `.github/workflows/` (verified `ls`) — the external `notecheck`
-  signature-parity oracle and any build/test/format/tidy gate run only locally, never in CI. Natural
-  companion to the M2 `fsck` slice (which first arms the mirror-path trust-root oracle).
-- Remote `origin` configured (github.com/iscc/iscc-monitor); working branch is **`develop`**; tree clean
-  at HEAD `8c5ccfb` (review pushed on PASS). **No `.github/workflows/` — no CI configured**, so no
-  `gh run` check applies. When CI is wired it must avoid `go build ./...` over the gitignored
-  `cauldron/` reference trees and shell out the future `notecheck` oracle rather than `go run` from
-  `cauldron/`.
+  signature-parity oracle and any build/test/format/tidy gate run only locally, never in CI. Now that
+  the mirror path exercises the trust root structurally (`RunFsck`) but the truly-independent
+  `notecheck` runs only in CI, this is the natural next slice.
+- Remote `origin` configured (github.com/iscc/iscc-monitor); working branch is **`develop`**; tree
+  clean at HEAD `648158069` (review pushed on PASS). **No `.github/workflows/` — no CI configured**;
+  `gh run list --branch develop` returns `[]` (no runs), confirming no CI applies. When CI is wired it
+  must avoid `go build ./...` over the gitignored `cauldron/` reference trees and shell out the future
+  `notecheck` oracle rather than `go run` from `cauldron/`.
 
 ## Next Milestone
-**M2 — Aggregator.** M1 meets its full Verify bar; the `fsck` leaf-hasher prerequisite is now in place,
-so the loop moves toward the **`fsck` root-rebuild conformance slice** — wire `LeafHashes` +
-`SQLiteFetcher` into `fsck.New(...).Check(...)` over real on-disk tile/entry-bundle fixtures under
-`testdata/live/`, plus the inclusion cross-check against the hub's own `IsccLogInclusionProof`. This is
-the first slice where the trust-root **oracle gate re-arms for the mirror path**; it pulls the heavy
-`fsck`/`net/http`/otel/klog deps and needs the first real on-disk tile fixtures.
+**M2 — Aggregator.** M1 meets its full Verify bar and the `fsck` root-rebuild self-check is now landed,
+so the loop moves toward closing M2's remaining Verify bar. The structural rebuild oracle is armed but
+fully-independent CI verification (`notecheck`) is still missing — that gap takes priority.
 
-**Wire CI before that conformance slice** (the remaining open `normal` issue, the sole gate-relevant
-gap): the upcoming `fsck`-rebuild/fixture slices arm the external `notecheck` oracle, and the tree is
-tidy-clean so a `go mod tidy && git diff --exit-code` CI step will pass. Candidate order:
-1. **Wire CI + `notecheck`** — `.github/workflows/` running `mise run check` + shelling out `notecheck`,
-   avoiding `go build ./...` over gitignored `cauldron/`.
-2. **`fsck` root-rebuild conformance slice** (M2 Verify + first real on-disk tile/entry-bundle fixtures).
-3. **Live tile-ingestion writer** — make `PollHub` mirror tiles so the wired equivocation branch
-   becomes load-bearing on the live path.
-4. **sb1 fixture refresh** (`22b08f3e`→`069d0f14` in the two `sb1.amlet.id_did.json` + `derive_vkey.py`)
+Candidate order:
+1. **Wire CI + `notecheck`** (the sole open `normal` issue, the only gate-relevant gap) —
+   `.github/workflows/` running `mise run check` + shelling out the external `notecheck`
+   signature-parity oracle, avoiding `go build ./...` over the gitignored `cauldron/`. The tree is
+   tidy-clean so a `go mod tidy && git diff --exit-code` CI step will pass.
+2. **Inclusion cross-check** vs the hub's own `evidence.IsccLogInclusionProof` — the SECOND half of
+   M2's Verify bar; needs real captured `IsccLogInclusionProof` fixtures + an inclusion `ProofBuilder`.
+3. **Live tile-ingestion writer** — make `PollHub` mirror real tiles/bundles, which un-dormants the
+   wired equivocation branch on the live path AND gives `RunFsck` its first production caller.
+4. **`iscc_index` projection writer** + serving `inclusion`/`consistency`/`entries` from the local
+   store via a full `ProofBuilder`.
+5. **sb1 fixture refresh** (`22b08f3e`→`069d0f14` in the two `sb1.amlet.id_did.json` + `derive_vkey.py`)
    — its own trust-root step that re-arms the oracle gate.
-5. **Real alert transport** — replace the WARN `slog` placeholder with email/webhook delivery to fully
+6. **Real alert transport** — replace the WARN `slog` placeholder with email/webhook delivery to fully
    close M1's alert path.
