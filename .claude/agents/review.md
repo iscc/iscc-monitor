@@ -88,6 +88,21 @@ and triage Codex's output in step 6.
      outputs (not follower internals)? Real fixtures, not mocks?
    - **Purity** — does `internal/proof/verify` still avoid `net`/`os`/`sqlite` imports?
    - **Simplicity / dead code** — no over-engineering, unused symbols, or commented-out blocks?
+   - **Visual fidelity (SSR surfaces only)** — if the diff touched a server-rendered surface
+     (`internal/dashboard`, `internal/dossier`, `internal/web`, `internal/certificate`, or an embedded
+     template), run a **visual pass** with `agent-browser` (ADR-0012) and triage its output like the
+     Codex second opinion — it is **generative** and never sets the verdict:
+     1. Build + launch the instance against fixtures that render the surface's **rich** states (the live
+        testnet's cold-start index is empty, so screenshot fixtures, not the bare live state).
+     2. Screenshot the changed surface and its `.claude/design/*.dc.html` mockup headlessly — e.g.
+        `agent-browser batch "open <url>" "screenshot /tmp/<surface>.png"` (the mockup renders from the
+        local `.dc.html`); `Read` both PNGs and check the surface against its named-region/affordance bar.
+     3. File each genuine visual delta (missing region or affordance, broken layout, wrong chrome) as a
+        `normal` `issues.md` entry for a later `advance`.
+     - **Graceful degradation — never stall the loop.** If `agent-browser`/Chrome is unavailable (not
+       installed, launch failure, headless/cron run), record `Visual check: skipped — <reason>` in the
+       handoff and continue — best-effort, never NEEDS_WORK (same rule as Codex). Visual fidelity's hard
+       gate is the human M-UI exit sign-off (`target.md`), not this pass.
 5. **Quality-gate integrity** — scan **all unpushed commits** (`git diff @{upstream}..HEAD`, falling
    back to `HEAD~1..HEAD`) for gate circumvention: `//nolint`, `t.Skip`/`t.SkipNow`, swallowed errors
    to dodge a check, build-tag exclusions, deleted assertions/tests, or loosened gates. Any of these
@@ -172,6 +187,8 @@ and triage Codex's output in step 6.
 **Issues found:** <list, or (none)>
 
 **Codex second opinion:** <key findings + how you triaged each (confirmed → issue / refuted → one-line reason); or "unavailable — <reason>">
+
+**Visual check:** <SSR surface(s) screenshotted vs mockup + deltas filed as issues; or "skipped — <reason>"; or "n/a — no SSR surface changed">
 
 **Next:** <concrete suggestion for define-next — what to work on next>
 

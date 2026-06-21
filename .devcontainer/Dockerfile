@@ -61,8 +61,18 @@ RUN mkdir -p $HOME/go/pkg/mod $HOME/.cache/go-build
 # truth for the Go version (go = "1.24").
 RUN curl https://mise.run | sh
 
-# Install Claude Code and Codex CLI
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex
+# Install Claude Code, Codex CLI, and agent-browser. agent-browser is the headless
+# browser-automation CLI the CID loop uses for frontend visual verification
+# (ADR-0012); the npm package bundles the version-matched skill, unlike the bare
+# GitHub-release binary.
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex agent-browser@0.29.0
+
+# Bake Chrome for Testing + its Linux system libraries into the image so
+# agent-browser launches headless Chrome with no per-rebuild download. --with-deps
+# runs its own apt-get update, so it works even though the apt lists were cleared
+# above (ADR-0012).
+RUN agent-browser install --with-deps \
+    && sudo rm -rf /var/lib/apt/lists/*
 
 # Configure ZSH and activate mise in both interactive shells
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended \

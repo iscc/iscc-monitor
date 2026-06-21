@@ -143,7 +143,7 @@ checklist, **never a pixel diff**. The mockup is **authoritative for layout and 
 / store-leaf): where a mockup conflicts — it links `fonts.css` at jsDelivr and ships a JS component
 runtime — the constraint wins (we self-host + SSR; an interactive control becomes its plain-link/`GET`-form
 equivalent) and the deviation is flagged, not silently dropped. Visual polish below the named-region
-level (exact spacing, weight, "feel") is a **human review checkpoint, not a loop gate**. Two cross-cutting
+level (exact spacing, weight, "feel") is **not** an autonomous per-iteration pass/fail gate, but is no longer left unverified: when a diff touches an SSR surface, the `review` step runs a headless **visual pass** with `agent-browser` (ADR-0012) — it screenshots the changed surface and its `.dc.html` mockup and files the visual deltas as `issues.md` entries (generative, best-effort; it degrades gracefully and never stalls the loop when the browser is unavailable). The residual aesthetic judgement is a **mandatory M-UI exit gate**: M-UI does not reach DONE until every surface has passed that visual pass and a human has signed off, deviations filed as issues. Two cross-cutting
 requirements hold on every surface:
 - **Document chrome + instance identity.** Every surface carries the shared handoff header: the ISCC logo
   + "Trust & Transparency Monitor" mark, the **instance-identity** block (this instance's domain +
