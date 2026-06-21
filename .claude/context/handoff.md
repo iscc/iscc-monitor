@@ -1,54 +1,56 @@
 # Handoff
 
-## 2026-06-21 — Review of: Commit the 22 `go mod tidy` go.sum lines so the tidy gate is idempotent
+## 2026-06-21 — Port the M2 fsck leaf-hasher (`LeafHashes`) — entry-bundle → RFC-6962 leaf hashes
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Landed the pure entry-bundle leaf hasher `logclient.LeafHashes(bundle []byte) ([][]byte,
+error)` — a verbatim-in-shape port of `runfsck`'s `leafHasher` (`api.EntryBundle{}.UnmarshalText` then
+`rfc6962.DefaultHasher.HashLeaf` per entry, taking `h[:]`), matching the `fsck.New(...)` hasher
+contract exactly. Added a table-driven golden test that cross-checks each hash against an
+independently-computed `rfc6962` leaf hash over a self-encoded C2SP bundle. No source/dep changes
+outside the two new files.
 
-**Summary:** The advance commit (79e5e37) is a textbook go.sum-only change: +22 checksum lines, 0
-removed, with `go.mod` and every source/test/testdata path byte-untouched. It makes `go mod tidy`
-idempotent against the committed tree, resolving the open `normal` tidy-divergence issue. All six
-`next.md` criteria pass, the recorded checksums are independently confirmed genuine (proxy re-fetch,
-not just a local-cache tautology), and the trust root is unaffected.
+**Files changed:**
+- `internal/logclient/leafhasher.go` (new): exports `LeafHashes`; imports only `fmt` +
+  `tessera/api` + `merkle/rfc6962` (file-level WASM purity). Pre-sizes `out`, wraps the unmarshal
+  error with `%w` as `logclient.LeafHashes: unmarshal entry bundle: %w`.
+- `internal/logclient/leafhasher_test.go` (new): `TestLeafHashes` (3-entry bundle, differing lengths
+  incl. a zero-length entry, asserts each hash byte-equals the independent `HashLeaf` and is exactly
+  32 bytes), `TestLeafHashesEmpty` (nil + empty bundle → `len==0, err==nil`), `TestLeafHashesTruncated`
+  (`[]byte{0x00,0x05,0x01}` → `err != nil`). The in-test `encodeBundle` is the independent encode path
+  (distinct from the decode + hash paths under test), so the cross-check is not circular.
 
-**Verification:**
-- [x] `go mod tidy && git diff --exit-code -- go.sum` exits **0** — tidy added nothing; byte-compared
-      go.sum before/after tidy → IDENTICAL (idempotent).
-- [x] `git diff --exit-code -- go.mod` exits **0** — go.mod byte-identical vs HEAD~1 too.
-- [x] `go mod verify` → `all modules verified` (exit 0).
-- [x] `mise run check` green — `go build ./...` + `go vet ./...` + `go test ./...`, all 10 packages
-      pass (exit 0); readonly build+test (`-mod=readonly`) also green.
-- [x] `gofmt -l .` empty (no source changed).
-- [x] `git show --stat HEAD` lists **`go.sum` as the only tracked-source change** (handoff.md the only
-      other file; no go.mod/internal/cmd/testdata path touched).
-- [x] **Checksums are genuine, not fabricated** — `go mod download -x` of 3 added modules
-      (backoff/v5, otel, klog/v2) resolved from the proxy with **no** verify error/mismatch (Go
-      recomputes the same `h1:` from source). Purely additive (no existing go.sum line rewritten).
-- [x] **Graph-only, never compiled** — `go mod why -m <each>` traces through `tessera/api.test` →
-      `tessera`, never a monitor package; matches the handoff's claim.
-- [x] **Trust root intact** — didweb/logclient/follower conformance tests pass **uncached**
-      (`-count=1`); independent `derive_vkey.py` oracle reproduces both golden vectors
-      (`40b74463`/`22b08f3e`). Oracle/conformance gate correctly N/A for the diff itself (touches no
-      signature/RFC-6962/Merkle/proof/didweb/fork-shrink-equivocation code).
-- [x] **Gate-integrity clean** — no `.go` file touched in the unpushed range (`origin/develop..HEAD`);
-      no `//nolint`, `t.Skip`, build-tag, deleted assertion, or loosened gate. This is the *opposite*
-      of a dodge: it makes a future `go mod tidy && git diff --exit-code` CI step pass legitimately.
+**Verification:** `mise run check` → green (all 10 packages `ok`; `go build ./...`, `go vet ./...`,
+`go test ./...`). Per-criterion:
+- [x] `gofmt -l .` empty.
+- [x] `go test -run TestLeafHashes ./internal/logclient` passes (all 3 subtests PASS).
+- [x] `GOOS=js GOARCH=wasm go build ./internal/logclient` exits 0 (file-level purity invariant holds).
+- [x] `go build ./... && git diff --exit-code -- go.mod go.sum` exits 0 (no new dependency; go.mod/go.sum
+      byte-identical — both `tessera/api` and `merkle/rfc6962` were already in the closure via
+      `proofbuilder.go`).
+- [x] 3-entry bundle assertion: returns 3 hashes, each 32 bytes, `out[i]` byte-equal to
+      `rfc6962.DefaultHasher.HashLeaf(ri)`.
+- [x] `LeafHashes(nil)`/empty → `len==0, err==nil`; truncated `[]byte{0x00,0x05,0x01}` → `err != nil`.
 
-**Issues found:** (none). Resolved the `go mod tidy` 22-line tidy-divergence issue (deleted from
-issues.md after verifying tidy is now idempotent). The "No CI / `notecheck` oracle wired" `normal`
-issue stays open — the natural companion to the M2 `fsck` slice.
-
-**Next:** The M2 `fsck` root-rebuild conformance slice — the first slice to face the trust-root oracle
-in CI: real tile fixtures + `fsck.New(...).Check(...)` over the `SQLiteFetcher`, plus the inclusion
-cross-check against the hub's own `IsccLogInclusionProof`. Its natural companion is wiring
-`.github/workflows/` CI + the `notecheck` external oracle (the remaining open `normal` issue), since
-the tree is now tidy-clean and a `go mod tidy && git diff --exit-code` CI gate will pass on these
-lines. Either could go first; define-next picks the smaller verifiable slice.
+**Next:** Wire `LeafHashes` + the `SQLiteFetcher` into the real M2 `fsck` root-rebuild conformance
+slice — the first slice to face the trust-root oracle in CI. That needs `tessera/fsck` (pulls
+`net/http`/`otel`/`klog` — a heavier go.mod cost, deliberately deferred here), real on-disk tile/
+entry-bundle fixtures under `testdata/live/`, and the inclusion cross-check against the hub's own
+`IsccLogInclusionProof`. Natural companion: wiring `.github/workflows/` CI + the external `notecheck`
+oracle (the remaining open `normal` issue), since the tree is tidy-clean.
 
 **Notes:**
-- The pre-commit `git diff` showing the 22 lines (exit 1) was always expected, not a failure — the
-  load-bearing fact is tidy itself adds nothing, and `git diff --exit-code` exits 0 once HEAD carries
-  them. Re-verified post-commit by the reviewer.
-- Pushed to `origin/develop` (remote configured). M7 remains out of scope; no `critical`/`normal`
-  blocker is open against M1, but the v1 DONE bar (M1→OTS Verify) is not yet met (M2+ pending), so the
-  loop continues.
+- **Oracle/conformance gate APPLIES (RFC-6962 leaf-hash crypto) and is satisfied by independent ground
+  truth, not a tautology.** The test's `encodeBundle` (manual `binary.BigEndian.PutUint16` framing) is a
+  distinct code path from `api.EntryBundle.UnmarshalText` (decode) and `rfc6962.DefaultHasher.HashLeaf`
+  (hash); the assertion compares `LeafHashes` output against an independently-recomputed `HashLeaf`. The
+  zero-length entry exercises the framing walk on a non-trivial empty record. `notecheck`/
+  `derive_vkey.py`/`fsck` ground-truth oracles are N/A for this slice (no signature/did:web/tile-rebuild
+  path; the real `fsck.New(...).Check(...)` cross-check is the deferred next slice).
+- `LeafHashes` is an **intentional unused-until-wired export seam** (like the consistency triggers,
+  `IsFull`, `LookupHubKey`) — consumed by the future `fsck` slice, no caller added per scope. `go vet`
+  is clean; do not flag it as dead code.
+- WASM-purity is enforced at the **file level**: the `logclient` package as a whole pulls `net/http`
+  via `didresolve.go`, so the load-bearing invariant is this file's import cleanliness + the
+  `GOOS=js GOARCH=wasm go build ./internal/logclient` still passing (verified). Both new imports were
+  already proven WASM-clean by `proofbuilder.go`.
+- No backward-incompatible API change, no design deviation, no human review needed.
