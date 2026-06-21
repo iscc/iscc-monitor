@@ -1,98 +1,88 @@
 # Next Work Package
 
-## Step: Serve the raw tlog-tiles mirror (checkpoint / tile / entries) over HTTP from one hub's SQLiteFetcher
+## Step: Wire tilesserve.Handler into the binary with a per-hub mirror router
 
 ## Goal
-Stand up the canonical static read surface M2 requires — `GET /checkpoint`,
-`GET /tile/<L>/<K>`, `GET /tile/entries/<K>` (including `.p/<W>` partials) — served verbatim
-from the local mirror via the existing `store.SQLiteFetcher`, never re-hitting the hub. This is
-the spec-correct foundation of "serve proofs from the local store" (iscc-log §9: there are no
-proof-computing endpoints; a verifier computes proofs locally from the served tiles) and the
-inbound transport the later `consistency`/`inclusion` `verify-for-me` slices build on.
+Mount the already-built `tilesserve.Handler` in `cmd/iscc-monitor` so each followed hub's mirrored
+tlog-tiles artifacts are actually *served* over HTTP at its canonical origin path
+(`/<origin>/checkpoint`, `/<origin>/tile/...`, `/<origin>/tile/entries/...`). This turns the
+built-but-unserved raw-mirror surface into a live inbound transport and is the foundation the M2/M3
+`verify-for-me` proof-serving slice builds on.
 
 ## Scope
-- **Create**: `internal/tilesserve/handler.go` — a new package exporting
-  `Handler(f store.SQLiteFetcher) http.Handler` that routes the three canonical tlog-tiles paths
-  to `f.ReadCheckpoint` / `f.ReadTile` / `f.ReadEntryBundle` and writes the raw BLOB bytes.
-- **Create**: `internal/tilesserve/handler_test.go` — table-driven `httptest` test over a real
-  `store.Open(tmp)` seeded with one full tile, one partial tile, one entry bundle, and one
-  checkpoint via the existing store writers.
-- **Modify**: (none — binary wiring is a separate slice; see Not In Scope)
+- **Modify**: `cmd/iscc-monitor/main.go` (add a `mirrorHandler` router helper + mount it on the same
+  mux as `/metrics`; pass per-hub origins through from `registerHubs`). This is the only non-test
+  production file.
+- **Modify (tests)**: `cmd/iscc-monitor/main_test.go` (add a router test).
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/metricshttp/handler.go` — the `Handler(...) http.Handler`
-    leaf-wrapping pattern and the mid-write `_ = w.Write(...)` swallow idiom to mirror.
-  - `/workspace/iscc-monitor/internal/store/fetcher.go` — `SQLiteFetcher.ReadCheckpoint` /
-    `ReadTile(ctx,l,i uint64,p uint8)` / `ReadEntryBundle(ctx,i uint64,p uint8)`; note the
-    `os.ErrNotExist` wrap on a missing row and the partial→full fallback already handled inside.
-  - `/workspace/iscc-monitor/internal/tiles/layout.go` — the build-side `TilePath`/`EntriesPath`
-    re-exports the test can use to construct request URLs without hand-building chunked paths.
-  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/api/layout/paths.go`
-    (lines 149–208) — `ParseTileLevelIndexPartial(level, index string) (uint64,uint64,uint8,error)`
-    and `ParseTileIndexPartial(index string) (uint64,uint8,error)`: the canonical parsers for the
-    `x###/###` chunked index and the `.p/<W>` partial suffix. Use these — do NOT hand-roll path math.
-  - `/workspace/iscc-monitor/internal/store/tiles.go` — `RecordTile`/`RecordEntryBundle` (the test's
-    seed writers) and the `width` they take (256 = full, else the partial leaf count).
+  - `/workspace/iscc-monitor/internal/tilesserve/handler.go` — `Handler(f store.SQLiteFetcher) http.Handler`;
+    note it trims exactly ONE leading slash and then matches `checkpoint` / `tile/...` /
+    `tile/entries/...`, so it MUST be mounted such that it sees `/checkpoint` etc. (use
+    `http.StripPrefix` to drop the per-hub prefix down to the single leading slash).
+  - `/workspace/iscc-monitor/internal/store/fetcher.go` — `SQLiteFetcher{Store, HubID}` is a plain
+    struct literal (no constructor); reads are read-only over the shared single connection.
+  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` — existing `serveMetrics` mux pattern,
+    `registerHubs` (already computes `org, _ := logclient.Origin(e.BaseURL)`), and the `run` wiring.
+  - `/workspace/iscc-monitor/internal/follower/loop.go` — `HubTarget{HubID int64; BaseURL string}`
+    (note: it carries no origin field; the router needs origin, so thread it from `registerHubs`).
+  - `/workspace/iscc-monitor/internal/logclient/origin.go` — `Origin(baseURL)` → `<domain>/log`.
 
 ## Not In Scope
-- Binary wiring in `cmd/iscc-monitor/main.go` (mounting a per-hub route prefix, a hub→origin
-  router, a read-only connection pool). That needs a multi-hub routing design and is its own slice.
-- The `consistency` / `inclusion` proof-computing or `verify-for-me` REST surface — those are
-  later M2/M3 slices that consume `ConsistencyProofFromTiles` / `VerifyInclusionEvidence`; this
-  slice only serves the raw static bytes a verifier (or those later handlers) reads from.
-- CORS headers, `Cache-Control`, ETag, conditional GET, and any non-GET method handling beyond a
-  405/404 default — defer to the M3 REST-surface slice (target.md M3: "CORS on every public GET").
-- Any change to `store`, `logclient`, `tiles`, `schema.sql`, `go.mod`, or `go.sum`. If a tile-path
-  parse re-export feels cleaner in `internal/tiles`, resist it — import `api/layout` directly in the
-  new handler this slice (no new exported surface on the `tiles` leaf).
-- Resolving `iscc_id → seq` or serving an entry bundle by record index — `EntriesPath` indexes by
-  bundle, and that resolution belongs to the inclusion slice.
+- **No proof-computing endpoints** (`inclusion`/`consistency`/`entries`-as-proofs). This slice serves
+  only the raw static mirror BLOBs `tilesserve` already exposes; the `ProofBuilder` /
+  `verify-for-me` REST surface is the next M2 slice.
+- **No CORS, caching, conditional GET, healthz, or dashboard** — `tilesserve` already documents these
+  as out of scope, and M3 owns them.
+- **Do not change `tilesserve.Handler`'s routing or signature**, and do not touch
+  `internal/store`/`internal/follower`/`schema.sql`/`go.mod`/`go.sum`.
+- **Do not address the 6 open `normal` issues** here (this slice does not modify
+  `checkpoints.go`/`accept.go`/`follower.go`/`ingest.go`/`fetcher.go`/`tiles.go`/`consistency.go`).
+- Do not add a `HubID`→origin store lookup; reuse the origin `registerHubs` already derives.
 
 ## Implementation Notes
-- One package `tilesserve`, one exported `Handler(f store.SQLiteFetcher) http.Handler`. It is NOT a
-  WASM leaf (it imports `net/http` + `store`), so there is no purity constraint here — unlike
-  `internal/metrics`, the split exists only to keep routing out of `store` (store stays a leaf; the
-  new package depends on store, never the reverse).
-- Route on `r.URL.Path` with a small `switch`/prefix match. Canonical tlog-tiles paths (iscc-log §9,
-  served under the hub's `/log` origin, but THIS handler is mounted at the hub root so it sees the
-  suffix): `checkpoint`, `tile/<L>/<index...>`, `tile/entries/<index...>`. Trim a single leading
-  `/`. Match `tile/entries/` BEFORE `tile/` (entries is a sub-prefix of tile and a bare `tile/<L>`
-  parse of an `entries/...` path must not win).
-- For `tile/<L>/<index...>`: split off the level segment, pass `(level, rest)` to
-  `layout.ParseTileLevelIndexPartial`, then `f.ReadTile(ctx, level, index, width)`. tessera's
-  returned `width` IS the fetcher's `p` (0 = full, else partial leaf count) — they share the exact
-  convention (`store/fetcher.go` `widthForP`), so pass it straight through; do not re-map it.
-- For `tile/entries/<index...>`: pass the index remainder to `layout.ParseTileIndexPartial`, then
-  `f.ReadEntryBundle(ctx, index, width)`.
-- For `checkpoint`: `f.ReadCheckpoint(ctx)` with no path args.
-- Error mapping (the load-bearing contract): a parse failure → `400`; `errors.Is(err,
-  os.ErrNotExist)` (the `SQLiteFetcher` missing-row sentinel — Correctness: the fetcher wraps
-  `os.ErrNotExist`) → `404`; any other read error → `500`; method != GET → `405`; unmatched path →
-  `404`. On success write the raw bytes verbatim (the BLOB IS the canonical tlog-tiles body — these
-  are static files), `Content-Type: application/octet-stream`. Mirror metricshttp's deliberate
-  mid-write `_ = w.Write(...)` swallow (the 200 is already on the wire), documented inline — NOT a
-  gate dodge.
-- Use `r.Context()` for the fetcher calls. Keep the package docstring evergreen (purpose first line).
-- Test: `store.Open(t.TempDir()+"/x.db")`, `UpsertHub`, seed via `RecordTile`(full width 256 at
-  `(0,0)` and a partial e.g. width 44 at `(0,1)`), `RecordEntryBundle`(one bundle), and
-  `RecordCheckpoint`(raw bytes). Build request URLs with `tiles.TilePath`/`tiles.EntriesPath` so the
-  paths are tessera-canonical, not author-asserted. Assert: 200 + exact seeded bytes for each
-  served path (full, partial, entries, checkpoint), 404 for a never-mirrored tile, 400 for a
-  malformed index, 405 for POST. Drive through `httptest.NewServer` or call the handler with
-  `httptest.NewRecorder()` — either is fine; assert on observable HTTP outputs (status + body),
-  never on handler internals (PRD seam-testing rule).
+- **Routing key = the hub origin path.** Each hub's origin is `<domain>/log` (e.g. `sb0.iscc.id/log`).
+  Mount each hub at prefix `"/" + origin + "/"` (e.g. `/sb0.iscc.id/log/`) and `http.StripPrefix` that
+  prefix so the wrapped `tilesserve.Handler` sees `/checkpoint`, `/tile/0/000`, etc. — exactly the
+  single-leading-slash suffix the handler trims. Register the prefix `"/sb0.iscc.id/log/"` (with a
+  trailing slash, so `http.ServeMux` does subtree matching) on the same mux that already serves
+  `/metrics`.
+- **Thread origin from `registerHubs`.** `registerHubs` already computes `org` per entry but currently
+  discards it (only `HubID`+`BaseURL` flow into `HubTarget`). The cleanest minimal change: have a
+  sibling helper return a small `[]hubRoute{HubID int64; Origin string}` slice (re-deriving origin via
+  `logclient.Origin`, OR returned alongside the existing `targets`), then a pure, testable helper
+  `mirrorHandler(st *store.Store, routes []hubRoute) http.Handler` builds the mux. Keep `main`/`run`
+  thin and put the per-hub `StripPrefix` + `tilesserve.Handler(store.SQLiteFetcher{Store: st, HubID:
+  r.HubID})` loop in the helper so it is unit testable without binding a socket. Define the `hubRoute`
+  struct local to `package main`.
+- **Mount on the metrics mux.** Extend `serveMetrics` (or factor a `buildMux` helper it calls) so the
+  one `http.Server` serves both `/metrics` and the per-hub mirror subtrees — avoid a second listener.
+  Keep `/metrics` registered exactly as today (sole behavior unchanged).
+- **Read-only reuse of the single connection.** `SQLiteFetcher` reads through the store's one open
+  connection (`SetMaxOpenConns(1)`, single-writer discipline, ADR-0005/0007); concurrent HTTP reads
+  share that connection — this is fine (reads serialize on it), do NOT open a second DB handle.
+- **Correctness rule (learnings):** origin is `<domain>/log`, never the bare domain — the mount prefix
+  must use the full origin, so a request to `/sb0.iscc.id/checkpoint` (missing `/log`) does NOT match.
+  Reuse `logclient.Origin`, never hand-build the path.
+- **Status passthrough:** the handler already maps 400/404/405/500 and an unmatched path under a hub
+  prefix to 404; an entirely unknown top-level prefix falls through to the mux's default 404. No extra
+  status logic needed in the router.
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -run TestHandler -count=1 ./internal/tilesserve` passes (all sub-cases).
-- `git diff --quiet HEAD -- internal/store/schema.sql go.mod go.sum` exits 0 (no schema/dep change).
+- `go test -run TestMirror -count=1 ./cmd/iscc-monitor` passes (the new router test).
+- New router test asserts, against a store seeded with one hub + a checkpoint BLOB (reuse the
+  `registerHubs`/store seeding pattern already in `main_test.go`, served via a direct `ServeHTTP`
+  against `httptest.NewRecorder`):
+  - `GET /sb0.iscc.id/log/checkpoint` → 200 with body byte-equal to the seeded checkpoint BLOB.
+  - `GET /sb0.iscc.id/log/tile/0/000` (an unmirrored path under the hub prefix) → 404.
+  - `GET /sb0.iscc.id/checkpoint` (origin missing the `/log` segment) → 404 (wrong prefix, not matched).
+  - `GET /metrics` still → 200 (the existing route is untouched on the shared mux).
+- `git diff --quiet HEAD -- internal/store/schema.sql go.mod go.sum` exits 0 (no schema/dependency
+  change — this is pure wiring of existing packages).
 - `go list -deps ./internal/store | grep -E 'internal/tilesserve|net/http'` is empty (store stays a
-  leaf; the new package depends on store, never the reverse).
-- `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (WASM purity invariant untouched).
-- A `GET` for a full tile returns HTTP 200 with bytes byte-equal to the seeded `RecordTile` BLOB; a
-  `GET` for a never-mirrored tile index returns HTTP 404; a malformed tile index returns HTTP 400;
-  a `POST` returns HTTP 405.
+  leaf; the binary depends on `tilesserve`→`store`, never the reverse).
 
 ## Done When
-`internal/tilesserve.Handler` serves the three canonical tlog-tiles paths (checkpoint / tile /
-entries, including `.p/<W>` partials) verbatim from one hub's `SQLiteFetcher` with correct
-400/404/405/500 status mapping, and all Verification criteria pass.
+`tilesserve.Handler` is mounted per-hub on the binary's HTTP server at each hub's `<origin>/` prefix
+and all Verification criteria pass — a real `GET /<origin>/checkpoint` returns the mirrored bytes while
+`/metrics` and the store-leaf/no-dep-change invariants remain intact.
