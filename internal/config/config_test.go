@@ -28,6 +28,7 @@ func TestLoadGolden(t *testing.T) {
 		keyRealm:  "/etc/iscc-monitor/realm.txt",
 		keyNormal: "30s",
 		keyFrozen: "10m",
+		keyAddr:   "127.0.0.1:41234",
 	})
 	got, err := Load(get)
 	if err != nil {
@@ -38,6 +39,7 @@ func TestLoadGolden(t *testing.T) {
 		RealmPath: "/etc/iscc-monitor/realm.txt",
 		Normal:    30 * time.Second,
 		Frozen:    10 * time.Minute,
+		Addr:      "127.0.0.1:41234",
 	}
 	if got != want {
 		t.Errorf("Load(full) = %#v, want %#v", got, want)
@@ -60,9 +62,13 @@ func TestLoadDefaults(t *testing.T) {
 		RealmPath: "/data/realm.txt",
 		Normal:    defaultNormal,
 		Frozen:    defaultFrozen,
+		Addr:      defaultAddr,
 	}
 	if got != want {
 		t.Errorf("Load(minimal) = %#v, want %#v", got, want)
+	}
+	if got.Addr != ":9464" {
+		t.Errorf("Load(minimal) Addr = %q, want default %q", got.Addr, ":9464")
 	}
 	if !(want.Frozen >= want.Normal) {
 		t.Fatalf("default intervals violate Frozen >= Normal: Normal=%s Frozen=%s", want.Normal, want.Frozen)
@@ -78,17 +84,27 @@ func TestLoad(t *testing.T) {
 		{
 			name: "only normal overridden, frozen defaults",
 			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyNormal: "1m"},
-			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: time.Minute, Frozen: defaultFrozen},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: time.Minute, Frozen: defaultFrozen, Addr: defaultAddr},
 		},
 		{
 			name: "only frozen overridden, normal defaults",
 			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyFrozen: "2h"},
-			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: 2 * time.Hour},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: 2 * time.Hour, Addr: defaultAddr},
 		},
 		{
 			name: "frozen equal to normal is accepted",
 			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyNormal: "15m", keyFrozen: "15m"},
-			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: 15 * time.Minute, Frozen: 15 * time.Minute},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: 15 * time.Minute, Frozen: 15 * time.Minute, Addr: defaultAddr},
+		},
+		{
+			name: "addr overridden, intervals default",
+			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyAddr: ":40080"},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, Addr: ":40080"},
+		},
+		{
+			name: "empty addr falls back to default",
+			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyAddr: ""},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, Addr: defaultAddr},
 		},
 	}
 	for _, tc := range cases {

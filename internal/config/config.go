@@ -17,6 +17,8 @@
 //	ISCC_MONITOR_NORMAL optional — clean-hub poll interval (default 5m).
 //	ISCC_MONITOR_FROZEN optional — frozen-hub backed-off poll interval, the
 //	                    evidence-only re-poll cadence (ADR-0006); default 1h.
+//	ISCC_MONITOR_ADDR   optional — listen address for the /metrics HTTP server;
+//	                    default :9464.
 //
 // Intervals are parsed with time.ParseDuration. The load-bearing cross-check is
 // Frozen >= Normal: the follower loop encodes its back-off by polling a frozen
@@ -35,6 +37,7 @@ const (
 	keyRealm  = "ISCC_MONITOR_REALM"
 	keyNormal = "ISCC_MONITOR_NORMAL"
 	keyFrozen = "ISCC_MONITOR_FROZEN"
+	keyAddr   = "ISCC_MONITOR_ADDR"
 )
 
 // Default poll intervals applied when the corresponding key is absent. Normal is
@@ -45,15 +48,22 @@ const (
 	defaultFrozen = time.Hour
 )
 
+// defaultAddr is the listen address for the /metrics HTTP server when
+// ISCC_MONITOR_ADDR is absent: an exotic non-standard port per the project port
+// convention, fixed so the same deployment reuses it across restarts.
+const defaultAddr = ":9464"
+
 // Config is the validated, typed startup configuration for the monitor binary.
 // DBPath is the single network's SQLite file (ADR-0007), RealmPath the on-disk
-// realm-membership document, and Normal/Frozen the follower loop's poll intervals
-// (Frozen >= Normal encodes the freeze back-off, ADR-0006).
+// realm-membership document, Normal/Frozen the follower loop's poll intervals
+// (Frozen >= Normal encodes the freeze back-off, ADR-0006), and Addr the listen
+// address for the /metrics HTTP server (default :9464).
 type Config struct {
 	DBPath    string
 	RealmPath string
 	Normal    time.Duration
 	Frozen    time.Duration
+	Addr      string
 }
 
 // Load reads the configuration from the injected get closure, applies the
@@ -91,7 +101,8 @@ func Load(get func(key string) (string, bool)) (Config, error) {
 	if frozen < normal {
 		return Config{}, fmt.Errorf("config: %q (%s) must be >= %q (%s): freeze cadence backs off, never speeds up", keyFrozen, frozen, keyNormal, normal)
 	}
-	return Config{DBPath: dbPath, RealmPath: realmPath, Normal: normal, Frozen: frozen}, nil
+	addr := optional(get, keyAddr, defaultAddr)
+	return Config{DBPath: dbPath, RealmPath: realmPath, Normal: normal, Frozen: frozen, Addr: addr}, nil
 }
 
 // required returns the value for key, failing closed with a wrapped error naming
@@ -103,6 +114,18 @@ func required(get func(key string) (string, bool), key string) (string, error) {
 		return "", fmt.Errorf("config: required key %q is missing", key)
 	}
 	return value, nil
+}
+
+// optional returns the value for key, falling back to fallback when the key is
+// absent or empty. A bad value is not validated here (the listen address surfaces
+// at ListenAndServe), matching the optional-key pattern's no-validation-beyond-
+// default contract.
+func optional(get func(key string) (string, bool), key, fallback string) string {
+	value, ok := get(key)
+	if !ok || value == "" {
+		return fallback
+	}
+	return value
 }
 
 // duration returns the interval for key, falling back to fallback when the key is

@@ -1,24 +1,34 @@
 // Command iscc-monitor is the monitor process entrypoint: it wires the four M1
 // leaves — config.Load, registry.Parse, store.Open/UpsertHub, and follower.Loop
 // — into a running follower that polls every hub in the realm document on a
-// cadence and persists its observations into the network's SQLite database.
+// cadence and persists its observations into the network's SQLite database. It
+// also constructs the in-memory metrics registry, threads it into the loop, and
+// serves it at /metrics on the configured address so production both collects and
+// exposes the alert-worthy series.
 //
 // main stays thin and owns process exit (config/file/store failures print to
 // stderr and exit non-zero); all the registry -> store -> target wiring lives in
 // the testable registerHubs helper. The poll loop runs until SIGINT, which a
-// signal-bound context cancels so Loop.Run returns cleanly.
+// signal-bound context cancels so Loop.Run returns cleanly; the /metrics server
+// runs in a background goroutine and is shut down on the same context so serving
+// never blocks polling.
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/iscc/iscc-monitor/internal/config"
 	"github.com/iscc/iscc-monitor/internal/follower"
 	"github.com/iscc/iscc-monitor/internal/logclient"
+	"github.com/iscc/iscc-monitor/internal/metrics"
+	"github.com/iscc/iscc-monitor/internal/metricshttp"
 	"github.com/iscc/iscc-monitor/internal/registry"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
@@ -66,6 +76,9 @@ func run() error {
 		return err
 	}
 
+	m := metrics.New()
+	go serveMetrics(ctx, cfg.Addr, m, logger)
+
 	loop := &follower.Loop{
 		Store:   st,
 		Fetcher: logclient.NewHTTPFetcher(nil),
@@ -74,11 +87,39 @@ func run() error {
 		Frozen:  cfg.Frozen,
 		Alert:   alertFunc(logger),
 		Logger:  logger,
+		Metrics: m,
 	}
 	if err := loop.Run(ctx); err != nil && err != context.Canceled {
 		return err
 	}
 	return nil
+}
+
+// serveMetrics runs the /metrics HTTP server until ctx is cancelled. It serves
+// exactly GET /metrics from m via metricshttp.Handler and is started in a
+// background goroutine so it never blocks the follower loop (the foreground
+// blocker). On ctx cancellation it shuts the server down with a short-timeout
+// context so a SIGINT exits promptly. http.ErrServerClosed from ListenAndServe is
+// the normal-shutdown signal (mirroring how Run treats context.Canceled as clean)
+// and is logged, not surfaced; any other listen error is logged so a misconfigured
+// address is never silent.
+func serveMetrics(ctx context.Context, addr string, m *metrics.Registry, logger *slog.Logger) {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metricshttp.Handler(m))
+	srv := &http.Server{Addr: addr, Handler: mux}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.ErrorContext(ctx, "metrics server shutdown failed", "err", err)
+		}
+	}()
+
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logger.ErrorContext(ctx, "metrics server failed", "addr", addr, "err", err)
+	}
 }
 
 // registerHubs registers each realm entry in the store and returns the follower
