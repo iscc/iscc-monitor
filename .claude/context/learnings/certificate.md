@@ -100,6 +100,25 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
     state only, TOCTOU race remained); `681a2c6` replaced it with this re-verification.
     git history keeps the detail.
 
+- **§4 SIGNING KEY derives the key id from the accepted checkpoint's own raw bytes, not synthetically.**
+  `buildData` now captures the `raw` return of `CheckpointAt` (was `_`), recovers the key id via
+  `logclient.KeyIDFromCheckpoint(raw)` (pure stdlib+sumdb/note; reads only the BE-uint32 keyhash, does
+  NOT verify the sig), and reads the cached resolution back via `store.LookupHubKey(hubID, keyID)`.
+  `HasClause4` is set ONLY on a cache hit — a `KeyIDFromCheckpoint` error (the cheap `[]byte("raw")`
+  fixtures) or a `!found4` miss is an honest decline (no §4, no 500, no fabricated key); only a real
+  `LookupHubKey` DB fault is a 500 (buffer-then-200). The derived key id is grounded in the oracle: it
+  equals the `0x40b74463` pin in `logclient/checkpointkey_test.go` for the live sb0 checkpoint.
+  Mutation-proven (review reproduced): `if found4` → `if found4 || true` makes
+  `TestCertificateSigningKeyUncached` FAIL. `KeyIDFromCheckpoint` ignores the signature, so the live sb0
+  note seeds an sb1-indexed fixture fine — the test threads a real signed note `Raw` only on the §4
+  happy path; §3 callers keep `[]byte("raw")`.
+- **`did:web:` + `data.Domain` is WRONG for a `host:port` hub (latent, Codex-confirmed).** §4 builds
+  the DID as `"did:web:" + data.Domain`, but `internal/registry` explicitly supports `host:port`
+  domains and `didweb.DocumentURL` requires the port colon `%3A`-encoded — so a `host:port` hub renders
+  `did:web:localhost:8443` (which did:web reads as host `localhost`, path `8443`), naming a different
+  DID than the key resolved from. Not currently exploitable (the testnet realm uses clean
+  `sb0.iscc.id`/`sb1.amlet.id`); filed as a `normal` issue. Same fail-quietly-on-clean-fixtures class as
+  the `hubDomain` ForceQuery gap. Any surface building a DID from a domain must `%3A`-encode the port.
 - **`html/template` entity-escapes base64 `+`/`/` in text nodes (`+`→`&#43;`).** Only
   the execution-path contextual escaper does this — `html.EscapeString` does not — so
   §2's `cm9vdA==` fixture root (no `+`) hid it. Any test asserting on rendered base64
