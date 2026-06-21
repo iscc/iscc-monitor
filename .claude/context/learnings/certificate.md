@@ -46,6 +46,20 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   (review): reverting to bare `rawID` → `TestCertificateKnownID` +
   `TestCertificatePrefixedLookup` FAIL ("not found in log").
 
+- **§2 CHECKPOINT reads the accepted root back via `CheckpointAt(hub.HubID, hub.LastSize)`.**
+  follow_state does NOT persist the accepted root (store.md), so `buildData`'s certifiable
+  branch reads it: size is `hub.LastSize` (the cap already proved `> 0`, no second read), root
+  is `base64.StdEncoding.EncodeToString(root)` — base64-**Std**, byte-identical to the log
+  browser + verify-for-me (`proofserve` `browserData.Root`/`VerifyVerdict.Root`). A DB `err` →
+  500 (buffer-then-200 in place); `found == false` leaves `HasClause2 = false` (no fabricated
+  root — honest absence, NOT a 500, deliberately divergent from proofserve verify-for-me which
+  500s on `!found` because it has already committed to serving a proof). `found` is realistically
+  always true (`AdvanceAccepted` records the checkpoint at the same `tree_size` it advances
+  `last_size` to). The §2 test asserts the REAL committed root (`EncodeToString([]byte("root"))`,
+  `cm9vdA==`), not a literal — mutation-proven (review): corrupt the rendered root or neuter
+  `HasClause2` → `TestCertificateKnownID` FAILS. Oracle gate still N/A (pure store read + render);
+  it RE-ENGAGES at §3 (inclusion proof must be non-vacuous vs `IsccLogInclusionProof`/`notecheck`).
+
 - **Interim Hub-List wiring lives in `cmd/iscc-monitor` (`hubListFromEntries`), not
   in config/registry.** Production has no real Hub-List document path yet; the
   binary builds `*registry.HubList` from realm.txt order (slot i = entry i, matching
