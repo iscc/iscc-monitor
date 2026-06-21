@@ -1,74 +1,61 @@
-## 2026-06-21 — Review of: Fix single-record kind-label constants to the full `note.$schema` URIs
+## 2026-06-21 — Pure ISCC-IDv1 decoder (`internal/index`) — realm + 12-bit hub_id, golden-tested
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Added the pure leaf package `internal/index` with `Decode(isccID string) (ISCCID, error)`
+that parses an ISCC-IDv1 string into `{Realm, HubID, Timestamp}` (SubType nibble = realm, `body & 0xFFF`
+= 12-bit hub_id, `body >> 12` = 52-bit µs timestamp), validating MainType = 6 (ID) and Version = 1 and
+failing closed (descriptive error, never panic) on any malformed input. Golden vectors are grounded in
+external ground truth, not the implementation's own arithmetic.
 
-**Summary:** The advance fixed the blocking defect: `schemaDeclaration`/`schemaDeletion`
-(`handler.go:111-112`) now hold the full wire URIs (`http://purl.org/iscc/schema/iscc-note-0.8.0.json`
-+ `…delete…`), byte-equal to the golden ground truth `internal/logclient/projection_test.go:19-20`, so
-real declarations/deletions render "Declaration"/"Deletion" instead of "Unknown record type" — the
-M-UI single-record Verify criterion is now genuinely met. The no-CDN ban was correctly scoped to the
-document head (up to `</style>`). Production code is correct; the one residual is that the guarding test
-is tied to the constant under test rather than to a literal, so it cannot catch a future regression of
-the constant value (filed `low`).
+**Files changed:**
+- `internal/index/iscc.go`: new package + the pure `Decode` + result type `ISCCID`; an unexported
+  `encode` helper used only by the round-trip test. Stdlib only (`encoding/base32`, `encoding/binary`,
+  `fmt`, `strings`).
+- `internal/index/iscc_test.go`: golden-vector table (realm 0 + realm 1, non-zero hub slots, `ISCC:`
+  prefix), encode→Decode round-trip (both realms, max slot 4095, near-max timestamp), malformed-input
+  table, dedicated wrong-MainType and wrong-Version sub-tests, and a "never panics on junk" guard.
 
-**Verification:**
-- [x] `mise run check` — green (build + vet + all 20 packages; proofserve re-run uncached 0.668s)
-- [x] `gofmt -l .` — empty (PASS)
-- [x] `go test -count=1 -run TestRecord ./internal/proofserve` — PASS uncached (`TestRecordKindLabels`
-  decl/del/unknown/empty all 200 with correct labels; `TestRecordLinksTokensNoCDN` no longer
-  false-fails on the verbatim `http://purl.org/...` schema)
-- [x] Declaration URI → "Declaration", deletion URI → "Deletion", non-URL/empty → "Unknown record
-  type" (200) — confirmed at runtime via the green suite
-- [x] `grep '"iscc-note-0.8.0"\|"iscc-note-delete-0.8.0"' internal/proofserve/handler.go` — no match
-  (short forms gone) PASS
-- [x] `git diff --stat HEAD -- go.mod go.sum internal/store/schema.sql` — empty (byte-identical) PASS
-- [x] Constants byte-match the golden `projection_test.go:19-20` ground truth — confirmed by direct
-  string comparison (the literal ground-truth source, not the code under review)
-- [x] Scope: exactly 2 files (1 production + 1 test), both in `internal/proofserve` — within budget
-- [x] Oracle/conformance gate correctly N/A — the diff touches only the `proofserve` render surface;
-  no `internal/proof`/`logclient/verify`/`didweb`/fork-shrink-equivocation path. `internal/proof` is
-  not even a package (verify lives in `logclient`); the earlier grep hit was the `internal/proof*`
-  prefix matching `proofserve` only.
-- [x] Gate-integrity scan over all unpushed commits (`origin/develop..HEAD`, 8 commits) —
-  no `//nolint`/`t.Skip`/build-tag/swallowed-error pattern; the one removed `t.Errorf`
-  (`entries?index=4` link) was replaced by the `record?index=4` assertion in a prior reviewed PASS,
-  not silently dropped.
+**Verification:** `mise run check` → green (build + vet + all 21 packages; `internal/index` ran uncached
+0.004s). Per-criterion:
+- [x] `gofmt -l .` empty.
+- [x] `go test -count=1 ./internal/index` passes (golden + error-path, all sub-tests PASS).
+- [x] `go list -deps ./internal/index | grep -E '^net/http$|^database/sql$|^net$|^os/exec$'` → empty
+  (pure leaf; only `fmt`→`os` transitively, the allowed stdlib nuance).
+- [x] `GOOS=js GOARCH=wasm go build ./internal/index` → succeeds (WASM-shareable).
+- [x] Golden vector decodes to the documented `(realm, hub_id, timestamp)`; every error case (empty,
+  prefix-only, too-short/long, non-base32, lowercase, wrong MainType, wrong Version) returns a non-nil
+  error and does not panic.
+- [x] `go.mod`/`go.sum` byte-identical (stdlib only; no new deps).
 
-**Issues found:**
-- **[low] Single-record label test is vacuous on the kind-label constant value** (filed in issues.md).
-  Mutation-found: `schemaForSeq` returns the `schemaDeclaration`/`schemaDeletion` constants and
-  `recordKind` switches on the same constants, so reverting BOTH constants back to the old short forms
-  leaves the entire `go test -run TestRecord ./internal/proofserve` suite GREEN (reviewer-verified).
-  The test is written to the symbol under test, not to ground truth. Does NOT block PASS: the
-  production constants are already correct (byte-equal to the golden `projection_test.go`), so the
-  feature works and the M-UI criterion holds; this only hardens the regression gate. The real
-  protection today is that `projection_test.go` is itself a non-vacuous golden test, and the constants
-  match it.
-
-**Codex second opinion:** Codex (exit 0) reviewed the advance commit: "The patch aligns the
-single-record kind labels with the full wire schema URIs and adjusts the CDN assertion scope without
-introducing a functional regression. The relevant Go tests pass." — no findings. Concurs with the
-PASS direction. It did not surface the test-vacuity gap (a mutation-only observation), which I found
-independently and filed `low`.
-
-**Next:** Proceed to the originally-planned slice deferred out of this fix: the certificate of
-inclusion (`/inclusion/{iscc_id}` HTML) + the downloadable proof-bundle assembler. That slice
-re-engages the oracle/conformance gate (signature / RFC-6962 / Merkle path), so the reviewer must
-mutation-prove the served bundle's inclusion proof non-vacuous and confirm `notecheck`/golden-vector
-parity where the bundle carries hub-signed material. (Optionally fold in the `low` test-hardening above
-if `record_test.go` is touched.)
+**Next:** The 12-bit-`hub_id` → hub resolver + the `internal/registry` move from domains-only `realm.txt`
+to the iscc-hub `hubs/<network>.yaml` Hub-List (ADR-0010 §"Hub-id resolution adopts the iscc-hub
+Hub-List"): map decoded `(realm, hub_id)` → hub url/domain (realm also keys the per-network DB, ADR-0007).
+That step CONSUMES the `ISCCID` this step produces. After resolution lands, the `/inclusion/{iscc_id}`
+HTML certificate handler and the proof-bundle assembler follow (the latter re-engages the oracle gate —
+reviewer must mutation-prove the served inclusion proof non-vacuous and confirm notecheck/golden parity
+on hub-signed material).
 
 **Notes:**
-- The mutation finding is the durable lesson, now recorded in `learnings/http-surface.md`: tie a
-  `note.$schema`→label test to a HARDCODED literal URI (or compare the constant against the
-  `projection_test.go` literal), never to the constant under test — otherwise both sides move together
-  and the gate is vacuous. This is the same class of "tests written to the code" the prior NEEDS_WORK
-  flagged; the constant is now correct, but the test still has the structural blind spot.
-- Learnings rotated: `http-surface.md` 157→155 lines (collapsed the now-landed single-record "defective"
-  section to `settled:` + the durable schema-URI trap + the new test-vacuity lesson; deduped the
-  `iscc_index above LastSize` paragraph that appeared twice; tightened the tilesserve + inclusion
-  settled bullets). Index unchanged at 83 lines.
-- Pre-existing unstaged/committed `.claude/context/target.md` edit (`155c8ed target(M-UI): named-region
-  design-parity bar`) in the unpushed history is a target-owned file, left untouched (not review-owned).
-- Branch is 8 commits ahead of `origin/develop` (`83588b1`); this PASS pushes them all.
+- **Codec is grounded, not invented.** The reference `iscc/iscc-core` `iscc_id.py` (and the hub-side
+  `iscc_hub/iscc_id.py`) is NOT vendored in `cauldron/`. I confirmed the exact layout against a real
+  ISCC-ID published in `cauldron/iscc-hub/iscc_hub/schema.py` — the resolved-URL example
+  `…/iscc_id/maighfecjmopmiab`. Decoding it (independently, via Python `base64.b32decode`) yields header
+  bytes `0x60 0x10` → MainType 6 (ID), SubType 0 (realm 0), Version 1, and body `0x6394824b1cf62001` →
+  hub_id 1, timestamp 1751831876325218 µs (2025-07-06, a plausible recent date). That ID is the realm-0
+  golden vector; the realm-1 vector (`MEIGHFECJMOPMIAC`, hub_id 2) is constructed from first principles
+  per ADR-0010's header layout. The expected fields are NOT computed by calling `Decode`/`encode`.
+- **ADR caveat confirmed:** next.md warned the old test ids (`MAAGZTFQ…`, `MEAJU5BQ…`, `MAIG…`) might
+  carry a different MainType — true for those, so I did NOT reuse them. I initially added a malformed
+  row claiming `MEAAGZTFQLCYPKIZ` had a non-ID MainType; on re-checking it decodes to MainType 6 (a
+  valid realm-1 ID), so I removed that incorrect row. The wrong-MainType path is covered correctly by
+  `TestDecodeWrongMainType` (`AAAAAAAAAAAAAAAA` → MainType nibble 0).
+- **ISCC base32 = RFC 4648 uppercase, NO padding** (`base32.StdEncoding.WithPadding(NoPadding)`),
+  confirmed against the reference: 80 bits / 5 bits-per-char = exactly 16 chars, no `=`. Lowercase is
+  rejected (the alphabet is uppercase-only), as is any char outside `A-Z2-7`.
+- **Fail-closed guard kept** per the `derive_vkey.py` short-key precedent: length is checked before every
+  slice (`len(body) != 16`, then `len(raw) < 10`), so short/garbage input errors instead of
+  index-panicking. A "never panics on junk" test pins this.
+- **Oracle/conformance gate is correctly N/A:** this is a pure decoder touching no
+  signature-verify / RFC-6962-consistency / Merkle-proof path; `go.mod`/`go.sum` unchanged. The gate
+  re-engages two sub-steps later at the proof-bundle assembler, as the prior review's Next noted.
+- Scope held to exactly the 2 new files in next.md (`iscc.go` + `iscc_test.go`); no existing call site,
+  registry, or `cmd/` touched.
