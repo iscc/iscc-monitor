@@ -36,16 +36,22 @@ record honest learnings, set the **verdict**, and push on PASS.
 
 **First, kick off the Codex second opinion so it runs while you review.** Codex (GPT) is a slow,
 independent *second skeptic* — not an oracle, and like you **not** ground truth for the trust root.
-Start it **before step 1**, in the **background**, so it works in parallel; run it read-only against the
-advance commit (we are externally sandboxed in the devcontainer):
+Start it **before step 1**, in the **background**, so it works in parallel. Scope it to **just the
+advance commit** with the `codex review` subcommand (at this point — before *you* commit — `HEAD` is
+the advance commit, so `--commit HEAD` reviews exactly the increment under test):
 ```sh
-timeout 1200 codex exec review --commit HEAD --dangerously-bypass-approvals-and-sandbox \
+codex review --commit HEAD -c sandbox_mode="danger-full-access" -c approval_policy="never" \
   > /tmp/codex-review.txt 2>&1
 ```
-Launch it as a background command and do **not** wait on it now. For a high-risk change (trust-root or
-public-API) you may append custom focus instructions as a final string argument; otherwise the default
-review is fine. Then go straight to step 1 and do your own review — you collect and triage Codex's
-output in step 6.
+The command **must begin with `codex review`** so it matches the pre-authorized `Bash(codex review:*)`
+allow-rule — do **not** wrap it in `timeout` (or any other command), which would break the prefix
+match. `sandbox_mode=danger-full-access` disables Codex's *own* bubblewrap sandbox: it can't create
+user namespaces inside the devcontainer, so every command Codex runs would otherwise fail with
+`bwrap: No permissions to create a new namespace`. The devcontainer is the real sandbox boundary, and
+a review only reads. Launch it as a background command and do **not** wait on it now. For a high-risk
+change (trust-root or public-API) you may append custom focus instructions as a final string argument;
+otherwise the default review is fine. Then go straight to step 1 and do your own review — you collect
+and triage Codex's output in step 6.
 
 1. **Read the handoff** — understand what `advance` claims to have done.
 2. **Inspect the diff** — `git diff HEAD~1..HEAD` (HEAD = advance commit). Read the modified files in
