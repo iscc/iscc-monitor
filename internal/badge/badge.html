@@ -1,0 +1,16 @@
+{{define "hubStatusBadge" -}}
+<span class="hub-status-badge" data-status="{{.Status}}">
+  {{- if eq .Status "verified"}}
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M8.4 12.3l2.5 2.5 4.7-5.2"></path></svg>
+  {{- else if eq .Status "unresolvable"}}
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.2 9.3a3 3 0 0 1 5.6 1.2c0 1.9-2.7 2.4-2.7 2.4"></path><circle cx="12" cy="16.8" r="0.9" fill="currentColor" stroke="none"></circle></svg>
+  {{- else if eq .Status "unverified"}}
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.4 21 19H3z"></path><line x1="12" y1="9.4" x2="12" y2="13.6"></line><circle cx="12" cy="16.3" r="0.9" fill="currentColor" stroke="none"></circle></svg>
+  {{- else if eq .Status "frozen"}}
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.2 3.3h7.6L20.7 8.2v7.6L15.8 20.7H8.2L3.3 15.8V8.2z"></path><line x1="9.6" y1="9.6" x2="14.4" y2="14.4"></line><line x1="14.4" y1="9.6" x2="9.6" y2="14.4"></line></svg>
+  {{- else if eq .Status "inactive"}}
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><line x1="9.7" y1="9" x2="9.7" y2="15"></line><line x1="14.3" y1="9" x2="14.3" y2="15"></line></svg>
+  {{- end}}
+  <span class="hub-status-badge-label">{{.Label}}</span>
+</span>
+{{- end}}
