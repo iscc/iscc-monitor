@@ -18,29 +18,6 @@ filed it and does **not** affect priority.
 
 ---
 
-## Certificate proof-bundle download link renders `#ZgotmplZ` for the `ISCC:`-prefixed id form
-- **Priority:** critical
-- **Source:** [review] (Codex P2, reviewer-reproduced)
-- **What / where / how to verify:** `internal/certificate/cert.html:397` builds the enabled download
-  action as `<a … href="{{.IsccID}}.bundle" download>`. `.IsccID` carries the RAW request id verbatim
-  (`certData{IsccID: rawID}` in `handler.go`). For the explicitly-supported `/inclusion/ISCC:MAIG…`
-  form (the `lookupID` canonicalization at `handler.go:574-575` exists precisely to accept the `ISCC:`
-  prefix, and the `.dc.html` mockup shows the prefixed id as the PRIMARY display form), `html/template`'s
-  URL-context escaper reads `ISCC:` as an unknown URL scheme and emits `href="#ZgotmplZ.bundle"` — a
-  dead link to the headline affordance this advance shipped. The bare form (`/inclusion/MAIG…`) works;
-  the canonical prefixed form silently breaks. Reviewer-reproduced directly: a one-template probe renders
-  `id="ISCC:MAIGHFECJMOPMIAB"` → `href="#ZgotmplZ.bundle"`. The guarding test
-  (`TestCertificateProofBundleLinkRendered`) only exercises the bare `goldenID`, so it missed this.
-  Fix: root the href (`href="/inclusion/{{.IsccID}}.bundle"`) OR strip the `ISCC:` prefix into a
-  canonical-id template field used for the href, so the URL escaper never sees a leading `ISCC:`. The
-  `.bundle` request handler itself accepts both forms (it strips `.bundle` then decodes), so only the
-  rendered href is wrong. Verify fixed: a `TestCertificateProofBundleLinkRendered` case for the
-  `ISCC:`-prefixed id asserts the body contains a working `.bundle` href and NOT `#ZgotmplZ`; reverting
-  the href fix makes it FAIL.
-- **Spec:** target.md M-UI certificate Verify criterion ("offers a downloadable proof bundle … the
-  certificate page links it via an enabled download action"); learnings/certificate.md `ISCC:`-prefixed
-  form is supported; `html/template` URL-context contextual escaping.
-
 ## Adopt the iscc-lib Go codec + bump the toolchain to Go 1.26 (ADR-0011)
 - **Priority:** normal
 - **Source:** [human]

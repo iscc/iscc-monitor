@@ -136,15 +136,16 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   Mutation-proven (review reproduced both): `proof.VerifyInclusion(...) == nil || true` fails the
   contradictory bundle+page tests; an unconditional `data.HasBundle = true` serves a fabricated
   bundle (empty proof/record — the artifacts are themselves gate-populated) and fails the gap test.
-- **TRAP (review, Codex-confirmed): `href="{{.IsccID}}.bundle"` renders `#ZgotmplZ` for the
-  `ISCC:`-prefixed form.** `cert.html:397` builds the download href directly from `.IsccID`, which
-  carries the RAW request id verbatim (`certData{IsccID: rawID}`). For the explicitly-supported
-  `/inclusion/ISCC:MAIG…` form, `html/template`'s URL-context escaper reads `ISCC:` as an unknown
-  scheme and emits `href="#ZgotmplZ.bundle"` — a dead link to the headline affordance. The bare
-  form works; the canonical prefixed form (the `.dc.html` shows the prefixed id as primary) breaks.
-  Filed critical. Fix: root the href (`/inclusion/{{.IsccID}}.bundle`) or strip the `ISCC:` prefix
-  into a canonical-id template field; add a prefixed-form link-render test. Any template emitting a
-  user-supplied id into a `url`/`href` context must path-root it, never let `ISCC:` lead.
+- **A user-supplied id in a `url`/`href` context MUST be path-rooted, never let `ISCC:` lead.**
+  `html/template`'s URL-context escaper reads a leading `ISCC:` as an unknown scheme and filters the
+  whole attribute to the `#ZgotmplZ` sentinel — a dead link. The download href is built canonically in
+  `buildData` as `data.BundleHref = PathPrefix + strings.TrimPrefix(rawID, "ISCC:") + bundleSuffix`
+  (path-rooted + prefix-free; the `.bundle` handler decodes the bare form identically). Set it inside
+  the certifiable branch so a non-certifiable id leaves it empty (read only under `{{if .HasBundle}}`).
+  Mutation: reverting `href="{{.BundleHref}}"` → `href="{{.IsccID}}.bundle"` reproduces
+  `href="#ZgotmplZ.bundle"` and fails the `ISCC:`-prefixed sub-case of
+  `TestCertificateProofBundleLinkRendered` (review-reproduced). The guard tests BOTH id forms.
+  settled: the `#ZgotmplZ` critical (bare form worked, prefixed form broke) is closed by this href.
 - **`bundle.Hub.DID` reuses §4's `"did:web:"+Domain` and inherits the `host:port` bug**
   (the same already-filed `normal` issue, now carried on a second surface). Fix both DID-building
   sites together when next touched; `%3A`-encode the port (reuse the resolver's encoding).
