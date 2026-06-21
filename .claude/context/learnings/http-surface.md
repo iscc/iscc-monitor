@@ -116,43 +116,34 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   unverified/unresolvable/rotated statuses live in the in-memory metrics registry and are deliberately
   NOT threaded into proofserve (a documented limitation, not a defect).
 
-## HTML log browser at the hub-log root (`GET /` + `serveBrowser`) — closes M3 4/4
+## HTML log browser at the hub-log root (`GET /` + `serveBrowser`)
 
-- **The bare-`/` hub-log root is a 5th `proofserve.Handler` route, but the per-hub mux can't mount it as
-  an exact pattern — an `http.ServeMux` cannot hold both an exact `/` AND a subtree `/` (the subtree
-  pattern `/` IS the bare-`/` match).** Fix in `cmd/iscc-monitor` `hubHandler`: the `/` slot is a tiny
-  dispatch `http.HandlerFunc` that sends `r.URL.Path == "/"` to `proofs` (proofserve) and delegates every
-  deeper path to `tilesserve`. The four exact proof mounts (`/inclusion`/`/consistency`/`/entries`/
-  `/verify`) still win by most-specific match. Reviewer end-to-end-confirmed through the full `buildMux`
-  (throwaway, then removed): `GET /<domain>/log/` → 200 text/html "Log Browser"; `/<domain>/log/checkpoint`
-  → 200 octet-stream (still tilesserve); `POST /<domain>/log/` → 405 (the shared method-gate at the top
-  of `proofserve.Handler` covers it); `/<domain>/log` (no slash) → 301 to trailing slash (subtree).
-- **`serveBrowser` is a pure store-read render (oracle gate N/A) — same posture as `/verify`'s
-  store-provable subset, NOT the crypto routes.** Reads only `FollowState` + `CheckpointAt`, base64-Std
-  encodes the root verbatim (never recomputed); render-into-`bytes.Buffer`-then-200, post-200 write-drop;
-  `html/template` (NOT text) so root/status auto-escape. Status mapping: DB error or `CheckpointAt
-  found==false` at the accepted size → 500 (the real store-inconsistency fault); `LastSize == 0`
-  (followed-but-unpolled) → **200** "no accepted checkpoint yet" (ADR-0001 coverage honesty, never a 404
-  and never a fabricated `(0,"")`). Mutation-proven non-vacuous: dropping `{{.Root}}` and `{{.Size}}`
-  each FAIL `TestBrowserExposesAcceptedCheckpoint` (reviewer re-ran independently, reverted → green).
-  go.mod/go.sum/schema byte-identical; store stays a leaf.
-- **The status cell now renders through the five-status `hubStatusBadge` partial overlaid with the
-  in-memory verdict — same `StatusSource`-interface + `overlayStatus`-precedence shape the dashboard
-  uses, NOT a `dashboard`/`metrics` import.** `proofserve` defines its own local `StatusSource`
-  (`Status(hubID int64) (string, bool)`, satisfied structurally by `*metrics.Registry`) and
-  `overlayStatus(fs, hubID, statuses)`; `main.go` threads `m` through `mirrorHandler` → `hubHandler` →
-  `proofserve.Handler(st, hubID, m)`. Precedence is verbatim `dashboard.overlayStatus`: frozen wins
-  (early return when `hubStatus != "verified"`), nil-tolerant, overlay applies ONLY over store-`verified`
-  and adopts ONLY `unresolvable`/`unverified`. Input subset is `frozen`/`verified` only (`serveBrowser`
-  reads `FollowState`, not the realm-active flag), so the overlay can only ever flip `verified` →
-  `unresolvable`/`unverified` — `inactive` is unreachable here. `browserData` carries a precomputed
-  `.Label` (`badge.Label(status)`, `!ok → label = status` defensive-only since the overlay only yields
-  valid `labels` keys). `TestBrowserRendersInMemoryStatus` is the HTTP-seam non-vacuous render (reviewer
-  mutation-confirmed: `overlayStatus → hubStatus(fs)` renders bare `verified`, test FAILS, reverted →
-  green). The earlier "unpolled non-frozen hub renders bare verified" minor is RESOLVED: the overlay
-  now honestly shows `unresolvable`/`unverified` on a `LastSize==0` hub too (both `browser.html`
-  branches invoke the partial). Keep `proofserve` free of `internal/metrics`/`internal/dashboard`
-  (`go list -deps` empty); store stays a leaf. Oracle gate stays N/A.
+- **settled:** the `GET /<domain>/log/` browser is landed + Evidence-Ledger-dressed (DS token/font shell,
+  no `<table>`, no CDN URL — matches `/`). Pure store-read render (oracle gate N/A): reads only
+  `FollowState` + `CheckpointAt`, base64-Std encodes the root verbatim, render-into-`bytes.Buffer`-then-200
+  with post-200 write-drop, `html/template` auto-escape; `proofserve` stays free of
+  `internal/metrics`/`internal/dashboard` (`go list -deps` empty); store stays a leaf; go.mod/go.sum
+  byte-identical. The status cell renders through the five-status `hubStatusBadge` partial overlaid with
+  the in-memory verdict via `proofserve`'s own local `StatusSource` + `overlayStatus` (verbatim
+  `dashboard.overlayStatus` precedence; can only flip store-`verified` → `unresolvable`/`unverified`;
+  `inactive` unreachable here). (Detail in git history pre/at-2026-06-21.) Three durable traps below.
+- **Mux mount trap:** the bare-`/` hub-log root is a 5th `proofserve.Handler` route, but an
+  `http.ServeMux` cannot hold both an exact `/` AND a subtree `/` (the subtree pattern `/` IS the bare-`/`
+  match). `cmd/iscc-monitor` `hubHandler` makes the `/` slot a tiny dispatch `http.HandlerFunc`: send
+  `r.URL.Path == "/"` to proofserve, delegate every deeper path to `tilesserve`; the four exact proof
+  mounts still win by most-specific match. `/<domain>/log` (no slash) → 301 to trailing slash.
+- **Coverage-honesty status mapping (ADR-0001):** DB error or `CheckpointAt found==false` at the accepted
+  size → 500 (real store-inconsistency fault); `LastSize == 0` (followed-but-unpolled) → **200** "No
+  accepted checkpoint yet", NEVER a 404 and NEVER a fabricated `(0,"")`. Both `browser.html` branches
+  invoke the badge partial so an unpolled hub still shows its honest overlay status.
+- **CSS-literal trap (cross-cutting for any DS-dressed SSR surface with a negative `data-status` assert):**
+  `TestBrowserRendersInMemoryStatus` asserts the body contains NO `data-status="verified"` (proving the
+  overlay won). The DS badge-color/frozen-tint selectors must therefore use the UNQUOTED CSS attribute
+  form (`[data-status=verified]`, valid CSS for identifier values), NOT `dashboard.html`'s QUOTED
+  `[data-status="verified"]` — the quoted form would emit that literal into the rendered `<style>` and
+  falsely fail the negative assert. `dashboard.html` gets away with quoted selectors only because its
+  render test has no such negative assertion. Use the unquoted form on any future surface that both
+  carries a no-`data-status="X"` assert AND inlines the badge color block.
 
 ## CORS middleware (`internal/corsmw`)
 
