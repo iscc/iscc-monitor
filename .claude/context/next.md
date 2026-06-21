@@ -1,128 +1,148 @@
 # Next Work Package
 
-## Step: Certificate §2 CHECKPOINT clause — render the accepted (size, root)
+## Step: Certificate §3 INCLUSION PROOF — render the real RFC-6962 proof from the mirror
 
 ## Advances
-target.md **M-UI — Evidence Ledger frontend** Verify criterion (the last open M-UI criterion):
+M-UI — Evidence Ledger frontend, the **certificate of inclusion** Verify criterion:
 
-> the **realm-wide certificate** (`/inclusion/{iscc_id}` …) for a known id renders the numbered
-> evidence clauses (subject + position; **checkpoint `(size, root)`**; inclusion proof; signing key;
-> anchor state; full per-id record history incl. any deletion) …
+> "the **realm-wide certificate** (`/inclusion/{iscc_id}` …) for a known id renders the numbered
+> evidence clauses (subject + position; checkpoint `(size, root)`; **inclusion proof**; signing key;
+> anchor state; full per-id record history …)"
 
-This is the §2 clause of the per-surface certificate landmark list ("§1 Subject · **§2 Checkpoint
-(size, root)** · §3 Inclusion proof …", target.md Certificate mockup region). §1 SUBJECT is sound and
-PASS-verified at HEAD (340303b); the `review` handoff `**Next:**` is explicit: "Proceed to the §2
-Checkpoint clause (`HasClause2`): render the accepted `(size, root)` the cap already keys on, reusing
-the `HubSummary.LastSize` carry." This is the next slice in the certificate clause-by-clause arc.
+§1 SUBJECT and §2 CHECKPOINT are landed + PASS-verified. This step closes the **§3 inclusion proof**
+clause — the point the state, handoff, and learnings all name as next, and where the
+**oracle/conformance crypto gate RE-ENGAGES** (the served inclusion proof must be mutation-proven
+non-vacuous against the hub's `IsccLogInclusionProof` / golden vectors and rebuilt over the
+`SQLiteFetcher`). It is one clause of a coherent in-flight arc (§1 → §2 → §3 → …), not a switch to
+unrelated work.
 
 ## Goal
-Make the certificate's §2 CHECKPOINT clause real for a certifiable id: render the hub's accepted
-checkpoint `(size, root)` — the same accepted tree the §1 cap already keys on (`hub.LastSize`). The
-root is read back via `store.CheckpointAt(hubID, LastSize)` and rendered base64-Std, matching every
-sibling SSR surface (log browser, verify-for-me). This converts the §2 placeholder from `HasClause2 ==
-false` (renders nothing) into a populated clause without rework — the gated-clause template structure
-already exists.
+Make the certificate's §3 INCLUSION PROOF clause real: for a certifiable id, recompute the RFC-6962
+inclusion proof of `seqs[0]` against the accepted tree (`hub.LastSize`) from the hub's mirrored tiles
+via the existing `logclient.InclusionProofFromTiles` + `store.SQLiteFetcher`, and render the
+leaf→siblings→root chain in §3. This is the first certificate clause that touches the Merkle path, so
+its test must prove the proof is genuine (not vacuous), the way the proofbuilder/inclusioncheck tests do.
 
 ## Scope
-- **Modify**:
-  - `/workspace/iscc-monitor/internal/certificate/handler.go` — extend `certData` with
-    `CheckpointSize uint64` + `CheckpointRoot string` (base64-Std); in `buildData`, in the
-    `Certifiable = true` branch (after the accepted-tree cap passes), read
-    `st.CheckpointAt(r.Context(), hub.HubID, hub.LastSize)` and populate `CheckpointSize = hub.LastSize`,
-    `CheckpointRoot = base64.StdEncoding.EncodeToString(root)`, and set `HasClause2 = true`. A
-    `CheckpointAt` DB error → 500 (buffer-then-200 already in place); a `found == false` leaves
-    `HasClause2 = false` (no fabricated checkpoint — honest absence). (1 of ≤3 non-test source files.)
-  - `/workspace/iscc-monitor/internal/certificate/cert.html` — fill the existing `{{if .HasClause2}}`
-    §2 block (currently an empty `.clause-value`) with the accepted size + root + an honest note.
-    (2 of ≤3.)
-- **Modify (tests, not counted)**: `/workspace/iscc-monitor/internal/certificate/handler_test.go` —
-  extend `TestCertificateKnownID` to assert the §2 clause renders the accepted size + base64-Std root;
-  assert a non-certifiable case renders NO §2 clause.
-- **Reference**:
-  - `/workspace/iscc-monitor/.claude/context/learnings/certificate.md` — package mechanics
-    (decode→resolve→ListHubs→cap chain, buffer-then-200, fail-closed 200 discipline). Read before editing.
-  - `/workspace/iscc-monitor/.claude/context/learnings/store.md` — `CheckpointAt` / `HubSummary.LastSize`
-    semantics (the accepted root is NOT persisted in follow_state; `CheckpointAt(hubID, treeSize)` reads
-    it back; absent → `found=false, nil err`).
-  - `/workspace/iscc-monitor/internal/store/checkpoints.go` (lines 143-169) — `CheckpointAt` signature
-    `(root []byte, raw []byte, found bool, err error)`.
-  - `/workspace/iscc-monitor/internal/proofserve/handler.go` (lines 511, 657) — the established SSR root
-    encoding: `base64.StdEncoding` (the log browser `browserData.Root` and `VerifyVerdict.Root` both use
-    it — match it for cross-surface consistency).
-  - `/workspace/iscc-monitor/internal/certificate/cert.html` (lines 336-341) — the existing empty
-    `{{if .HasClause2}}` §2 block to fill; (lines 188-217) — the `.clause` / `.clause-marker` /
-    `.clause-value` / `.clause-mono` / `.clause-note` CSS classes to reuse (no new CSS).
-  - `.claude/design/ISCC Monitor - Certificate.dc.html` — the §2 clause layout/copy (subordinate to the
-    ADR/PRD hard constraints — flag any conflict).
+- **Create**: (none)
+- **Modify** (≤3 non-test/doc files — exactly 2 source + 1 test):
+  - `/workspace/iscc-monitor/internal/certificate/handler.go` — in `buildData`'s certifiable branch
+    (after §2, where `hub.LastSize > 0` and `seqs[0] < hub.LastSize` are already proven), build the
+    inclusion proof from the mirror and populate the §3 view-model fields + `HasClause3`.
+  - `/workspace/iscc-monitor/internal/certificate/cert.html` — render the §3 clause inside the existing
+    `{{if .HasClause3}}` block (cert.html:345-350, currently an empty `.clause-value`).
+  - `/workspace/iscc-monitor/internal/certificate/handler_test.go` — add a **tile-backed** fixture + a
+    non-vacuous §3 test (test file, not counted toward the ≤3 budget).
+- **Reference** (read before implementing):
+  - `/workspace/iscc-monitor/.claude/context/learnings/certificate.md` — §1/§2 mechanics, fail-closed
+    buffer-then-200, canonicalized lookup key, the accepted-tree cap; §3 re-engages the oracle gate.
+  - `/workspace/iscc-monitor/.claude/context/learnings/logclient.md` — `InclusionProofFromTiles` (the
+    proof source, its oracle-gate section), `VerifyInclusionEvidence`, and the `TileFetcher` ≡
+    `SQLiteFetcher.ReadTile` signature.
+  - `/workspace/iscc-monitor/.claude/context/learnings/store.md` — `SQLiteFetcher` / `widthForP` /
+    partial-tile read-back; `CheckpointAt` / `AdvanceAccepted` set `last_size`.
+  - `/workspace/iscc-monitor/internal/proofserve/handler.go` `serveInclusion` (lines 218-280) +
+    `writeEvidence` (1049-1068) — the exact precedent: `InclusionProofFromTiles(ctx, f.ReadTile,
+    leafIndex, size)` → base64-Std hashes; the `errors.Is(err, os.ErrNotExist)` tile-miss branch.
+  - `/workspace/iscc-monitor/internal/follower/fsck_test.go` (lines ~217-274) — the canonical way to
+    build a `testonly.Tree`, enumerate `tiles.TileCoords(size)`, `api.HashTile{Nodes}.MarshalText`, and
+    ingest via `store.RecordTile`; reuse this to make the §3 fixture have real mirrored tiles.
+  - `/workspace/iscc-monitor/internal/logclient/proofbuilder_test.go` (lines ~32-105) — `buildTree` /
+    `tileFetcherFor` and the three-independent-paths assertion (`tree.InclusionProof` vs builder vs
+    `proof.VerifyInclusion`).
+  - `/workspace/iscc-monitor/.claude/design/ISCC Monitor - Certificate.dc.html` (lines 60-64) — the §3
+    mockup: `leaf · seq N` chip, the sibling-hash chip list, the `root … ✓` chip, note "Five sibling
+    hashes rebuild the root from your record" (use the actual proof length, not the literal "Five").
 
 ## Not In Scope
-- **§3 Inclusion proof and the downloadable proof-bundle assembler.** §3 re-engages the
-  oracle/conformance crypto gate (the served inclusion proof must be mutation-proven non-vacuous against
-  the hub's `IsccLogInclusionProof` / `notecheck`). §2 is a pure store read + render — keep this slice
-  inside the N/A-oracle envelope so it lands clean before the crypto step. Leave `HasClause3..6 == false`.
-- §4 signing key, §5 Bitcoin anchor, §6 record history.
-- The separate Bitcoin-anchor vs comparison-anchor panels.
-- The Hub-List `hubDomain` `ForceQuery` fail-open fix (the deferred `normal`): this step does not touch
-  `internal/registry/registry.go`, so do NOT fold it in here — it waits for a step that edits `hubDomain`.
-- The ADR-0011 Go 1.26 / iscc-lib bump (its own foundational increment; needs a Go 1.26 toolchain).
-- Any new store method or second store round-trip beyond the single `CheckpointAt` call.
+- Clauses **§4 (signing key)**, **§5 (Bitcoin anchor)**, **§6 (record history)** — later sub-steps.
+  Leave `HasClause4/5/6` false and their template placeholders empty.
+- The **downloadable proof-bundle assembler** `{checkpoint, inclusion/consistency proof, record bytes,
+  hub key, ots?}` — keep the Download button the existing disabled placeholder. §3 renders the proof on
+  the page; bundling it for download is a distinct later step.
+- The separate **Bitcoin-anchor vs comparison-anchor** panels.
+- The **ADR-0011 Go 1.26 / iscc-lib bump** (`normal`, foundational) — a separate sequenced increment;
+  do not touch `go.mod`/`mise.toml`/CI here. (`InclusionProofFromTiles` + `SQLiteFetcher` are already in
+  the closure, so `go.mod`/`go.sum` must stay byte-unchanged.)
+- The `hubDomain` `ForceQuery` registry fail-open (`normal`) — this step does **not** touch
+  `internal/registry/registry.go`, so that fix waits for a step that does (per its issue).
+- Pixel-matching the mockup's chip styling — reuse the existing `.clause-*` / `.subject-mono` CSS;
+  named-region parity (the §3 marker + the rendered hash chain) is the bar, not exact spacing.
 
 ## Implementation Notes
-Both populated fields live in `buildData`'s certifiable branch; the template's `{{if .HasClause2}}`
-structure already exists, so only its inner `.clause-value` needs filling.
-
-- **Reuse `hub.LastSize`, do NOT re-derive the accepted size.** `followedHub` already returns the
-  `store.HubSummary` carrying `LastSize`; the cap branch (`hub.LastSize == 0` / `seqs[0] >= hub.LastSize`)
-  has already proven `LastSize > 0` by the time you populate §2, so `CheckpointSize = hub.LastSize` needs
-  no extra read. Only the *root* needs a store call.
-- **Root read seam is `CheckpointAt(ctx, hub.HubID, hub.LastSize)`** (`checkpoints.go:157`), returning
-  `(root []byte, raw []byte, found bool, err error)`. You only need `root`; ignore `raw` here (the raw
-  signed-note bytes belong to the §3 proof-bundle step). A DB `err != nil` → `return certData{},
-  http.StatusInternalServerError` (the existing 500 idiom; the handler buffers before 200). A
-  `found == false` is the rare honest gap — leave `HasClause2 = false` and still render the certifiable
-  §1 banner; never fabricate a root. Realistically `found` is always true on the certifiable path
-  because `AdvanceAccepted` records the checkpoint at the same `tree_size` it advances `last_size` to,
-  but the fail-closed branch keeps the render honest.
-- **Encode the root base64-Std** (`base64.StdEncoding.EncodeToString(root)`), matching
-  `proofserve/handler.go:511,657` (the log browser + verify-for-me) so the certificate's root string is
-  byte-identical to what the rest of the federation surfaces show. Add `encoding/base64` to the imports.
-- **`html/template` auto-escapes** `{{.CheckpointRoot}}` / `{{.CheckpointSize}}` (the template is already
-  `html/template`, not `text/template`).
-- **Template: fill the existing `{{if .HasClause2}}` block** (cert.html:336-341, currently
-  `<div class="clause-value"></div>`). Render the accepted size + base64 root in a `.clause-mono` value
-  and an honest `.clause-note` — e.g. value `size {{.CheckpointSize}} · root {{.CheckpointRoot}}` and a
-  note like "The accepted checkpoint (size + RFC-6962 tree head) the monitor vouches for; this id's
-  position ({{.Position}}) falls within it." Reuse the existing `.clause-*` CSS classes (no new CSS).
-  Do NOT imply pre-coverage guarantees (ADR-0001 coverage honesty — Correctness rule).
-- **Correctness rules in play:** *Coverage honesty (ADR-0001)* — §2 renders only the accepted-tree
-  checkpoint, never a contradicted/unaccepted one; the cap already guarantees `Position < LastSize`. The
-  *one origin/leaf* and *iscc_id→seq one-to-many* rules are unaffected (no new lookup).
-- **store stays a leaf** — `CheckpointAt` is an existing store read; you add no store method and no
-  net/http to store. Oracle/conformance gate is **N/A** for this slice (pure store read + HTML render;
-  no signature/RFC-6962/Merkle/did:web/fsck/proof path) — say so in the advance notes; the gate APPLIES
-  starting at §3.
-- **Test (non-vacuous):** extend `internal/certificate/handler_test.go`. The existing
-  `TestCertificateKnownID` fixture calls `AdvanceAccepted` with `Root: []byte("root")` and an accepted
-  size — assert the rendered HTML for the certifiable id now contains the §2 marker (`§2 CHECKPOINT`),
-  the accepted size, AND `base64.StdEncoding.EncodeToString([]byte("root"))`. Make it non-vacuous: a
-  `TestCertificateUnacceptedLeaf` / `TestCertificateNotInLog` case must NOT render `§2 CHECKPOINT` (it is
-  not Certifiable). Mutation check to record for review: neutering `HasClause2 = true` (or rendering a
-  hardcoded wrong root) makes the §2 assertion FAIL.
+- **Where to wire it (`handler.go`):** at the end of `buildData`'s certifiable branch, after the §2
+  `CheckpointAt` read. The leaf index is `seqs[0]` (already `data.Position`) and the tree size is
+  `hub.LastSize` (already proven `> 0` and `> seqs[0]` by the cap). Construct the fetcher exactly as
+  proofserve does: `f := store.SQLiteFetcher{Store: st, HubID: hub.HubID}`, then
+  `proof, err := logclient.InclusionProofFromTiles(r.Context(), f.ReadTile, data.Position, hub.LastSize)`.
+  (This adds the first `internal/logclient` import to `internal/certificate`; that direction is fine —
+  certificate is an HTTP-surface package, logclient is below it.)
+- **Fail-closed, NOT 500 on a tile miss.** proofserve maps `errors.Is(err, os.ErrNotExist)` to a 404
+  because it has committed to serving a proof. The certificate is a clause-by-clause page that can
+  decline a clause honestly (exactly as §2 does on `found == false`): a **tile-not-mirrored**
+  (`os.ErrNotExist`) miss should leave `HasClause3 = false` (no fabricated proof, no error), so the page
+  still renders §1+§2. A non-`os.ErrNotExist` build error stays a **500** via the existing
+  buffer-then-200 path (`return certData{}, http.StatusInternalServerError`) — match §2's split. Import
+  `errors` + `os` in `handler.go` for the `errors.Is(err, os.ErrNotExist)` check (currently neither is
+  imported; `encoding/base64` already is for §2).
+- **View-model.** Add to `certData`: `ProofHashes []string` (each `base64.StdEncoding.EncodeToString(h)`,
+  matching §2's root + proofserve's `writeEvidence`, so the strings are byte-identical across surfaces)
+  and set `HasClause3 = true` only when the proof built. Reuse `data.Position` (leaf) and
+  `data.CheckpointRoot` (root, already base64-Std from §2) in the template's leaf/root chips — do not
+  re-encode them. Note: a valid inclusion proof can be **empty** (`len(proof) == 0`) when `size == 1`
+  (single-leaf tree); that is a legitimate proof, so gate `HasClause3` on the build *succeeding*
+  (`err == nil`), not on `len(proof) > 0`. (§3 also depends on §2's root, so realistically render §3
+  only when `HasClause2` already holds — `CheckpointRoot` is the root chip.)
+- **Template (`cert.html`).** Inside `{{if .HasClause3}}` replace the empty `.clause-value` with: the
+  §3 marker already present, a `.clause-mono` chain rendering `leaf · seq {{.Position}}`, then
+  `{{range .ProofHashes}}…{{end}}` siblings, then `root {{.CheckpointRoot}} ✓`, and a `.clause-note`
+  like "{{len .ProofHashes}} sibling hashes rebuild the accepted root from this record." Reuse existing
+  `.clause`, `.clause-marker`, `.clause-value`, `.clause-mono`, `.clause-note` CSS — confirm no new CSS
+  is needed (the §2 review confirmed these classes already exist). `html/template` auto-escapes.
+- **Oracle / conformance gate (APPLIES — this is RFC-6962 inclusion crypto).** The §3 test MUST be
+  mutation-proven non-vacuous, the way `proofbuilder_test.go` / `inclusioncheck_test.go` are: build a
+  real `testonly.Tree`, ingest its hash tiles into the fixture store via `store.RecordTile` (port the
+  `fsck_test.go` enumeration over `tiles.TileCoords(size)` — write full tiles as p==0, partials as
+  their width per store.md's `widthForP`), seed the accepted checkpoint with the tree's REAL root
+  (`tree.Hash()` at that size via `AdvanceAccepted`), index a leaf for the golden id at the chosen seq,
+  then assert the body's rendered hash chips equal `base64.StdEncoding.EncodeToString` of each hash in
+  `tree.InclusionProof(seqs[0], size)` (the independent prover path). The proof must be substantive —
+  pick a leaf/size that yields a multi-hash proof (e.g. a small tree of 5–8 leaves so the proof has ≥2
+  hashes, not an empty proof). The advance author should confirm two mutations FAIL the new test (e.g.
+  neuter `HasClause3`; corrupt one rendered hash) and that a tile-less fixture leaves §3 unrendered (the
+  `os.ErrNotExist` honest-gap path) — record them for `review`.
+- **Reuse, do not reimplement (target "Stack (locked)").** `InclusionProofFromTiles` already exists and
+  is itself oracle-gated; do NOT hand-roll Merkle math in the certificate. The certificate only calls it
+  and base64-encodes the result.
+- **Correctness rules (learnings index):** `iscc_id → seq` is one-to-many / schema-agnostic — the proof
+  is for `seqs[0]` (the deterministic default, matching §1/§2/`serveVerify`); do not interpret the id.
+  Coverage honesty (ADR-0001) — the proof is against the **accepted** tree (`hub.LastSize`), already
+  capped by §1; never against an unaccepted projection. `proof/verify` purity is unaffected (the
+  certificate is not WASM-shared; the proof builder it calls is already net-free at file level).
+- **Keep the existing fixture helpers working.** The new tile-backed fixture is **additive** (a new
+  helper). The §1/§2 tests that use the synthetic `Root: []byte("root")` fixture WITHOUT mirrored tiles
+  must keep passing — they will now hit the `os.ErrNotExist` honest-gap path and simply render no §3
+  clause, which is correct. Verify those tests do not newly assert on §3; the §3-presence assertion
+  lives only in the new tile-backed test.
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
 - `go test -count=1 ./internal/certificate` passes uncached.
-- `go test -count=1 -run TestCertificateKnownID ./internal/certificate` passes and the response body
-  contains `§2 CHECKPOINT`, the accepted tree size, and `base64.StdEncoding.EncodeToString([]byte("root"))`
-  (the fixture's accepted root) — proving §2 renders the real accepted `(size, root)`.
-- A non-certifiable id (`TestCertificateUnacceptedLeaf` / `TestCertificateNotInLog`) renders NO §2
-  clause (`§2 CHECKPOINT` absent from the body).
-- Mutation check (reviewer reproduces): neutering `HasClause2 = true` → the §2 assertion in
-  `TestCertificateKnownID` FAILS; rendering a hardcoded wrong root → the base64-root assertion FAILS.
-- `GOOS=js GOARCH=wasm go build ./internal/index` still succeeds (no-regression sanity check; this step
-  does not touch `internal/index`).
+- `go test -count=1 -run TestCertificate ./internal/certificate` passes; the new tile-backed §3 test
+  body contains `§3 INCLUSION PROOF`, `leaf · seq <N>`, and each base64-Std-encoded hash of
+  `tree.InclusionProof(seqs[0], size)` (assert each is `strings.Contains`-present).
+- Mutation (advance author reproduces, then reverts): forcing `HasClause3 = false` (or skipping the
+  proof render) makes the new §3 test FAIL; corrupting one rendered hash makes it FAIL — proving the
+  assertion is grounded in the real proof, not a literal.
+- The §1/§2 synthetic-fixture tests (`TestCertificateKnownID`, etc.) still pass, and a tile-less fixture
+  renders NO `§3 INCLUSION PROOF` (the `os.ErrNotExist` honest-gap path; assert `§3 INCLUSION PROOF`
+  absent there).
+- `GOOS=js GOARCH=wasm go build ./internal/index` still exits 0 (no-regression on the WASM leaf).
+- `go.mod` / `go.sum` are byte-unchanged (`git diff --stat go.mod go.sum` empty).
 
 ## Done When
-`mise run check` is green and the certificate's §2 CHECKPOINT clause renders the hub's accepted
-`(size, root)` (size from `hub.LastSize`, root base64-Std from `CheckpointAt`) for a certifiable id and
-nothing for a non-certifiable one, with the §2 assertion mutation-proven non-vacuous.
+`buildData` recomputes the real RFC-6962 inclusion proof of `seqs[0]` against `hub.LastSize` from the
+mirrored tiles via `InclusionProofFromTiles`, the §3 clause renders the leaf→siblings→root chain for a
+tile-backed certifiable id (and honestly omits §3 when tiles are not mirrored), the §3 test is
+mutation-proven non-vacuous against `testonly.Tree.InclusionProof`, and all Verification criteria pass
+with `mise run check` green and `go.mod`/`go.sum` byte-unchanged.
