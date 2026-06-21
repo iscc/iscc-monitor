@@ -1,84 +1,95 @@
 # Next Work Package
 
-## Step: Pure entry-bundle coordinate enumeration for a tree of size N (`tiles.BundleCoords`)
+## Step: Pure hash-tile (multi-level) coordinate enumeration for a tree of size N (`tiles.TileCoords`)
 
 ## Goal
-Add the pure, golden-testable function that says *which* entry bundles a complete
-mirror of a tree of size N must hold — the `(index, partial)` coordinate list. This is
-the first, foundational slice of the M2 live tile-ingestion writer: the fetch loop and
-the `PollHub` wiring both build on it, and it must be exact at the 256-leaf boundary.
-Doing the pure enumeration first (before any I/O or store wiring) keeps the riskiest
-part — the boundary math — isolated and oracle-checkable against tessera.
+Add the pure, boundary-exact enumeration naming which **hash tiles** (across every tile-level) a
+complete mirror of a tree of size N must hold — the sibling of `BundleCoords`. Together they are the
+two coordinate sources the M2 live tile-ingestion writer needs to know what to fetch; this is the last
+missing pure prerequisite before that writer (and thus `fsck` / the inclusion cross-check) becomes
+implementable.
 
 ## Scope
-- **Create**:
-  - `internal/tiles/coords.go` — the new `BundleCoord` type + `BundleCoords(treeSize uint64) []BundleCoord`.
-  - `internal/tiles/coords_test.go` — table-driven golden test (test file, not counted).
-- **Modify**: (none — purely additive)
+- **Create**: `internal/tiles/tilecoords_test.go` (golden table test)
+- **Modify**: `internal/tiles/coords.go` — add `TileCoord{Level, Index uint64; Partial uint8}` and
+  `TileCoords(treeSize uint64) []TileCoord` (1 non-test file)
 - **Reference**:
-  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/api/layout/paths.go`
-    (`Range` at line 49, `RangeInfo` at line 99, `EntriesPath` at line 121) — the oracle to delegate to.
-  - `/workspace/iscc-monitor/internal/tiles/layout.go` — the existing seam; match its delegation + doc style.
-  - `/workspace/iscc-monitor/internal/tiles/layout_test.go` — match its table-driven golden-vector test style.
-  - `/workspace/iscc-monitor/internal/store/tiles.go` — confirms the downstream
-    `RecordEntryBundle(hubID, bundleIndex, width, …)` signature this list will eventually feed (width is
-    the leaf count; `p==0` ⇒ 256, via `widthForP` in `internal/store/fetcher.go`).
+  - `/workspace/iscc-monitor/internal/tiles/coords.go` + `/workspace/iscc-monitor/internal/tiles/layout.go`
+    — existing seam style + the `PartialTileSize`/`TilePath` wrappers and the two-convention
+    (path-`p` vs store-`width`) doc rules
+  - `/workspace/iscc-monitor/internal/tiles/coords_test.go` — golden-test style to mirror (table +
+    non-nil-empty zero case)
+  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/api/layout/tile.go` —
+    `PartialTileSize(level, index, logSize)` (`sizeAtLevel = logSize >> (level*8)`,
+    `fullTiles = sizeAtLevel/256`), `TileHeight = 8`, `TileWidth = 256` — the boundary oracle to delegate to
+  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/api/layout/paths.go` — `TilePath`
+    (already re-exported as `tiles.TilePath`)
+  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/fsck/fsck.go` (lines ~218–284) —
+    confirms tessera derives tiles by *replaying entries* (`visit`), so there is **no** single upstream
+    helper to port; the per-level loop below is the correct, minimal construction
 
 ## Not In Scope
-- **No hash-tile (multi-level) enumeration.** Hash tiles span tile-levels `0, 1, 2, …` (tree-levels
-  `0, 8, 16, …`) and need their own boundary reasoning — that is the *next* slice. This step is entry
-  bundles only.
-- **No I/O, no fetch, no store writes.** Do not add a tile/bundle *fetch* primitive, do not call
-  `RecordEntryBundle`, do not touch `PollHub`/`follower`. This function is pure.
-- **No `PollHub`/follower wiring** — the live ingestion writer that calls this is a later slice.
-- Do not touch the open `low` issue (`cmd/notecheck` vestigial `out`).
+- The **live tile-ingestion writer** (`PollHub` fetch loop calling `RecordTile`/`RecordEntryBundle`) —
+  that is the next slice and consumes both `TileCoords` and `BundleCoords`. Do not wire any caller.
+- Any I/O, store, fetcher, or follower change. `TileCoords` is a pure unwired export seam, exactly like
+  `BundleCoords` / `IsFull` / the consistency triggers (`go vet` clean, not dead code).
+- The `fsck` root-rebuild, the inclusion cross-check, real tile/bundle fixtures in `testdata/live/`, or
+  the `iscc_index` writer — all downstream of the ingestion writer.
+- The open `low` issue (`cmd/notecheck`'s vestigial `out io.Writer`) — loop-skipped.
 
 ## Implementation Notes
-- **Delegate to tessera, never reimplement the boundary math** (target Stack rule, and the
-  `internal/tiles` package is explicitly "a thin re-export … not a reimplementation"). Implement
-  `BundleCoords` by iterating `layout.Range(0, treeSize, treeSize)` and projecting each `RangeInfo` to a
-  `BundleCoord{Index: ri.Index, Partial: ri.Partial}`. Ignore `ri.First`/`ri.N` (those describe
-  sub-ranges; for a full-tree mirror every bundle is taken whole — `Range(0, treeSize, treeSize)`
-  already yields the complete cover, confirmed by running it in-module).
-- `BundleCoord` carries `Index uint64` and `Partial uint8` (the path-API "0 == full" qualifier — the
-  same `p` `EntriesPath` takes). Keep the existing two-convention discipline: `Partial` is the *path*
-  qualifier here; the store's `width` column is `widthForP(Partial)` later, NOT this step's concern.
-- `layout.Range` returns a Go 1.23 range-over-func iterator (`iter.Seq[layout.RangeInfo]`); consume it
-  with `for ri := range layout.Range(0, treeSize, treeSize) { … }`. The 1.24 toolchain supports this.
-- `treeSize == 0` must yield an **empty (len 0) slice** — `layout.Range` yields nothing, so a pre-sized
-  `make([]BundleCoord, 0, …)` accumulator returns empty cleanly. Return a non-nil empty slice for the
-  zero case; the test asserts `len == 0` (and reads fine for a nil slice too, but prefer non-nil).
-- Keep the package a pure leaf: import only `github.com/transparency-dev/tessera/api/layout` (already in
-  the closure via `layout.go`). Do **not** pull in `net`/`database/sql`. `go.mod`/`go.sum` must stay
-  byte-identical (no new dependency — `layout.Range` is already compiled in).
-- Correctness rule (learnings, "Partial-tile discipline" + the pinned `PartialTileSize(0,0,300)==0` /
-  `(0,1,300)==44`): the boundary is the bug surface. The first 256-leaf bundle of a 300-leaf tree is
-  **full** (`Partial==0`, index 0); the leftover 44 are a **partial** at **index 1** (`Partial==44`) —
-  never index 0.
-- Oracle/conformance gate is **N/A** for this slice: it is pure path/coordinate math delegating to
-  tessera (no signature / RFC-6962 / Merkle / did:web / fsck-rebuild path). It re-arms when the fetched
-  bundles feed `LeafHashes` + the inclusion cross-check. State this in the handoff rather than inventing
-  a crypto check.
-
-## Golden vectors (ground truth — pinned by running `layout.Range(0, size, size)` in-module)
-- `BundleCoords(0)` → `[]` (len 0)
-- `BundleCoords(1)` → `[{0, 1}]`
-- `BundleCoords(255)` → `[{0, 255}]`
-- `BundleCoords(256)` → `[{0, 0}]`
-- `BundleCoords(257)` → `[{0, 0}, {1, 1}]`
-- `BundleCoords(300)` → `[{0, 0}, {1, 44}]`   ← the boundary case
-- `BundleCoords(513)` → `[{0, 0}, {1, 0}, {2, 1}]`
+- **Construction (no single `layout.Range` covers all levels — climb tile-levels yourself):** loop
+  `level := uint64(0), 1, 2, …`. At each level compute
+  `sizeAtLevel := treeSize >> (level * tiles.TileHeight)`. When `sizeAtLevel == 0`, stop. Otherwise emit
+  `fullTiles := sizeAtLevel / tiles.TileWidth` full tiles (`Index 0 .. fullTiles-1`, `Partial 0`)
+  followed by, **iff** `sizeAtLevel % tiles.TileWidth != 0`, one partial tile at `Index == fullTiles`
+  with `Partial == uint8(sizeAtLevel % tiles.TileWidth)`. After emitting the level, **stop once
+  `sizeAtLevel <= tiles.TileWidth`** (that level has collapsed to a single root tile; there is no level
+  above it). This stop-after-emit ordering is load-bearing: it correctly emits the lone root tile of an
+  exact-power-of-256 tree (e.g. `256 → {0,0,0}` then stop, `65536 → …256 full…, {1,0,0}` then stop)
+  and never adds a spurious empty level above the root.
+- **Delegate the per-tile `Partial` to tessera, don't hand-roll it twice:** derive each tile's `Partial`
+  via `tiles.PartialTileSize(level, index, treeSize)` (which already wraps `layout.PartialTileSize`)
+  rather than recomputing `% TileWidth` for the emitted value. Use the inline `fullTiles` /
+  `sizeAtLevel % TileWidth` arithmetic only to drive the loop bounds and the stop condition; `Partial`
+  on the emitted `TileCoord` comes from `PartialTileSize`. That keeps tessera the single source of truth
+  for the "0 == full" qualifier and matches how `coords.go` already leans on `layout` (Correctness rule:
+  re-use the transparency stack, never reimplement it). Use `tiles.TileWidth` / `tiles.TileHeight`
+  constants, not bare `256` / `8`.
+- **Two-convention discipline (carry the `BundleCoord` doc pattern verbatim in spirit):**
+  `TileCoord.Partial` is the **path-API** qualifier (`0 == full`, the same `p` arg `tiles.TilePath`
+  takes) — NOT the store's `width` column (`widthForP`: `0 → 256`). State this in the doc comment exactly
+  as `BundleCoord` does; the width translation belongs to the downstream ingestion writer, not here.
+- **Zero case:** `TileCoords(0)` must return a **non-nil, length-0** slice (`make([]TileCoord, 0)`),
+  mirroring `BundleCoords(0)`'s documented contract.
+- Keep the file a pure leaf: the only import stays `github.com/transparency-dev/tessera/api/layout`
+  (already present in `coords.go`); add **no** new dep, so `go.mod`/`go.sum` stay byte-identical
+  (`PartialTileSize` is already in the closure via `layout.go`).
+- **Oracle/conformance gate is correctly N/A** for this slice (pure path/coordinate math; no
+  signature / RFC-6962 / Merkle / did:web / `fsck`-rebuild path introduced). It re-arms when the fetched
+  tiles feed the `fsck` root-rebuild. Ground the goldens externally instead: re-run
+  `layout.PartialTileSize(level, index, size)` per vector to confirm each `Partial`, exactly as the
+  `BundleCoords` review re-ran `layout.Range`.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass).
+- `mise run check` is green (build + vet + test; `go vet ./...` clean, all packages `ok`).
 - `gofmt -l internal/tiles/` is empty.
-- `go test -run TestBundleCoords ./internal/tiles` passes, asserting every golden vector above
-  (length + each `{Index, Partial}` in order).
+- `go test -run TestTileCoords ./internal/tiles` passes (uncached `-count=1`).
 - `git diff --quiet HEAD -- go.mod go.sum` exits 0 (no dependency change).
-- `GOOS=js GOARCH=wasm go build ./internal/tiles` exits 0 (the leaf-purity invariant holds).
-- Assertion: `BundleCoords(300)` returns exactly `[]BundleCoord{{0, 0}, {1, 44}}` — full bundle at
-  index 0, partial-44 at index 1, never partial at index 0.
+- `GOOS=js GOARCH=wasm go build ./internal/tiles` exits 0 (leaf-purity invariant holds).
+- Golden assertions (ground truth from the per-level construction above; `{Level, Index, Partial}`):
+  - `TileCoords(0)` is non-nil and length 0.
+  - `TileCoords(1) == [{0,0,1}]`
+  - `TileCoords(255) == [{0,0,255}]`
+  - `TileCoords(256) == [{0,0,0}]`
+  - `TileCoords(257) == [{0,0,0},{0,1,1},{1,0,1}]`
+  - `TileCoords(300) == [{0,0,0},{0,1,44},{1,0,1}]`
+  - `TileCoords(513) == [{0,0,0},{0,1,0},{0,2,1},{1,0,2}]`
+  - `TileCoords(65536)` ends with the root tile `{1,0,0}` and has exactly 257 entries (256 full level-0
+    tiles `{0,0,0} .. {0,255,0}` + one full level-1 root tile).
+  - `TileCoords(65537)` contains `{0,256,1}` (the lone extra leaf as a partial-1 at level-0 index 256)
+    and ends with `{1,0,0}`.
 
 ## Done When
-`internal/tiles/coords.go` provides `BundleCoords` returning the exact golden entry-bundle coordinate
-lists above, and all Verification criteria pass with the tree clean and `go.mod`/`go.sum` byte-unchanged.
+`advance` adds `TileCoord` + `TileCoords` to `internal/tiles/coords.go` with the golden test, and every
+Verification criterion above passes.
