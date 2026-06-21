@@ -2,9 +2,12 @@
 // proofserve.Handler over the buildMirror fixture store and asserts the rendered
 // page exposes the monitor's accepted checkpoint (size, root) — the store-provable
 // state read back verbatim, never recomputed (the oracle gate is N/A here: no
-// signature, RFC-6962, Merkle, did:web, fsck, or proof path). The mutation check is
-// that dropping the {{.Root}} or {{.Size}} cell from browser.html fails the golden
-// body assert, proving the page non-vacuous.
+// signature, RFC-6962, Merkle, did:web, fsck, or proof path). It also asserts the
+// hub status renders through the five-status hubStatusBadge partial overlaid with the
+// in-memory StatusSource verdict, mirroring dashboard.TestDashboardRendersInMemoryStatus.
+// The mutation checks are that dropping the {{.Root}} or {{.Size}} cell from
+// browser.html fails the golden body assert, and reverting serveBrowser to hubStatus(fs)
+// instead of the overlay fails the unresolvable-overlay assert — proving both non-vacuous.
 package proofserve
 
 import (
@@ -24,7 +27,7 @@ import (
 // body contains the accepted size and the base64-Std encoding of the accepted root.
 func TestBrowserExposesAcceptedCheckpoint(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID)
+	h := Handler(m.store, m.hubID, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -57,7 +60,7 @@ func TestBrowserExposesAcceptedCheckpoint(t *testing.T) {
 // method-gate at the top of Handler covers it).
 func TestBrowserNonGET(t *testing.T) {
 	m := buildMirror(t, 8)
-	h := Handler(m.store, m.hubID)
+	h := Handler(m.store, m.hubID, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
@@ -81,7 +84,7 @@ func TestBrowserNoAcceptedCheckpoint(t *testing.T) {
 		t.Fatalf("UpsertHub: %v", err)
 	}
 
-	h := Handler(st, hubID)
+	h := Handler(st, hubID, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -91,5 +94,52 @@ func TestBrowserNoAcceptedCheckpoint(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "No accepted checkpoint yet") {
 		t.Errorf("body missing no-coverage state\n%s", body)
+	}
+}
+
+// fakeStatusSource is an in-memory StatusSource keyed by hub_id, standing in for the
+// metrics registry so the log browser's status overlay is golden-testable without
+// importing internal/metrics. A nil map (or a missing key) reports a miss.
+type fakeStatusSource map[int64]string
+
+func (f fakeStatusSource) Status(hubID int64) (string, bool) {
+	s, ok := f[hubID]
+	return s, ok
+}
+
+// TestBrowserRendersInMemoryStatus proves the in-memory status overlay reaches the
+// log-browser page: a store-verified hub whose live verdict (from the StatusSource)
+// is unresolvable renders that richer status through the hubStatusBadge partial —
+// badge wrapper + label + the per-status silhouette marker — even though the store
+// can only prove "verified". It is non-vacuous: reverting serveBrowser to
+// hubStatus(fs) instead of overlayStatus renders data-status="verified" and fails
+// these assertions (mirroring dashboard.TestDashboardRendersInMemoryStatus).
+func TestBrowserRendersInMemoryStatus(t *testing.T) {
+	m := buildMirror(t, mirrorLeaves)
+	statuses := fakeStatusSource{m.hubID: "unresolvable"}
+	h := Handler(m.store, m.hubID, statuses)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	// The in-memory-only status must render through the badge partial: the wrapper,
+	// the fixed-table label, and the unresolvable silhouette marker (badge.md: M9.2 9.3).
+	for _, want := range []string{
+		`class="hub-status-badge"`,
+		`data-status="unresolvable"`,
+		">Unresolvable<",
+		"M9.2 9.3",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing overlaid status markup %q\n%s", want, body)
+		}
+	}
+	// And the store-only "verified" must NOT be the rendered status (the overlay won).
+	if strings.Contains(body, `data-status="verified"`) {
+		t.Errorf("body still renders store-only verified status; overlay did not apply\n%s", body)
 	}
 }

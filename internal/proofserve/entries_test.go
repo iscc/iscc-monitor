@@ -117,7 +117,7 @@ func buildEntriesMirror(t *testing.T, leaves int) entriesMirror {
 // in-tree leaves on both sides of the 256-leaf bundle boundary.
 func TestServeEntries(t *testing.T) {
 	m := buildEntriesMirror(t, 300)
-	h := Handler(m.store, m.hubID)
+	h := Handler(m.store, m.hubID, nil)
 
 	for _, seq := range []int{0, 5, 255, 256, 260, 299} {
 		rec := httptest.NewRecorder()
@@ -137,7 +137,7 @@ func TestServeEntries(t *testing.T) {
 // TestServeEntriesMissingIndex asserts a request without index is a 400.
 func TestServeEntriesMissingIndex(t *testing.T) {
 	m := buildEntriesMirror(t, 8)
-	h := Handler(m.store, m.hubID)
+	h := Handler(m.store, m.hubID, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/entries", nil))
 	if rec.Code != http.StatusBadRequest {
@@ -148,7 +148,7 @@ func TestServeEntriesMissingIndex(t *testing.T) {
 // TestServeEntriesNonNumericIndex asserts a non-numeric index is a 400.
 func TestServeEntriesNonNumericIndex(t *testing.T) {
 	m := buildEntriesMirror(t, 8)
-	h := Handler(m.store, m.hubID)
+	h := Handler(m.store, m.hubID, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/entries?index=abc", nil))
 	if rec.Code != http.StatusBadRequest {
@@ -160,7 +160,7 @@ func TestServeEntriesNonNumericIndex(t *testing.T) {
 // the leaf is not in the monitor's accepted tree.
 func TestServeEntriesBeyondAcceptedTree(t *testing.T) {
 	m := buildEntriesMirror(t, 8)
-	h := Handler(m.store, m.hubID)
+	h := Handler(m.store, m.hubID, nil)
 	for _, seq := range []int{8, 9, 100} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/entries?index=%d", seq), nil))
@@ -184,7 +184,7 @@ func TestServeEntriesNoAcceptedCheckpoint(t *testing.T) {
 		t.Fatalf("UpsertHub: %v", err)
 	}
 
-	h := Handler(st, hubID)
+	h := Handler(st, hubID, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/entries?index=0", nil))
 	if rec.Code != http.StatusNotFound {
@@ -219,7 +219,7 @@ func TestServeEntriesBundleNotMirrored(t *testing.T) {
 		t.Fatalf("AdvanceFollowState: %v", err)
 	}
 
-	h := Handler(st, hubID)
+	h := Handler(st, hubID, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/entries?index=3", nil))
 	if rec.Code != http.StatusNotFound {
@@ -230,7 +230,7 @@ func TestServeEntriesBundleNotMirrored(t *testing.T) {
 // TestServeEntriesNonGET asserts a non-GET method is a 405.
 func TestServeEntriesNonGET(t *testing.T) {
 	m := buildEntriesMirror(t, 8)
-	h := Handler(m.store, m.hubID)
+	h := Handler(m.store, m.hubID, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/entries?index=1", nil))
 	if rec.Code != http.StatusMethodNotAllowed {

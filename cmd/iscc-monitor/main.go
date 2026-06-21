@@ -156,7 +156,7 @@ func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hu
 // serveMetrics so the full routing is unit-testable against an
 // httptest.ResponseRecorder without binding a socket.
 func buildMux(st *store.Store, routes []hubRoute, m *metrics.Registry) http.Handler {
-	mux := mirrorHandler(st, routes)
+	mux := mirrorHandler(st, routes, m)
 	mux.Handle("/", dashboard.Handler(st, m))
 	mux.Handle("/metrics", metricshttp.Handler(m))
 	mux.Handle("/healthz", healthz.Handler(st))
@@ -175,13 +175,15 @@ func buildMux(st *store.Store, routes []hubRoute, m *metrics.Registry) http.Hand
 // 301-redirects a path missing its leading slash. The origin must be the full
 // <domain>/log — a request missing the /log segment does not match the prefix and
 // 404s. All routes share the store's single open connection (reads serialize on it,
-// ADR-0005/0007); no second DB handle is opened.
-func mirrorHandler(st *store.Store, routes []hubRoute) *http.ServeMux {
+// ADR-0005/0007); no second DB handle is opened. The metrics registry m is forwarded
+// to each hubHandler so the log browser gets the same in-memory status overlay the
+// dashboard does.
+func mirrorHandler(st *store.Store, routes []hubRoute, m *metrics.Registry) *http.ServeMux {
 	mux := http.NewServeMux()
 	for _, r := range routes {
 		prefix := "/" + r.Origin + "/"
 		strip := "/" + r.Origin // leave the leading slash on the suffix
-		mux.Handle(prefix, http.StripPrefix(strip, hubHandler(st, r.HubID)))
+		mux.Handle(prefix, http.StripPrefix(strip, hubHandler(st, r.HubID, m)))
 	}
 	return mux
 }
@@ -210,9 +212,14 @@ func mirrorHandler(st *store.Store, routes []hubRoute) *http.ServeMux {
 // /tile/entries/<bundleindex> (the raw whole-bundle BLOB tilesserve serves under
 // "/"): the former returns exactly one leaf's bytes, the latter 256 framed leaves a
 // client must still parse — different routes, different shapes, not duplicates.
-func hubHandler(st *store.Store, hubID int64) http.Handler {
+//
+// The metrics registry m is the in-memory status overlay (the StatusSource) the log
+// browser uses to render the live unresolvable / unverified verdicts the store cannot
+// prove — the same overlay source the dashboard receives, so the five-status badge
+// taxonomy is consistent across both surfaces.
+func hubHandler(st *store.Store, hubID int64, m *metrics.Registry) http.Handler {
 	mux := http.NewServeMux()
-	proofs := proofserve.Handler(st, hubID)
+	proofs := proofserve.Handler(st, hubID, m)
 	tiles := tilesserve.Handler(store.SQLiteFetcher{Store: st, HubID: hubID})
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {

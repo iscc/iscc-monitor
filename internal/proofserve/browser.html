@@ -13,7 +13,7 @@
     <tbody>
       <tr>
         <th>Status</th>
-        <td>{{.Status}}</td>
+        <td>{{template "hubStatusBadge" .}}</td>
       </tr>
       <tr>
         <th>Accepted size</th>
@@ -34,7 +34,7 @@
     <li><a href="checkpoint">checkpoint</a> — the mirrored signed checkpoint BLOB</li>
   </ul>
   {{- else}}
-  <p>Status: {{.Status}}</p>
+  <p>Status: {{template "hubStatusBadge" .}}</p>
   <p>No accepted checkpoint yet — this hub is followed but has not yet yielded a verified checkpoint. Guarantees hold only from coverage start onward.</p>
   {{- end}}
 </body>

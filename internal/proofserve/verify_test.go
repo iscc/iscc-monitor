@@ -181,7 +181,7 @@ func getVerdict(t *testing.T, h http.Handler, query string) (int, VerifyVerdict)
 // entry-bundle read path).
 func TestVerifyKnownISCCID(t *testing.T) {
 	m := buildVerifyMirror(t, mirrorLeaves, false)
-	h := Handler(m.store, m.hubID)
+	h := Handler(m.store, m.hubID, nil)
 	wantRoot := base64.StdEncoding.EncodeToString(m.tree.HashAt(m.size))
 
 	for _, leaf := range []int{0, 5, 255, 256, 260, 299} {
@@ -223,7 +223,7 @@ func TestVerifyKnownISCCID(t *testing.T) {
 // for a handler that hard-codes verified:true.
 func TestVerifyUnknownISCCID(t *testing.T) {
 	m := buildVerifyMirror(t, mirrorLeaves, false)
-	h := Handler(m.store, m.hubID)
+	h := Handler(m.store, m.hubID, nil)
 	code, v := getVerdict(t, h, "iscc_id=ISCC:NOSUCHLEAF")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
@@ -243,7 +243,7 @@ func TestVerifyUnknownISCCID(t *testing.T) {
 // 400 like /inclusion): verify-for-me always yields a verdict for id input.
 func TestVerifyMissingISCCID(t *testing.T) {
 	m := buildVerifyMirror(t, mirrorLeaves, false)
-	h := Handler(m.store, m.hubID)
+	h := Handler(m.store, m.hubID, nil)
 	code, v := getVerdict(t, h, "")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
@@ -264,7 +264,7 @@ func TestVerifyMissingISCCID(t *testing.T) {
 // proof.VerifyInclusion — such a handler would report verified:true here.
 func TestVerifyInclusionIsNonVacuous(t *testing.T) {
 	m := buildVerifyMirror(t, mirrorLeaves, true)
-	h := Handler(m.store, m.hubID)
+	h := Handler(m.store, m.hubID, nil)
 
 	code, v := getVerdict(t, h, "iscc_id="+leafISCCID(5))
 	if code != http.StatusOK {
@@ -292,7 +292,7 @@ func TestVerifyInclusionIsNonVacuous(t *testing.T) {
 // TestVerifyNonGET asserts a non-GET method is a 405 (the shared method gate).
 func TestVerifyNonGET(t *testing.T) {
 	m := buildVerifyMirror(t, 8, false)
-	h := Handler(m.store, m.hubID)
+	h := Handler(m.store, m.hubID, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/verify?iscc_id="+leafISCCID(1), nil))
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -318,7 +318,7 @@ func TestVerifyNoAcceptedCheckpoint(t *testing.T) {
 		t.Fatalf("RecordProjections: %v", err)
 	}
 
-	h := Handler(st, hubID)
+	h := Handler(st, hubID, nil)
 	code, v := getVerdict(t, h, "iscc_id="+leafISCCID(0))
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
@@ -341,7 +341,7 @@ func TestVerifyFrozenHubStatus(t *testing.T) {
 		t.Fatalf("Freeze: %v", err)
 	}
 
-	h := Handler(m.store, m.hubID)
+	h := Handler(m.store, m.hubID, nil)
 	code, v := getVerdict(t, h, "iscc_id="+leafISCCID(5))
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)

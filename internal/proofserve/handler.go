@@ -38,6 +38,7 @@ import (
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
 
+	"github.com/iscc/iscc-monitor/internal/badge"
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/store"
 	"github.com/iscc/iscc-monitor/internal/tiles"
@@ -52,15 +53,31 @@ const contentType = "application/json"
 //go:embed browser.html
 var browserSource string
 
-// browserTmpl is the parsed log-browser template. template.Must panics at init if
-// the embedded source fails to parse, surfacing a template bug at startup. It is
+// browserTmpl is the parsed log-browser template with the HubStatusBadge partial
+// associated into the same set, so the page invokes {{template "hubStatusBadge" .}}
+// over the browserData view (which exposes .Status and .Label). template.Must panics
+// at init if either source fails to parse, surfacing a template bug at startup. It is
 // html/template (NOT text/template) so the base64 root and status strings
 // auto-escape.
-var browserTmpl = template.Must(template.New("browser").Parse(browserSource))
+var browserTmpl = func() *template.Template {
+	t := template.Must(template.New("browser").Parse(browserSource))
+	return template.Must(t.Parse(badge.Source))
+}()
 
 // octetStreamType is the media type for the raw record bytes /entries serves: the
 // JCS-canonical log-entry envelope is an opaque BLOB, not the JSON proof shape.
 const octetStreamType = "application/octet-stream"
+
+// StatusSource reports a hub's current in-memory glossary status by hub_id. It is
+// the read seam the log browser uses to overlay the live poll verdict (the richer
+// unresolvable / unverified states the store cannot prove) onto the store-provable
+// subset (frozen / verified). ok is false when no live status is recorded for the
+// hub. *metrics.Registry satisfies it structurally via its Status method; proofserve
+// takes the interface, not the concrete package, so it never imports internal/metrics
+// (mirroring dashboard.StatusSource).
+type StatusSource interface {
+	Status(hubID int64) (string, bool)
+}
 
 // Handler returns an http.Handler that serves one hub's computed inclusion and
 // consistency proofs from the local mirror. It handles GET /inclusion?iscc_id=<id>
@@ -90,7 +107,12 @@ const octetStreamType = "application/octet-stream"
 // owns the rest (serveBrowser / serveInclusion / serveConsistency / serveEntries /
 // serveVerify); see each for its 400/404/500 mapping. CORS, caching, and
 // conditional GET are intentionally out of scope for this slice.
-func Handler(st *store.Store, hubID int64) http.Handler {
+//
+// statuses is the in-memory status overlay (the metrics registry) the log browser
+// uses to render the richer unresolvable / unverified verdicts the store cannot
+// prove; only serveBrowser consults it. A nil statuses is tolerated and simply
+// leaves every store-verified hub showing "verified" (the proof routes ignore it).
+func Handler(st *store.Store, hubID int64, statuses StatusSource) http.Handler {
 	f := store.SQLiteFetcher{Store: st, HubID: hubID}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -101,7 +123,7 @@ func Handler(st *store.Store, hubID int64) http.Handler {
 		// of the hub's /log origin; the proof routes are /inclusion and /consistency.
 		switch r.URL.Path {
 		case "/":
-			serveBrowser(w, r, st, hubID)
+			serveBrowser(w, r, st, hubID, statuses)
 		case "/inclusion":
 			serveInclusion(w, r, st, f, hubID)
 		case "/consistency":
@@ -494,14 +516,17 @@ func serveVerify(w http.ResponseWriter, r *http.Request, st *store.Store, f stor
 	writeVerdict(w, verdict)
 }
 
-// browserData is the log-browser template view-model: the store-provable hub
-// status, whether an accepted checkpoint exists, and the accepted (size, root) the
-// monitor vouches for (root base64-Std encoded, matching the proof encodings). When
-// HasCheckpoint is false the page renders a "no accepted checkpoint yet" state
-// (Size 0, Root empty) — a followed-but-unpolled hub, never a fabricated guarantee
-// (ADR-0001 coverage honesty).
+// browserData is the log-browser template view-model: the overlaid hub status, its
+// fixed-table badge label, whether an accepted checkpoint exists, and the accepted
+// (size, root) the monitor vouches for (root base64-Std encoded, matching the proof
+// encodings). When HasCheckpoint is false the page renders a "no accepted checkpoint
+// yet" state (Size 0, Root empty) — a followed-but-unpolled hub, never a fabricated
+// guarantee (ADR-0001 coverage honesty). The hubStatusBadge partial reads .Label
+// directly (it does not re-derive the label from .Status), so the view carries a
+// precomputed Label from the badge package's single source of truth.
 type browserData struct {
 	Status        string
+	Label         string
 	HasCheckpoint bool
 	Size          uint64
 	Root          string
@@ -511,7 +536,10 @@ type browserData struct {
 // monitor's accepted checkpoint (size, root) plus relative links into the proof
 // surface. It reads only persisted store rows (FollowState + CheckpointAt) — no
 // signature, RFC-6962, Merkle, or proof computation; the served (size, root) are
-// read back verbatim, never recomputed.
+// read back verbatim, never recomputed. The displayed hub status overlays the
+// store-provable subset with the in-memory live verdict (overlayStatus) so the
+// richer unresolvable / unverified states render through the same hubStatusBadge
+// partial the dashboard uses.
 //
 // Status mapping: a FollowState / CheckpointAt DB error → 500; a CheckpointAt
 // found==false at the accepted size is the same real store inconsistency serveVerify
@@ -519,7 +547,7 @@ type browserData struct {
 // 200 "no accepted checkpoint yet" page (not a 404 — the browser page exists for a
 // followed-but-unpolled hub, mirroring the dashboard's coverage honesty). The page
 // is rendered into a buffer first so a template/store error is a 500 BEFORE any 200.
-func serveBrowser(w http.ResponseWriter, r *http.Request, st *store.Store, hubID int64) {
+func serveBrowser(w http.ResponseWriter, r *http.Request, st *store.Store, hubID int64, statuses StatusSource) {
 	ctx := r.Context()
 
 	fs, err := st.FollowState(ctx, hubID)
@@ -527,7 +555,16 @@ func serveBrowser(w http.ResponseWriter, r *http.Request, st *store.Store, hubID
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	data := browserData{Status: hubStatus(fs)}
+	status := overlayStatus(fs, hubID, statuses)
+	// The hubStatusBadge partial reads .Label directly; precompute it from the
+	// badge package's single source of truth. The !ok fallback is defensive-only —
+	// overlayStatus only ever yields valid labels keys (frozen / verified /
+	// unresolvable / unverified).
+	label, ok := badge.Label(status)
+	if !ok {
+		label = status
+	}
+	data := browserData{Status: status, Label: label}
 
 	size := fs.LastSize
 	if size > 0 {
@@ -571,6 +608,30 @@ func hubStatus(fs store.FollowState) string {
 		return "frozen"
 	}
 	return "verified"
+}
+
+// overlayStatus resolves the log browser's displayed status from the store-provable
+// subset (hubStatus) plus the in-memory live verdict. It mirrors
+// dashboard.overlayStatus precedence verbatim: the store status wins for the durable,
+// harder truth (frozen, an ADR-0006 self-consistency violation that survives restart,
+// must never be overridden by a fresher in-memory verdict). Only when the store says
+// "verified" does it consult statuses, and only to adopt "unresolvable" (a currently-
+// failing did:web resolve) or "unverified" (a current signature matching no listed
+// key) — both fresher than the store's verified flag (ADR-0009). It is nil-tolerant:
+// a nil statuses keeps the store status. serveBrowser reads FollowState (not the
+// realm-active flag), so there is no "inactive" input here; the overlay can only ever
+// flip "verified" → "unresolvable"/"unverified".
+func overlayStatus(fs store.FollowState, hubID int64, statuses StatusSource) string {
+	status := hubStatus(fs)
+	if status != "verified" || statuses == nil {
+		return status
+	}
+	switch live, ok := statuses.Status(hubID); {
+	case ok && (live == "unresolvable" || live == "unverified"):
+		return live
+	default:
+		return status
+	}
 }
 
 // selectSeq picks the leaf seq to prove. When the index query param is empty it
