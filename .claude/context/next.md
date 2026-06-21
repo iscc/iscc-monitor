@@ -1,102 +1,95 @@
 # Next Work Package
 
-## Step: Wire CI — `mise run check` + the `notecheck` signature-parity oracle shell-out
+## Step: Port `InclusionProofFromTiles` — the tile-sourced RFC-6962 inclusion proof builder
 
 ## Goal
-Stand up `.github/workflows/` so the green quality gate (`mise run check`) and the
-fully-independent external signature oracle (`cmd/notecheck`) run on every push/PR — not just
-locally. This closes the sole open `normal` issue and makes the trust-root conformance gate actually
-gate, which `target.md` requires ("the fully-independent external oracle `notecheck` … is built and
-**shelled out in CI**").
+Add the pure inclusion-proof *source* the M2 inclusion cross-check needs: build an RFC-6962
+inclusion proof for a leaf index from a hub's mirrored hash tiles, mirroring the already-landed
+`ConsistencyProofFromTiles`. This is the first, golden-testable half of the handoff's "inclusion
+cross-check vs the hub's `IsccLogInclusionProof`" — broken out as a pure unit before the
+fixture-and-wiring half that depends on captured `IsccLogInclusionProof`/tile fixtures and the
+live tile-ingestion writer (neither exists yet).
 
 ## Scope
-- **Create**: `.github/workflows/ci.yml` — a single GitHub Actions workflow (CI infrastructure, not a
-  Go source file; it does not count against the 3-non-test/doc-file budget).
-- **Modify**: (none — no Go source or config changes are needed; `mise.toml` already defines `check`).
+- **Modify**: `internal/logclient/proofbuilder.go` — add one exported function
+  `InclusionProofFromTiles(ctx, fetch TileFetcher, index, size uint64) ([][]byte, error)` plus a
+  doc comment. Reuse the existing `getNode`, `tileKey`, and `TileFetcher` already in this file
+  unchanged. (1 non-test/doc file.)
+- **Create**: `internal/logclient/inclusionproof_test.go` — golden test in `package logclient`
+  reusing the helpers already defined in `proofbuilder_test.go` (`buildTree`, `tileFetcherFor`,
+  `equalProof`, `fmtProof`, `bytesEqual`) — do NOT redefine them (same package → redefinition won't
+  compile).
 - **Reference**:
-  - `/workspace/iscc-monitor/.claude/context/handoff.md` — the `**Next:**` block spells out the exact
-    CI shape (build `./cmd/notecheck`, shell it against a captured checkpoint, assert `OK <name>` +
-    exit 0, exit 1 on a corrupted one, plus a `mise run check` job).
-  - `/workspace/iscc-monitor/cmd/notecheck/main.go` — confirms the CLI contract: `--vkey <string>`,
-    checkpoint text on **stdin**, prints `OK <name>` + exit 0 / exit 1 verify-fail / exit 2 setup-fail.
-  - `/workspace/iscc-monitor/testdata/live/sb0.iscc.id_checkpoint` — the captured checkpoint the CI
-    shells the oracle against (signed by `sb0.iscc.id/log`, size 10183).
-  - `/workspace/iscc-monitor/mise.toml` — the `[tasks.check]` gate the workflow invokes; `[tools] go =
-    "1.24"`. Note `gofmt -l .` is NOT in `check` (the loop's `review` agent judges it); see Notes.
-  - `/workspace/iscc-monitor/.gitignore` — confirms `cauldron/` is gitignored so it never reaches a
-    fresh CI checkout (the `go build ./...` cauldron pitfall in `learnings.md` does not apply to CI).
+  - `/workspace/iscc-monitor/internal/logclient/proofbuilder.go` (the sibling
+    `ConsistencyProofFromTiles` to mirror exactly).
+  - `/workspace/iscc-monitor/internal/logclient/proofbuilder_test.go` (the golden-test pattern + the
+    shared helpers to reuse).
+  - `/workspace/iscc-monitor/cauldron/tessera/client/client.go` lines ~197-249
+    (`ProofBuilder.InclusionProof` + `fetchNodes` — the upstream this ports; note it calls
+    `proof.Inclusion(index, treeSize)`).
 
 ## Not In Scope
-- Do **not** add a `gofmt`/formatting gate step to CI. `mise run check` deliberately excludes `gofmt
-  -l .` (it exits 0 even when listing files, so it cannot gate by exit code portably — see `mise.toml`
-  header); formatting stays the `review` agent's job. Adding a hand-rolled `gofmt -l` exit-code check
-  is a separate decision, not this step.
-- Do **not** edit any Go source, `mise.toml`, `go.mod`/`go.sum`, `cmd/notecheck`, or the `low`-issue
-  vestigial `out` param. CI is purely additive.
-- Do **not** start the inclusion cross-check vs `IsccLogInclusionProof` (the next M2 slice) or the
-  live tile-ingestion writer — those wait until CI is green.
-- Do **not** add caching, matrix builds, multi-OS runners, release jobs, or `go mod tidy`/`go mod
-  verify` steps beyond what is needed to gate. Keep the workflow minimal (KISS); a tidy-drift gate can
-  be a later additive step.
+- The inclusion *cross-check* itself (asserting our proof byte-equals the hub's
+  `evidence.IsccLogInclusionProof`) — needs real captured `IsccLogInclusionProof` + tile +
+  entry-bundle fixtures that do not exist in `testdata/live/` yet. Defer.
+- Wiring `InclusionProofFromTiles` into `follower.PollHub` or any production caller — it lands as an
+  intentional unused-until-wired export seam (like `CheckEquivocation`, `LeafHashes`, `RunFsck`).
+- The live tile-ingestion writer (making `PollHub` mirror real tiles/bundles) — separate later slice.
+- Refactoring `ConsistencyProofFromTiles` or extracting a shared `fetchNodes` helper — keep the change
+  additive; duplicating the tiny per-call fetch loop is the KISS choice and leaves the existing
+  function byte-identical.
+- The `cmd/notecheck` `out io.Writer` low issue — loop-skipped.
 
 ## Implementation Notes
-- Trigger on `push` and `pull_request`. Include both `develop` (the working branch) and `main` (the
-  default), or use no branch filter — either is fine. Run on `ubuntu-latest`; the workflow `run:` steps
-  execute in bash on the Linux runner, so shell scripting (incl. the corruption one-liner below) is
-  fine — the CLAUDE.md cross-platform rule constrains **dev tooling developers run locally**, not the
-  CI runner OS.
-- Prefer one job with clearly named steps (simplest), `env: CGO_ENABLED: 0` at the job level per
-  ADR-0003 / `target.md`:
-  1. `actions/checkout@v4`.
-  2. `actions/setup-go@v5` with `go-version: '1.24'`.
-  3. **check gate**: `go build ./... && go vet ./... && go test ./...` (this IS `mise run check`,
-     inlined). Inlining avoids needing `mise` on the runner. If you instead prefer to invoke `mise run
-     check` for single-source-of-truth, add `jdx/mise-action@v2` before it — acceptable, but inlining
-     the three commands is the lighter path. Pick one; do not do both.
-  4. **notecheck oracle** (after the build): `go build -o notecheck ./cmd/notecheck`, then shell the
-     assertions against `testdata/live/sb0.iscc.id_checkpoint` (use `set -euo pipefail` and a guarded
-     non-zero-exit check so the binary's intentional exit 1 doesn't fail the step):
-     - **accept**: `./notecheck --vkey "$VKEY" < testdata/live/sb0.iscc.id_checkpoint` prints exactly
-       `OK sb0.iscc.id/log` and exits 0. Assert the output string, not just the exit code.
-     - **reject (corrupted)**: corrupt the signature line and assert the binary exits **1**. Use the
-       deterministic base64-char flip the handoff used: `sed 's/QLdEY/QLdEZ/'` (`QLdEY…` begins the sig
-       line's base64). Guard it, e.g.
-       `if sed 's/QLdEY/QLdEZ/' testdata/live/sb0.iscc.id_checkpoint | ./notecheck --vkey "$VKEY"; then
-       echo "ERROR: oracle accepted a corrupted checkpoint"; exit 1; fi` so a *spurious accept* fails CI.
-     - **bad vkey** (optional, cheap): `./notecheck --vkey not-a-valid-vkey < … ` exits **2**.
-  - The golden vkey to pass: `sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5`
-    (the embedded `sb0VKey`, confirmed in `cmd/notecheck/main_test.go` and `derive_vkey.py`). Put it in
-    a step-level `env: VKEY:` and always double-quote `"$VKEY"` — the `+` chars must not shell-mangle.
-- `go build ./...` on a fresh CI checkout is **safe**: `cauldron/` is gitignored (verified in
-  `.gitignore`), so the "cauldron breaks `go build ./...`" pitfall in `learnings.md` does not reach
-  CI. The `./cmd/notecheck` build sidesteps it regardless.
-- Pin action versions (`@v4`/`@v5`/`@v2`) rather than `@main` for reproducibility.
-- **Correctness rule in play (target.md "Oracle / conformance gate"):** `notecheck` is the
-  *fully-independent* external oracle — a green-but-wrong verify must not ship on `mise run check` + an
-  LLM PASS alone. The **reject-corrupted assertion is the load-bearing half**: a workflow that only
-  checks the accept path is a green-but-useless gate. Both the accept and the reject step must be
-  present.
+- Port from tessera `ProofBuilder.InclusionProof`: it is `proof.Inclusion(index, treeSize)` then
+  `fetchNodes`. Your version is structurally identical to `ConsistencyProofFromTiles` with exactly two
+  swaps: call `proof.Inclusion(index, size)` instead of `proof.Consistency(smaller, larger)`, and pass
+  `size` (the only tree size) as the `logSize` argument to `getNode` (matching how `larger` is the
+  logSize in the consistency builder — `index` selects the leaf, `size` is the tree the proof is
+  computed against). Reuse the same per-call `tiles := make(map[tileKey]api.HashTile)` cache + loop +
+  final `nodes.Rehash(hashes, rfc6962.DefaultHasher.HashChildren)`.
+- `proof.Inclusion` is already in the closure (`github.com/transparency-dev/merkle/proof`, used by
+  `ConsistencyProofFromTiles`). Signature: `func Inclusion(index, size uint64) (Nodes, error)`,
+  requires `0 <= index < size`. `proof.VerifyInclusion(hasher, index, size, leafHash, proof, root)` is
+  the verifier for the test. No new import, no `go.mod`/`go.sum` change — confirm after with
+  `git diff --quiet HEAD -- go.mod go.sum`.
+- Keep purity (Correctness rule: `proof/verify` is pure / WASM-shareable): import only what
+  `proofbuilder.go` already imports; do NOT add `net`/`net/http`/`database/sql`/`os`. A missing tile
+  must stay a `%w`-wrapped error so `errors.Is(err, os.ErrNotExist)` survives — `getNode` already does
+  this; you only forward its error wrapped with an `InclusionProofFromTiles:` prefix (this file never
+  references `os` directly, same as the sibling).
+- Error wrap style: mirror `ConsistencyProofFromTiles` exactly — wrap `proof.Inclusion`'s error as
+  `InclusionProofFromTiles: compute node list for (index %d, size %d): %w`, `getNode`'s error as
+  `InclusionProofFromTiles: get node %+v: %w`, and `nodes.Rehash`'s error as
+  `InclusionProofFromTiles: rehash proof: %w`.
+- Test (oracle gate APPLIES — RFC-6962 inclusion crypto): reuse `buildTree(treeLeaves)` (300 leaves,
+  crosses the 256-leaf tile boundary) and `tileFetcherFor(t, tree, treeLeaves)` from
+  `proofbuilder_test.go`. For leaf indices that exercise both tile 0 (full) and tile 1 (partial) —
+  e.g. `{0, 5, 200, 255, 256, 260, 299}` — assert `InclusionProofFromTiles(ctx, fetch, index, 300)`
+  byte-equals `tree.InclusionProof(index, 300)` (independent prover = ground truth, not a tautology)
+  AND verifies via `proof.VerifyInclusion(rfc6962.DefaultHasher, index, 300, tree.LeafHash(index),
+  got, tree.HashAt(300))`. Add a missing-tile case (fetcher returns a wrapped `os.ErrNotExist`) that
+  asserts `errors.Is(err, os.ErrNotExist)` survives, mirroring `TestConsistencyProofFromTilesMissingTile`.
+  The prover (`testonly.Tree.InclusionProof`), the verifier (`proof.VerifyInclusion`), and the builder
+  are three independent merkle paths, so the cross-check is non-circular.
+- Mutation hint for `advance`/`review`: forcing the builder to return the proof from a wrong index
+  (or a one-byte-corrupted node) must make the byte-equality AND `VerifyInclusion` fail for at least
+  one boundary index — confirm before declaring done so a green-but-wrong builder can't ship.
+- Edge case: `proof.Inclusion` requires `index < size`; pick all test indices `< 300`. An `index >=
+  size` test is optional (it is `proof.Inclusion`'s precondition, not this layer's contract); if added,
+  assert a wrapped non-nil error and no panic.
 
 ## Verification
-- `.github/workflows/ci.yml` exists and is valid YAML:
-  `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"` exits 0 (PyYAML present
-  with the repo's Python 3.11; if PyYAML is absent, `yamllint`/any YAML parser substitute is acceptable).
-- The accept step reproduces locally:
-  `go build -o /tmp/notecheck ./cmd/notecheck && /tmp/notecheck --vkey
-  "sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5" <
-  testdata/live/sb0.iscc.id_checkpoint` prints `OK sb0.iscc.id/log` and exits 0.
-- The reject step reproduces locally:
-  `sed 's/QLdEY/QLdEZ/' testdata/live/sb0.iscc.id_checkpoint | /tmp/notecheck --vkey
-  "sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5"; test $? -eq 1` exits 0
-  (i.e. the binary exited 1 on the corrupted checkpoint).
-- `mise run check` is green locally (proves the gate the workflow runs still passes; CI did not
-  regress it).
-- After push to `develop`: `gh run list --branch develop --json status,conclusion,name` shows a
-  completed run with `conclusion == "success"` — the real CI-is-live confirmation the issue's "Verify
-  fixed" asks for. `advance` performs this push-and-check once the workflow is committed.
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass).
+- `gofmt -l internal/logclient/` is empty.
+- `go test -run TestInclusionProofFromTiles ./internal/logclient` passes.
+- `go test -run 'TestConsistencyProofFromTiles|TestInclusionProofFromTiles' ./internal/logclient`
+  passes (the consistency goldens still pass — the change is additive).
+- `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (the WASM-share purity invariant unbroken).
+- `git diff --quiet HEAD -- go.mod go.sum` exits 0 (no dependency change).
 
 ## Done When
-`.github/workflows/ci.yml` is valid YAML running both a `mise run check`-equivalent (build+vet+test,
-`CGO_ENABLED=0`) gate and the `notecheck` oracle shell-out (accept → `OK sb0.iscc.id/log` exit 0,
-corrupted → exit 1), the local reproductions above all pass, and a pushed `develop` run reports
-`success`.
+`InclusionProofFromTiles` builds a tile-sourced inclusion proof that byte-equals
+`testonly.Tree.InclusionProof` and verifies via `proof.VerifyInclusion` for leaf indices spanning the
+256-leaf tile boundary, the missing-tile error preserves `os.ErrNotExist`, and every Verification
+check passes with no `go.mod`/`go.sum` change.
