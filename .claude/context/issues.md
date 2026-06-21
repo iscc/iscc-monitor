@@ -44,33 +44,36 @@ filed it and does **not** affect priority.
     it reds the gate for the whole module.
 - **Spec:** ADR-0011; target.md "Stack (locked — ADR-0003, ADR-0011)"; iscc/iscc-lib#43.
 
-## Certificate §3 renders a self-contradictory proof for a frozen-after-fork hub (built ≠ verified)
+## Certificate §3 can still render a self-contradictory proof in the fork-poll TOCTOU window (the `!hub.Frozen` gate is incomplete)
 - **Priority:** critical
-- **Source:** [review] (Codex P2, reviewer-confirmed against the follower freeze/ingest ordering)
-- **What / where / how to verify:** `internal/certificate/handler.go:324-344` builds the §3 inclusion
-  proof via `logclient.InclusionProofFromTiles(f.ReadTile, data.Position, hub.LastSize)` and sets
-  `HasClause3 = true` whenever the build succeeds — but `InclusionProofFromTiles` is a pure *builder*
-  (`internal/logclient/proofbuilder.go:103`) that folds whatever tile bytes the fetcher returns and
-  NEVER checks the proof rebuilds the accepted root. For a **frozen-after-fork** hub the follower
-  ingests the contradictory candidate tiles BEFORE the consistency check
-  (`internal/follower/follower.go:174`) and `RecordTile` overwrites the same (hub,level,index,width)
-  rows — full tiles included, the upsert `DO UPDATE SET data = excluded.data` has no immutability guard
-  (`internal/store/tiles.go:49-56`) — while the frozen path returns early
-  (`internal/follower/follower.go:204-207`) so `AdvanceAccepted`/`fsckMirror` never run and
-  `CheckpointAt(LastSize)` keeps the OLD accepted root. Result: §3 builds a valid proof against the
-  CONTRADICTORY tree, renders the sibling chain, and pairs it with `root {{.CheckpointRoot}} ✓` (the
-  accepted root the siblings do NOT rebuild) — a self-contradictory certificate of inclusion on the
-  trust-root self-verifiable surface. The §1/§2 cap reasoning is unaffected (those read the
-  irreplaceable accepted-checkpoint *record*; §3 reads the corruptible *mirror*). `hub.Frozen` is
-  already in hand via `followedHub`/`HubSummary` but §3 ignores it. Not currently reachable in
-  production (no real fork has occurred and §3 is brand-new), but the artifact must never render
-  misleading evidence. **Fix (root cause):** before `HasClause3 = true`, verify the built proof
-  rebuilds `data.CheckpointRoot` via `proof.VerifyInclusion(hasher, data.Position, hub.LastSize,
-  proof, acceptedRootBytes, leafHash)` (fail-closed against ANY tile divergence, not just freeze) — OR,
-  simpler, gate §3 on `!hub.Frozen`. Verify fixed: a frozen-hub fixture whose mirrored tiles disagree
-  with the accepted root renders §1+§2 but NO §3 `✓`; reverting the guard makes that test FAIL. The new
-  test must cover the contradictory-tile case (the current `TestCertificateInclusionProof` only
-  exercises a clean tree).
+- **Source:** [review] (Codex P1 this iteration, reviewer-confirmed against the follower fork-poll
+  ordering; supersedes the steady-state frozen-after-fork variant which `a687f5e` closed)
+- **What / where / how to verify:** `a687f5e` gated §3 on `!hub.Frozen`
+  (`internal/certificate/handler.go:369`), which closes the STEADY-STATE frozen-after-fork case
+  (mutation-proven by `TestCertificateInclusionProofFrozen`). But the gate reads the
+  `ListHubs`-sourced `hub.Frozen` flag, and the HTTP server runs CONCURRENTLY with the follower loop, so
+  a non-atomic TOCTOU window remains: in a fork `PollHub`, `ingestTiles`
+  (`internal/follower/follower.go:174`) overwrites the same-size tile rows with the fork's tiles in
+  per-tile `RecordTile` transactions, THEN `checkConsistency` detects the fork, THEN `freeze`
+  (`follower.go:194`) calls `st.Freeze` (its LAST store write, `freeze` records evidence via
+  `RecordCheckpoint`, never `AdvanceAccepted`, so `CheckpointAt(LastSize)` keeps the OLD accepted root).
+  Between the first overwritten tile and the `st.Freeze` commit, a concurrent certificate request reads
+  `hub.Frozen == false`, builds §3 from the fork's tiles, and renders the sibling chain under the OLD
+  accepted root with a `✓` the siblings do not rebuild — the same self-contradictory certificate, now
+  reachable via a race rather than steady state. This is the "non-frozen divergence demonstrated"
+  condition the §3 plan named as the trigger to revisit the heavier fix. Not currently reachable in
+  production (no real fork has occurred; the window is sub-second), but the self-verifiable artifact must
+  never render misleading evidence. **Fix (root cause, the fail-closed variant the plan deferred):**
+  before `HasClause3 = true`, VERIFY the built proof rebuilds the accepted root — read the subject
+  leaf's entry bundle from the mirror, derive the leaf hash, decode `data.CheckpointRoot`, and call
+  `proof.VerifyInclusion(hasher, data.Position, hub.LastSize, proof, acceptedRootBytes, leafHash)`;
+  set `HasClause3` only on a nil verdict. This fails closed against ANY tile/root divergence (race OR
+  steady state), so it subsumes and can replace the `!hub.Frozen` gate. (`fixtureStoreTiled` does not
+  seed entry bundles yet, so the test fixture must add a byte-accurate bundle for the subject leaf.)
+  Verify fixed: a contradictory-tile fixture (mirror tree A, accept tree B's root) renders §1+§2 but NO
+  §3 `✓` EVEN WHEN NOT frozen (drop the freeze from `TestCertificateInclusionProofFrozen`'s fixture);
+  reverting the `proof.VerifyInclusion` guard makes that test FAIL. The clean-tree
+  `TestCertificateInclusionProof` (mirror and accepted root agree) must stay green.
 - **Spec:** glossary "Proof bundle" / "Verifiable cache" (a client verifies the artifact itself);
   ADR-0001 coverage honesty / fail-closed; ADR-0006 freeze preserves evidence but never advances; the
   oracle/conformance gate (a served inclusion proof must rebuild the root it is shown under).

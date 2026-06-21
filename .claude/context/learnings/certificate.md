@@ -66,30 +66,35 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   the testnet fixture sb0=0/sb1=1). KISS interim; documented TODO. `registry.go` and
   `internal/config` stay untouched. The `Hub` literal needs `*uint16` HubIDs.
 
-- **§3 INCLUSION PROOF recomputes the RFC-6962 proof from the mirror — but a proof
-  BUILT is not a proof VERIFIED.** `buildData` calls
-  `logclient.InclusionProofFromTiles(f.ReadTile, data.Position, hub.LastSize)` over a
-  `store.SQLiteFetcher` and base64-Std encodes each sibling, exactly as proofserve's
-  `serveInclusion` does (the same oracle-gated builder — never hand-roll Merkle math).
-  `os.ErrNotExist` → honest §3-omitted gap (the page keeps §1/§2); any other err →
-  500. **Trap (open, see issues.md, critical):** `InclusionProofFromTiles` is a pure
-  *builder* — it folds whatever tile bytes the fetcher returns and NEVER checks the
-  proof rebuilds the accepted root. For a **frozen-after-fork** hub the follower
-  ingests the contradictory candidate tiles BEFORE the freeze check and `RecordTile`
-  overwrites the same (hub,level,index,width) rows (full tiles included — the upsert
-  has no immutability guard), while `CheckpointAt(LastSize)` still returns the OLD
-  accepted root and `AdvanceAccepted`/`fsckMirror` never run on the frozen path. So §3
-  can build a valid proof against the CONTRADICTORY tree yet render it under the
-  accepted root with a `✓` the siblings do not rebuild — a self-contradictory cert.
-  The §1/§2 cap reasoning ("a frozen hub's LastSize caps it at its accepted window")
-  covers §1/§2 because those read the irreplaceable accepted-checkpoint *record*; §3
-  reads the *mirror*, which the fork can corrupt. Fix: gate §3 on `!hub.Frozen` OR
-  verify the built proof rebuilds `data.CheckpointRoot` via `proof.VerifyInclusion`
-  before `HasClause3 = true` (the latter is fail-closed against ANY tile divergence,
-  not just freeze). The §3 test (`TestCertificateInclusionProof`) is mutation-proven
-  non-vacuous against `testonly.Tree.InclusionProof` (review reproduced both
-  mutations), but it only exercises the CLEAN tree — it does not cover the
-  frozen/contradictory-tile case the fix must add.
+- **§3 INCLUSION PROOF recomputes the RFC-6962 proof from the mirror — a proof BUILT
+  is not a proof VERIFIED, and the `!hub.Frozen` gate is necessary but NOT sufficient.**
+  `buildData` calls `logclient.InclusionProofFromTiles(f.ReadTile, data.Position,
+  hub.LastSize)` over a `store.SQLiteFetcher` and base64-Std encodes each sibling,
+  exactly as proofserve's `serveInclusion` does (the same oracle-gated builder — never
+  hand-roll Merkle math). `os.ErrNotExist` → honest §3-omitted gap (the page keeps
+  §1/§2); any other err → 500. `InclusionProofFromTiles` is a pure *builder* — it folds
+  whatever tile bytes the fetcher returns and NEVER checks the proof rebuilds the
+  accepted root. `a687f5e` gated the §3 RENDER on `data.HasClause2 && !hub.Frozen`
+  (handler.go:369), closing the STEADY-STATE frozen-after-fork case (mutation-proven by
+  `TestCertificateInclusionProofFrozen`: mirror tree A, accept tree B's root, freeze →
+  §1+§2 render, §3 absent; reverting the guard FAILS). **Still open (issues.md,
+  critical):** the gate reads the `ListHubs` `hub.Frozen` flag, but the HTTP server runs
+  CONCURRENTLY with the follower; in a fork poll `ingestTiles` (follower.go:174)
+  overwrites same-size tiles in per-tile transactions BEFORE `freeze`→`st.Freeze`
+  (follower.go:194, its last write; the freeze records evidence, never advances, so
+  `CheckpointAt(LastSize)` keeps the old root). A request landing in that TOCTOU window
+  reads `Frozen==false`, builds §3 from the fork's tiles, and renders them under the old
+  root's `✓` — the same self-contradictory cert via a race. The durable fix is the
+  fail-closed one the plan deferred: before `HasClause3 = true`, verify the built proof
+  rebuilds `data.CheckpointRoot` via `proof.VerifyInclusion` (subsumes the frozen gate;
+  catches race + steady state alike). §1/§2 are immune (they read the irreplaceable
+  accepted-checkpoint *record* via `CheckpointAt`; only §3 reads the corruptible
+  *mirror*). **Durable rule: on a self-verifiable surface, gate a rendered Merkle/`✓`
+  assertion on a re-VERIFICATION against the accepted root, not on a status FLAG read
+  from a separate, racily-updated row.** `TestCertificateInclusionProof` is
+  mutation-proven non-vacuous against `testonly.Tree.InclusionProof` but only exercises
+  the CLEAN tree; the fail-closed fix's test must assert §3 absent on a NON-frozen
+  contradictory-tile fixture.
 
 - **`html/template` entity-escapes base64 `+`/`/` in text nodes (`+`→`&#43;`).** Only
   the execution-path contextual escaper does this — `html.EscapeString` does not — so
