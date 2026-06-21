@@ -373,6 +373,34 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   is justified inline. Verify `time.Now()` never appears in `loop.go` (the ticker delivers `t` via
   `ticker.C`) — the only wall-clock source is `time.NewTicker(l.Normal)`.
 
+## Equivocation trigger wiring (`internal/follower/checkConsistency`)
+
+- **The third trigger lands in `checkConsistency`'s `switch` default (the growing-pair case).** Order
+  is shrink (`next<prev`) → fork (`next==prev`) → equivocation (`next>prev`); the default-branch guard
+  `if !prevFound || info.TreeSize <= prevSize` is load-bearing, NOT redundant: fork is `prevFound`-guarded,
+  so a `next==prev && !prevFound` observation reaches default and must not be misread as a growing pair.
+  Proof is built from the LOCAL mirror only — `store.SQLiteFetcher{Store,HubID}.ReadTile` straight into
+  `ConsistencyProofFromTiles(ctx, …, prevSize, info.TreeSize)` — never re-hitting the hub. Production
+  follower imports stay `{context,fmt,logclient,store,time}`; merkle/testonly/tessera are test-only.
+- **Error-vs-violation discipline is the load-bearing subtlety and is correct.** A proof-BUILD error
+  from `ConsistencyProofFromTiles` (most often a missing tile = wrapped `os.ErrNotExist`, since prod
+  doesn't mirror tiles until M2) is swallowed narrowly → branch skipped, no freeze (false-positive
+  guard, ADR-0006). `CheckEquivocation`'s own (unreachable-by-type) `err` is propagated, not swallowed;
+  a genuine `st` fault still surfaces via `CheckpointAt` above. The branch is **dormant in production**
+  until M2 writes tiles — today the live path always hits the missing-tile skip.
+- **Reviewer mutation-proved non-vacuousness three ways (throwaway copy, reverted):** (1) `if eq`→`if !eq`
+  inverts the verdict → freeze case fails; (2) forcing the proof-build-error skip to always fire → freeze
+  case fails, proving the happy/freeze cases genuinely build the proof over seeded tiles (NOT the
+  missing-tile skip); (3) `if eq`→`if false` is a compile error (unused `eq`) — use an inverting mutation
+  instead. So a green-but-wrong always/never-freezes wiring cannot ship. Oracle gate APPLIES (RFC-6962)
+  and is satisfied by the in-test merkle ground truth + the unchanged `derive_vkey.py` vectors.
+- **The p↔width seam is exercised end-to-end here:** test seeds the full tile (index 0, width 256) and
+  the 44-leaf partial (index 1, width 44); the proof builder requests `p=0`→256 and `p=44`→44 over the
+  SQLiteFetcher, so the equivocation proof crosses the 256-leaf tile boundary against real mirror reads,
+  not a hand-rolled fetcher. Test seam: calls unexported `checkConsistency` + `freeze` directly (no
+  `StatusVerified` fixture whose signature encodes the synthesized root exists), asserting only on
+  observable store outputs (`violations`/`follow_state`/alert count), never follower internals.
+
 ## hub_keys cache wiring (`internal/follower` + `internal/logclient/keyid.go`)
 
 - **`cacheHubKey` is wired ONLY on the verified, non-violation `PollHub` path** (after
