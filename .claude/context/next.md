@@ -1,98 +1,107 @@
 # Next Work Package
 
-## Step: Fix single-record kind-label constants to the full `note.$schema` URIs
+## Step: Pure ISCC-IDv1 decoder (`internal/index`) — realm + 12-bit hub_id, golden-tested
 
 ## Advances
-M-UI (Evidence Ledger frontend) Verify criterion — quoted from `target.md`:
-> "the single-record page renders `declaration`, `deletion` (a new record — original preserved) **and an
-> unknown `note.$schema`** without erroring"
+M-UI (Evidence Ledger frontend), the last open M-UI Verify criterion:
 
-This step closes the **open `normal` issue** "Single-record page kind-label constants miss the real
-`note.$schema` URIs" and resolves the latest review NEEDS_WORK verdict (handoff `**Next:**`). It is not
-a detour from milestone work — it *completes* an in-flight M-UI Verify criterion that currently fails
-for every real declaration/deletion. Per protocol a NEEDS_WORK handoff is fixed before new milestone
-work, and the single-record slice cannot be pushed until this lands.
+> "the **realm-wide certificate** (`/inclusion/{iscc_id}`, keyed by the self-describing ISCC-IDv1 —
+> decode realm + 12-bit `hub_id`, resolve the issuing hub via the registry) for a known id renders the
+> numbered evidence clauses … and offers a **downloadable proof bundle** …"
+
+The certificate is too large for one ≤3-file step (it needs: this decoder → a 12-bit-`hub_id`→hub
+resolver / registry-format change → the HTML certificate handler with §1–§6 clauses → the proof-bundle
+assembler that re-engages the oracle gate). This step lays the **verifiable skeleton**: the pure,
+self-contained codec the whole slice is keyed on. ADR-0010 §"The inclusion certificate is a realm-wide
+endpoint" + §"Implementation note" make this decoder the first concrete piece ("decode `(realm, hub_id)`
+from the id — port the codec from `iscc/iscc-core` `iscc_id.py` … into the not-yet-built `internal/index`
+`index/iscc.go`"). A wrong decode resolves the wrong hub and proves the wrong leaf, so this unit IS the
+trust-root oracle for the certificate — it earns a golden-vector test (target Quality bar: "Pure units …
+get table-driven golden-vector tests").
 
 ## Goal
-The single-record page currently labels every production declaration and deletion "Unknown record type"
-because the kind-label constants are CLAUDE.md glossary short forms (`iscc-note-0.8.0`) while the
-projection fold stores the verbatim wire value — the full URI
-`http://purl.org/iscc/schema/iscc-note-0.8.0.json`. Set the two constants to the full URIs and reseed
-the test fixture with the production URIs so the page labels real records correctly and the test
-exercises the real wire value.
+Add `internal/index` with a pure `Decode(isccID string) (ISCCID, error)` that parses an ISCC-IDv1 string
+into its realm (header SubType nibble), 12-bit `hub_id` (`body & 0xFFF`), and 52-bit microsecond
+`timestamp` (`body >> 12`), rejecting any input that is not a well-formed ISCC-IDv1. This is the
+foundation every later certificate sub-step builds on, and it is WASM-shareable (no I/O), so it must
+stay import-clean.
 
 ## Scope
-- **Modify**: `internal/proofserve/handler.go` (the only production file — 2 constant lines)
-- **Modify (test)**: `internal/proofserve/record_test.go` (the `schemaForSeq` fixture follows the
-  constants automatically; scope the no-CDN ban so the now-real schema URI does not false-fail)
+- **Create**: `internal/index/iscc.go` (the package + the pure decoder)
+- **Create**: `internal/index/iscc_test.go` (golden-vector + error-path table test)
+- **Modify**: (none — new leaf package; do NOT touch `cmd/iscc-monitor`, registry, or any handler this
+  step)
 - **Reference**:
-  - `internal/logclient/projection_test.go:18-21` — the golden ground truth for the exact wire URIs
-    (`http://purl.org/iscc/schema/iscc-note-0.8.0.json`, `…iscc-note-delete-0.8.0.json`).
-  - `.claude/context/learnings/store.md` (lines 43-48) — the "stored `note.$schema` is the VERBATIM wire
-    value — a full URI, NOT a short name" trap.
-  - `.claude/context/learnings/http-surface.md` (lines 85-99) — the single-record section's durable
-    trap: match the full wire URI, seed the test with the URI, and scope a no-CDN `http://` body ban to
-    the template/CDN region once a real schema URI renders.
-  - `.claude/context/issues.md` — the full issue text (the issue `review` deletes on PASS).
+  - `.claude/adr/0010-evidence-ledger-frontend.md:83-119` — the authoritative ISCC-IDv1 layout: 80-bit
+    code = 16-bit header + 64-bit body; **SubType nibble = realm** (0 = test/sandbox, 1 = operational);
+    body big-endian `uint64`; `timestamp = body >> 12` (52 bits, µs since epoch); `hub_id = body & 0xFFF`
+    (12 bits, slot 0–4095). This file wins over any guess.
+  - `iscc/iscc-core` `iscc_id.py` (public package, **not vendored in `cauldron/`** — port from the public
+    source / ISO 24138 codec, do not invent): the `encode_base32`/`decode_base32` alphabet and the
+    `write_header`/`read_header` nibble layout (MainType, SubType, Version, Length). The canonical ISCC
+    base32 alphabet is RFC 4648 (`ABCDEFGHIJKLMNOPQRSTUVWXYZ234567`), **uppercase, no `=` padding** —
+    confirm against the reference before relying on it.
+  - `.claude/derive_vkey.py` — the precedent for a small, dependency-free Go port grounded in a Python
+    reference, and the "keep a defensive length check before the assert so a short input errors instead of
+    index-panicking" pattern (learnings index: "Keep this guard when porting crypto").
+  - `.claude/context/learnings.md` (index) — the `proof/verify` purity rule applies by analogy: keep this
+    decoder free of `net`/`net/http`/`database/sql`/`os` so it stays WASM-shareable.
 
 ## Not In Scope
-- The certificate of inclusion (`/inclusion/{iscc_id}`) and the downloadable proof-bundle assembler —
-  the NEXT slice (it re-engages the oracle/conformance gate). Do not start it here.
-- Touching `cmd/iscc-monitor`, `internal/store`, `internal/logclient`, or any file outside
-  `internal/proofserve` — the defect is entirely local to the kind-label map and its test.
-- Reworking `recordKind`'s structure (the `switch` at handler.go:835-844 is correct); only the two
-  `const` values change.
-- Adding a separate "glossary short name" constant or any ISCC-ID codec — ADR-0008 is schema-agnostic;
-  the page interprets only the verbatim `note.$schema` against the wire URI.
-- Any `go.mod`/`go.sum`/`schema.sql` change (must stay byte-identical).
+- The HTTP handler `/inclusion/{iscc_id}` and the certificate HTML template (`.dc.html` §1–§6 clauses,
+  two-tier honesty panel, Download-proof-bundle action) — a later sub-step, after resolution exists.
+- The 12-bit-`hub_id` → hub resolver and the `internal/registry` move from domains-only `realm.txt` to
+  the iscc-hub `hubs/<network>.yaml` Hub-List (ADR-0010 §"Hub-id resolution adopts the iscc-hub
+  Hub-List") — its own M1/registry step; this decoder only PRODUCES the `(realm, hub_id)` it consumes.
+- The downloadable proof-bundle assembler and re-plumbing `serveVerify` to retain the raw checkpoint
+  bytes + resolved hub key — the oracle-gate sub-step; not touched here.
+- ENCODING ISCC-IDs into strings as a public API (the monitor only ever decodes ids it is handed). Add a
+  small *unexported* encode helper only if the golden test genuinely needs it to round-trip a vector —
+  keep the package's public surface to `Decode` + the result type (YAGNI).
+- Wiring the decoder into any existing call site (`SeqsForISCCID`, dashboard, dossier) — pure leaf only.
 
 ## Implementation Notes
-- In `internal/proofserve/handler.go:108-109`, change the two constants to the exact wire URIs (port them
-  verbatim from `projection_test.go:19-20`):
-  - `schemaDeclaration = "http://purl.org/iscc/schema/iscc-note-0.8.0.json"`
-  - `schemaDeletion    = "http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json"`
-  The comment at handler.go:101-106 already says "the verbatim `note.$schema`", so it stays accurate; the
-  constants now match that prose. `recordKind` (835-844) needs no change — it `switch`es on these
-  constants.
-- In `internal/proofserve/record_test.go`, `schemaForSeq` (lines 40-52) returns the *constants* for seq 0
-  (declaration) and seq 1 (deletion), so those two cases follow the rename automatically and now feed the
-  production wire URIs — which is the whole point: the test must exercise the production path, not invent
-  short forms. Keep seq 2 (`"iscc-note-future-9.9.9"`, a non-URL unknown) and seq 3 (`""`, empty →
-  Unknown) as-is so the unknown/empty no-error clause stays exercised.
-- **The no-CDN ban interaction (the review's explicit warning, the load-bearing part of this fix).**
-  `TestRecordLinksTokensNoCDN` (record_test.go:369-396) renders `index=0` (a declaration) and bans
-  `"jsdelivr"`, `"http://"`, `"https://"`, `"cdn."` across the WHOLE body. Once seq 0's schema is the
-  full URI, `record.html:272` renders `http://purl.org/...` as legitimate record data, so the whole-body
-  `http://` ban false-fails. Fix the test, NOT the page: scope the CDN ban to the template/CDN region —
-  the document head where a CDN `<link>`/`url(` would actually appear (slice the body at `</style>` or at
-  `<body`, and run the `http://`/`https://`/`jsdelivr`/`cdn.` ban only over that head region). The
-  legitimate same-origin `/_ds/` link asserts (`href="/_ds/tokens.css"`, `href="/_ds/fonts.css"`,
-  `var(--font-sans)`, `var(--font-mono)`) and the `<table>` absence assert must still hold over the
-  appropriate region. (Alternative the review allows: render that one no-CDN assertion against a non-URL
-  schema such as seq 2 — but prefer scoping the region; it keeps the ban honest where a CDN link would
-  appear and survives future surfaces that render real URIs.)
-- Correctness rule (learnings index "schema-agnostic" + store.md trap): the stored `note.$schema` is the
-  verbatim wire value (a full URI), so any consumer matching it against a literal MUST use the full URI
-  and its test MUST seed the URI, never the glossary short form. CLAUDE.md's `iscc-note-0.8.0` is prose
-  shorthand only.
-- Keep the slice a pure render (oracle gate N/A — no signature/RFC-6962/Merkle/did:web/fsck/proof path is
-  touched); `internal/store` stays a leaf; `go.mod`/`go.sum`/`schema.sql` byte-identical.
+- **Port, don't invent.** The base32 alphabet and the header-nibble (varnibble) encoding are external
+  facts owned by `iscc/iscc-core` `iscc_id.py` / ISO 24138. Port them faithfully; cite the source in the
+  file docstring. Do not approximate the alphabet from memory — confirm it is RFC 4648 uppercase-no-pad.
+- **Decode pipeline (per ADR-0010):** strip an optional `ISCC:` prefix → base32-decode the body chars to
+  bytes → read the 16-bit header (validate it is an ISCC-IDv1: MainType = ID, Version = 1; the **SubType
+  nibble is the realm**) → the remaining 8 bytes are the big-endian `uint64` body → `timestamp = body >>
+  12`, `hub_id = uint16(body & 0xFFF)`. Return realm + hub_id + timestamp.
+- **Fail closed, never panic** (learnings index — the `derive_vkey.py` short-key guard). Guard length
+  BEFORE every slice/index: empty string, missing/garbage base32 chars, a header that is not an
+  ISCC-IDv1 (wrong MainType/Version), and a body shorter than 8 bytes must each return a descriptive
+  `error`, not an index-out-of-range panic. A "decode random/short junk never panics" sub-test is cheap
+  insurance.
+- **Keep it pure / WASM-shareable** (learnings: `proof/verify` purity rule by analogy). No
+  `net`/`net/http`/`database/sql`/`os` imports. `fmt` (→ transitively `os`) and `encoding/base32`,
+  `encoding/binary` are fine; verify with `GOOS=js GOARCH=wasm go build ./internal/index`.
+- **Golden-vector test grounding (the load-bearing part).** The existing test ISCC-IDs (`ISCC:MAAGZTFQ…`,
+  `ISCC:MEAJU5BQ…`, `ISCC:MAIG…`) are NOT guaranteed valid ISCC-IDv1s — do NOT assume they decode; some
+  carry a different MainType. Seed the golden test with a vector whose realm/hub_id/timestamp are
+  documented from first principles: construct the header+body bytes per the ADR/iscc-core layout in the
+  test (or hard-code the canonical string AND its decoded fields), then assert `Decode` returns exactly
+  those fields. If you add the unexported encode helper, prove the round-trip
+  (`Decode(encode(realm,hubID,ts)) == {realm,hubID,ts}`) for at least one **test-realm (0)** vector AND
+  one **operational-realm (1)** vector, with a **non-zero `hub_id`** (e.g. slot 1) exercised, so realm 0
+  vs realm 1 and a real slot are both covered. Cite where each expected value comes from in a comment —
+  never write the test to mirror the implementation's own arithmetic (the "tie a test to ground truth,
+  not the symbol under test" lesson, `learnings/http-surface.md`).
+- **Result shape.** Return a small named struct (`type ISCCID struct { Realm uint8; HubID uint16;
+  Timestamp uint64 }`) with an `error`, not a 4-value tuple — easier for the later resolver to consume.
+  Write an evergreen docstring on the package and the function.
 
 ## Verification
-- `mise run check` is green (build + vet + all packages test; `gofmt -l .` empty).
-- `go test -run TestRecord ./internal/proofserve` passes — including `TestRecordLinksTokensNoCDN` (no
-  longer false-failing on the now-realistic `http://purl.org/...` schema data) and the
-  declaration/deletion kind-label assertions.
-- Assertion: a single-record page for a leaf whose projection `note.$schema` is
-  `"http://purl.org/iscc/schema/iscc-note-0.8.0.json"` renders the label **"Declaration"** (not
-  "Unknown record type"); a leaf with `"http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json"` renders
-  **"Deletion"**; a non-URL/empty schema still renders 200 with **"Unknown record type"**.
-- `grep -n '"iscc-note-0.8.0"\|"iscc-note-delete-0.8.0"' internal/proofserve/handler.go` returns nothing
-  (the short forms are gone from the production constants).
-- `git diff --stat HEAD -- go.mod go.sum internal/store/schema.sql` is empty (byte-identical).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
+- `go test -count=1 ./internal/index` passes (the golden-vector + error-path table test).
+- `go list -deps ./internal/index | grep -E '^net/http$|^database/sql$'` is empty (pure leaf, no HTTP/SQL
+  in the closure).
+- `GOOS=js GOARCH=wasm go build ./internal/index` succeeds (WASM-shareable).
+- For the golden vector, `Decode` returns the realm, `hub_id`, and timestamp documented in the test
+  comment; for each error case (empty, non-base32, wrong MainType/Version, truncated body) `Decode`
+  returns a non-nil error and does NOT panic.
 
 ## Done When
-`mise run check` is green, the single-record page labels the full-URI declaration/deletion schemas as
-"Declaration"/"Deletion" (and unknown/empty as "Unknown record type") proven by
-`go test -run TestRecord ./internal/proofserve`, the production constants no longer hold the short forms,
-and the no-CDN ban no longer false-fails on the verbatim schema URI.
+`internal/index` exists with a pure, golden-tested `Decode` that yields the correct `(Realm, HubID,
+Timestamp)` for a documented ISCC-IDv1 vector and fails closed (error, no panic) on malformed input,
+with `mise run check` green and the package WASM-buildable.
