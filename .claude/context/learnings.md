@@ -1104,6 +1104,26 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   value (exported `Store *Store` + `HubID int64` fields), so the binary constructs one per hub with no
   new store surface. go.mod/go.sum/schema byte-identical; `GOOS=js GOARCH=wasm go build ./internal/didweb`
   still exits 0 (WASM purity rides on `didweb`, untouched by this net/http leaf-wrapper).
+- **Per-route `Cache-Control` keys on the parsed path-API `width`, NOT the store width — `immutable :=
+  (width == 0)`.** `writeBlob(w, data, immutable bool)` sets `public, max-age=31536000, immutable` for
+  FULL tiles/bundles and `no-cache` for partials + the size-varying checkpoint (`serveCheckpoint` passes
+  `false` unconditionally). The predicate is correct because `layout.ParseTile*` returns `width == 0` for
+  a full resource and the actual leaf count (`> 0`) for a partial — reviewer re-derived from ground truth
+  that `tile/0/000`/`tile/entries/000` parse to width 0 and `tile/0/001.p/44` parses to width 44 (the
+  same vocab the SQLiteFetcher documents as `p == 0 → full`, distinct from the store column's 256=full).
+  `no-cache` (NOT `no-store`) is deliberate: a partial is overwritten in place every poll (ADR-0005), so
+  it must be cacheable-with-revalidation, never pinned immutable. The partial-tile assertion is the
+  load-bearing guard — reviewer mutated the predicate to always-immutable and the `partial_tile` subtest
+  FAILED (reverted), so a partial wrongly marked immutable cannot ship.
+- **Header-order + no-conflict are safe: both `Content-Type` and `Cache-Control` are set before the
+  first `w.Write` (the 200 freezes the header map on first write), and the `corsmw` wrap sets only
+  `Access-Control-*` (verified), so it neither duplicates nor conflicts with the per-route
+  `Cache-Control`.** Error paths (`http.Error` 400/404/405/500) intentionally carry no `Cache-Control`.
+  Oracle gate correctly N/A (pure HTTP header wiring on opaque BLOBs — no signature/RFC-6962/Merkle/
+  did:web/fsck/proof path); no new import, so go.mod/go.sum/schema byte-identical; `immutable` directive
+  string appears in exactly one place (the const), `no-store` absent. Conditional GET (`ETag`/
+  `If-None-Match`/304) is the deliberately-deferred follow-up slice; `proofserve` size-dependent surfaces
+  (`/inclusion`/`/consistency`/`/entries`) still have no cache policy (tied to `LastSize`, later slice).
 
 ## Computed inclusion proof HTTP surface (`internal/proofserve/handler.go`)
 
