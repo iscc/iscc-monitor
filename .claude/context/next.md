@@ -1,121 +1,115 @@
 # Next Work Package
 
-## Step: Pure `ConsistencyProofFromTiles` builder over the tile-fetch seam (`internal/logclient`)
+## Step: Wire `CheckEquivocation` into `follower.checkConsistency` as the third self-consistency trigger
 
 ## Goal
-Build the RFC-6962 consistency proof between two tree sizes from mirrored hash tiles, as a pure
-function over a tile-level fetcher — the missing proof *source* that `CheckEquivocation` needs. This
-is the prerequisite that unblocks wiring the third self-consistency trigger (equivocation) into the
-follower without yet needing real on-disk tile fixtures: it is golden-testable against a synthetic
-`testonly.Tree` whose tiles are computed in-test.
+Close the last open M1 self-consistency trigger end-to-end: when a hub presents a verified checkpoint
+that *grows* the tree but whose RFC-6962 consistency proof fails to relate the prior accepted root to the
+new root, the follower must freeze it (ADR-0006). All three ingredients are already pure and golden-tested
+(`CheckEquivocation`, `SQLiteFetcher.ReadTile`, `ConsistencyProofFromTiles`); this step connects them.
 
 ## Scope
-- **Create**: `internal/logclient/proofbuilder.go` — the pure proof builder.
-- **Create**: `internal/logclient/proofbuilder_test.go` — golden test against a real `testonly.Tree`
-  (tests do not count against the 3-file budget).
-- **Modify**: (none expected — see Implementation Notes; if a tiny re-export is genuinely needed,
-  add ONE delegate to `internal/tiles/layout.go`, still ≤3 non-test files.)
-- **Reference**:
-  - `cauldron/tessera/client/client.go` — port `ProofBuilder.ConsistencyProof` (~lines 214–231),
-    `fetchNodes` (~233–245), and `nodeCache.GetNode` (~385–435). This is the structure to port; do
-    **not** import `tessera/client` (it pulls `net/http`/`otel`/`klog`). Drop the otel spans.
-  - `/home/dev/go/pkg/mod/github.com/transparency-dev/merkle@v0.0.2/proof/proof.go` —
-    `proof.Consistency(size1,size2)`, `Nodes.IDs`, `Nodes.Rehash(h, hc)`, `Nodes.Ephem`.
-  - `/home/dev/go/pkg/mod/github.com/transparency-dev/merkle@v0.0.2/compact/nodes.go` +
-    `.../compact/range.go` — `compact.NodeID{Level,Index}`, and
-    `compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}.NewEmptyRange(0)` + `Append` +
-    `GetRootHash(nil)` to recompute a node hash from a tile's leaves.
-  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/api/layout/tile.go` —
-    `layout.NodeCoordsToTileAddress(treeLevel, treeIndex)` and `layout.PartialTileSize`.
-  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/api/state.go` —
-    `api.HashTile{}.UnmarshalText` (the tlog-tiles concatenated-32-byte format).
-  - `/home/dev/go/pkg/mod/github.com/transparency-dev/merkle@v0.0.2/testonly/tree.go` —
-    `testonly.New`, `Tree.HashAt(size)`, `Tree.ConsistencyProof(s1,s2)` for the golden vector.
-  - `internal/logclient/consistency.go` — the `CheckEquivocation` consumer this feeds (its
-    `consistencyProof [][]byte` arg). `rootBytes = 32` lives in `verify.go`.
-  - `internal/store/fetcher.go` — `SQLiteFetcher.ReadTile(ctx, l, i uint64, p uint8) ([]byte, error)`
-    is the production fetcher whose shape the new `TileFetcher` seam must match exactly.
+- **Create**: (none — tiles are synthesized in-test, see Implementation Notes; no on-disk fixtures)
+- **Modify**:
+  - `internal/follower/follower.go` (the only non-test production file: extend `checkConsistency` with an
+    equivocation branch that sources the proof from the local mirror and calls `CheckEquivocation`)
+  - `internal/follower/follower_test.go` (test only — add an equivocation freeze test)
+- **Reference** (read, do not import or edit):
+  - `internal/logclient/consistency.go` — `CheckEquivocation(prevSize, prevRoot, nextSize, nextRoot, proof)`
+    and `ViolationEquivocation = "equivocation"`.
+  - `internal/logclient/proofbuilder.go` — `ConsistencyProofFromTiles(ctx, fetch TileFetcher, smaller,
+    larger uint64)`; the `TileFetcher` signature (byte-identical to `SQLiteFetcher.ReadTile`).
+  - `internal/logclient/proofbuilder_test.go` — the **exact pattern** for synthesizing a real
+    `testonly.Tree`'s hash tiles via `api.HashTile.MarshalText` (`buildTree`, `nodeHash`, `tileFetcherFor`);
+    port this into the follower test to record tiles into the store.
+  - `internal/store/fetcher.go` — `SQLiteFetcher{Store, HubID}` and `SQLiteFetcher.ReadTile` (the method
+    value to pass as the `TileFetcher`).
+  - `internal/store/tiles.go` — `RecordTile(ctx, hubID, level, index uint64, width int, data, observedAt)`
+    to seed mirrored tiles in the test; `internal/tiles/layout.go` for `TileWidth`/`PartialTileSize`.
+  - `internal/follower/follower.go` (`checkConsistency`, `follower.go:236`) and
+    `internal/follower/follower_test.go` (`TestPollHubFork`, line 184) — the existing seeding +
+    freeze-assertion pattern (`RecordCheckpoint` + `AdvanceFollowState` seed, `assertViolation`, `countRows`,
+    restart) to mirror.
 
 ## Not In Scope
-- **Do NOT wire anything into `internal/follower/`** — no third branch in `checkConsistency`, no
-  `SQLiteFetcher` call from the follower. That is the *next* step, which this one unblocks.
-- **Do NOT add real tile fixtures** under `testdata/live/`. The golden tree is synthesized in-test
-  (`testonly.Tree`); on-disk fixtures + the `fsck` root-rebuild are a separate later slice.
-- **Do NOT import `tessera/client` or `tessera/fsck`** (they pull `net/http`/`otel`/`klog`, breaking
-  `logclient`'s WASM-clean seam and churning `go.mod`). Port the logic; reuse only
-  `merkle/{proof,compact,rfc6962}` and `tessera/api{,/layout}` (all dep-clean, already required).
-- Inclusion-proof building, entry-bundle reads, the M2 serving `ProofBuilder`, and `iscc_index`.
+- **`fsck` root-rebuild conformance** (`fsck.New(...).Check(...)` over `SQLiteFetcher` + the inclusion
+  cross-check vs the hub's `IsccLogInclusionProof`). It needs the heavy `fsck`/otel/klog dep in a non-leaf
+  package and is the *next* conformance slice — explicitly deferred.
+- **Capturing real on-disk tile fixtures under `testdata/live/`.** This step synthesizes tiles in-test
+  (the proven `proofbuilder_test` pattern); the real-fixture capture belongs to the `fsck`/M2 slice.
+- **sb1 stale-key fixture refresh** (`22b08f3e`→`069d0f14`) — its own separate trust-root step.
+- **Structured logs (`slog`), `/metrics`, real alert transport, CI/`notecheck` wiring, the `go mod tidy`
+  go.sum divergence** — all separate later slices; do not touch them here.
+- **Mirroring tiles inside `PollHub`'s production path.** This step only *reads* tiles for the proof; the
+  tile-ingestion writer (fetching `.../tile/...` from the hub) is M2 work, not this step.
 
 ## Implementation Notes
-- **Signature.** Define a tile-fetch seam matching tessera's `TileFetcherFunc` and the existing
-  `store.SQLiteFetcher.ReadTile` exactly, so the follower can later pass `SQLiteFetcher.ReadTile`
-  directly:
-  ```go
-  type TileFetcher func(ctx context.Context, level, index uint64, p uint8) ([]byte, error)
-  func ConsistencyProofFromTiles(ctx context.Context, fetch TileFetcher, smaller, larger uint64) ([][]byte, error)
-  ```
-  Return `[][]byte` shaped to feed `CheckEquivocation`'s `consistencyProof` argument directly.
-- **Algorithm (ported from `client.go`).** `proof.Consistency(smaller, larger)` → a `proof.Nodes`;
-  fetch each `compact.NodeID` hash via a `getNode` helper; collect them in `nodes.IDs` order
-  (mirroring `fetchNodes`); then `nodes.Rehash(hashes, rfc6962.DefaultHasher.HashChildren)` to fold
-  the ephemeral node and return the proof.
-- **Node → tile mapping (the load-bearing port of `nodeCache.GetNode`).** For a `compact.NodeID{Level,
-  Index}`: `tileLevel, tileIndex, nodeLevel, nodeIndex := layout.NodeCoordsToTileAddress(uint64(Level),
-  uint64(Index))`; the tile's partial qualifier is `p := layout.PartialTileSize(tileLevel, tileIndex,
-  larger)`; fetch `fetch(ctx, tileLevel, tileIndex, p)`; `var t api.HashTile; t.UnmarshalText(raw)`.
-  Then recompute the node hash from the tile leaves: `numLeaves := 1 << nodeLevel; firstLeaf :=
-  int(nodeIndex) * numLeaves; lastLeaf := firstLeaf + numLeaves`; guard `lastLeaf <= len(t.Nodes)`;
-  fold `t.Nodes[firstLeaf:lastLeaf]` through `compact.RangeFactory{Hash:
-  rfc6962.DefaultHasher.HashChildren}.NewEmptyRange(0)` + `Append(leaf, nil)` + `GetRootHash(nil)`. A
-  simple per-call map cache keyed by `(tileLevel, tileIndex)` is fine (KISS) — no need to port the full
-  `nodeCache` struct or its ephemeral-node map.
-- **`larger` is the log size** passed to `PartialTileSize` (tessera uses `n.logSize`), so the partial
-  qualifier reflects the *newer* tree the proof is computed against.
-- **Boundaries / errors.** `proof.Consistency` returns `Nodes{IDs: []}` for `smaller==0` or
-  `smaller==larger`, so `Rehash` yields an empty proof — return an empty/`nil` slice cleanly so the
-  `CheckEquivocation` guard short-circuits correctly. A genuine tile-fetch fault (a real
-  `os.ErrNotExist` or transport error) is a Go error returned to the caller — distinct from
-  `CheckEquivocation`'s "proof fails to verify = violation" verdict. Wrap fetch/parse errors with
-  `%w` so `errors.Is(err, os.ErrNotExist)` survives a missing tile (matches the `SQLiteFetcher`
-  contract).
-- **Purity / WASM (Correctness rule: `proof/verify` is pure; keep WASM-shareable).** `tessera/api`
-  and `tessera/api/layout` closures are stdlib-only (verified: no `net/http`/`otel`/`klog`), and
-  `merkle/{proof,compact,rfc6962}` are already in `logclient`'s closure. This file must NOT pull
-  `net`/`database/sql`/`net/http`. The one allowed I/O-ish import is `os` only as the `os.ErrNotExist`
-  sentinel surfaced from the fetcher (already in `logclient` via `checkpoint.go`). Verify the package
-  still builds under `GOOS=js GOARCH=wasm`.
-- **`go.mod` must stay byte-identical.** Both `merkle v0.0.2` and `tessera v1.0.2` are already direct
-  requires, `merkle/compact` is already in the closure, and `tessera/api` is a dep-clean graph member
-  — adding it is not a new require. `go mod tidy` must remain a no-op; any `go get` is a red flag.
-- **Golden test = ground truth, not author-asserted (Oracle gate APPLIES — RFC-6962 crypto).** Build
-  a `testonly.New(rfc6962.DefaultHasher)` tree of ~300 leaves (crosses a full 256-tile boundary so the
-  node→tile mapping is exercised at level-0 index 0 *and* index 1). Serialize its hash tiles into an
-  in-test `TileFetcher` (fill each tile's `api.HashTile.Nodes` with the tree's level-0 leaf hashes for
-  that tile range — `tree.LeafHash(i)` — and `MarshalText` them, since tiles store the bottom-row
-  leaves and the builder recomputes interior nodes via the `RangeFactory`). Assert
-  `ConsistencyProofFromTiles(ctx, fetch, s1, s2)` byte-equals `tree.ConsistencyProof(s1, s2)` for
-  several `(s1<s2)` pairs, and that the result verifies via
-  `proof.VerifyConsistency(rfc6962.DefaultHasher, s1, s2, got, tree.HashAt(s1), tree.HashAt(s2))`. The
-  prover (`tree.ConsistencyProof`) and the tile-sourced builder are independent code paths, so the
-  match is not a tautology. Include the empty-proof boundary (`s1==0`, `s1==s2`). If reconstructing
-  tiles from leaf hashes proves fiddly, the equivalent ground-truth check is asserting the built proof
-  *verifies* via `VerifyConsistency` (independent of `tree.ConsistencyProof`) — keep at least the
-  byte-equality on one boundary-crossing pair so a green-but-wrong builder cannot ship.
+- **Where**: `checkConsistency` already computes `prevRoot [32]byte` from `CheckpointAt`. Add the
+  equivocation branch there, after the shrink/fork checks, honoring the **shrink → fork → equivocation**
+  order (learnings: shrink and fork are dep-free and mutually exclusive by size; equivocation is the
+  growing-pair case `info.TreeSize > prevSize`). Extend the existing `switch` to evaluate `shrink`, then
+  `fork`, then equivocation.
+- **Proof source**: build the proof from the local mirror only — never re-hit the hub. Construct
+  `store.SQLiteFetcher{Store: st, HubID: hubID}` and pass its `ReadTile` method value straight into
+  `ConsistencyProofFromTiles(ctx, fetcher.ReadTile, prevSize, info.TreeSize)` — the `TileFetcher` signature
+  was made byte-identical to `SQLiteFetcher.ReadTile` for exactly this (learnings). Feed the resulting
+  `[][]byte` to `CheckEquivocation(prevSize, prevRoot, info.TreeSize, info.Root, proofHashes)`.
+- **Compare against the prior accepted root, not the contradicting evidence** (learnings + Correctness rule
+  ADR-0006): `prevRoot`/`prevSize` come from `CheckpointAt(prevSize)` (the prior accepted checkpoint), and
+  `info.Root`/`info.TreeSize` are the new observation. Do not source the proof or roots from the freeze
+  evidence row. (Note the existing fork re-detection subtlety: `CheckpointAt`'s `LIMIT 1` returns the
+  lower-rowid prior root; this step must preserve that "compare against the prior accepted root" semantics.)
+- **Error vs. violation discipline (ADR-0006 "freeze, never crash")**: `CheckEquivocation` already turns a
+  non-verifying proof into a `(violated=true, err=nil)` verdict. But `ConsistencyProofFromTiles` returns a
+  genuine Go error on a *tile-fetch/parse fault* (e.g. tiles not mirrored yet, a wrapped `os.ErrNotExist`) —
+  that is **not** a violation verdict. Decide and document the policy explicitly in the `checkConsistency`
+  doc comment: a missing-tile / proof-build error must NOT be misread as an equivocation. The conservative
+  choice that matches the current "shrink/fork only" behavior and the "no tile-ingestion yet" reality is to
+  treat a proof-build error as "cannot evaluate equivocation this poll" — skip the equivocation branch (no
+  violation, no crash) rather than freeze or abort the poll. (Rationale: until M2 mirrors tiles in production
+  the branch will usually have no tiles; freezing on a missing-tile error would be a false positive, and
+  aborting the poll would break the loop. The branch becomes load-bearing once tiles are mirrored.) Keep the
+  swallow narrow and explained in a comment — distinguish it from a genuine `st` query failure if you can,
+  but at minimum do not let a missing tile freeze a hub.
+- **Guards**: only reach the equivocation branch when `prevFound && info.TreeSize > prevSize` (growth). The
+  `prevSize == 0` early-return at the top of `checkConsistency` already covers the fresh-store case;
+  `CheckEquivocation`'s own `nextSize <= prevSize` guard is a backstop.
+- **Test (the load-bearing part)**: synthesize a real `testonly.New(rfc6962.DefaultHasher)` tree (port
+  `buildTree`/`nodeHash`/`tileFetcherFor` from `proofbuilder_test.go`), record its level-0 hash tiles into
+  the store via `RecordTile` (full tile at index 0 = width `tiles.TileWidth`; partial at index 1 = the
+  `PartialTileSize` width), seed a prior accepted checkpoint at `prevSize` with `tree.HashAt(prevSize)`, then
+  drive the equivocation by presenting a *new* checkpoint at `largerSize` whose root is **wrong** (e.g.
+  `tree.HashAt(largerSize)` with one byte flipped, or a different tree's root) so `VerifyConsistency` fails →
+  expect a freeze with `violations.kind == "equivocation"`, `frozen=1`, exactly-one-alert, and evidence
+  surviving a restart — mirroring `TestPollHubFork`. Also assert the **happy path**: a growing observation at
+  `largerSize` with the *correct* `tree.HashAt(largerSize)` and consistent mirrored tiles does NOT freeze
+  (advances normally), proving the branch is non-vacuous (a green-but-wrong "always freezes" or "never
+  freezes" wiring is caught by having both cases).
+- **Driving the test**: `PollHub`'s production path needs a genuinely `StatusVerified` signed checkpoint, but
+  the equivocation needs full control over `(prevSize, prevRoot, info.TreeSize, info.Root)`. Because
+  `checkConsistency` is unexported, the test may call it directly (package-internal) for tight control over
+  `info`, and/or exercise the full freeze via the `freeze` helper — choose whichever yields a clean,
+  deterministic assertion on observable store outputs (per the PRD seam rule, assert on
+  `violations`/`follow_state`/coverage, never follower internals). A direct `checkConsistency` +`freeze` test
+  avoids needing a fixture checkpoint whose signature happens to encode the synthesized tree's root.
+- **Purity / leaf discipline** (learnings): `internal/store` stays a leaf — do NOT import `logclient` into
+  store. The follower already imports both `logclient` and `store`; `SQLiteFetcher` lives in `store`, so the
+  follower constructs it directly. Production follower imports stay `{context, fmt, logclient, store, time}`;
+  any `testonly` / `merkle` / `tessera/api` imports for tile synthesis go in the **test file only**.
 
 ## Verification
-- `mise run check` is green (build + vet + test, all packages).
-- `gofmt -l .` is empty.
-- `go test -count=1 -run TestConsistencyProofFromTiles ./internal/logclient` passes.
-- The golden assertion holds: for a ~300-leaf `testonly.Tree`, `ConsistencyProofFromTiles(ctx, fetch,
-  s1, s2)` byte-equals `tree.ConsistencyProof(s1, s2)` for at least one boundary-crossing `(s1<s2)`
-  pair, and `proof.VerifyConsistency(rfc6962.DefaultHasher, s1, s2, got, tree.HashAt(s1),
-  tree.HashAt(s2))` accepts the built proof for at least three pairs.
-- `GOOS=js GOARCH=wasm go build ./internal/logclient` succeeds (purity preserved).
-- `git diff --quiet HEAD -- go.mod go.sum` exits 0 (no dep churn); `go mod tidy` is a no-op.
-- `go list -deps ./internal/logclient | grep -E '^net/http$|^database/sql$'` is empty (still a
-  network-free pure unit).
+- `mise run check` is green (build + vet + test, all packages; `gofmt -l .` empty).
+- `go test -count=1 -run TestPollHubEquivocation ./internal/follower` passes (the new equivocation freeze test).
+- `go test -count=1 -run 'TestPollHubFork|TestPollHubShrink|TestPollHubVerifiedAdvances' ./internal/follower`
+  still passes (the other two triggers + the clean advance path are unregressed).
+- The equivocation test asserts, on a wrong-root growing observation over consistent mirrored tiles:
+  `violations.kind == "equivocation"`, `follow_state.frozen == 1`, the cursor did NOT advance, exactly one
+  alert fired, and the violation rows survive a store reopen.
+- The same test asserts the non-vacuous happy path: a correct-root growing observation over the same tiles
+  does NOT freeze and advances the cursor.
+- `GOOS=js GOARCH=wasm go build ./internal/logclient` still succeeds (the pure proof builder is untouched).
 
 ## Done When
-`ConsistencyProofFromTiles` reconstructs the `testonly.Tree` consistency proof from tiles for the
-boundary-crossing pair(s) and the built proofs verify, all Verification checks pass, and `logclient`
-still builds for `GOOS=js GOARCH=wasm` with `go.mod`/`go.sum` unchanged.
+`checkConsistency` freezes a hub on a failing growing-pair consistency proof sourced from the local mirror
+(and only then), all Verification checks pass, and the other two triggers plus the clean-advance path remain
+green.
