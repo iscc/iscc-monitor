@@ -454,6 +454,21 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   via `boolToInt`; partials overwrite in place through the composite-PK `ON CONFLICT … DO UPDATE`
   (TestRecordTilePartialOverwrite asserts row count stays 1). `LatestCheckpointRaw` is the
   size-agnostic `ORDER BY tree_size DESC LIMIT 1` read (distinct from size-keyed `CheckpointAt`).
+- **`widthForP` is now the SINGLE `p→width` authority (`fetcher.go:113`) — the write API speaks `p`,
+  the follower's duplicate is deleted (RESOLVED the last `normal` issue).** `RecordTile`/
+  `RecordEntryBundle` take `p uint8` and compute `width := widthForP(p)` at the top (error strings still
+  print the *translated* `width`, so a full-tile error reads `width 256`). `grep -rn "func widthForP"
+  internal/` returns exactly one hit. The read API (`ReadTileBlob`/`ReadEntryBundleBlob`, deliberately
+  Not-In-Scope) keeps `width int` — they are keyed by the stored column, not the public ingest surface.
+  **Full coords MUST be written as the literal `0`, never `uint8(256)` (wraps to 0 only by luck);** test
+  sites with a runtime `width` use an explicit `if width == tiles.TileWidth { p = 0 }` guard. The
+  deleted `TestWidthForP` (which tested the now-gone follower duplicate's arithmetic) is correctly
+  superseded by `TestIngestTilesWidthMapping`, which drives the invariant through the PUBLIC
+  `RecordTile`/`ReadTileBlob` surface — both the positive (full readable at 256) AND the negative (full
+  NOT readable at 0). Reviewer mutation-proved it non-vacuous: `widthForP` full-mapping → `tiles.TileWidth
+  - 1` makes `TestIngestTilesWidthMapping` + `TestRecordTileRoundTrip` FAIL ("full tile not found"),
+  reverted → green. Not a gate dodge. Oracle gate correctly N/A (pure arithmetic), but the four
+  mirror-consuming pkgs (`follower`/`logclient`/`proofserve`/`tilesserve`) re-ran uncached green.
 - **The partial→full fallback wraps `os.ErrNotExist` on BOTH legs, so `errors.Is` survives a double
   miss.** `ReadTile`/`ReadEntryBundle` retry at width 256 only when `p>0 && errors.Is(err,
   os.ErrNotExist)`; if the full leg also misses it returns *that* wrapped `os.ErrNotExist`

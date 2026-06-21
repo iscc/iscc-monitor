@@ -28,17 +28,3 @@ filed it and does **not** affect priority.
   is misleading. Fix when `run` is next touched: drop `out`, OR have `run` print `OK %s` to `out` and
   let the test assert on it. Verify fixed: `out` is either gone or written to. Low — skipped by the loop.
 - **Spec:** KISS / YAGNI (CLAUDE.md code standards); no spec contract.
-
-## Tile writers require `width`, duplicating the tlog `p` translation in the follower
-- **Priority:** normal
-- **Source:** [review]
-- **What / where / how to verify:** `internal/store/fetcher.go:61-115` reads tiles and entry bundles
-  through the tlog-tiles `p uint8` vocabulary and privately translates `p == 0` to width 256, while
-  `internal/store/tiles.go:37` and `:56` require callers to pass the already-translated `width`.
-  `internal/follower/ingest.go:57`, `:73`, and `:86-91` therefore carry a second load-bearing
-  `widthForP` copy; if that copy ever stores a full tile at width 0 instead of 256, the
-  `SQLiteFetcher` cannot read the mirror back. Make `RecordTile` and `RecordEntryBundle` accept
-  `p uint8`, keep the `p`→`width` translation private to the store, and delete the follower copy.
-  Verify fixed by moving the full/partial width tests to the store API and ensuring ingest passes
-  `c.Partial` directly while `SQLiteFetcher` round-trips full and partial mirrors.
-- **Spec:** ADR-0005 (mirror tile discipline); KISS / single source of truth for coordinate mapping.

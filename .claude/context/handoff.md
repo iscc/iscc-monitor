@@ -1,78 +1,75 @@
-## 2026-06-21 — Unify the tlog-tiles `p`-vocabulary — store owns the only `p→width` translation
+## 2026-06-21 — Review of: Unify the tlog-tiles `p`-vocabulary — store owns the only `p→width` translation
 
-**Done:** Re-parameterized `Store.RecordTile` / `Store.RecordEntryBundle` to take the tlog-tiles
-partial qualifier `p uint8` (not a pre-translated `width int`); each method now computes
-`width := widthForP(p)` at the top via the package-private helper in `fetcher.go` (the single
-`p→width` authority, shared with the `SQLiteFetcher` read side). Deleted the follower's duplicate
-`func widthForP` and switched both ingest call sites to pass `c.Partial` straight through. Closes the
-last open `normal` issue (ADR-0005 single-source-of-truth for the mirror coordinate mapping).
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/store/tiles.go`: `RecordTile`/`RecordEntryBundle` signatures now end `…, p uint8, data
-  []byte, observedAt time.Time)`; each computes `width := widthForP(p)` then feeds the unchanged
-  INSERT/UPDATE, `tiles.IsFull(width)`, and `width %d` error args (so a full-tile error still reads
-  `width 256`). SQL/schema/`is_full` discipline unchanged; file + method docstrings updated.
-- `internal/follower/ingest.go`: both write call sites pass `c.Partial` directly; deleted the
-  duplicate `func widthForP` (was lines 119-130); `ingestTiles`/`ingestHashTiles`/`ingestEntryBundles`
-  docstrings now state the store owns the `p→width` translation.
-- `internal/tiles/coords.go`: two `BundleCoord`/`TileCoord` doc comments that said the translation is
-  "translated downstream by the ingestion writer" updated to "the store translates Partial to that
-  width on write" (the only honest description after the move; pure comment edit, no code change).
-- Tests (full `256`/`tiles.TileWidth` → `0`; partial width `W` → `uint8(W)`):
-  `internal/store/tiles_test.go`, `internal/store/fetcher_test.go`,
-  `internal/follower/equivocation_test.go` (translate `len(nodes)` → `p`),
-  `internal/follower/fsck_test.go`, `internal/follower/ingest_test.go` (see Notes),
-  `internal/logclient/fsck_test.go`, `internal/proofserve/entries_test.go`,
-  `internal/proofserve/handler_test.go` (pass `c.Partial` straight from `TileCoords`),
-  `internal/tilesserve/handler_test.go`, `cmd/iscc-monitor/main_test.go`.
+**Summary:** `advance` re-parameterized `Store.RecordTile`/`RecordEntryBundle` to take the tlog-tiles
+partial qualifier `p uint8` (computing `width := widthForP(p)` internally via the package-private
+single authority in `fetcher.go`), deleted the follower's duplicate `widthForP`, and switched both
+ingest call sites to pass `c.Partial` straight through. The diff is scope-clean (3 production files,
+one of them a comment-only doc fix), store stays a leaf, and the load-bearing invariant is
+reviewer-mutation-proven non-vacuous through the public surface. Resolves the last open `normal`
+issue (ADR-0005 single-source-of-truth for the mirror coordinate mapping).
 
-**Verification:** `mise run check` → green (`go build`/`go vet`/`go test ./...` all `ok`, 15 packages);
-`gofmt -l .` empty. Per-criterion:
-- `grep -rn "func widthForP" internal/` → exactly one hit (`internal/store/fetcher.go`). PASS.
-- `grep -n "widthForP" internal/follower/ingest.go` → empty (exit 1). PASS.
-- `go test -count=1 -run 'TestRecordTile|TestRecordEntryBundle|TestFetcher' ./internal/store` → ok
-  uncached (full + partial round-trip via `RecordTile`/`RecordEntryBundle` → `SQLiteFetcher`). PASS.
-  Named regression guards `TestRecordTilePartialOverwrite` (p=100), `TestRecordTileRoundTrip`,
-  `TestRecordEntryBundleRoundTrip`, `TestRecordTilePartialIsNotFull` all `--- PASS`.
-- `go test -count=1 ./internal/follower ./internal/logclient ./internal/proofserve ./internal/tilesserve`
-  → all `ok` uncached (full/partial mirror round-trips, fsck root-rebuild, equivocation
-  consistency-proof all read the mirror back correctly). PASS.
-- `go list -deps ./internal/store | grep -E "net/http|internal/logclient|internal/follower"` → empty
-  (store stays a leaf). PASS. `git diff --stat -- internal/store/schema.sql go.mod go.sum` → empty.
+**Verification:**
+- [x] `mise run check` (build + vet + test) — green, all 15 packages `ok`.
+- [x] `gofmt -l .` — empty (clean).
+- [x] `grep -rn "func widthForP" internal/` — exactly **one** hit (`internal/store/fetcher.go:113`).
+- [x] `grep -n "widthForP" internal/follower/ingest.go` — empty (exit 1); both call sites pass
+  `c.Partial` directly.
+- [x] `go test -count=1 -run 'TestRecordTile|TestRecordEntryBundle|TestFetcher' ./internal/store` — PASS
+  uncached. Named regression guards `TestRecordTilePartialOverwrite` (p=100), `TestRecordTileRoundTrip`,
+  `TestRecordEntryBundleRoundTrip`, `TestRecordTilePartialIsNotFull`, `TestFetcherReadTile*`,
+  `TestFetcherReadEntryBundle*` all `--- PASS`.
+- [x] `go test -count=1 ./internal/follower ./internal/logclient ./internal/proofserve
+  ./internal/tilesserve` — all `ok` **uncached** (full/partial mirror round-trips, fsck root-rebuild,
+  equivocation/inclusion consistency-proof all read the mirror back correctly; no conformance regression).
+- [x] `go list -deps ./internal/store | grep -E "net/http|internal/logclient|internal/follower"` —
+  empty (store stays a leaf). `git diff --stat HEAD~1..HEAD -- internal/store/schema.sql go.mod go.sum`
+  — empty.
+- [x] **Mutation testing (reviewer, reverted) — the public-surface invariant is non-vacuous.** Forcing
+  `widthForP`'s full mapping to `tiles.TileWidth - 1` makes `TestIngestTilesWidthMapping` ("tile L0 I0
+  not found at width 256") AND `TestRecordTileRoundTrip` ("full tile not found") FAIL. A green-but-wrong
+  `widthForP` cannot ship through the public `RecordTile`/`ReadTileBlob` seam; reverting restores green.
+- [x] **Deleted `TestWidthForP` is not a gate dodge.** It tested the now-deleted follower-private
+  `widthForP` arithmetic directly; the load-bearing "full coord (p=0) readable at width 256, NOT 0"
+  invariant is now pinned *more strongly* by `TestIngestTilesWidthMapping` over the public surface (both
+  the positive read-at-256 and the negative not-readable-at-0).
+- [x] **Gate-integrity scan over the 3 unpushed commits (`@{upstream}..HEAD`)** — no `//nolint` /
+  `t.Skip` / build-tag exclusion / swallowed-error / loosened gate in code (the single grep hit is a
+  prose line in the prior `handoff.md`).
+- [x] **Not-In-Scope respected** — `fetcher.go` (`widthForP` body + read methods), `schema.sql`, and
+  `cmd/notecheck` all byte-untouched; `ReadTileBlob`/`ReadEntryBundleBlob` keep their `width int` param.
+- [x] **Oracle/conformance gate correctly N/A** for this slice (plain CRUD + the existing pure `p→width`
+  arithmetic; no signature/RFC-6962/Merkle/did:web/fsck *path* changed) — but the four
+  mirror-consuming packages were re-run uncached anyway because their fsck root-rebuild and
+  equivocation/inclusion proofs read the mirror back via `SQLiteFetcher`.
 
-**Next:** The last `normal` issue is now drained. Remaining `issues.md` entry is the `low`
-`cmd/notecheck` vestigial `out io.Writer` param (loop-skipped). With the M3 mirror arc + three computed
-proofs + HTTP serving + this single-source cleanup landed, the natural next arc is the proof-surface
-cache / verify-for-me REST surface (deferred by this step's Not-In-Scope) — start by scoping the
-proof-bundle assembly (`{checkpoint, inclusion proof, record bytes, hub key, ots?}`) that both the
-in-browser verifier and verify-for-me share, reading from the now-unified store/SQLiteFetcher seam.
+**Issues found:** (none). Resolved + deleted the ADR-0005 `normal` issue "Tile writers require `width`,
+duplicating the tlog `p` translation in the follower" (verified the fix in production + test). One `low`
+issue remains in `issues.md`: the `cmd/notecheck` vestigial `out io.Writer` param (loop-skipped).
+
+**Next:** The `normal` backlog is drained. With the M3 mirror arc + three computed proofs + HTTP
+serving + this single-source cleanup landed, the natural next arc is the proof-surface cache /
+verify-for-me REST surface. Scope the proof-bundle assembly (`{checkpoint, inclusion proof, record
+bytes, hub key, ots?}`) that both the in-browser verifier and verify-for-me share, reading from the
+now-unified store/SQLiteFetcher seam — start with the bundle assembler in `internal/proofserve` (or a
+sibling) that composes `LatestCheckpointRaw` + `InclusionProofFromTiles` + the record bytes + the
+resolved hub key into one self-contained, client-verifiable package.
 
 **Notes:**
-- **One unlisted test file (`internal/follower/ingest_test.go`) referenced the deleted follower
-  `widthForP` and had to be fixed to keep the gate green.** `next.md`'s test-file list omitted it.
-  Two changes: (1) deleted `TestWidthForP` — it directly tested the now-deleted follower duplicate's
-  arithmetic; the load-bearing "full coord (p=0) must be readable at width 256, NOT 0" invariant is
-  still pinned by `TestIngestTilesWidthMapping` over the public `RecordTile`/`ReadTileBlob` surface
-  (it asserts the full tile is found at width 256 AND absent at width 0). (2) The two `PollHub`
-  integration tests used `widthForP(c.Partial)` as a local read-back helper; replaced with a
-  test-local `readWidth(p) int` (deliberately NOT named `widthForP`, so the single-authority grep
-  stays one hit) — needed because the read-side helpers (`ReadTileBlob`/`ReadEntryBundleBlob`) keep
-  their `width int` param per Not-In-Scope. This is not a gate dodge: the deleted test targeted code
-  that no longer exists, and the invariant has stronger coverage elsewhere.
-- **`internal/tiles/coords.go` was touched (3rd production file) for comment accuracy only** — its
-  `BundleCoord`/`TileCoord` docs claimed the writer does the translation, now false. Edit is
-  comment-only (no code, closure/go.mod/go.sum byte-unchanged); keeps total production files at 3
-  (the scope ceiling). Flagging since `next.md` listed only 2 modify targets.
-- **`uint8(256)` was never written** — every full coord is the literal `0` per the lossy-guard rule.
-  Test sites with a runtime `width` variable (`equivocation_test.go`'s `len(nodes)`,
+- **Third production file `internal/tiles/coords.go` is a comment-only doc fix** (confirmed via diff
+  filter: every changed line is a comment) — its `BundleCoord`/`TileCoord` docs claimed the *writer*
+  does the `p→width` translation, now false after the move. Within the ≤3 scope ceiling; flagged
+  transparently by the advance author. `next.md` listed only 2 modify targets, so this is a benign
+  over-list, not a scope violation.
+- **`uint8(256)` is never written** — every full coord is the literal `0` per the lossy-guard rule; the
+  test sites carrying a runtime `width` variable (`equivocation_test.go`'s `len(nodes)`,
   `entries_test.go`'s `last-first`) translate with an explicit `if width == tiles.TileWidth { p = 0 }`
   guard so a future full bundle/tile in those loops maps to `0`, never a wrapped `uint8(256)`.
-- **Oracle/conformance gate correctly N/A for this slice** (plain CRUD + the existing pure `p→width`
-  arithmetic; no signature/RFC-6962/Merkle/did:web/fsck path changed) — same posture the reviewer
-  recorded for the original tile-writer slice. The four mirror-consuming packages
-  (`follower`/`logclient`/`proofserve`/`tilesserve`) were still re-run **uncached** because the
-  full/partial round-trips, fsck root-rebuild, and equivocation consistency-proof read the mirror back
-  via `SQLiteFetcher` — all green, no conformance regression.
-- **Unrelated `.devcontainer/devcontainer.json` change is present in the working tree but NOT committed
-  by me** (pre-existing infra tuning: `--memory` runArgs + `GOFLAGS=-p=2`). Left for the human/infra
-  owner.
+- **`.devcontainer/devcontainer.json` is modified in the working tree but NOT committed** (pre-existing
+  infra tuning: `--memory` runArgs + `GOFLAGS=-p=2`) — left for the human/infra owner, correctly not
+  swept into this loop's commits.
+- **Loop is CONTINUE:** M1/M2 met, M3 in progress (mirror arc + three computed proofs + HTTP serving +
+  this cleanup done); verify-for-me REST, dashboard, log browser, WASM verifier, and OTS anchoring
+  remain the bulk of v1 — not DONE. No human-only decision open — not STOP.
