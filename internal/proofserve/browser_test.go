@@ -56,6 +56,48 @@ func TestBrowserExposesAcceptedCheckpoint(t *testing.T) {
 	}
 }
 
+// TestBrowserLinksTokensNoCDN pins the Evidence-Ledger shell wiring on the log
+// browser: the rendered GET / body links the embedded DS token + self-hosted-font
+// stylesheets at their literal /_ds/ paths, is styled through the DS font tokens
+// (so the type resolves to the self-hosted webfonts), lays out the card without an
+// HTML <table>, and carries no external CDN URL — the load-bearing M-UI invariant
+// that every SSR body is complete with JavaScript disabled and references no
+// third-party origin (mirrors dashboard.TestDashboardLinksTokensNoCDN).
+func TestBrowserLinksTokensNoCDN(t *testing.T) {
+	m := buildMirror(t, mirrorLeaves)
+	h := Handler(m.store, m.hubID, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// The DS shell is linked and the type resolves through the DS font tokens.
+	for _, want := range []string{
+		`href="/_ds/tokens.css"`,
+		`href="/_ds/fonts.css"`,
+		"var(--font-sans)",
+		"var(--font-mono)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing DS-shell marker %q\n%s", want, body)
+		}
+	}
+	// The redress drops the bare <table> for a card/grid layout.
+	if strings.Contains(body, "<table") {
+		t.Errorf("body still contains a <table> element; the ledger redress is incomplete\n%s", body)
+	}
+	// No external CDN URL may appear in the body — same-origin/relative hrefs only.
+	for _, banned := range []string{"jsdelivr", "http://", "https://", "cdn."} {
+		if strings.Contains(body, banned) {
+			t.Errorf("body contains external CDN reference %q\n%s", banned, body)
+		}
+	}
+}
+
 // TestBrowserNonGET asserts a non-GET method to the bare / is a 405 (the shared
 // method-gate at the top of Handler covers it).
 func TestBrowserNonGET(t *testing.T) {
