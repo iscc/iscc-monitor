@@ -12,10 +12,11 @@
 // the [][]byte CheckEquivocation expects for its consistencyProof argument.
 //
 // Purity (Correctness rule: proof/verify is pure; keep WASM-shareable): this file
-// imports only stdlib + the dep-clean merkle/{proof,compact,rfc6962} and
-// tessera/api{,/layout} closures. It must not pull net / net/http /
-// database/sql. The one I/O-ish import is os, used solely for the os.ErrNotExist
-// sentinel surfaced from the fetcher (already in this package via checkpoint.go).
+// imports only stdlib (context, fmt) + the dep-clean merkle/{proof,compact,rfc6962}
+// and tessera/api{,/layout} closures. It must not pull net / net/http /
+// database/sql. It never imports os: a fetcher's os.ErrNotExist is preserved by the
+// %w-wrapping of the fetch error, so errors.Is survives without this file
+// referencing the sentinel.
 package logclient
 
 import (

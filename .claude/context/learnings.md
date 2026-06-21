@@ -195,6 +195,54 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   consistency-proof) now remains deferred to the merkle-backed slice. Test guard `if rootA == rootB
   { t.Fatal }` makes the "different root" cases non-vacuous.
 
+## Consistency-proof builder (`internal/logclient/proofbuilder.go`)
+
+- **`ConsistencyProofFromTiles(ctx, fetch TileFetcher, smaller, larger uint64) ([][]byte, error)` is
+  the proof *source* `CheckEquivocation` needs — a faithful port of tessera `client.ProofBuilder.
+  ConsistencyProof + fetchNodes + nodeCache.GetNode` (`cauldron/tessera/client/client.go`) minus the
+  otel spans, the net/http `TileFetcherFunc`, and the ephemeral-node map.** Reviewer diffed the `getNode`
+  body line-for-line against tessera's `nodeCache.GetNode`: `layout.NodeCoordsToTileAddress` →
+  `PartialTileSize(…, larger)` → `fetch` → `api.HashTile.UnmarshalText` → fold `t.Nodes[firstLeaf:
+  lastLeaf]` through `compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}` — identical. The
+  dropped `m > pb.treeSize` bounds guard is correct to drop here (this layer is stateless; `larger` IS
+  the tree size). Dropping the ephemeral-node check is correct too: `proof.Consistency`'s IDs only ever
+  map to real tile nodes, and `nodes.Rehash` supplies the one ephemeral node itself — `getNode` is never
+  asked for it.
+- **The `TileFetcher` signature is byte-identical to `store.SQLiteFetcher.ReadTile`** (`func(ctx
+  context.Context, level, index uint64, p uint8) ([]byte, error)`), so the follower's equivocation wiring
+  can pass `SQLiteFetcher.ReadTile` straight in — verified both signatures side by side. `larger` (not
+  `smaller`) is the `logSize` fed to `PartialTileSize`, matching tessera's `nodeCache.logSize` (the
+  partial qualifier reflects the *newer* tree). Empty-proof boundaries (`smaller==0`/`smaller==larger`)
+  return a nil slice without touching the fetcher (`proof.Consistency` yields zero IDs) — the test's
+  fail-on-fetch fetcher proves this. A genuine tile miss is `%w`-wrapped so `errors.Is(err,
+  os.ErrNotExist)` survives, distinct from the "proof fails to verify = violation" verdict (that verdict
+  is `CheckEquivocation`'s job, never this builder's).
+- **Oracle gate APPLIES (RFC-6962 crypto) and is satisfied by three independent code paths.** The golden
+  builds a 300-leaf `testonly.Tree` (crosses the 256-leaf tile boundary: tile 0 full, tile 1 = 44-leaf
+  partial at index 1), serves its tiles via an in-test `TileFetcher`, and asserts the tile-built proof
+  *byte-equals* `tree.ConsistencyProof(s1,s2)` AND *verifies* via `proof.VerifyConsistency` for 5 growing
+  pairs. Prover, verifier, and builder are three independent merkle paths → not a tautology. Reviewer
+  confirmed non-vacuousness two ways: (1) instrumented the proof lengths — 9/7/10/6/8 hashes, so the
+  byte-match is substantive not empty-vs-empty; (2) injected a one-byte corruption into `getNode`'s
+  returned hash → the golden FAILED (then reverted). A green-but-wrong builder cannot ship.
+- **`proofbuilder.go` is net-free though the `logclient` *package* is not.** `next.md` criterion "`go
+  list -deps ./internal/logclient | grep net/http` empty" is UNSATISFIABLE for this package and was so at
+  baseline — `net/http` enters via `didresolve.go` (the networked did:web resolver), confirmed
+  pre-existing. The new file imports only `context`+`fmt`+`merkle/{proof,compact,rfc6962}`+`tessera/api
+  {,/layout}`; the load-bearing purity invariant is the **`GOOS=js GOARCH=wasm` build**, which passes.
+  Reviewer trimmed a stale file-comment that claimed `os` was imported (it never was — the sentinel rides
+  the `%w` wrap, this file never references `os`).
+- **`go mod tidy` is NOT a no-op here (adds 22 go.sum lines) — but the committed go.sum is byte-identical
+  to HEAD and the build is fully reproducible under `-mod=readonly` (verified: clean readonly build+test,
+  `go mod verify` passes).** Importing `tessera/api` (vs `tessera/api/layout`, already used by
+  `internal/tiles`) widens the module-graph *require* footprint, so tidy wants checksums for tessera's
+  transitive requires (otel/klog/x-crypto/formats/backoff) that **never compile** (`go list -deps
+  tessera/api` is stdlib-only). There is **no CI yet** (`.github/workflows/` absent), so no tidy-cleanliness
+  job fails today — but **a future `go mod tidy && git diff --exit-code` CI step WOULD fail** on these 22
+  lines. Resolve before CI/notecheck lands: either a deliberate go.sum-only commit adding the 22 entries,
+  or a tidy step scoped to compiled deps. This is the FIRST slice where tidy actually diverges (the
+  go-cmp/tessera-graph churn earlier learnings noted stayed latent until `tessera/api` was imported).
+
 ## tlog-tiles layout seam (`internal/tiles`)
 
 - **`internal/tiles` is a thin re-export of `tessera/api/layout`, not a reimplementation** — wrappers
