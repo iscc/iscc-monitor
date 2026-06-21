@@ -46,7 +46,8 @@ mechanics are here.
   signature/RFC-6962/Merkle/did:web/fsck/proof path; go.mod/go.sum/schema byte-identical.
 - **Only 3 of 5 statuses are store-provable (`frozen`/`verified`/`inactive`); the other two
   (`unresolvable`/`unverified`) come from the in-memory `metrics.Registry` (`follower.glossaryStatus`
-  folds `rotated → unverified`).** settled: `/` now renders all five — `dashboard.overlayStatus`
-  overlays the live verdict onto the store subset (see `learnings/dashboard.md` for the precedence
-  rule). A new page that wants the full taxonomy must reuse that `StatusSource` overlay; the store
-  alone still cannot prove `unresolvable`/`unverified`.
+  folds `rotated → unverified`).** settled: both `/` (dashboard) and `/<domain>/log/` (proofserve
+  `serveBrowser`) now render all five via the same `StatusSource`-interface + `overlayStatus` overlay
+  (each package defines its own local copy of the tiny shape — no shared import; see
+  `learnings/dashboard.md` + `learnings/http-surface.md`). A new page that wants the full taxonomy must
+  reuse that overlay; the store alone still cannot prove `unresolvable`/`unverified`.

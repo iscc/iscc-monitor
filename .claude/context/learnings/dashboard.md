@@ -27,7 +27,9 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   (a fresher poll verdict is honest, but durable `inactive`/`frozen` must win). `TestOverlayStatusPrecedence`
   pins the table; `TestDashboardRendersInMemoryStatus` is the non-vacuous HTTP-seam render
   (reviewer mutation-confirmed: `overlayStatus`→`hubStatus` renders `data-status="verified"`, test FAILS).
-  Reuse this exact `StatusSource`-interface + overlay shape for the per-hub log-browser cell / dossier.
+  settled: the per-hub log-browser cell (`proofserve.serveBrowser`) now reuses this exact
+  `StatusSource`-interface + `overlayStatus` shape (its own local copy, no `internal/dashboard` import —
+  see `learnings/http-surface.md`). Reuse the same shape for the upcoming hub dossier / record pages.
 - **`inactive` is currently unreachable through the public store API (no `SetActive` writer; `UpsertHub`
   inserts the schema default `active=1`).** So the golden HTTP-seam test cannot drive a hub to
   `inactive`; the advance covered it with a white-box table test on the package-private `hubStatus`

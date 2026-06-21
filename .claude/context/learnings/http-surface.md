@@ -135,9 +135,24 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   (followed-but-unpolled) → **200** "no accepted checkpoint yet" (ADR-0001 coverage honesty, never a 404
   and never a fabricated `(0,"")`). Mutation-proven non-vacuous: dropping `{{.Root}}` and `{{.Size}}`
   each FAIL `TestBrowserExposesAcceptedCheckpoint` (reviewer re-ran independently, reverted → green).
-  go.mod/go.sum/schema byte-identical; store stays a leaf. Minor: an unpolled non-frozen hub renders
-  "Status: verified" (the store-provable subset only knows frozen-vs-verified), softened by the explicit
-  no-coverage sentence — consistent with `serveVerify`, not a regression.
+  go.mod/go.sum/schema byte-identical; store stays a leaf.
+- **The status cell now renders through the five-status `hubStatusBadge` partial overlaid with the
+  in-memory verdict — same `StatusSource`-interface + `overlayStatus`-precedence shape the dashboard
+  uses, NOT a `dashboard`/`metrics` import.** `proofserve` defines its own local `StatusSource`
+  (`Status(hubID int64) (string, bool)`, satisfied structurally by `*metrics.Registry`) and
+  `overlayStatus(fs, hubID, statuses)`; `main.go` threads `m` through `mirrorHandler` → `hubHandler` →
+  `proofserve.Handler(st, hubID, m)`. Precedence is verbatim `dashboard.overlayStatus`: frozen wins
+  (early return when `hubStatus != "verified"`), nil-tolerant, overlay applies ONLY over store-`verified`
+  and adopts ONLY `unresolvable`/`unverified`. Input subset is `frozen`/`verified` only (`serveBrowser`
+  reads `FollowState`, not the realm-active flag), so the overlay can only ever flip `verified` →
+  `unresolvable`/`unverified` — `inactive` is unreachable here. `browserData` carries a precomputed
+  `.Label` (`badge.Label(status)`, `!ok → label = status` defensive-only since the overlay only yields
+  valid `labels` keys). `TestBrowserRendersInMemoryStatus` is the HTTP-seam non-vacuous render (reviewer
+  mutation-confirmed: `overlayStatus → hubStatus(fs)` renders bare `verified`, test FAILS, reverted →
+  green). The earlier "unpolled non-frozen hub renders bare verified" minor is RESOLVED: the overlay
+  now honestly shows `unresolvable`/`unverified` on a `LastSize==0` hub too (both `browser.html`
+  branches invoke the partial). Keep `proofserve` free of `internal/metrics`/`internal/dashboard`
+  (`go list -deps` empty); store stays a leaf. Oracle gate stays N/A.
 
 ## CORS middleware (`internal/corsmw`)
 
