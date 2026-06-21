@@ -1,139 +1,128 @@
 # Next Work Package
 
-## Step: Make the certificate §1 inclusion claim sound — accepted-tree cap + ISCC:-prefixed lookup
+## Step: Certificate §2 CHECKPOINT clause — render the accepted (size, root)
 
 ## Advances
-Closes the two open `critical` issues that block the M-UI certificate Verify criterion. Per the
-`review` handoff (**Next:** "Fix the two `critical` defects — they belong together in ONE slice") and
-`state.md` "Next Milestone" step 1, these preempt all other work: the headline §1 SUBJECT clause
-currently makes an affirmative inclusion claim it cannot back. The criterion advanced toward is
-target.md M-UI:
+target.md **M-UI — Evidence Ledger frontend** Verify criterion (the last open M-UI criterion):
 
-> "the **realm-wide certificate** (`/inclusion/{iscc_id}` …) for a known id renders the numbered
-> evidence clauses (subject + position; …) … while an unknown id renders the documented 'not found in
-> log' state (200, never 5xx)"
+> the **realm-wide certificate** (`/inclusion/{iscc_id}` …) for a known id renders the numbered
+> evidence clauses (subject + position; **checkpoint `(size, root)`**; inclusion proof; signing key;
+> anchor state; full per-id record history incl. any deletion) …
 
-The skeleton landed NEEDS_WORK because §1 certifies leaves *outside the accepted tree* and looks up a
-*bare* id that never matches the stored `ISCC:`-prefixed key. This step makes the §1 claim honest so
-the criterion can progress (its §2–§6 clauses follow in later steps, see `## Not In Scope`).
+This is the §2 clause of the per-surface certificate landmark list ("§1 Subject · **§2 Checkpoint
+(size, root)** · §3 Inclusion proof …", target.md Certificate mockup region). §1 SUBJECT is sound and
+PASS-verified at HEAD (340303b); the `review` handoff `**Next:**` is explicit: "Proceed to the §2
+Checkpoint clause (`HasClause2`): render the accepted `(size, root)` the cap already keys on, reusing
+the `HubSummary.LastSize` carry." This is the next slice in the certificate clause-by-clause arc.
 
 ## Goal
-Gate the certificate's affirmative inclusion claim on the accepted-tree cap (`seqs[0] < LastSize`,
-like every sibling record route) and canonicalize the lookup id to the stored `ISCC:`-prefixed form,
-so a real declaration in an accepted checkpoint certifies while an unaccepted / unindexed / pre-coverage
-id renders the honest cannot-certify state — with fixtures re-grounded to production's storage format.
+Make the certificate's §2 CHECKPOINT clause real for a certifiable id: render the hub's accepted
+checkpoint `(size, root)` — the same accepted tree the §1 cap already keys on (`hub.LastSize`). The
+root is read back via `store.CheckpointAt(hubID, LastSize)` and rendered base64-Std, matching every
+sibling SSR surface (log browser, verify-for-me). This converts the §2 placeholder from `HasClause2 ==
+false` (renders nothing) into a populated clause without rework — the gated-clause template structure
+already exists.
 
 ## Scope
-- **Modify**: `internal/certificate/handler.go` (`buildData` + `followedHub`) — the only non-test source
-  file. (1 of ≤3.)
-- **Modify (tests, not counted)**: `internal/certificate/handler_test.go` — re-ground `fixtureStore`
-  to index the leaf under the `ISCC:`-prefixed id and seed an accepted checkpoint covering it; add the
-  two cannot-certify seam tests below.
+- **Modify**:
+  - `/workspace/iscc-monitor/internal/certificate/handler.go` — extend `certData` with
+    `CheckpointSize uint64` + `CheckpointRoot string` (base64-Std); in `buildData`, in the
+    `Certifiable = true` branch (after the accepted-tree cap passes), read
+    `st.CheckpointAt(r.Context(), hub.HubID, hub.LastSize)` and populate `CheckpointSize = hub.LastSize`,
+    `CheckpointRoot = base64.StdEncoding.EncodeToString(root)`, and set `HasClause2 = true`. A
+    `CheckpointAt` DB error → 500 (buffer-then-200 already in place); a `found == false` leaves
+    `HasClause2 = false` (no fabricated checkpoint — honest absence). (1 of ≤3 non-test source files.)
+  - `/workspace/iscc-monitor/internal/certificate/cert.html` — fill the existing `{{if .HasClause2}}`
+    §2 block (currently an empty `.clause-value`) with the accepted size + root + an honest note.
+    (2 of ≤3.)
+- **Modify (tests, not counted)**: `/workspace/iscc-monitor/internal/certificate/handler_test.go` —
+  extend `TestCertificateKnownID` to assert the §2 clause renders the accepted size + base64-Std root;
+  assert a non-certifiable case renders NO §2 clause.
 - **Reference**:
-  - `/workspace/iscc-monitor/.claude/context/learnings/certificate.md` — both OPEN traps documented
-    verbatim (the accepted-tree cap + the prefixed-key mismatch); read before editing.
-  - `/workspace/iscc-monitor/.claude/context/learnings/store.md` — `AdvanceAccepted` tx,
-    `ListHubs`/`FollowState` leaf reads, the iscc_index contract.
-  - `/workspace/iscc-monitor/.claude/context/learnings/http-surface.md` — the documented
-    "iscc_index can hold projections ABOVE LastSize" trap + every sibling route's `>= size` cap.
-  - `/workspace/iscc-monitor/.claude/context/issues.md` — the two `critical` entries carry the exact fix
-    + verify recipe.
-  - `/workspace/iscc-monitor/internal/store/hubs.go` (line 23: `HubSummary` carries `.LastSize` +
-    `.Frozen`) and `/workspace/iscc-monitor/internal/store/iscc_index.go` (line 201: `SeqsForISCCID`,
-    ORDER BY seq ascending).
-  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — the accept path (`AdvanceAccepted` /
-    `FollowState`) the fixture uses to set `LastSize`; confirm the exact signature there.
-  - `/workspace/iscc-monitor/internal/logclient/projection.go` (lines 31-32) — ground truth: `iscc_id`
-    is stored **`ISCC:`-prefixed, verbatim**.
-  - `/workspace/iscc-monitor/internal/certificate/cert.html` (lines 324, 378-391) — the
-    `{{if .Certifiable}} … {{else}}` not-found branch already renders any `.Reason`; **no template
-    change is needed** for the new cannot-certify states.
+  - `/workspace/iscc-monitor/.claude/context/learnings/certificate.md` — package mechanics
+    (decode→resolve→ListHubs→cap chain, buffer-then-200, fail-closed 200 discipline). Read before editing.
+  - `/workspace/iscc-monitor/.claude/context/learnings/store.md` — `CheckpointAt` / `HubSummary.LastSize`
+    semantics (the accepted root is NOT persisted in follow_state; `CheckpointAt(hubID, treeSize)` reads
+    it back; absent → `found=false, nil err`).
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go` (lines 143-169) — `CheckpointAt` signature
+    `(root []byte, raw []byte, found bool, err error)`.
+  - `/workspace/iscc-monitor/internal/proofserve/handler.go` (lines 511, 657) — the established SSR root
+    encoding: `base64.StdEncoding` (the log browser `browserData.Root` and `VerifyVerdict.Root` both use
+    it — match it for cross-surface consistency).
+  - `/workspace/iscc-monitor/internal/certificate/cert.html` (lines 336-341) — the existing empty
+    `{{if .HasClause2}}` §2 block to fill; (lines 188-217) — the `.clause` / `.clause-marker` /
+    `.clause-value` / `.clause-mono` / `.clause-note` CSS classes to reuse (no new CSS).
+  - `.claude/design/ISCC Monitor - Certificate.dc.html` — the §2 clause layout/copy (subordinate to the
+    ADR/PRD hard constraints — flag any conflict).
 
 ## Not In Scope
-- The §2–§6 clauses (checkpoint, inclusion proof, signing key, Bitcoin anchor, record history) and the
-  downloadable **proof-bundle assembler** — those re-engage the oracle/conformance gate and are their
-  own later slices. Leave `HasClause2..6` false and the download button disabled.
+- **§3 Inclusion proof and the downloadable proof-bundle assembler.** §3 re-engages the
+  oracle/conformance crypto gate (the served inclusion proof must be mutation-proven non-vacuous against
+  the hub's `IsccLogInclusionProof` / `notecheck`). §2 is a pure store read + render — keep this slice
+  inside the N/A-oracle envelope so it lands clean before the crypto step. Leave `HasClause3..6 == false`.
+- §4 signing key, §5 Bitcoin anchor, §6 record history.
 - The separate Bitcoin-anchor vs comparison-anchor panels.
-- The deferred `internal/registry` `hubDomain` `ForceQuery` fail-open (`normal`) — do NOT touch
-  `registry.go` this step; it rides the slice that next edits `hubDomain`.
-- The ADR-0011 Go 1.26 + iscc-lib bump (`normal`, human-sequenced, needs a Go 1.26 toolchain).
-- Any new store query: the cap reads `LastSize` from the `HubSummary` that `followedHub` already fetches
-  via `ListHubs` — do **not** add a second `FollowState` call.
-- Editing `cert.html` — the existing `{{else}}` not-found branch covers both new states via `.Reason`.
+- The Hub-List `hubDomain` `ForceQuery` fail-open fix (the deferred `normal`): this step does not touch
+  `internal/registry/registry.go`, so do NOT fold it in here — it waits for a step that edits `hubDomain`.
+- The ADR-0011 Go 1.26 / iscc-lib bump (its own foundational increment; needs a Go 1.26 toolchain).
+- Any new store method or second store round-trip beyond the single `CheckpointAt` call.
 
 ## Implementation Notes
-Both fixes live in `buildData` (+ a small `followedHub` return-type change). The template needs no
-edit — the cannot-certify states route through the existing `{{else}}` branch by setting `data.Reason`.
+Both populated fields live in `buildData`'s certifiable branch; the template's `{{if .HasClause2}}`
+structure already exists, so only its inner `.clause-value` needs filling.
 
-1. **Carry `LastSize` out of the hub lookup (no extra query).** `followedHub` already calls
-   `st.ListHubs` and returns the matching `HubSummary.HubID`. `HubSummary` also carries `.LastSize`
-   and `.Frozen` (`internal/store/hubs.go:23`). Change `followedHub` to return the matched
-   `store.HubSummary` (or at minimum `(hubID int64, lastSize uint64, ok bool, err error)`) so
-   `buildData` has `LastSize` in hand without a second store round-trip. Keep it one linear scan.
-
-2. **Accepted-tree cap (Correctness rule: coverage honesty, ADR-0001).** After
-   `seqs, err := st.SeqsForISCCID(...)`, keep the current `len(seqs) == 0 → "not found in log"`. Then
-   add the cap **before** setting `Certifiable`:
-   - if `LastSize == 0` → `data.Reason = "no accepted checkpoint yet"`, return 200 (not certifiable);
-   - else if `seqs[0] >= LastSize` → `data.Reason = "not in accepted tree"`, return 200 (the leaf is
-     indexed but above the accepted checkpoint — a frozen/failed poll left an unaccepted projection;
-     see learnings/http-surface.md "iscc_index can hold projections ABOVE LastSize").
-   Only `len(seqs) > 0 && seqs[0] < LastSize` sets `data.Certifiable = true`. This mirrors
-   `serveInclusion` / `serveEntries` / `serveRecord` (`leafIndex/seq >= size → not served`).
-   `seqs` is ascending (`SeqsForISCCID` ORDER BY seq), so `seqs[0]` is the earliest indexed candidate —
-   the right one to gate on. Set `data.Domain = domain` on these branches too, so the page names the hub.
-
-3. **Canonicalize the lookup id to the stored prefixed form (ADR-0008 schema-agnostic index).**
-   Production stores `iscc_id` `ISCC:`-prefixed and verbatim (`projection.go:31-32`). The handler
-   currently passes the bare path suffix `rawID`. After `index.Decode(rawID)` succeeds (so we know it
-   is a valid ISCC-IDv1), build the canonical key once:
-   `lookupID := "ISCC:" + strings.TrimPrefix(rawID, "ISCC:")` — this accepts either `/inclusion/MAIG…`
-   or `/inclusion/ISCC:MAIG…` and always queries the single stored prefixed form (do NOT double-prefix).
-   Pass `lookupID` (not `rawID`) to `SeqsForISCCID`. Keep echoing `rawID` as `data.IsccID` for display.
-   `index.iscPrefix` is unexported, so use the literal `"ISCC:"` here (matching how `cert.html` carries
-   literal `/_ds/` paths).
-
-4. **Re-ground the fixtures to ground truth, not to the code.** In `handler_test.go` `fixtureStore`:
-   - index the leaf under the **prefixed** id: `IsccID: "ISCC:" + indexedID` in the `ProjectionRecord`
-     (currently it seeds the bare form), matching `projection_test.go`'s `"ISCC:MAIG…"`. Keep the
-     `indexedID` argument the bare golden id and prefix it inside `fixtureStore`.
-   - seed an **accepted checkpoint** covering the leaf so `LastSize > seq`. Use the store's accept path
-     (`AdvanceAccepted` — the same call `checkpoints_test.go` uses to set `LastSize`); confirm the API
-     in `internal/store/checkpoints.go`. For the golden seq `24815`, set `LastSize` to e.g. `24816`+.
-   `TestCertificateKnownID` then proves the real production path (prefixed key + accepted tree), and the
-   bare-suffix request `/inclusion/MAIGHFECJMOPMIAB` still certifies (proving the canonicalization).
-   The existing not-in-log / malformed / unresolvable / not-followed / empty / nil-HubList tests stay
-   green (none of them assert `Certifiable`); fix any that now need an accepted checkpoint to certify.
-
-5. **Add two cannot-certify seam tests** (mutation-provable, ground-truthed):
-   - `TestCertificateUnacceptedLeaf`: index the prefixed leaf at a seq `>= LastSize` (or with
-     `LastSize == 0` — no accepted checkpoint) and assert the body renders the cannot-certify state
-     ("not in accepted tree" / "no accepted checkpoint yet") and **not** the "is included in the
-     transparency log" banner. Reverting the cap makes this FAIL.
-   - `TestCertificatePrefixedLookup` (or fold into the known-id test): with the leaf indexed under the
-     prefixed id, the bare-suffix request still certifies; reverting the canonicalization makes it FAIL.
-
-Edge cases: a frozen hub's `LastSize` is its last *accepted* size (freeze stops advance, ADR-0006), so
-the same `seqs[0] < LastSize` cap correctly caps a frozen hub at its accepted window — no separate
-frozen branch needed. Keep all branches 200 (fail-closed); a store error stays the only 500
-(buffer-then-200, unchanged).
+- **Reuse `hub.LastSize`, do NOT re-derive the accepted size.** `followedHub` already returns the
+  `store.HubSummary` carrying `LastSize`; the cap branch (`hub.LastSize == 0` / `seqs[0] >= hub.LastSize`)
+  has already proven `LastSize > 0` by the time you populate §2, so `CheckpointSize = hub.LastSize` needs
+  no extra read. Only the *root* needs a store call.
+- **Root read seam is `CheckpointAt(ctx, hub.HubID, hub.LastSize)`** (`checkpoints.go:157`), returning
+  `(root []byte, raw []byte, found bool, err error)`. You only need `root`; ignore `raw` here (the raw
+  signed-note bytes belong to the §3 proof-bundle step). A DB `err != nil` → `return certData{},
+  http.StatusInternalServerError` (the existing 500 idiom; the handler buffers before 200). A
+  `found == false` is the rare honest gap — leave `HasClause2 = false` and still render the certifiable
+  §1 banner; never fabricate a root. Realistically `found` is always true on the certifiable path
+  because `AdvanceAccepted` records the checkpoint at the same `tree_size` it advances `last_size` to,
+  but the fail-closed branch keeps the render honest.
+- **Encode the root base64-Std** (`base64.StdEncoding.EncodeToString(root)`), matching
+  `proofserve/handler.go:511,657` (the log browser + verify-for-me) so the certificate's root string is
+  byte-identical to what the rest of the federation surfaces show. Add `encoding/base64` to the imports.
+- **`html/template` auto-escapes** `{{.CheckpointRoot}}` / `{{.CheckpointSize}}` (the template is already
+  `html/template`, not `text/template`).
+- **Template: fill the existing `{{if .HasClause2}}` block** (cert.html:336-341, currently
+  `<div class="clause-value"></div>`). Render the accepted size + base64 root in a `.clause-mono` value
+  and an honest `.clause-note` — e.g. value `size {{.CheckpointSize}} · root {{.CheckpointRoot}}` and a
+  note like "The accepted checkpoint (size + RFC-6962 tree head) the monitor vouches for; this id's
+  position ({{.Position}}) falls within it." Reuse the existing `.clause-*` CSS classes (no new CSS).
+  Do NOT imply pre-coverage guarantees (ADR-0001 coverage honesty — Correctness rule).
+- **Correctness rules in play:** *Coverage honesty (ADR-0001)* — §2 renders only the accepted-tree
+  checkpoint, never a contradicted/unaccepted one; the cap already guarantees `Position < LastSize`. The
+  *one origin/leaf* and *iscc_id→seq one-to-many* rules are unaffected (no new lookup).
+- **store stays a leaf** — `CheckpointAt` is an existing store read; you add no store method and no
+  net/http to store. Oracle/conformance gate is **N/A** for this slice (pure store read + HTML render;
+  no signature/RFC-6962/Merkle/did:web/fsck/proof path) — say so in the advance notes; the gate APPLIES
+  starting at §3.
+- **Test (non-vacuous):** extend `internal/certificate/handler_test.go`. The existing
+  `TestCertificateKnownID` fixture calls `AdvanceAccepted` with `Root: []byte("root")` and an accepted
+  size — assert the rendered HTML for the certifiable id now contains the §2 marker (`§2 CHECKPOINT`),
+  the accepted size, AND `base64.StdEncoding.EncodeToString([]byte("root"))`. Make it non-vacuous: a
+  `TestCertificateUnacceptedLeaf` / `TestCertificateNotInLog` case must NOT render `§2 CHECKPOINT` (it is
+  not Certifiable). Mutation check to record for review: neutering `HasClause2 = true` (or rendering a
+  hardcoded wrong root) makes the §2 assertion FAIL.
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
 - `go test -count=1 ./internal/certificate` passes uncached.
-- `go test -count=1 -run TestCertificateKnownID ./internal/certificate` passes with the leaf indexed
-  under `"ISCC:"+goldenID` and an accepted checkpoint with `LastSize > 24815`, asserting the certifiable
-  subject banner + position `24815` for the bare-suffix request `/inclusion/MAIGHFECJMOPMIAB`.
-- `go test -count=1 -run TestCertificateUnacceptedLeaf ./internal/certificate` passes: a prefixed leaf
-  at seq `>= LastSize` (or `LastSize == 0`) renders the cannot-certify state, not the subject banner.
-- Mutation check (reviewer reproduces): (a) removing the `seqs[0] < LastSize` cap →
-  `TestCertificateUnacceptedLeaf` FAILS; (b) reverting the lookup to bare `rawID` →
-  `TestCertificateKnownID` FAILS (declaration reports "not found in log").
-- `GET /inclusion/MAIGHFECJMOPMIAB` and `GET /inclusion/ISCC:MAIGHFECJMOPMIAB` both certify the same
-  leaf (canonicalization accepts either input form).
+- `go test -count=1 -run TestCertificateKnownID ./internal/certificate` passes and the response body
+  contains `§2 CHECKPOINT`, the accepted tree size, and `base64.StdEncoding.EncodeToString([]byte("root"))`
+  (the fixture's accepted root) — proving §2 renders the real accepted `(size, root)`.
+- A non-certifiable id (`TestCertificateUnacceptedLeaf` / `TestCertificateNotInLog`) renders NO §2
+  clause (`§2 CHECKPOINT` absent from the body).
+- Mutation check (reviewer reproduces): neutering `HasClause2 = true` → the §2 assertion in
+  `TestCertificateKnownID` FAILS; rendering a hardcoded wrong root → the base64-root assertion FAILS.
+- `GOOS=js GOARCH=wasm go build ./internal/index` still succeeds (no-regression sanity check; this step
+  does not touch `internal/index`).
 
 ## Done When
-`buildData` gates `Certifiable` on `len(seqs) > 0 && seqs[0] < LastSize` and looks up the
-`ISCC:`-prefixed id, the fixtures are re-grounded to the prefixed form + an accepted checkpoint, both
-new tests pass and are mutation-proven non-vacuous, and `mise run check` is green — closing the two
-open `critical` issues so the certificate §1 claim is sound.
+`mise run check` is green and the certificate's §2 CHECKPOINT clause renders the hub's accepted
+`(size, root)` (size from `hub.LastSize`, root base64-Std from `CheckpointAt`) for a certifiable id and
+nothing for a non-certifiable one, with the §2 assertion mutation-proven non-vacuous.
