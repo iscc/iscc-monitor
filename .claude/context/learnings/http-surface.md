@@ -19,23 +19,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## Computed inclusion proof HTTP surface (`internal/proofserve/handler.go`)
 
-- **Nesting a per-hub `http.ServeMux` under `StripPrefix` changes the strip discipline — strip `"/"+
-  Origin`, NOT `"/"+Origin+"/"`.** When the inner handler is itself a `ServeMux` (here: `/inclusion` →
-  proofserve, `/` → tilesserve), it 301-redirects any path missing its leading slash, so the strip must
-  leave the leading slash on the suffix. The earlier tilesserve-only mount stripped the full
-  trailing-slash prefix and worked only because `tilesserve` `TrimPrefix`-tolerates a slash-less path.
-  The mount prefix still keeps its trailing slash to arm subtree matching. Reviewer-confirmed with a
-  standalone mux: exact `/inclusion` wins over the `/` subtree; `/checkpoint`, `/tile/...`, and even
-  `/inclusion/x` fall through to tilesserve (the last 404s there, fine — not a real proof route).
-- **Oracle gate APPLIES here (RFC-6962 inclusion crypto) and is reviewer-mutation-proven non-vacuous.**
-  Three independent paths meet in `TestInclusionServedProofVerifies`: the `testonly.Tree` prover (owns
-  the real proof + root), `InclusionProofFromTiles` inside the handler (recompute over the mirror the
-  test wrote), and `proof.VerifyInclusion` (verifier). Reviewer reverted-mutated the handler twice: (1)
-  serve `proof = nil` → FAIL "wrong proof size 0, want N" across boundary leaves; (2) build for
-  `leafIndex+1` → FAIL (wrong-leaf verifies / 500 at the last leaf). A green-but-wrong handler cannot
-  ship. `notecheck`/`derive_vkey.py` correctly N/A — the checkpoint signature is never re-parsed or
-  served here (the served `{type,treeSize,leafIndex,inclusionProof}` omits `checkpoint`; the client
-  refetches `/checkpoint` from the mirror; `AcceptCheckpoint` owns signature/root).
+- **settled:** the `/inclusion` RFC-6962 proof seam is landed + stable — strip discipline (`"/"+Origin`,
+  NOT `+"/"`, so the inner `ServeMux` keeps its leading slash and exact mounts beat the `/` subtree),
+  oracle gate APPLIES and was mutation-proven non-vacuous (`TestInclusionServedProofVerifies`: tree
+  prover vs `InclusionProofFromTiles` vs `proof.VerifyInclusion`; reverted-mutated `proof=nil` and
+  `leafIndex+1` both FAIL), and `notecheck`/`derive_vkey.py` correctly N/A (the served object omits
+  `checkpoint`; the client refetches `/checkpoint`; `AcceptCheckpoint` owns sig/root). (Detail in git
+  history pre-2026-06-21.) The one durable trap: strip leaves the leading slash so a nested mux does not
+  301-redirect.
 - **Default seq is `seqs[0]` and it is genuinely the lowest committed seq** because `SeqsForISCCID`
   is `ORDER BY seq` ASC — so the documented "first committed seq" default is deterministic, not
   arbitrary. An explicit `&index=<n>` must equal one of the committed seqs (else 400 via `selectSeq`),
@@ -48,23 +39,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## Computed consistency proof HTTP surface (`internal/proofserve` + `CheckpointAt ORDER BY rowid`)
 
-- **`GET /consistency?from=<n>` is the second proof route; the inner `Handler` is now a `switch
-  r.URL.Path { /inclusion, /consistency, default 404 }` after the one shared 405 method-gate.** The
-  per-hub mount in `cmd/iscc-monitor/main.go` `hubHandler` mounts ONE `proofserve.Handler(st,hubID)` at
-  BOTH exact paths (`mux.Handle("/inclusion", proofs)` + `mux.Handle("/consistency", proofs)`); the
-  handler's internal path switch dispatches. Both exact mounts beat the `/` → tilesserve subtree via
-  `http.ServeMux` most-specific match — verified green by `TestMirror*` + the proofserve route tests.
-- **Oracle gate APPLIES (RFC-6962 consistency crypto) and is reviewer-mutation-proven non-vacuous.**
-  `TestConsistencyServedProofVerifies` reuses the inclusion `buildMirror` 300-leaf `testonly.Tree`
-  fixture (records a prior checkpoint at each tested `from` via `recordPriorCheckpoint`) and for
-  `from ∈ {1,200,255,256,299}` (straddling the 256-leaf tile boundary, `larger=300`) asserts the served
-  proof byte-equals `tree.ConsistencyProof(from,300)` AND `proof.VerifyConsistency` ACCEPTS, with a
-  sharp wrong-prior-root negative. Reviewer corrupted `encoded[0]` in `writeConsistency` → FAILS BOTH
-  the byte-equal assert and `VerifyConsistency` ("calculated root does not match expected root"), then
-  reverted → green. Arg-order gotcha (reconfirmed): `VerifyConsistency(hasher, size1, size2, proof,
-  root1, root2)` — `proof` precedes the two roots, UNLIKE `VerifyInclusion` where `leafHash` precedes
-  `proof`. `notecheck`/`derive_vkey.py` correctly N/A — the consistency response carries no checkpoint
-  and re-parses no signature (the client refetches `/checkpoint`; `AcceptCheckpoint` owns sig/root).
+- **settled:** the `/consistency` RFC-6962 proof seam is landed + stable — one `proofserve.Handler`
+  mounted at both exact paths via the inner path switch (both beat the `/` subtree by most-specific
+  match), oracle gate APPLIES and was mutation-proven non-vacuous (`TestConsistencyServedProofVerifies`
+  over the 300-leaf fixture; corrupting `encoded[0]` FAILS both byte-equal + `VerifyConsistency`), and
+  `notecheck`/`derive_vkey.py` correctly N/A. (Detail in git history pre-2026-06-21.) The two durable
+  traps: **`VerifyConsistency(hasher, size1, size2, proof, root1, root2)`** — `proof` precedes the two
+  roots, UNLIKE `VerifyInclusion` where `leafHash` precedes `proof`; and the degenerate-boundary rules
+  below.
 - **The degenerate `from == 0` and `from == LastSize` cases are a 200 with an empty `consistencyProof`
   array, not a 400** — `ConsistencyProofFromTiles` returns a nil proof without touching the fetcher.
   `from == 0` SKIPS the `CheckpointAt(from)` row requirement (there is no checkpoint at size 0 by
@@ -133,6 +115,29 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   ADR-0006: only signature-verified checkpoints advance `LastSize`); the richer
   unverified/unresolvable/rotated statuses live in the in-memory metrics registry and are deliberately
   NOT threaded into proofserve (a documented limitation, not a defect).
+
+## HTML log browser at the hub-log root (`GET /` + `serveBrowser`) — closes M3 4/4
+
+- **The bare-`/` hub-log root is a 5th `proofserve.Handler` route, but the per-hub mux can't mount it as
+  an exact pattern — an `http.ServeMux` cannot hold both an exact `/` AND a subtree `/` (the subtree
+  pattern `/` IS the bare-`/` match).** Fix in `cmd/iscc-monitor` `hubHandler`: the `/` slot is a tiny
+  dispatch `http.HandlerFunc` that sends `r.URL.Path == "/"` to `proofs` (proofserve) and delegates every
+  deeper path to `tilesserve`. The four exact proof mounts (`/inclusion`/`/consistency`/`/entries`/
+  `/verify`) still win by most-specific match. Reviewer end-to-end-confirmed through the full `buildMux`
+  (throwaway, then removed): `GET /<domain>/log/` → 200 text/html "Log Browser"; `/<domain>/log/checkpoint`
+  → 200 octet-stream (still tilesserve); `POST /<domain>/log/` → 405 (the shared method-gate at the top
+  of `proofserve.Handler` covers it); `/<domain>/log` (no slash) → 301 to trailing slash (subtree).
+- **`serveBrowser` is a pure store-read render (oracle gate N/A) — same posture as `/verify`'s
+  store-provable subset, NOT the crypto routes.** Reads only `FollowState` + `CheckpointAt`, base64-Std
+  encodes the root verbatim (never recomputed); render-into-`bytes.Buffer`-then-200, post-200 write-drop;
+  `html/template` (NOT text) so root/status auto-escape. Status mapping: DB error or `CheckpointAt
+  found==false` at the accepted size → 500 (the real store-inconsistency fault); `LastSize == 0`
+  (followed-but-unpolled) → **200** "no accepted checkpoint yet" (ADR-0001 coverage honesty, never a 404
+  and never a fabricated `(0,"")`). Mutation-proven non-vacuous: dropping `{{.Root}}` and `{{.Size}}`
+  each FAIL `TestBrowserExposesAcceptedCheckpoint` (reviewer re-ran independently, reverted → green).
+  go.mod/go.sum/schema byte-identical; store stays a leaf. Minor: an unpolled non-frozen hub renders
+  "Status: verified" (the store-provable subset only knows frozen-vs-verified), softened by the explicit
+  no-coverage sentence — consistent with `serveVerify`, not a regression.
 
 ## CORS middleware (`internal/corsmw`)
 
