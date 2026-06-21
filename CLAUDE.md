@@ -53,6 +53,9 @@ After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSO
   window (`monitored_since` size + time, observed size). The status overlays the store-provable subset
   (frozen / verified / inactive) with the in-memory live verdict (unresolvable / unverified), so all
   five glossary statuses render honestly. Its `<head>` links `/_ds/tokens.css` (no external CDN URL).
+- `GET /<domain>` — server-rendered HTML hub dossier (e.g. `/sb0.iscc.id`): one hub's five-status
+  badge (same overlay as `GET /`) and honest coverage window (`monitored_since` size + RFC-3339 time, or
+  "no coverage yet"), plus a link into its mirrored log browser. Same no-JS, no-CDN DS shell.
 - `GET /_ds/tokens.css` — the shared ISCC Design System v2 token stylesheet (CDN-free, build-pinned);
   the one no-JS, no-CDN style shell every server-rendered surface links.
 - `GET /healthz` — liveness + store readiness.

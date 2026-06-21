@@ -79,6 +79,10 @@ func TestRegisterHubs(t *testing.T) {
 		if want := entries[i].Domain + "/log"; routes[i].Origin != want {
 			t.Errorf("route %d Origin = %q, want %q", i, routes[i].Origin, want)
 		}
+		// The route also carries the bare domain (the dossier mount point).
+		if routes[i].Domain != entries[i].Domain {
+			t.Errorf("route %d Domain = %q, want %q", i, routes[i].Domain, entries[i].Domain)
+		}
 	}
 
 	// Idempotency: a second registration returns identical hub_ids (UpsertHub is
@@ -125,7 +129,7 @@ func TestMirrorRouter(t *testing.T) {
 		t.Fatalf("RecordCheckpoint: %v", err)
 	}
 
-	routes := []hubRoute{{HubID: hub, Origin: "sb0.iscc.id/log"}}
+	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
 	mux := buildMux(st, routes, metrics.New())
 
 	// GET /sb0.iscc.id/log/checkpoint -> 200 byte-equal to the seeded BLOB.
@@ -156,6 +160,23 @@ func TestMirrorRouter(t *testing.T) {
 		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id/checkpoint", nil))
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404", rec.Code)
+		}
+	})
+
+	// GET /sb0.iscc.id -> 200 text/html: the bare-domain dossier resolves on the
+	// shared mux alongside the /<domain>/log/ mirror subtree (the exact pattern is
+	// more specific than and disjoint from the subtree, so http.ServeMux keeps both).
+	t.Run("dossier at bare domain is 200 alongside the mirror subtree", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+			t.Errorf("Content-Type = %q, want text/html; charset=utf-8", ct)
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("Hub dossier")) {
+			t.Errorf("body missing the dossier page\n%s", rec.Body.String())
 		}
 	})
 
@@ -239,7 +260,7 @@ func TestMirrorInclusionRoute(t *testing.T) {
 		t.Fatalf("AdvanceFollowState: %v", err)
 	}
 
-	routes := []hubRoute{{HubID: hub, Origin: "sb0.iscc.id/log"}}
+	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
 	mux := buildMux(st, routes, metrics.New())
 
 	// GET /sb0.iscc.id/log/inclusion?iscc_id=<seeded> -> 200 JSON whose proof verifies.
@@ -321,7 +342,7 @@ func TestMirrorEntriesRoute(t *testing.T) {
 		t.Fatalf("AdvanceFollowState: %v", err)
 	}
 
-	routes := []hubRoute{{HubID: hub, Origin: "sb0.iscc.id/log"}}
+	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
 	mux := buildMux(st, routes, metrics.New())
 
 	// GET /sb0.iscc.id/log/entries?index=2 -> 200 byte-equal to the seeded record.

@@ -27,6 +27,7 @@ import (
 	"github.com/iscc/iscc-monitor/internal/config"
 	"github.com/iscc/iscc-monitor/internal/corsmw"
 	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/dossier"
 	"github.com/iscc/iscc-monitor/internal/follower"
 	"github.com/iscc/iscc-monitor/internal/healthz"
 	"github.com/iscc/iscc-monitor/internal/logclient"
@@ -39,14 +40,17 @@ import (
 	"github.com/iscc/iscc-monitor/internal/web"
 )
 
-// hubRoute is one hub's mirror mount point: its store hub_id and its log origin
-// (<domain>/log, e.g. sb0.iscc.id/log). The router mounts tilesserve.Handler at
-// "/" + Origin + "/" so a request to /<origin>/checkpoint reaches that hub's
-// SQLiteFetcher. It is package-local to main — the follower needs no origin, so
-// HubTarget does not carry one, and the origin is re-derived here from the same
-// logclient.Origin registerHubs already uses.
+// hubRoute is one hub's mirror mount point: its store hub_id, its bare domain
+// (e.g. sb0.iscc.id), and its log origin (<domain>/log, e.g. sb0.iscc.id/log). The
+// router mounts tilesserve.Handler at "/" + Origin + "/" so a request to
+// /<origin>/checkpoint reaches that hub's SQLiteFetcher, and dossier.Handler at the
+// exact bare-domain path "/" + Domain so /<domain> serves the per-hub dossier page.
+// It is package-local to main — the follower needs neither domain nor origin, so
+// HubTarget does not carry them, and both are re-derived here from the same realm
+// entry / logclient.Origin registerHubs already uses.
 type hubRoute struct {
 	HubID  int64
+	Domain string
 	Origin string
 }
 
@@ -143,11 +147,11 @@ func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hu
 // server-rendered hub-list dashboard), GET /metrics, GET /healthz (liveness +
 // store readiness), the GET /_ds/ subtree (the shared ISCC Design System v2 token
 // stylesheet, the self-hosted @font-face stylesheet, and the woff2 font binaries
-// every SSR page links), plus every hub's mirror subtree from mirrorHandler. The
-// dashboard mounts at the exact path "/" — http.ServeMux's most-specific match
-// means it never shadows /metrics, /healthz, the /_ds/ subtree, or any
-// /<domain>/log/ subtree (the dashboard.Handler itself 404s any path other than
-// "/"). The static assets mount at the web.Prefix subtree ("/_ds/"), so the token
+// every SSR page links), plus every hub's mirror subtree AND bare-domain dossier
+// from mirrorHandler. The dashboard mounts at the exact path "/" —
+// http.ServeMux's most-specific match means it never shadows /metrics, /healthz,
+// the /_ds/ subtree, any /<domain>/log/ subtree, or any /<domain> dossier (the
+// dashboard.Handler itself 404s any path other than "/"). The static assets mount at the web.Prefix subtree ("/_ds/"), so the token
 // stylesheet, the fonts stylesheet, and every /_ds/fonts/<file>.woff2 route to the
 // one web.Handler; it is isolated and never shadows "/" or the per-hub subtrees.
 // The same metrics
@@ -186,12 +190,19 @@ func buildMux(st *store.Store, routes []hubRoute, m *metrics.Registry) http.Hand
 // ADR-0005/0007); no second DB handle is opened. The metrics registry m is forwarded
 // to each hubHandler so the log browser gets the same in-memory status overlay the
 // dashboard does.
+//
+// Each route ALSO mounts dossier.Handler at the exact bare-domain path "/" + Domain
+// (e.g. /sb0.iscc.id): an exact pattern, more-specific than and disjoint from the
+// "/" + Origin + "/" mirror subtree, so http.ServeMux keeps both and routes only that
+// exact path to the dossier. The same metrics registry m is the dossier's in-memory
+// status overlay, so its five-status badge matches the dashboard and log browser.
 func mirrorHandler(st *store.Store, routes []hubRoute, m *metrics.Registry) *http.ServeMux {
 	mux := http.NewServeMux()
 	for _, r := range routes {
 		prefix := "/" + r.Origin + "/"
 		strip := "/" + r.Origin // leave the leading slash on the suffix
 		mux.Handle(prefix, http.StripPrefix(strip, hubHandler(st, r.HubID, m)))
+		mux.Handle("/"+r.Domain, dossier.Handler(st, r.HubID, m))
 	}
 	return mux
 }
@@ -265,7 +276,7 @@ func registerHubs(ctx context.Context, st *store.Store, entries []registry.Entry
 			return nil, nil, fmt.Errorf("register hub %q: %w", e.Domain, err)
 		}
 		targets = append(targets, follower.HubTarget{HubID: id, BaseURL: e.BaseURL})
-		routes = append(routes, hubRoute{HubID: id, Origin: org})
+		routes = append(routes, hubRoute{HubID: id, Domain: e.Domain, Origin: org})
 	}
 	return targets, routes, nil
 }
