@@ -1,104 +1,94 @@
 # Next Work Package
 
-## Step: Collapse the self-consistency decision into `logclient.CheckConsistency`
+## Step: Collapse accepted-checkpoint advancement into one store-owned transaction (`AdvanceAccepted`)
 
 ## Goal
-Move the load-bearing shrink/fork/equivocation branch order, proof construction, and missing-tile
-handling out of the follower and into one deep, table-testable
-`logclient.CheckConsistency(...) -> (violated, kind, err)`. This closes the ADR-0006 `normal` issue
-"self-consistency policy is split across follower orchestration and logclient helpers": the verdict
-gets a single home that can be table-tested in `logclient` (shrink, same-size split view, growing
-split view, clean growth, missing-tile), leaving the follower to only look up prior accepted evidence
-and act on the returned verdict.
+Move the "advance accepted state" invariant from three caller-sequenced follower writes
+(`RecordCheckpoint` → `SetCoverage` → `AdvanceFollowState`) into one transactional store method
+`AdvanceAccepted`, so ordering and partial-write atomicity live at the storage boundary (ADR-0005
+single-writer locality). Closes the open `normal` issue "Accepted checkpoint advancement is three
+caller-sequenced store writes".
 
 ## Scope
-- **Create**: `internal/logclient/checkconsistency.go` — the deep `CheckConsistency` entry point that
-  composes `CheckShrink` → `CheckFork` → (build proof from tiles) → `CheckEquivocation`.
-- **Modify**: `internal/follower/follower.go` — replace the body of `checkConsistency` (currently
-  follower.go:416-457) so it does only the prior-checkpoint store lookup (`CheckpointAt(prevSize)`)
-  and delegates the pure decision to `logclient.CheckConsistency`, returning the same
-  `(violated, kind, prevRaw, err)` tuple `PollHub` already consumes (PollHub call site at
-  follower.go:180 is unchanged).
+- **Create**: (none)
+- **Modify**:
+  - `internal/store/checkpoints.go` — add `func (s *Store) AdvanceAccepted(ctx context.Context, c
+    CheckpointRecord) error` that opens one `s.db.BeginTx`, performs the three writes (record-checkpoint
+    dedupe-insert, set-once coverage UPDATE, advance follow cursor upsert) against the `*sql.Tx`, and
+    commits; rolls back on any error.
+  - `internal/follower/follower.go` — replace the three sequential calls at lines 217-227
+    (`RecordCheckpoint`/`SetCoverage`/`AdvanceFollowState`) with a single `st.AdvanceAccepted(ctx, rec)`;
+    the `rec store.CheckpointRecord` already built at follower.go:209-216 carries
+    `HubID`/`TreeSize`/`Root`/`Raw`/`ObservedAt`.
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/logclient/consistency.go` — the three pure triggers
-    (`CheckShrink`/`CheckFork`/`CheckEquivocation`, `ViolationKind` constants) to compose.
-  - `/workspace/iscc-monitor/internal/logclient/proofbuilder.go` — `ConsistencyProofFromTiles(ctx,
-    fetch TileFetcher, smaller, larger)` and the `TileFetcher` type (lines 33-40) to accept.
-  - `/workspace/iscc-monitor/internal/logclient/accept.go` — `CheckpointInfo{Origin, TreeSize, Root}`
-    shape (lines 64-68); `Root` is `[rootBytes]byte` (= `[32]byte`, `rootBytes` const in verify.go:35).
-  - `/workspace/iscc-monitor/internal/follower/follower.go` — current `checkConsistency` (lines
-    386-457) is the exact logic to port; preserve its doc-comment intent (error-vs-violation
-    discipline, the narrow missing-tile swallow).
-  - `/workspace/iscc-monitor/internal/logclient/consistency_test.go` — the existing
-    `testonly.New(rfc6962.DefaultHasher)` / `ConsistencyProof` golden pattern to reuse for the table
-    tests.
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — the existing `RecordCheckpoint`
+    (ON CONFLICT dedupe), `SetCoverage` (guarded set-once UPDATE), `AdvanceFollowState` (upsert), and the
+    `unixOrNil` helper to reuse verbatim inside the tx.
+  - `/workspace/iscc-monitor/internal/store/sqlite.go` — `Store{db *sql.DB}`, `SetMaxOpenConns(1)`,
+    WAL + `busy_timeout=5000` (ADR-0005/0007 single-writer discipline the tx rides on).
+  - `/workspace/iscc-monitor/internal/store/schema.sql` — `checkpoints UNIQUE(hub_id, tree_size, root)`,
+    `hubs.monitored_since_{size,time}`, `follow_state(hub_id PRIMARY KEY, last_size, frozen)`.
+  - `/workspace/iscc-monitor/internal/store/checkpoints_test.go` — the `openTemp(t)` helper + the
+    assert-on-observable-rows style to mirror for the new test.
+  - `/workspace/iscc-monitor/internal/follower/follower.go` — the verified-advance block (lines 209-249)
+    is the call site; only lines 217-227 change.
 
 ## Not In Scope
-- The store-owned `AdvanceAccepted` single-transaction write (a separate `normal` issue) — leave the
-  three sequenced `RecordCheckpoint`/`SetCoverage`/`AdvanceFollowState` writes in `PollHub` untouched.
-- The tile-writer `p`-vocabulary unification (`widthForP`) — separate `normal` issue.
-- Changing any of the three pure trigger functions (`CheckShrink`/`CheckFork`/`CheckEquivocation`) or
-  their semantics — `CheckConsistency` only *composes* them; their bodies stay byte-identical.
-- Adding an "explicit indeterminate result" return type — keep the existing missing-tile = clean-pass
-  behavior (`violated=false, err=nil`) so `PollHub`'s contract is unchanged; richer indeterminate
-  modeling is a later step if ever needed.
-- Touching `freeze`, `recordVerdict`, `cacheHubKey`, `fsckMirror`, the `PollHub` body, or the `store`
-  package.
+- Do NOT delete or change the signatures of `RecordCheckpoint`, `SetCoverage`, or `AdvanceFollowState`:
+  they stay public and are still used directly as seed helpers by `internal/follower/*_test.go`,
+  `cmd/iscc-monitor/main_test.go`, and the follower's frozen-path / equivocation seeding.
+- Do NOT touch the freeze path, the `cacheHubKey`/`fsckMirror` calls (follower.go:233-247), `ingestTiles`,
+  or the second `RecordCheckpoint` caller in the test-only seeding code.
+- Do NOT fold the second `normal` issue (the `widthForP` / tile-writer `p`-vocabulary unification) into
+  this step — that is a separate slice.
+- Do NOT alter `schema.sql`, the consistency-check logic, or the `logclient` package.
 
 ## Implementation Notes
-- **Signature (pure decision lives in `logclient`).** `func CheckConsistency(ctx context.Context,
-  fetch TileFetcher, prevSize uint64, prevRoot [rootBytes]byte, prevFound bool, info CheckpointInfo)
-  (violated bool, kind ViolationKind, err error)`. The follower keeps owning the
-  `CheckpointAt(prevSize)` store read and the `prevRaw` evidence bytes (persistence concerns, not pure
-  policy), then calls `CheckConsistency` and pairs its verdict with `prevRaw`.
-- **Port, don't rewrite.** The body is the existing `follower.checkConsistency` logic (follower.go:
-  416-457) minus the `st.CheckpointAt` call: the `prevSize == 0` early return, the `shrink`/`fork`
-  precompute (keep the `prevFound &&` guard on `CheckFork`), the `switch` over shrink → fork →
-  default(equivocation), the `!prevFound || info.TreeSize <= prevSize` equivocation guard, the
-  `ConsistencyProofFromTiles(ctx, fetch, prevSize, info.TreeSize)` build, the **narrow missing-tile
-  swallow** (`perr != nil → return false, "", nil`), and the `CheckEquivocation` call whose `eerr`
-  surfaces as a wrapped Go error. Keep the exact branch order.
-- **Correctness rule (learnings.md, ADR-0006): a self-consistency violation freezes, never crashes.**
-  The missing-tile / proof-build error stays swallowed to `(false, "", nil)` — freezing on a missing
-  tile is a false positive, and a non-verifying proof is `CheckEquivocation`'s `(violated=true,
-  err=nil)` verdict, never a Go error. Only a `CheckEquivocation` `err` (today unreachable-by-type,
-  kept for symmetry) wraps as a returned `err`.
-- **TileFetcher seam.** `CheckConsistency` takes the `TileFetcher` closure (matches
-  `store.SQLiteFetcher.ReadTile` exactly), so the follower passes `fetcher.ReadTile` in. This keeps
-  `logclient` free of any `store` import (dependency direction stays follower → logclient).
-- **Follower delegate.** After porting, `follower.checkConsistency` becomes: keep the `prevSize == 0`
-  early return (a store lookup at size 0 is wasteful), call `st.CheckpointAt(ctx, hubID, prevSize)`
-  for `prevRootBytes`/`prevRaw`/`prevFound`, copy into `var prevRoot [32]byte`, then `violated, kind,
-  err := logclient.CheckConsistency(ctx, store.SQLiteFetcher{Store: st, HubID: hubID}.ReadTile,
-  prevSize, prevRoot, prevFound, info)` and return `(violated, kind, prevRaw, err)`. The follower no
-  longer constructs the proof itself (`ConsistencyProofFromTiles` / `CheckEquivocation` calls move out
-  of `follower.go`).
-- **Test ground truth.** Reuse `consistency_test.go`'s `testonly.New(rfc6962.DefaultHasher)` pattern:
-  build an append-only tree, `HashAt(M)`/`HashAt(N)` for roots, `ConsistencyProof(M,N)` for the valid
-  proof, serve tiles through an in-test `TileFetcher`. The prover (`ConsistencyProof`) and the composed
-  verifier (`CheckConsistency`→`CheckEquivocation`→`VerifyConsistency`) are independent merkle paths,
-  so the cross-check is not a tautology. Cover: shrink (`next<prev`), same-size fork (`next==prev`,
-  differing root), growing split view (corrupt the new root so the real proof fails to verify →
-  `equivocation`), clean growth (valid proof → not violated), `prevSize==0` (always clean), and a
-  missing-tile fetcher (`fetch` returns wrapped `os.ErrNotExist` → not violated, no error).
-- **Oracle/conformance gate APPLIES** (this composes RFC-6962 consistency-proof verification): the new
-  table tests must include the `testonly.Tree` merkle ground truth above, and the existing follower
-  `TestPollHub*` conformance tests must stay green with the delegated call. Do not weaken any gate;
-  mutation-check mentally — forcing `violated=false` must fail the growing-split-view case. The
-  fully-independent `notecheck` oracle runs in `mise run check`'s `cmd/notecheck` package.
+- This is the **first** `BeginTx`/`*sql.Tx` use in the repo (verified: `grep -rn BeginTx internal/` is
+  empty). Pattern: `tx, err := s.db.BeginTx(ctx, nil)`; guard with `defer func() { _ = tx.Rollback() }()`
+  (after a successful `Commit`, `Rollback` returns `sql.ErrTxDone`, which is safe to ignore); return
+  `tx.Commit()` last. Wrap every error with `%w` and a `store.AdvanceAccepted:` prefix matching the
+  file's convention.
+- Port the three SQL statements **byte-for-byte** from the existing methods, swapping `s.db.ExecContext`
+  → `tx.ExecContext`:
+  - checkpoint: `INSERT INTO checkpoints (hub_id, tree_size, root, raw, observed_at) VALUES (?,?,?,?,?)
+    ON CONFLICT(hub_id, tree_size, root) DO NOTHING` with `c.HubID, int64(c.TreeSize), c.Root, c.Raw,
+    unixOrNil(c.ObservedAt)`. Idempotent re-poll comes for free from `ON CONFLICT … DO NOTHING`;
+    `AdvanceAccepted` needs neither the inserted id nor the inserted-bool, so drop `RecordCheckpoint`'s
+    read-back-on-conflict branch and discard the `Result`.
+  - coverage: `UPDATE hubs SET monitored_since_size = ?, monitored_since_time = ? WHERE hub_id = ? AND
+    monitored_since_size IS NULL` with `int64(c.TreeSize), unixOrNil(c.ObservedAt), c.HubID`. The
+    `IS NULL` guard keeps coverage **set-once** (ADR-0001); a re-poll is a silent no-op, never an error
+    — do NOT inspect `RowsAffected`.
+  - follow cursor: `INSERT INTO follow_state (hub_id, last_size) VALUES (?, ?) ON CONFLICT(hub_id) DO
+    UPDATE SET last_size = excluded.last_size` with `c.HubID, int64(c.TreeSize)`. Omitting `frozen` from
+    the conflict update preserves ADR-0006 no-auto-unfreeze (the follower already short-circuits a frozen
+    hub before this path, but keep the SQL identical).
+- `c.TreeSize` is the single source for both the coverage size and the follow cursor — in the old
+  three-call sequence both used `info.TreeSize`, which equals `rec.TreeSize`.
+- Correctness rules from `learnings.md` this step must respect: **Coverage honesty (ADR-0001)** —
+  coverage start is immutable / set-once (the `IS NULL` guard); **SQLite single writer (ADR-0005/0007)** —
+  the tx runs on the one capped connection, opens no second connection; **freeze no-auto-unfreeze
+  (ADR-0006)** — never write `frozen` here.
+- The follower edit is purely mechanical: keep the `rec store.CheckpointRecord{...}` already at
+  follower.go:209-216, then `if err := st.AdvanceAccepted(ctx, rec); err != nil { return status,
+  fmt.Errorf("follower.PollHub: hub %d: advance accepted: %w", hubID, err) }`. Leave the following
+  `cacheHubKey`/`fsckMirror`/`recordVerdict` calls unchanged.
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -count=1 -run TestCheckConsistency ./internal/logclient` passes (table tests: shrink, fork,
-  growing split view, clean growth, prevSize==0, missing-tile).
-- `go test -count=1 -run TestPollHub ./internal/follower` passes (the delegated follower path stays
-  green: freeze/fork/equivocation/inclusion/fsck unchanged).
-- `grep -n "ConsistencyProofFromTiles" internal/follower/follower.go` returns nothing (the proof build
-  moved out of the follower into `logclient.CheckConsistency`).
-- `go list -deps ./internal/logclient | grep "iscc-monitor/internal/store"` is empty (`logclient`
-  gained no `store` import edge).
+- `go test -count=1 -run TestAdvanceAccepted ./internal/store` passes — a new store-level test that
+  asserts: (1) one `AdvanceAccepted` records the checkpoint row, sets `monitored_since_size`, and sets
+  `follow_state.last_size`; (2) a **second** `AdvanceAccepted` with the same `(hub, size, root)` is
+  idempotent (exactly one checkpoints row, `last_size` unchanged); (3) a later `AdvanceAccepted` at a
+  larger size advances `last_size` but does **not** move `monitored_since_size` (set-once coverage).
+- `go test -count=1 -run TestPollHub ./internal/follower` passes (the verified-advance path now runs
+  through `AdvanceAccepted` end-to-end: checkpoint recorded, coverage set, cursor advanced).
+- `grep -n "st.RecordCheckpoint(ctx, rec)" internal/follower/follower.go` is empty (exit 1) — the
+  verified-advance path no longer calls the three writes directly; it calls `AdvanceAccepted` instead.
 
 ## Done When
-`logclient.CheckConsistency` owns the pure shrink/fork/equivocation decision (branch order + proof
-build + missing-tile swallow), the follower's `checkConsistency` only looks up prior accepted evidence
-and delegates, and every Verification check passes with `mise run check` green.
+`AdvanceAccepted` performs record + set-once coverage + cursor-advance as one transaction, the follower's
+verified non-violation path calls it instead of three sequential writes, the new store test proves
+atomicity / idempotent re-poll / set-once coverage, and `mise run check` plus the named follower test are
+green.
