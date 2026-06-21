@@ -50,9 +50,11 @@ only *from coverage start* (cold start is inherent; see ADR-0001 Coverage).
 
 ## Architecture (one process; state in per-network SQLite databases)
 
-1. **Realm registry sync** — fetch the realm membership doc (domains only), derive per-hub
-   `{domain, origin = domain+"/log", base_url}`, reconcile add/remove/inactive. Reconciliation changes follow-status
-   only; it **never deletes evidence or mirror** (ADR-0007).
+1. **Realm registry sync** — fetch the authoritative **Hub-List** (`iscc-hub` `hubs/<network>.yaml`:
+   `{hub_id, url, active}`; no key material — `pubkey` deprecated, keys via did:web), derive per-hub
+   `{hub_id (12-bit slot), domain, origin = domain+"/log", base_url}`, reconcile add/remove/inactive. Capturing the
+   12-bit `hub_id` lets an ISCC-IDv1's embedded slot resolve to its hub (the M-UI realm-wide certificate, ADR-0010).
+   Reconciliation changes follow-status only; it **never deletes evidence or mirror** (ADR-0007).
 2. **did:web key resolution (ADR-0009)** — resolve `did:web:<domain>` → DID doc → Ed25519 key(s) + validity. Port
    `derive_vkey.py`'s did→verifier-key derivation; the *source* is the DID doc, not a YAML key list. Resolution failure
    → status `unresolvable` (keep mirroring). Cache resolved keys; re-resolve on cadence.
@@ -81,9 +83,15 @@ only *from coverage start* (cold start is inherent; see ADR-0001 Coverage).
    → self-contained bundle `{checkpoint_note, treeSize, leafIndex, inclusionProof[], record_bytes, hub_didweb_key, ots?,
    other_records:[(seq,$schema)]}` (ADR-0008 generic per-id record list); `consistency?hub&from&to`; entry/range fetch;
    `verify-for-me` (wraps the shared verifier); plus the raw tlog-tiles mirror at canonical paths.
-8. **Frontend** — server-rendered (`html/template`, `go:embed`) per-hub dashboard (size, lag, last-seen, **coverage
-   since**, status [verified/unresolvable/unverified/frozen/inactive], violation/OTS status) + log browser;
-   **lazy-loaded WASM** verifies checkpoint+inclusion+consistency fully client-side (reproducible + hash-pinned).
+8. **Frontend (Evidence Ledger — ADR-0010)** — server-rendered (`html/template`, `go:embed`) on the **ISCC Design
+   System v2**, **no-JS baseline**: realm index (`/`) + per-hub **dossier** (coverage since, status
+   [verified/unresolvable/unverified/frozen/inactive] via the five-silhouette `HubStatusBadge`, latest checkpoint,
+   Bitcoin-anchor vs comparison-anchor as distinct panels, violation **Exhibit** when frozen) + **log browser** (record
+   list over `iscc_index` + single record) + **certificate of inclusion** (HTML proof result + downloadable proof
+   bundle). DS tokens + Readex Pro / JetBrains Mono fonts **self-hosted** (embedded, no runtime CDN). **lazy-loaded
+   WASM** then elevates the tier-2 "verified in your browser" result and powers the standalone verifier app at
+   `monitor.iscc.codes` (reproducible + hash-pinned). Build source of truth:
+   `.claude/design/ISCC Monitor - Developer Handoff.dc.html`.
 9. **Observability & alerting** — three layers, **no built-in notifier integrations**: (a) `/metrics` (Prometheus) with
    explicit series for every alert-worthy condition (per-hub `status`, `violations_total{kind}`, `unresolvable`, poll/
    availability failures, `lag_seconds`, `last_observed_at`) — the primary path, operators alert via Alertmanager;
@@ -131,6 +139,8 @@ sibling `iscc-hub`/`tessera` repos so these resolve without a specific checkout 
 - `cauldron/iscc-hub/iscc_hub/checkpoint_note.py` — exact signed-note / keyid wire format to mirror in Go.
 - `.claude/derive_vkey.py` — did → origin → verifier-key derivation to port into `internal/didweb/vkey.go`; the two live testnet hubs are golden vectors (source the did from did:web, not the YAML).
 - `cauldron/iscc-hub/iscc_hub/log_tree.py` (`inclusion_evidence`, `log_origin`) + `cauldron/iscc-hub/iscc_hub/schema.py` (`Evidence`) — authoritative shape of the `IsccLogInclusionProof` cross-check oracle (the `cauldron/iscc-hub/specs/schemas/iscc-receipt.yaml` is stale; trust `schema.py`).
+- `cauldron/iscc-hub/iscc_hub/iscc_id.py` (mirrors `iscc/iscc-core` `iscc_id.py`; upstream: `https://raw.githubusercontent.com/iscc/iscc-core/refs/heads/main/iscc_core/iscc_id.py`) — the **ISCC-IDv1 codec** to port into `internal/index/iscc.go`. **v1 only.** 80-bit code = 16-bit header + 64-bit body: realm = header SubType nibble (0 testnet / 1 mainnet), `hub_id = body & 0xFFF` (low 12 bits), `timestamp = body >> 12` (high 52 bits, µs since epoch). Lets the realm-wide `/inclusion/{iscc_id}` certificate (M-UI, ADR-0010) decode `(realm, hub_id)` and resolve the issuing hub via the registry.
+- `cauldron/iscc-hub/hubs/{testnet,mainnet}.yaml` (upstream: `github.com/iscc/iscc-hub/blob/main/hubs/`) — the authoritative **Hub-List**: `{version, network, hubs:[{hub_id, url, active}]}` mapping the 12-bit `hub_id` slot → hub `url` per network (testnet = realm 0: hub 0 = sb0.iscc.id, hub 1 = sb1.amlet.id; mainnet = realm 1: hub 1 = iscc.id, hub 2 = amlet.id). Owned by iscc-hub; the monitor **consumes** it for realm membership AND to resolve an ISCC-IDv1's embedded `hub_id` (M-UI certificate, ADR-0010). The `pubkey` field is **deprecated/ignored** (keys via did:web, ADR-0009); the `valid_from` rotation variant is superseded (`.claude/hublist-schema-proposal.md`).
 
 ## SQLite schema (core tables; per-network DB, no `network` column)
 
@@ -179,8 +189,13 @@ sibling `iscc-hub`/`tessera` repos so these resolve without a specific checkout 
   (never re-hitting the hub).
 - **M3 — Trust API + dashboard:** REST surface + verify-for-me + server-rendered dashboard (status, coverage, lag,
   violations, OTS) & log browser + raw mirror at canonical paths.
-- **WASM upgrade:** in-browser verifier (`internal/proof/verify` → WASM), lazy-loaded progressive enhancement on M3;
-  reproducible build + published hash + SRI pin (ADR-0003).
+- **M-UI — Evidence Ledger frontend (ADR-0010):** dress + extend the M3 SSR surfaces into the chosen design — ISCC
+  Design System v2 tokens + self-hosted fonts, the five-status `HubStatusBadge`, hub dossier, log-browser record list +
+  single record, and the certificate of inclusion (+ downloadable proof bundle). No-JS baseline; the full five-status
+  taxonomy made store-provable.
+- **WASM upgrade:** in-browser verifier (`internal/proof/verify` → WASM), lazy-loaded progressive enhancement that
+  elevates the M-UI tier-2 result + powers the `monitor.iscc.codes` verifier app; reproducible build + published hash +
+  SRI pin (ADR-0003).
 - **OTS / Bitcoin anchoring:** stamp observed roots on cadence/growth + upgrade loop + serve `.ots` (the v1 independent
   attestation; calendar-attested). **No cosigning.**
 - **M7 (deferred):** multi-monitor gossip **+ cosigning** (C2SP witness cosignatures) + witness endpoint

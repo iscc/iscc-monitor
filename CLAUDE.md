@@ -14,7 +14,8 @@ run via **mise** — `mise run check` (build + vet + test) must stay green; form
 The project is built by an autonomous **CID loop** (Continuous Iterative Development): the `/build`
 skill runs one verified increment (`update-state → define-next → advance → review`), looped to the
 target by `/goal` or a scheduled task. Specs are the source of truth (`.claude/prd`, `.claude/plans`,
-`.claude/adr`); the loop's moving state lives in `.claude/context/`. See
+`.claude/adr`; the chosen **Evidence Ledger** frontend design lives in `.claude/design`, ratified in
+ADR-0010); the loop's moving state lives in `.claude/context/`. See
 `.claude/skills/build/SKILL.md` and `.claude/skills/build/AUTOMATION.md`.
 
 ## Running a local dev instance

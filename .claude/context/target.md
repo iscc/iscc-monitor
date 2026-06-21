@@ -13,6 +13,14 @@ transparency stack: `transparency-dev/tessera` (`client`, `api`, `api/layout`, `
 `golang.org/x/mod/sumdb/note`, `nbd-wtf/opentimestamps`, `modernc.org/sqlite`. Read-only vendored
 reference copies live under `cauldron/` (gitignored) — port/oracle against them, never import them.
 
+**Frontend (locked — ADR-0010).** The v1 web surfaces follow the **Evidence Ledger** direction on the
+**ISCC Design System v2**; the build source of truth is
+`.claude/design/ISCC Monitor - Developer Handoff.dc.html` (+ the `_ds/` token bundle), subordinate to
+the ADRs/PRD (where they disagree, the ADR/PRD wins — flag it). Server-rendered (`html/template` +
+`go:embed`), **no-JS baseline** for the dashboard & log browser; WASM re-verification is additive. DS
+tokens + Readex Pro / JetBrains Mono fonts are **self-hosted** (embedded, no runtime CDN). Hub status is
+conveyed by **icon + label + silhouette** (grayscale-safe), never hue alone.
+
 ## Quality bar (the gate — non-negotiable)
 
 `mise run check` is green: `go build ./...`, `go vet ./...`, `go test ./...` all pass and `gofmt -l .`
@@ -45,7 +53,7 @@ the seam-based integration tests + golden vectors + the external oracles above �
 number, which would force brittle tests on wiring / `main` and tempt the internal-detail assertions the
 PRD forbids. Revisit only if the testing strategy itself changes.
 
-## Milestones (advance in ADR-0004 order)
+## Milestones (advance in ADR-0004 / ADR-0010 order)
 
 ### M1 — Read-only Monitor  `[not started]`
 
@@ -79,11 +87,53 @@ hub with its glossary status + coverage window (golden-tested on a fixture store
 /<domain>/log/` (log browser) returns `200 text/html` exposing the mirrored checkpoint `(size, root)`
 with links into `entries`/proofs.
 
+### M-UI — Evidence Ledger frontend  `[not started]`
+
+Dress and extend M3's functional SSR surfaces into the **Evidence Ledger** design (ADR-0010): embed the
+ISCC Design System v2 tokens + self-hosted fonts; render every hub via a five-status `HubStatusBadge`
+template partial (icon + label + silhouette); and add the screens M3 left functional-only — **hub
+dossier** (incl. the frozen Exhibit), **log-browser record list** (paginated over `iscc_index`) +
+**single record**, and the **certificate of inclusion** (HTML proof result + downloadable proof
+bundle). Make the full five-status taxonomy (`verified`/`unresolvable`/`unverified`/`frozen`/`inactive`)
+store-provable so the badge renders it honestly. SSR + no-JS is the hard baseline; WASM is the next
+milestone.
+**Verify** (all asserted at the HTTP seam against fixtures — observable no-JS HTML, never handler
+internals; the rendering path's oracle gate is N/A, but the proof-bundle assembler shares the crypto
+path and MUST keep the conformance/oracle gate green):
+every SSR surface (`/` realm index, hub dossier, log-browser record list, single record, certificate)
+returns `200 text/html`, embeds the DS tokens + self-hosted fonts with **no external CDN URL in the
+body**, and is **complete with JavaScript disabled** (content in the served HTML, not script-gated);
+`HubStatusBadge` renders **all five** statuses each with a distinct text label **and** a distinct
+inline-SVG silhouette (golden-tested per status), with `frozen` rendered as the categorically-distinct
+**Exhibit** (violation kind + detected-at + "do not trust new state", non-dismissable), visibly
+different markup from the `unresolvable`/`unverified` caution; the coverage window (`monitored_since`
+size + RFC-3339 time, or an explicit "coverage just started" / "no coverage yet") shows for **every**
+hub on the index + dossier and a pre-coverage state never renders as a guarantee (ADR-0001); the
+**Bitcoin-anchor** panel and the **comparison-anchor** panel are separate, distinctly-labelled elements
+("anchoring" copy is Bitcoin-only; a not-yet-anchored root renders the normal "pending" state, not an
+error); the log-browser record list paginates via plain links (`?from=…[&n=…]`, no-JS), newest-first,
+each row links to its single-record page, and an empty log renders the informative empty state (200);
+the single-record page renders `declaration`, `deletion` (a new record — original preserved) **and an
+unknown `note.$schema`** without erroring; the **realm-wide certificate** (`/inclusion/{iscc_id}`, keyed
+by the self-describing ISCC-IDv1 — decode realm + 12-bit `hub_id`, resolve the issuing hub via the
+registry) for a known id renders the numbered evidence clauses (subject + position; checkpoint
+`(size, root)`; inclusion proof; signing key; anchor state; full per-id record history incl. any
+deletion) and offers a **downloadable proof bundle** `{checkpoint, inclusion/consistency proof, record
+bytes, hub key, ots?}`, while an unknown id renders the documented "not found in log" state (200, never
+5xx) and the tier-1 ("the monitor reports") vs tier-2 ("verify in
+your browser") affordance is present and visually distinct (the tier-2 result itself lands in the WASM
+milestone); status stays legible in grayscale + colorblind-safe (icon+label+silhouette, not hue);
+`mise run check` green; any new store status-derivation stays a leaf read (store keeps no
+`net/http`/web dependency).
+
 ### WASM verifier upgrade  `[not started]`
 
-`internal/proof/verify` → `GOOS=js GOARCH=wasm`, lazy-loaded progressive enhancement on the M3
-dashboard; reproducible build + published hash + SRI pin (ADR-0003). **Verify:** identical vectors
-yield identical verdicts (WASM vs server); the verifier artifact hash matches the published value.
+`internal/proof/verify` → `GOOS=js GOARCH=wasm`, lazy-loaded progressive enhancement that elevates the
+Evidence Ledger's **tier-2** result ("your browser verified…") on the M-UI certificate/dossier, plus the
+standalone **Independent Verification** verifier app (Surface C) at `monitor.iscc.codes` (monitor-agnostic
+via `?monitor=<url>`); reproducible build + published hash + SRI pin (ADR-0003, ADR-0010). **Verify:**
+identical vectors yield identical verdicts (WASM vs server); the verifier artifact hash matches the
+published value; a `(size, root)` mismatch renders the guided split-view alert, not a dead error.
 
 ### OTS / Bitcoin anchoring  `[not started]`
 
@@ -98,5 +148,5 @@ multi-monitor gossip + cosigning (C2SP witness cosignatures) + witness endpoint
 
 ## Done When
 
-Every v1 milestone (M1 → OTS) meets its **Verify** criteria with `mise run check` green and no open
-`critical` or `normal` issue in `issues.md`. M7 is explicitly out of scope.
+Every v1 milestone (M1 → M2 → M3 → M-UI → WASM → OTS) meets its **Verify** criteria with `mise run
+check` green and no open `critical` or `normal` issue in `issues.md`. M7 is explicitly out of scope.

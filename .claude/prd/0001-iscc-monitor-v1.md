@@ -180,6 +180,14 @@ non-technical users, hosted at **`monitor.iscc.codes`** (GitHub Pages from the r
 `?monitor=<url>`, reproducibly built, hash-published, SRI-pinned, served from an origin no monitor controls. It is a
 **progressive enhancement** on the M3 server-rendered dashboard.
 
+**Frontend direction (ADR-0010).** The v1 web surfaces follow the **Evidence Ledger** design (the forensic /
+document axis) on the **ISCC Design System v2**: server-rendered, **no-JS baseline** for the dashboard & log browser
+(realm index + hub dossier + log-browser record list + single record + certificate of inclusion), with WASM
+re-verification layered on top as the tier-2 "verified in your browser" result. DS tokens + fonts are self-hosted
+(embedded, no runtime CDN); hub status is icon + label + silhouette (grayscale-safe). The developer handoff
+`.claude/design/ISCC Monitor - Developer Handoff.dc.html` is the build source of truth, subordinate to this PRD/the
+ADRs (where they disagree, the ADR/PRD wins — flag it).
+
 **No cosigning in v1 (ADR-0004).** The v1 independent attestation is **OTS-anchoring observed roots** (trustless
 timestamp + anti-rewrite; no monitor signing key in the trust path). Cosigning + gossip + witness endpoint are deferred
 to M7. **OTS = daily per hub**, keyed by `(hub, tree_size, root)` UNIQUE (each distinct root anchored once); calendar-
@@ -284,5 +292,6 @@ SRI alone is insufficient.
 did:web model. `sb0.iscc.id` verifies end-to-end. Both are golden vectors and offline fixtures (`testdata/live/`).
 
 **Suggested milestone order (the headline-value path):** M1 read-only Monitor → M2 Aggregator (mirror + index +
-proofs) → M3 Trust API + dashboard + log browser → WASM verifier upgrade → OTS / Bitcoin anchoring → (M7 deferred:
-gossip + cosigning + witness). M1 is independently shippable and would already have caught the sb1 issue.
+proofs) → M3 Trust API + dashboard + log browser → M-UI Evidence Ledger frontend (ADR-0010) → WASM verifier upgrade →
+OTS / Bitcoin anchoring → (M7 deferred: gossip + cosigning + witness). M1 is independently shippable and would already
+have caught the sb1 issue.
