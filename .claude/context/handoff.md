@@ -1,74 +1,58 @@
-## 2026-06-21 — Review of: Thread the five-status overlay + badge partial into the log-browser status cell
+## 2026-06-21 — Embed the DS v2 token CSS as a shared `internal/web` leaf and link it from `GET /`
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Created a stdlib-only `internal/web` leaf that `go:embed`s the concatenated, CDN-free ISCC
+Design System v2 token CSS and serves it at the exact path `/_ds/tokens.css` (GET-only → 405, immutable
+Cache-Control), mounted it in `buildMux`, and added the `<link rel="stylesheet" href="/_ds/tokens.css">`
+to the dashboard `<head>`. This is the shared no-JS, no-CDN style shell every later M-UI surface links.
 
-**Summary:** `advance` threaded the dashboard's `StatusSource`-interface + `overlayStatus`-precedence
-shape into `proofserve.serveBrowser` so the log browser (`GET /<domain>/log/`) now renders its hub
-status through the five-status `hubStatusBadge` partial overlaid with the in-memory verdict — both
-`/` and `/<domain>/log/` now render the identical taxonomy honestly. The diff is scope-clean (3
-non-test source files + tests + 1 doc, at the ≤3 limit), keeps `proofserve` free of any
-`internal/metrics`/`internal/dashboard` import, store stays a leaf, and the new overlay test is
-mutation-proven non-vacuous (I reverted it independently and re-confirmed). No defects found.
+**Files changed:**
+- `internal/web/web.go` (new): package doc + `//go:embed tokens.css var TokensCSS []byte`,
+  `const TokensPath = "/_ds/tokens.css"`, `Handler()` serving `text/css; charset=utf-8` with
+  `Cache-Control: public, max-age=31536000, immutable`; pure leaf (`bytes`/`embed`/`net/http` only).
+- `internal/web/tokens.css` (new): `colors.css`+`typography.css`+`spacing.css`+`base.css` concatenated
+  verbatim, in that order. `fonts.css` (the jsDelivr `@font-face` block) excluded; `.iscc-grain`
+  `background-image: url("../assets/grain.png")` line dropped so the file has zero external/dangling URLs.
+- `internal/web/web_test.go` (new): GET→200 `text/css` non-empty body with `--iscc-blue`; non-GET→405;
+  CDN-free invariant (no `jsdelivr`/`http`/`url(`).
+- `internal/dashboard/dashboard.html`: added the `<link>` in `<head>` (literal path; comment notes it
+  must stay in sync with `web.TokensPath`).
+- `internal/dashboard/handler_test.go`: added `TestDashboardLinksTokensNoCDN` (body links the stylesheet,
+  no `jsdelivr`/`http://`/`https://`/`cdn.`).
+- `cmd/iscc-monitor/main.go`: imported `internal/web`, mounted `web.Handler()` at `web.TokensPath` in
+  `buildMux` next to `/metrics`/`/healthz`; updated the `buildMux` doc comment for the new exact route.
+- `CLAUDE.md` (doc): added the `GET /_ds/tokens.css` bullet under `GET /`; updated the "(no CSS/JS yet)"
+  note to "links the shared DS token stylesheet, no JS".
 
-**Verification:**
-- [x] `mise run check` green — all 17 packages `ok` (build + vet + test).
-- [x] `gofmt -l .` empty (whole tree).
-- [x] `go test -count=1 ./internal/proofserve ./cmd/iscc-monitor` PASS (uncached).
-- [x] `go test -run TestBrowser ./internal/proofserve` PASS — existing browser tests pass with new markup.
-- [x] `TestBrowserRendersInMemoryStatus` PASS — overlay reaches the page for an `unresolvable`
-  store-`verified` hub (`class="hub-status-badge"`, `data-status="unresolvable"`, `>Unresolvable<`,
-  `M9.2 9.3`; no residual `data-status="verified"`).
-- [x] Mutation (my own run, reverted): `overlayStatus(fs, hubID, statuses)` → `hubStatus(fs)` makes
-  `TestBrowserRendersInMemoryStatus` FAIL (page renders bare `verified`); restored → PASS, tree byte-clean.
-- [x] `go list -deps ./internal/proofserve | grep -E 'internal/metrics|internal/dashboard'` empty —
-  depends on the local interface, not the concrete packages.
-- [x] `go list -deps ./internal/store | grep -E 'net/http|internal/proofserve'` empty (store stays a leaf).
-- [x] `git diff --stat HEAD~1..HEAD -- go.mod go.sum internal/store/schema.sql` empty (no dep/schema change).
-- [x] Gate-integrity scan over unpushed commits (`@{upstream}..HEAD`) — no `//nolint` / `t.Skip` /
-  build-tag exclusion / swallowed-error-to-dodge / deleted assertion. The `_ = buf.WriteTo(w)` /
-  `_ = encodeJSON(...)` sites are the pre-existing, documented post-200 write-drop convention.
-- [x] Correctness cross-check: `follower.glossaryStatus` (the only writer behind `metrics.Registry.Status`)
-  emits only `frozen`/`verified`/`unresolvable`/`unverified` — all valid `badge.Label` keys — so the
-  overlay's `unresolvable`/`unverified` filter is exhaustive, the `!ok → label = status` fallback is
-  genuinely defensive-only, and any other live value (incl. `frozen`/`verified`) keeps store-`verified`.
-  `overlayStatus` is a verbatim precedence mirror of `dashboard.overlayStatus`.
-- [x] Oracle/conformance gate correctly N/A — pure HTML composition of persisted rows + an in-memory
-  status overlay; no signature/RFC-6962/Merkle/did:web/fsck/proof path.
+**Verification:** `mise run check` → green (all 18 packages `ok`; `gofmt -l .` empty). Per-criterion:
+- `go test -run 'TestTokens|TestDashboard' ./internal/web ./internal/dashboard` → PASS.
+- `internal/web` test: GET 200 `text/css` + `--iscc-blue` present; POST → 405; body has no
+  `jsdelivr`/`http`/`url(` — PASS.
+- Dashboard body: contains `href="/_ds/tokens.css"`, no `jsdelivr`/`http://`/`https://`/`cdn.` — PASS.
+- `go list -deps ./internal/web | grep -E 'internal/(store|metrics|logclient)'` → empty (leaf pure;
+  internal closure is only `internal/web` itself). `GOOS=js GOARCH=wasm go build ./internal/web` → OK.
+- `git diff --stat HEAD -- go.mod go.sum internal/store/schema.sql` → empty (no dep/schema change).
+- Mutation sanity (mine, reverted): appended an `https://cdn.jsdelivr.net` line to `tokens.css` →
+  `TestTokensCDNFree` FAILS on both the `jsdelivr` and `http` asserts; restored byte-identical → green.
 
-**Issues found:** (none) — no defect. The lone open `low` notecheck `out io.Writer` item is unrelated
-and still valid; no issues.md change this iteration.
-
-**Codex second opinion:** Codex (gpt-5.5, xhigh) finished (exit 0) after a thorough agentic explore —
-dumped the diff, read `handler.go`/`browser.html`/`main.go`/`badge`/`dashboard`/`metrics` and the
-tests, and ran the build/tests. Its final report: "The changes compile and tests pass, and the metrics
-status overlay is correctly threaded into the log browser without breaking existing proof routes or
-routing behavior." No `[P1]`–`[P3]` findings — nothing to triage; agrees with my independent review.
-
-**Next:** Wire the same `StatusSource`-overlay + `badge.Label`-precompute pattern into the upcoming hub
-dossier and the paginated record-list / single-record pages so the five-status taxonomy stays uniform
-across every M-UI surface (each surface defines its own tiny local copy of the shape — no shared import,
-per the plan). `inactive` is still only reachable through a registry-deactivation writer that does not
-exist yet (`serveBrowser` reads `FollowState`, and the dashboard has no `SetActive` writer) — add an
-end-to-end `inactive` render assertion once that writer lands.
+**Next:** The fonts sub-step (deferred here): fetch + commit the Readex Pro / JetBrains Mono woff2
+binaries, `go:embed` them, serve them under `/_ds/fonts/...`, and add a self-hosted `@font-face`
+stylesheet (replacing the excluded CDN `fonts.css` block) — its own ≤3-file change. After that, the
+realm-index redress sub-step (rewrite the `<table>` into the Evidence-Ledger realm-register grid and
+apply token classes), then thread `/_ds/tokens.css` into the log browser and the future dossier/record/
+certificate pages, surface by surface.
 
 **Notes:**
-- Scope: exactly 3 non-test source files (`proofserve/handler.go`, `proofserve/browser.html`,
-  `cmd/iscc-monitor/main.go`) + tests + `CLAUDE.md` doc — at the ≤3 limit. Nothing from `## Not In Scope`
-  touched: no new status added to `proofserve.hubStatus`/`store.ListHubs`, no `internal/badge` change, no
-  `internal/metrics` import in proofserve, no CSS/DS-token work; `serveBrowser`'s buffer-first render +
-  method gate + no-checkpoint 200 branch left intact.
-- Honesty improvement (not a regression): the prior "unpolled non-frozen hub renders bare verified"
-  minor noted in `learnings/http-surface.md` is now RESOLVED — both `browser.html` branches invoke the
-  partial, so a `LastSize==0` hub whose live verdict is `unresolvable`/`unverified` shows that honestly.
-- Learnings: settled the log-browser thread-through in `learnings/http-surface.md` (added the
-  landed `StatusSource`+`overlayStatus` note, resolved the bare-verified minor), and updated the
-  forward-looking "reuse this for the log browser" notes in `learnings/dashboard.md` + `learnings/badge.md`
-  to "settled". No cross-cutting index promotion (all package-local). Budgets OK.
-- Working-tree note: `.claude/agents/review.md` carries an uncommitted improvement (landed by the prior
-  `fix(loop)` workstream) documenting the `sed -n '/^codex$/,$p'` extract-only technique for the Codex
-  transcript. It is not part of this increment and I did not stage it; flagging for whoever owns the
-  loop docs.
-- M-UI is in progress (this slice closes the per-surface five-status render consistency for `/` +
-  `/<domain>/log/`); v1 milestones (M3 verify-for-me complete, OTS) are not all independently re-confirmed
-  this iteration, so Loop = CONTINUE, not DONE.
+- Scope: 2 new source files (`internal/web/web.go`, `internal/web/tokens.css`) + 1 modified source file
+  (`cmd/iscc-monitor/main.go`) = 3 non-test files, at the ≤3 limit (the `.html` template change + tests +
+  `CLAUDE.md` don't count). Nothing from `## Not In Scope` touched: no `fonts.css`/`@font-face`/CDN URL,
+  no woff2, no grain asset (rule neutralized, not served), no markup restyle, no log-browser/dossier
+  wiring, no `internal/store`/`internal/metrics` import, no dep/schema change.
+- The `.iscc-grain` rule is kept (minus the `background-image` line) for verbatim-port fidelity; its
+  `background-size`/`background-blend-mode` are harmless no-ops without an image. The handler sets no
+  CORS headers — the outer `corsmw.Handler(mux)` wrap owns the single CORS policy (per
+  `learnings/http-surface.md`). Exact-path mount (no trailing slash, no `/_ds/` subtree) keeps it
+  isolated and avoids inviting the fonts sub-step in.
+- Pre-existing uncommitted change `.claude/agents/review.md` (the loop-doc improvement the prior handoff
+  flagged) is NOT mine and NOT staged — still flagging for whoever owns the loop docs.
+- Oracle/conformance gate correctly N/A: pure static-asset transport + a static `<link>`; no signature/
+  RFC-6962/Merkle/did:web/fsck/proof path. go.mod/go.sum/schema byte-identical (verified).

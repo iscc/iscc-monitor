@@ -47,12 +47,14 @@ ISCC_MONITOR_ADDR=0.0.0.0:41464 \
 after a container rebuild.
 
 After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSON / text / Prometheus;
-`GET /` now serves a minimal server-rendered HTML dashboard (no CSS/JS yet):
+`GET /` now serves a minimal server-rendered HTML dashboard (links the shared DS token stylesheet, no JS):
 
 - `GET /` — server-rendered HTML dashboard listing every realm hub with its status badge and coverage
   window (`monitored_since` size + time, observed size). The status overlays the store-provable subset
   (frozen / verified / inactive) with the in-memory live verdict (unresolvable / unverified), so all
-  five glossary statuses render honestly.
+  five glossary statuses render honestly. Its `<head>` links `/_ds/tokens.css` (no external CDN URL).
+- `GET /_ds/tokens.css` — the shared ISCC Design System v2 token stylesheet (CDN-free, build-pinned);
+  the one no-JS, no-CDN style shell every server-rendered surface links.
 - `GET /healthz` — liveness + store readiness.
 - `GET /metrics` — Prometheus: hub status, last-observed, poll failures, violations.
 - `GET /<domain>/log/` — server-rendered HTML log browser: the mirrored accepted checkpoint

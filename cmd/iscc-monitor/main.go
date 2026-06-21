@@ -36,6 +36,7 @@ import (
 	"github.com/iscc/iscc-monitor/internal/registry"
 	"github.com/iscc/iscc-monitor/internal/store"
 	"github.com/iscc/iscc-monitor/internal/tilesserve"
+	"github.com/iscc/iscc-monitor/internal/web"
 )
 
 // hubRoute is one hub's mirror mount point: its store hub_id and its log origin
@@ -140,10 +141,13 @@ func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hu
 
 // buildMux assembles the monitor's single request multiplexer: GET / (the
 // server-rendered hub-list dashboard), GET /metrics, GET /healthz (liveness +
-// store readiness), plus every hub's mirror subtree from mirrorHandler. The
-// dashboard mounts at the exact path "/" — http.ServeMux's most-specific match
-// means it never shadows /metrics, /healthz, or any /<domain>/log/ subtree (the
-// dashboard.Handler itself 404s any path other than "/"). The same metrics
+// store readiness), GET /_ds/tokens.css (the shared ISCC Design System v2 token
+// stylesheet every SSR page links), plus every hub's mirror subtree from
+// mirrorHandler. The dashboard mounts at the exact path "/" — http.ServeMux's
+// most-specific match means it never shadows /metrics, /healthz, /_ds/tokens.css,
+// or any /<domain>/log/ subtree (the dashboard.Handler itself 404s any path other
+// than "/"). The token stylesheet mounts at the exact path web.TokensPath, so it
+// is isolated and never shadows "/" or the per-hub subtrees. The same metrics
 // registry m the /metrics handler exposes is also passed to the dashboard as its
 // in-memory status overlay (the StatusSource), so the page can render the live
 // unresolvable / unverified verdicts the store cannot prove. Both /metrics and
@@ -160,6 +164,7 @@ func buildMux(st *store.Store, routes []hubRoute, m *metrics.Registry) http.Hand
 	mux.Handle("/", dashboard.Handler(st, m))
 	mux.Handle("/metrics", metricshttp.Handler(m))
 	mux.Handle("/healthz", healthz.Handler(st))
+	mux.Handle(web.TokensPath, web.Handler())
 	return corsmw.Handler(mux)
 }
 

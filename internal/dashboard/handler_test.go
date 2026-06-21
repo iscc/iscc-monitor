@@ -170,6 +170,30 @@ func TestDashboardRendersInMemoryStatus(t *testing.T) {
 	}
 }
 
+// TestDashboardLinksTokensNoCDN pins the shared-shell wiring: the rendered "/" body
+// links the embedded DS token stylesheet at the literal web.TokensPath and carries
+// no external CDN URL — the load-bearing M-UI invariant that every SSR body is
+// complete with JavaScript disabled and references no third-party origin.
+func TestDashboardLinksTokensNoCDN(t *testing.T) {
+	st := fixtureStore(t)
+	rec := httptest.NewRecorder()
+	Handler(st, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `href="/_ds/tokens.css"`) {
+		t.Errorf("body missing token stylesheet link\n%s", body)
+	}
+	for _, banned := range []string{"jsdelivr", "http://", "https://", "cdn."} {
+		if strings.Contains(body, banned) {
+			t.Errorf("body contains external CDN reference %q\n%s", banned, body)
+		}
+	}
+}
+
 func TestDashboardMethodNotAllowed(t *testing.T) {
 	st := fixtureStore(t)
 	rec := httptest.NewRecorder()
