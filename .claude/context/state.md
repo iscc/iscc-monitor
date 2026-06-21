@@ -1,50 +1,46 @@
-<!-- assessed-at: 17c49572f3af773b3f6947c437046a6ab942356f -->
+<!-- assessed-at: 27f4804c34d5c7d878714824a5aa66b270c54d79 -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: M-UI (Evidence Ledger frontend, ADR-0010) — the certificate path, clause by clause.
-The certificate of inclusion (`internal/certificate`, `GET /inclusion/{iscc_id}`) now renders TWO of
-its six numbered clauses for real: §1 SUBJECT (sound + PASS-verified) and §2 CHECKPOINT (the accepted
-`(size, root)`, landed + PASS-verified this iteration, mutation-proven non-vacuous, Codex clean).
-M1/M2/M3 remain fully met. Clauses §3–§6 + the downloadable proof bundle, WASM, and OTS remain.
+## Phase: M-UI (Evidence Ledger frontend, ADR-0010) — certificate clause-by-clause, BLOCKED on a critical.
+The certificate of inclusion (`internal/certificate`, `GET /inclusion/{iscc_id}`) now renders four of
+its six numbered clauses' code: §1 SUBJECT + §2 CHECKPOINT are sound and PASS-verified; **§3 INCLUSION
+PROOF landed this cycle but is UNSOUND** — the latest `review` verdict is **NEEDS_WORK** with a new
+**critical** issue (a frozen-after-fork hub can render a self-contradictory proof). M1/M2/M3 remain
+fully met. §4–§6 + the downloadable proof bundle, WASM, and OTS remain.
 
 ## Convergence
 - **Remaining Verify criteria:**
   - **M1: 0 open (met). M2: 0 open (met). M3: 0 open (met, 4/4).**
-  - **M-UI (Evidence Ledger frontend): 1 still open, advanced again this iteration.**
-    **Met:** five-status `HubStatusBadge` (`internal/badge`); the DS v2 shared shell (`/_ds/` tokens +
-    self-hosted webfonts, CDN-free); the `/` realm-index grid; the `/<domain>/log/` log-browser; the
-    **hub dossier** (`GET /<domain>`, `internal/dossier`); the **frozen Exhibit**; the **paginated
-    record list** (`GET /<domain>/log/records`); the **single-record page** (`GET /record?index=<seq>`);
-    the **ISCC-IDv1 decoder** (`internal/index.Decode`); the `(realm, hub_id) → domain` **Hub-List
-    resolver** (`internal/registry`); and the **certificate §1 SUBJECT + §2 CHECKPOINT clauses** —
-    `/inclusion/{iscc_id}` decodes the id, resolves the hub, canonicalizes to the stored
-    `ISCC:`-prefixed key, gates the affirmative claim on the accepted-tree cap (`seqs[0] < LastSize`),
-    and for a certifiable id reads the accepted root back via `CheckpointAt(LastSize)` to render
-    `size N · root <b64-Std>`.
-    **Still open (NOT closed):** certificate clauses **§3–§6** (inclusion proof, signing key, Bitcoin
-    anchor, record history) + the downloadable **proof-bundle assembler** (re-engages the
-    oracle/conformance crypto gate at §3); the separate **Bitcoin-anchor vs comparison-anchor** panels.
-  - **WASM verifier: 1/1 open** (not started — no `internal/proof`, no `syscall/js` in source,
-    re-verified).
-  - **OTS anchoring: 1/1 open** (not started — `nbd-wtf/opentimestamps` not in `go.mod`/`go.sum` or
-    source, re-verified).
-- **Last ~10 iterations: ~7 milestone-Verify-advancing / ~3 refactor·polish·hardening.** The arc closed
-  all four M3 criteria, then opened M-UI leaf-first (badge → DS tokens → webfonts → `/` grid → log
-  browser → dossier → frozen Exhibit → record list → single record → ISCC-IDv1 decoder → Hub-List
-  resolver → cert §1 fix → **cert §2**). The certificate is building out clause-by-clause, each slice
-  PASS-verified and mutation-proven; no drift.
+  - **M-UI (Evidence Ledger frontend): 1 still open.** Met: five-status `HubStatusBadge`
+    (`internal/badge`); DS v2 shared shell (`/_ds/` tokens + self-hosted webfonts, CDN-free); `/`
+    realm-index grid; `/<domain>/log/` log browser; hub dossier (`GET /<domain>`, `internal/dossier`);
+    frozen Exhibit; paginated record list (`GET /<domain>/log/records`); single-record page
+    (`GET /record?index=<seq>`); ISCC-IDv1 decoder (`internal/index.Decode`); `(realm, hub_id) → domain`
+    Hub-List resolver (`internal/registry`); certificate **§1 SUBJECT + §2 CHECKPOINT** (sound,
+    PASS-verified). **Open / unsound:** certificate **§3 INCLUSION PROOF code present but
+    NEEDS_WORK** (critical — built ≠ verified against the accepted root; ignores `hub.Frozen`); clauses
+    **§4–§6** (signing key, Bitcoin anchor, record history) not started; the downloadable **proof-bundle
+    assembler** not started; the separate **Bitcoin-anchor vs comparison-anchor** panels.
+  - **WASM verifier: 1/1 open** (not started — no `internal/proof`, no `syscall/js` in source).
+  - **OTS anchoring: 1/1 open** (not started — `nbd-wtf/opentimestamps` not in `go.mod`/`go.sum`/source).
+- **Last ~10 iterations: ~7 milestone-Verify-advancing / ~3 refactor·polish·hardening.** The arc is
+  building the certificate clause-by-clause (badge → DS tokens → webfonts → `/` grid → log browser →
+  dossier → frozen Exhibit → record list → single record → ISCC-IDv1 decoder → Hub-List resolver →
+  cert §1 → §2 → §3). §1/§2 each PASS-verified + mutation-proven; §3 advanced but bounced to NEEDS_WORK
+  on a real trust-root defect. No drift — the loop is converging on real Verify criteria, and the gate
+  correctly caught (via review + Codex) a defect the automated checks miss.
 
 ## M1 — Read-only Monitor
-**Status**: **met** — carried forward. The `340303b..HEAD` diff touched ONLY `internal/certificate`
+**Status**: **met** — carried forward. The `17c4957..HEAD` diff touched ONLY `internal/certificate`
 (handler.go + cert.html + handler_test.go) and context/learnings docs — **no M1 source touched.** All
-M1 Verify criteria remain satisfied: `origin`/`vkey` golden, all three triggers
-(fork/shrink/equivocation) golden-tested end-to-end with freeze + alert-once + restart survival,
-coverage tracked, structured logs, `/metrics` served over HTTP.
-- **Test totals at HEAD**: **312 `func Test`** across **59** `_test.go` files (the §2 advance added
-  assertions inside existing test funcs in `handler_test.go`, not new funcs — count unchanged).
+M1 Verify criteria remain satisfied: `origin`/`vkey` golden; all three triggers
+(fork/shrink/equivocation) golden-tested end-to-end with freeze + alert-once + restart survival;
+coverage tracked; structured logs; `/metrics` served over HTTP.
+- **Test totals at HEAD**: **314 `func Test`** across **59** `_test.go` files (the §3 advance added two
+  new cert test funcs — `TestCertificateInclusionProof`, `TestCertificateInclusionProofTileGap`).
   Package count **19 internal + 2 cmd = 21**.
 - **Packages present (re-verified)**: `cmd/{iscc-monitor,notecheck}`; **19 internal packages** —
   `badge, certificate, config, corsmw, dashboard, didweb, dossier, follower, healthz, index, logclient,
@@ -62,12 +58,12 @@ coverage tracked, structured logs, `/metrics` served over HTTP.
 - **Reuse imports wired** (carried forward): `golang.org/x/mod/sumdb/note`, `modernc.org/sqlite`,
   `transparency-dev/merkle` (`rfc6962`, `proof.Inclusion`+`proof.Consistency`),
   `transparency-dev/tessera` (`api`, `api/layout`, both proof builders, `leafhasher`, `fsck`, `client`),
-  `transparency-dev/formats` (`cmd/notecheck`), `gopkg.in/yaml.v3` (direct, Hub-List parser).
+  `transparency-dev/formats` (`cmd/notecheck`), `gopkg.in/yaml.v3` (Hub-List parser).
   **Not wired:** `nbd-wtf/opentimestamps`, `github.com/iscc/iscc-lib/packages/go` (ADR-0011, not yet
   adopted — see Quality gates).
 
 ## M2 — Aggregator
-**Status**: **met** — carried forward; no M2 source touched in the `340303b..HEAD` diff. Both Verify
+**Status**: **met** — carried forward; no M2 source touched in the `17c4957..HEAD` diff. Both Verify
 criteria exercised: fsck root-rebuild WIRED on every verified non-frozen poll; inclusion cross-check
 conformance-tested over the real verified mirror. All three computed proofs — `inclusion`,
 `consistency`, `entries` — served from the local mirror, never re-hitting the hub.
@@ -82,38 +78,41 @@ ETag/Cache-Control on size-dependent proof surfaces (the `/_ds/` static assets D
 strong ETag + 304).
 
 ## M-UI — Evidence Ledger frontend
-**Status**: **in progress — certificate §1 SUBJECT + §2 CHECKPOINT clauses sound and PASS-verified;
-§3–§6 + proof bundle remain.** Badge, DS shell, `/` index, `/<domain>/log/` browser, hub dossier,
-frozen Exhibit, record list, single-record page, the ISCC-IDv1 decoder, and the Hub-List resolver are
-all built and verified.
+**Status**: **in progress — BLOCKED on a critical.** §1 SUBJECT + §2 CHECKPOINT are sound and
+PASS-verified; **§3 INCLUSION PROOF is landed-but-unsound (NEEDS_WORK)**; §4–§6 + the proof bundle are
+not started. Badge, DS shell, `/` index, `/<domain>/log/` browser, hub dossier, frozen Exhibit, record
+list, single-record page, the ISCC-IDv1 decoder, and the Hub-List resolver are all built and verified.
 - **Met (carried forward):** `internal/badge` five-status `Render`; `internal/web` `/_ds/` static-asset
-  subtree; the `/` realm-index grid; the `/<domain>/log/` log-browser; `internal/dossier.Handler`
+  subtree; the `/` realm-index grid; the `/<domain>/log/` browser; `internal/dossier.Handler`
   (`GET /<domain>`); the frozen Exhibit; the paginated record list (`GET /<domain>/log/records`); the
   single-record page (`GET /record?index=<seq>`); the ISCC-IDv1 `internal/index.Decode`
   (`GOOS=js GOARCH=wasm`-buildable); the fail-closed `(realm, hub_id) → domain` Hub-List resolver.
-- **§1 SUBJECT clause (PASS at 340303b, carried forward):** `internal/certificate.Handler`
-  (`GET /inclusion/{iscc_id}`, mounted in `cmd/iscc-monitor/main.go`) decodes the id → `hubList.Resolve`
-  → `followedHub`/`ListHubs` → `SeqsForISCCID`, with the accepted-tree cap (`handler.go:255-264`,
-  `seqs[0] < LastSize`) and the canonicalized `"ISCC:" + TrimPrefix(rawID, "ISCC:")` lookup key
-  (`handler.go:237`).
-- **§2 CHECKPOINT clause (PASS at HEAD 17c4957 — verified this iteration):** for a certifiable id,
-  `buildData` reads the accepted root via `st.CheckpointAt(hub.HubID, hub.LastSize)` (`handler.go:282`),
-  sets `CheckpointSize = hub.LastSize` + `CheckpointRoot` (base64-Std, cross-surface-identical) +
-  `HasClause2`; `cert.html:336-340` renders `§2 CHECKPOINT — size N · root <b64>` only when
-  `HasClause2`. Review verified golden (`size 24816`, real committed root `cm9vdA==`) + two mutations
-  (neuter `HasClause2`; corrupt the root) both FAIL the test; non-certifiable ids render NO §2 clause.
-  Oracle gate correctly N/A this slice (pure `CheckpointAt` store read + HTML render). Scope clean
-  (2 source + 1 test file), `go.mod`/`go.sum` byte-unchanged.
-- **Still open on the M-UI Verify bar:** certificate clauses **§3–§6** (inclusion proof, signing key,
+- **§1 SUBJECT (PASS, carried forward):** `internal/certificate.Handler` decodes the id → `hubList.Resolve`
+  → `followedHub`/`ListHubs` → `SeqsForISCCID`, with the accepted-tree cap (`seqs[0] < LastSize`) and the
+  canonicalized `"ISCC:" + TrimPrefix` lookup key.
+- **§2 CHECKPOINT (PASS at 17c4957, carried forward):** for a certifiable id, `buildData` reads the
+  accepted root via `CheckpointAt(LastSize)`, sets `HasClause2` + `CheckpointSize`/`CheckpointRoot`
+  (base64-Std); `cert.html` renders `§2 CHECKPOINT — size N · root <b64>` only when `HasClause2`.
+  Mutation-proven non-vacuous (verified §1/§2 in prior reviews).
+- **§3 INCLUSION PROOF (LANDED but NEEDS_WORK at HEAD `27f4804`):** `handler.go:325` builds the RFC-6962
+  proof of `data.Position` against `hub.LastSize` via `logclient.InclusionProofFromTiles` over a
+  `SQLiteFetcher`, base64-Std encodes each sibling, and `cert.html:345-355` renders the leaf→siblings→root
+  chain. The test is non-vacuous (review reproduced both mutations). **BUT** `handler.go:336-343` sets
+  `HasClause3 = true` whenever the build succeeds and §2 holds — it NEVER verifies the proof rebuilds the
+  accepted root and IGNORES `hub.Frozen` (in hand). For a frozen-after-fork hub the mirror can hold the
+  contradictory tree's tiles while the accepted root is the old one, so §3 renders a sibling chain under a
+  `root … ✓` the siblings do not rebuild — a self-contradictory certificate on the trust-root surface.
+  This is the **open critical issue**; review + Codex both confirmed it against the follower
+  freeze/ingest ordering.
+- **Still open on the M-UI Verify bar:** **fix §3 first** (verify the proof rebuilds `CheckpointRoot` via
+  `proof.VerifyInclusion` before `HasClause3 = true`, or gate §3 on `!hub.Frozen`; add a
+  contradictory-tile frozen-hub fixture test, mutation-proven). Then clauses **§4–§6** (signing key,
   Bitcoin anchor, record history) + the **downloadable proof-bundle assembler**
-  `{checkpoint, inclusion/consistency proof, record bytes, hub key, ots?}` (RE-ENGAGES the
-  oracle/conformance gate at §3); separate **Bitcoin-anchor vs comparison-anchor** panels.
-  `HasClause3..6` are all still `false`; the proof-bundle action renders as a disabled placeholder.
+  `{checkpoint, inclusion/consistency proof, record bytes, hub key, ots?}`; the separate Bitcoin-anchor
+  vs comparison-anchor panels. `HasClause4..6` are all still `false`.
 - **Residual fail-open (filed `normal`, NOT fixed):** `internal/registry` `hubDomain` (registry.go:188)
   does not check `u.ForceQuery`, so a bare trailing `?` slips the guard. Not exploitable (resolver not
   yet wired into a live caller). Fold in when `hubDomain` is next touched.
-- Build source of truth: `.claude/design/ISCC Monitor - Certificate.dc.html` + the `_ds/` token bundle
-  (subordinate to ADR/PRD). woff2 binaries are committed/build-pinned; never re-fetched at runtime.
 
 ## WASM verifier · OTS anchoring
 **Status**: **not started** (re-verified). `nbd-wtf/opentimestamps` not in `go.mod`/`go.sum` or source;
@@ -122,40 +121,42 @@ no `internal/proof` package; no WASM build target (`syscall/js` not in source). 
 primitives the verifier app will reuse, but the verifier itself does not exist.
 
 ## Quality gates
-**Status**: **green.** HEAD is PASS-verified, CI-confirmed, and has no open `critical`-blocking issue.
+**Status**: **gate green on the §3 commit, but an open `critical` BLOCKS the milestone.** The automated
+gate (`mise run check`) passes on the §3 advance — the review recorded build + vet + all 21 packages
+`ok`, `gofmt -l .` empty, `go.mod`/`go.sum` byte-unchanged, and the oracle/conformance gate (notecheck +
+`derive_vkey.py`) green. **But the latest `review` verdict (HEAD `27f4804`) is NEEDS_WORK / loop
+CONTINUE** — the §3 honesty defect is a class the automated gate cannot catch (a green-but-wrong proof
+render), which is exactly why the oracle/LLM review exists. **Not DONE-eligible: one open `critical`.**
 - `go.mod` present (`module github.com/iscc/iscc-monitor`, **`go 1.24.0`**, no `toolchain` line);
-  `mise run check` runnable. The latest `review` verdict (HEAD `17c4957`) is **PASS / loop CONTINUE**:
-  it records `mise run check` green (build + vet + all 21 packages `ok`, certificate uncached;
-  `gofmt -l .` empty; `go.mod`/`go.sum` byte-unchanged), the cert package tests pass uncached, and the
-  §2 clause mutation-proven non-vacuous with a clean Codex second opinion.
-- **CI**: `.github/workflows/ci.yml` runs the inlined `mise run check` gate + the `cmd/notecheck`
-  oracle shell-out on push/PR. Remote `origin` = `github.com/iscc/iscc-monitor.git`, branch `develop`.
-  **Latest concluded run: `conclusion: success` at headSha `17c4957` = HEAD.** The §2 fix IS
-  CI-verified.
-- **TARGET/CODE GAP (ADR-0011, filed `normal`):** `target.md` "Stack (locked)" mandates **Go 1.26** +
-  the **`github.com/iscc/iscc-lib/packages/go` v0.5.0** codec, but `go.mod` is still `go 1.24.0` with no
-  iscc-lib require. Deliberate, sequenced, not-yet-started increment — target and code disagree on the
-  stack until it lands. The bump must run where mise can provision Go 1.26.
-- **Open issues: 0 `critical`, 2 `normal`, 6 `low`.** The 2 `normal`: (a) [human] adopt iscc-lib codec
-  + bump to Go 1.26 (ADR-0011, foundational, sequenced before more M-UI feature work); (b)
-  [review/Codex] Hub-List `hubDomain` `ForceQuery` fail-open. The 6 `low` are loop-skipped.
+  `mise run check` runnable.
+- **CI**: `.github/workflows/ci.yml` runs the inlined `mise run check` gate + the `cmd/notecheck` oracle
+  shell-out on push/PR. Remote `origin` = `github.com/iscc/iscc-monitor.git`, branch `develop`. **The §3
+  cycle is UNPUSHED (correct — NEEDS_WORK does not push):** `origin/develop` is at `17c4957`, and the four
+  local commits (§2 update-state + the §3 define-next/advance/review) are ahead of it. **Latest concluded
+  CI run: `success` at `17c4957`** — i.e. CI is green at the last PASSed state, NOT at HEAD's unsound §3.
+- **TARGET/CODE GAP (ADR-0011, filed `normal`):** `target.md` "Stack (locked)" mandates **Go 1.26** + the
+  **`iscc-lib/packages/go` v0.5.0** codec, but `go.mod` is still `go 1.24.0` with no iscc-lib require.
+  Deliberate, sequenced, not-yet-started increment — target and code disagree on the stack until it lands.
+- **Open issues: 1 `critical`, 2 `normal`, 6 `low`.** The 1 `critical`: §3 self-contradictory proof for a
+  frozen-after-fork hub (preempts everything). The 2 `normal`: (a) [human] adopt iscc-lib codec + bump to
+  Go 1.26 (ADR-0011, foundational); (b) [review/Codex] Hub-List `hubDomain` `ForceQuery` fail-open. The 6
+  `low` are loop-skipped.
 
 ## Next Milestone
-**M1/M2/M3 met; M-UI is the active milestone and the gate is green with no critical issues.** The next
-`define-next`/`advance` should:
+**M1/M2/M3 met; M-UI is the active milestone and is BLOCKED by one open `critical`.** The next
+`define-next`/`advance` MUST:
 
-1. **§3 INCLUSION PROOF clause + the downloadable proof-bundle assembler** — this RE-ENGAGES the
-   oracle/conformance crypto gate: the served inclusion proof must be mutation-proven non-vacuous
-   against the hub's `IsccLogInclusionProof` / `notecheck` / golden vectors and rebuilt over the
-   `SQLiteFetcher` before a PASS. The raw signed-note bytes are already available from `CheckpointAt`'s
-   second return (`raw`, currently ignored at §2) — wire it in at §3. Then §4 signing key, §5 Bitcoin
-   anchor, §6 record history + the separate Bitcoin-anchor vs comparison-anchor panels. Fold in the
-   deferred `ForceQuery` registry fix when `hubDomain` is next touched.
-2. **The human-filed ADR-0011 stack bump** (Go 1.24 → 1.26 + adopt `iscc-lib` v0.5.0 + the
-   `internal/index` tripwire/parity test) — flagged foundational and "before more M-UI feature work."
-   Confirm the toolchain (mise must provision Go 1.26) before flipping `go.mod`'s `go` directive.
-3. **WASM verifier → OTS anchoring** remain the last two v1 milestones (each 1/1 Verify open).
-4. **Off the Verify bar (`low`):** harden the vacuous single-record label test; real alert transport;
-   `inactive` public path; consolidate the now-3x overlay precedence into `internal/badge`; `notecheck`
-   `out` param; proofserve `os.ErrNotExist`→404 dedup; mirror write-path tile-coord leak; scaling
-   trip-wire metrics.
+1. **Fix the §3 critical FIRST (preempts all feature work).** In `buildData`'s §3 branch, before
+   `HasClause3 = true`, verify the built proof rebuilds `data.CheckpointRoot` via `proof.VerifyInclusion`
+   (leaf hash from the mirrored entry bundle + the decoded accepted root) — the fail-closed choice for a
+   self-verifiable artifact — OR gate §3 on `!hub.Frozen`. Add a frozen-hub / contradictory-tile fixture
+   test that asserts §1+§2 render but NO §3 `✓`, mutation-proven (reverting the guard makes it FAIL).
+   Then push so CI re-greens at the real HEAD.
+2. **Resume the certificate clauses** — §4 SIGNING KEY (did:web key via `hub_keys`/`LookupHubKey`), §5
+   Bitcoin anchor, §6 record history + the proof-bundle assembler (re-engages the oracle gate) + the
+   separate Bitcoin-anchor vs comparison-anchor panels. Fold in the deferred `ForceQuery` registry fix
+   when `hubDomain` is next touched.
+3. **The human-filed ADR-0011 stack bump** (Go 1.24 → 1.26 + adopt `iscc-lib` v0.5.0 + the `internal/index`
+   tripwire/parity test) — flagged foundational; confirm mise can provision Go 1.26 before flipping
+   `go.mod`'s `go` directive.
+4. **WASM verifier → OTS anchoring** remain the last two v1 milestones (each 1/1 Verify open).
