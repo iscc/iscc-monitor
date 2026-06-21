@@ -1,51 +1,65 @@
-## 2026-06-21 — Review of: Fix the `/records` list — cap at `LastSize`, clamp overflow, reach seq 0
+## 2026-06-21 — Single-record page at `GET /record?index=<seq>` (declaration / deletion / unknown schema)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added a server-rendered, no-JS, DS-shell single-record page that renders one accepted leaf's
+seq, a kind label derived from the verbatim `note.$schema` (Declaration / Deletion / Unknown record
+type — the only interpretation, fail-open), the verbatim ISCC-ID and schema, and the raw record bytes
+read from the mirror, and re-pointed every `/records` row from `entries?index=<seq>` to
+`record?index=<seq>`. The route is mounted in `cmd/iscc-monitor`'s per-hub mux so it works in
+production.
 
-**Summary:** The advance closes all three record-list defects (the two open `normal` `[review]` issues)
-in exactly the two source files `next.md` named: `ListRecords` gained an accepted-tree ceiling applied to
-BOTH the `COUNT(*)` total and the windowed `SELECT`, plus an explicit `hasFrom bool` so the seq cursor is
-no longer overloaded as the start-at-newest sentinel; `serveRecords` threads `fs.LastSize` + `hasFrom`,
-moved the page-size clamp before the `int()` conversion, and `parseUint` now rejects uint64 overflow. The
-diff is tight, well-documented, all gates are green, and every new assertion is mutation-proven
-non-vacuous (I re-ran all three mutations independently).
+**Files changed:**
+- `internal/store/iscc_index.go`: added `RecordAt(ctx, hubID, seq) (RecordRow, found, err)` — a
+  single-row projection reader via `QueryRowContext` on the `(hub_id, seq)` PK; `sql.ErrNoRows` →
+  `(RecordRow{}, false, nil)` (absent is a plain miss, not an error); reuses `RecordRow`; added the
+  `errors` import (now consults `errors.Is(err, sql.ErrNoRows)`).
+- `internal/proofserve/handler.go`: added `//go:embed record.html` + parsed-once `recordTmpl`, the
+  schema→kind constants, `recordData` view-model, `recordKind` helper (fail-open mapping), `serveRecord`
+  (copies `serveEntries`' bundle-read + accepted-tree-cap flow incl. `p := tiles.PartialTileSize(0,
+  bundleIndex, size)`; reads labels via `RecordAt` but never 404s on a missing projection — bytes are
+  the source of truth), and a `case "/record":` in the path switch.
+- `internal/proofserve/record.html` (new): DS-shell page mirroring `records.html`/`browser.html` —
+  `/_ds/tokens.css` + `/_ds/fonts.css`, `var(--*)` tokens, no CDN, `{{template "hubStatusBadge" .}}`,
+  unquoted `[data-status=…]` selectors, raw bytes in a `<pre><code>` via auto-escape (string-cast).
+- `internal/proofserve/records.html`: row link `entries?index=` → `record?index=`; footnote reworded.
+- `cmd/iscc-monitor/main.go`: `mux.Handle("/record", proofs)` + hubHandler doc note.
+- `CLAUDE.md`: added the `GET /<domain>/log/record?index=<seq>` endpoint line; updated the `/records`
+  line to say each row links to the single-record page.
+- Tests: new `internal/proofserve/record_test.go` (12 HTTP-seam cases), new
+  `internal/store/iscc_index_test.go::TestRecordAt`/`TestRecordAtScopedByHub`; updated
+  `records_test.go` row-link assertions; updated `cmd/iscc-monitor/main_test.go::TestMirrorRecordsRoute`
+  (stale `entries?index=` → `record?index=`) and added `TestMirrorRecordRoute` (binary-level mount proof).
 
-**Verification:**
-- [x] `mise run check` — green (build + vet + all 20 packages `ok`).
-- [x] `gofmt -l .` — empty (no formatting failures).
-- [x] `go test -run TestListRecords ./internal/store` — PASS incl. new `TestListRecordsCeiling`; drop-ceiling mutation → FAILS (`total = 6, want 4`; seq 4/5 leak), reverted.
-- [x] `go test -run TestRecords ./internal/proofserve` — PASS incl. `TestRecordsClampsHostilePageSize`, `TestRecordsOlderLinkReachesSeq0`, `TestRecordsCeilingHidesUnacceptedLeaves`, `TestParseUintOverflow`.
-- [x] Mutation: post-`int()` clamp → `TestRecordsClampsHostilePageSize` FAILS (whole 300-row index renders), reverted.
-- [x] Mutation: re-overload `from` (`hasFrom`→`from > 0`) → `TestListRecords` + `TestRecordsOlderLinkReachesSeq0` FAIL (seq 0 unreachable), reverted.
-- [x] `go list -deps ./internal/store | grep '^net/http$'` empty AND no `internal/logclient` — store stays a leaf; `.Imports` unchanged.
-- [x] `git diff --stat HEAD~1..HEAD -- internal/store/schema.sql go.mod go.sum` empty (byte-identical).
-- [x] Scope: 2 non-test/doc `.go` files (handler.go, iscc_index.go) + 2 test files — within the ≤3 budget; nothing in `## Not In Scope` touched.
-- [x] Gate-integrity scan over all unpushed commits (`@{upstream}..HEAD`) — no `//nolint`/`t.Skip`/build-tag/swallowed-error/removed-assertion patterns.
-- [x] Oracle gate — correctly N/A (pure HTML render of persisted `iscc_index` rows via leaf reads; no signature / RFC-6962 / Merkle / did:web / fsck / proof path). Not skipped; does not apply.
+**Verification:** `mise run check` → green (`go build`, `go vet`, all 20 packages `ok`, `gofmt -l .`
+empty). Per-criterion:
+- `go test -run TestRecord ./internal/proofserve` — PASS (in-tree leaf 200 across the bundle boundary
+  shows seq/id/schema/raw bytes; Declaration/Deletion/Unknown labels incl. empty-schema → 200 no-error
+  clause; missing/non-numeric index → 400; `seq >= LastSize` → 404; `LastSize == 0` → 404; bundle not
+  mirrored → 404; non-GET → 405; DS-shell + no-CDN + no `<table>`; overlay status renders).
+- `TestRecordsListsNewestFirst` (updated) — PASS: each `/records` row links `record?index=<seq>`.
+- `go test -run TestRecordAt ./internal/store` — PASS: persisted row for existing seq, `found=false`
+  for absent, hub-scoped.
+- `go list -deps ./internal/store | grep '^net/http$'` empty AND no `internal/logclient`; `git diff
+  --stat HEAD -- internal/store/schema.sql go.mod go.sum` empty (byte-identical).
+- Conformance: `TestInclusionServedProofVerifies` / consistency tests re-ran uncached, green.
 
-**Issues found:** (none) — both open `normal` `[review]` issues verified fixed and deleted from `issues.md`.
-
-**Codex second opinion:** Codex ran long (broad codebase grep well past the advance scope) but produced
-a clean verdict before completing: "The changes correctly apply the accepted-size ceiling to record
-listing, preserve from=0 as a real cursor, clamp page size before int conversion, and reject uint64 parse
-overflow. The updated call sites and tests are consistent, and the test suite passes." No `[P1]`–`[P3]`
-findings. Concurs with my independent assessment and mutation testing; nothing to triage.
-
-**Next:** Resume the planned M-UI order — the single-record page (declaration / deletion / unknown
-schema) and re-point each `/records` row from `entries?index=<seq>` to it, then the certificate of
-inclusion (`/inclusion/{iscc_id}`, which re-engages the oracle gate). The record-list Verify criterion is
-now on its bar.
+**Next:** The certificate of inclusion (`/inclusion/{iscc_id}`) + downloadable proof-bundle assembler
+— the next M-UI slice, which re-engages the oracle gate. The single-record page deliberately renders
+ONLY this leaf; the per-id cross-record history (original declaration joined to its deletion) belongs
+to that certificate slice.
 
 **Notes:**
-- The record-list section of `learnings/http-surface.md` was net-tightened: the two stale "open issue"
-  pointers were collapsed into a single settled bullet carrying the durable seq-cursor-pagination lessons
-  (never overload `0` as both cursor + sentinel; clamp page size while still `uint64`; cap COUNT and the
-  windowed SELECT together; `parseUint` overflow reject). File is 157 lines — at the soft cap; a future
-  record-list review should net-reduce by collapsing more settled traps rather than appending.
-- Three remaining `low` issues only (the `overlayStatus`/`hubStatus` 3x duplication, the Mirror-seam
-  leak, the proofserve `writeReadError` lift, the scaling trip-wire metrics, and the `notecheck` `out`
-  param) — all skipped by the loop; reserved for human-directed work.
-- The `olderHref` test helper correctly distinguishes the live anchor (`older &rarr;</a>`) from the dead
-  `<span>` and grabs the older link's href via `LastIndex` past the newer link in source order — a
-  faithful walk of the chain the page actually emits, not a hand-built URL.
+- Oracle/conformance gate is correctly N/A and NOT skipped: the page is a pure decode-and-index render
+  of persisted projection rows + mirrored bundle bytes — no signature / RFC-6962 / Merkle / did:web /
+  fsck / proof-build path. The existing inclusion/consistency conformance tests still run green.
+- Scope: exactly 3 non-test/doc `.go` files touched (`iscc_index.go`, `handler.go`, `main.go`) — at
+  budget. The `cmd/iscc-monitor/main_test.go` edits are a stale-assertion fix (the row link changed) +
+  one new mount-proof test; the next.md only named `records_test.go` for the row-link update, but the
+  same affordance is asserted at the binary level in `main_test.go`, so it had to move too. No
+  assertion was deleted or weakened — the cmd test now asserts the new `record?index=` link, and the
+  added `TestMirrorRecordRoute` is the binary-level proof the new mount works (the proofserve unit test
+  drives the handler directly and cannot catch a missing mux mount, per next.md).
+- The missing-projection case (next.md's explicit decision point) is handled as designed:
+  `RecordAt` `found=false` still renders 200 from the bytes with id/schema shown as "no projection
+  indexed", schema→kind defaulting to Unknown — covered by `TestRecordRendersWithoutProjection`.
+- Pre-existing unstaged change to `.claude/context/target.md` was left untouched and NOT committed (not
+  my file to modify per the protocol).

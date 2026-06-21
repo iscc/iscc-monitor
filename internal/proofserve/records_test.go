@@ -1,7 +1,7 @@
 // Golden HTTP-seam tests for the HTML record-list route (GET /records). They drive
 // proofserve.Handler over the buildMirror fixture store and assert the rendered page
-// lists the hub's indexed records newest-first, links each row to its per-record
-// bytes view (entries?index=<seq>), paginates via plain no-JS ?from=…&n=… links, and
+// lists the hub's indexed records newest-first, links each row to its single-record
+// page (record?index=<seq>), paginates via plain no-JS ?from=…&n=… links, and
 // renders an informative 200 empty state for a hub with no indexed records. The oracle
 // gate is N/A here: pure HTML render of persisted iscc_index rows, no signature,
 // RFC-6962, Merkle, did:web, fsck, or proof path. The body is also pinned CDN-free —
@@ -35,7 +35,7 @@ func getRecords(t *testing.T, h http.Handler, query string) (int, string) {
 
 // TestRecordsListsNewestFirst asserts GET /records returns 200 text/html, lists the
 // hub's records newest-first (the highest seq appears before a lower one), links each
-// row to its per-record bytes view (entries?index=<seq>), and shows the honest total.
+// row to its single-record page (record?index=<seq>), and shows the honest total.
 func TestRecordsListsNewestFirst(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
 	h := Handler(m.store, m.hubID, nil)
@@ -53,8 +53,8 @@ func TestRecordsListsNewestFirst(t *testing.T) {
 
 	// The default page size is 50, so the newest 50 seqs (299..250) appear; the page
 	// must be newest-first: the newest seq's row precedes the oldest-on-page seq's row.
-	newestLink := "entries?index=299"
-	olderOnPageLink := "entries?index=250"
+	newestLink := "record?index=299"
+	olderOnPageLink := "record?index=250"
 	iNewest := strings.Index(body, newestLink)
 	iOlder := strings.Index(body, olderOnPageLink)
 	if iNewest < 0 {
@@ -84,7 +84,7 @@ func TestRecordsPagination(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("first page status = %d, want 200", code)
 	}
-	for _, want := range []string{"entries?index=299", "entries?index=298"} {
+	for _, want := range []string{"record?index=299", "record?index=298"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("first page missing %q\n%s", want, body)
 		}
@@ -101,12 +101,12 @@ func TestRecordsPagination(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("second page status = %d, want 200", code)
 	}
-	for _, want := range []string{"entries?index=297", "entries?index=296"} {
+	for _, want := range []string{"record?index=297", "record?index=296"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("second page missing %q\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, "entries?index=299") {
+	if strings.Contains(body, "record?index=299") {
 		t.Errorf("second page wrongly re-lists the first page's newest record (299)\n%s", body)
 	}
 	// On a non-first page a newer link is live too.
@@ -178,9 +178,9 @@ func TestRecordsRendersInMemoryStatus(t *testing.T) {
 }
 
 // countRecordLinks counts the per-record rows rendered in a /records body by counting
-// the per-record bytes links each row emits (one entries?index= link per row).
+// the single-record-page links each row emits (one record?index= link per row).
 func countRecordLinks(body string) int {
-	return strings.Count(body, "entries?index=")
+	return strings.Count(body, "record?index=")
 }
 
 // TestRecordsClampsHostilePageSize asserts a hostile n that wraps int(n) negative is
@@ -246,7 +246,7 @@ func TestRecordsOlderLinkReachesSeq0(t *testing.T) {
 		if code != http.StatusOK {
 			t.Fatalf("step %d (%q) status = %d, want 200", step, query, code)
 		}
-		if strings.Contains(body, "entries?index=0") {
+		if strings.Contains(body, "record?index=0") {
 			reached0 = true
 			// The page containing seq 0 is the bottom of the chain — no live older link.
 			if next := olderHref(body); next != "" {
@@ -268,7 +268,7 @@ func TestRecordsOlderLinkReachesSeq0(t *testing.T) {
 // TestRecordsCeilingHidesUnacceptedLeaves asserts the list caps at the accepted tree
 // size: a hub whose iscc_index holds projections at seq >= LastSize (a freeze/fault
 // leaves them, since ingest writes projections before AdvanceAccepted) lists ONLY the
-// accepted leaves, never the unaccepted ones whose entries?index= links would then 404.
+// accepted leaves, never the unaccepted ones whose record?index= links would then 404.
 func TestRecordsCeilingHidesUnacceptedLeaves(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "ceiling.db"))
@@ -300,14 +300,14 @@ func TestRecordsCeilingHidesUnacceptedLeaves(t *testing.T) {
 		t.Fatalf("status = %d, want 200", code)
 	}
 	// Accepted leaves (seq < 4) list.
-	for _, want := range []string{"entries?index=3", "entries?index=0"} {
+	for _, want := range []string{"record?index=3", "record?index=0"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("accepted leaf link %q missing\n%s", want, body)
 		}
 	}
 	// Unaccepted leaves (seq >= 4) must NOT list — they are not vouched for and their
-	// entries?index= links would 404.
-	for _, banned := range []string{"entries?index=4", "entries?index=5"} {
+	// record?index= links would 404.
+	for _, banned := range []string{"record?index=4", "record?index=5"} {
 		if strings.Contains(body, banned) {
 			t.Errorf("unaccepted leaf link %q rendered past the LastSize ceiling\n%s", banned, body)
 		}

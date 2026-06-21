@@ -11,9 +11,10 @@
 // drives the lookup without a codec) and the iscc_id_str TEXT column (the verbatim
 // string); an empty id writes an empty BLOB + empty string, indexed verbatim too.
 //
-// store stays a leaf: this file uses context + fmt (stdlib) only and does NOT import
-// internal/logclient. The follower copies logclient.Projection → ProjectionRecord at
-// the call site, so net/http-bearing deps never enter the store closure.
+// store stays a leaf: this file uses context, database/sql, errors, and fmt (stdlib)
+// only and does NOT import internal/logclient. The follower copies
+// logclient.Projection → ProjectionRecord at the call site, so net/http-bearing deps
+// never enter the store closure.
 //
 // It is an unwired-until-M2 export seam: RecordProjections has no production caller
 // yet (the PollHub tile-ingestion wiring is a later slice) and SeqsForISCCID exists
@@ -24,6 +25,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 )
 
@@ -150,6 +152,43 @@ func (s *Store) ListRecords(ctx context.Context, hubID int64, last uint64, hasFr
 		return nil, 0, fmt.Errorf("store.ListRecords: rows: %w", err)
 	}
 	return records, total, nil
+}
+
+// RecordAt is the single-row reader for the single-record page: it returns the one
+// projection row (the verbatim iscc_id_str and note.$schema) a hub indexed at the
+// absolute seq, with found reporting whether a row exists. It is a leaf read scoped
+// to one (hub, seq) via QueryRowContext on the PRIMARY KEY, returning a plain
+// RecordRow (store stays a leaf).
+//
+// An absent row is the no-row case, not an error: sql.ErrNoRows maps to (RecordRow{},
+// found=false, nil err) so the caller treats "no projection indexed for this seq" as
+// a plain miss (the leaf's mirrored bytes are the source of truth; the projection is
+// only a derived view, ADR-0008). iscc_id_str / note_schema are read through
+// sql.NullString so a NULL column degrades to "" rather than an error, and seq is
+// scanned as int64 then uint64(seq) (symmetric with RecordProjections' int64(r.Seq)
+// write). The id and schema are read verbatim and never interpreted. Only a real
+// query/scan fault returns a non-nil error.
+func (s *Store) RecordAt(ctx context.Context, hubID int64, seq uint64) (RecordRow, bool, error) {
+	var (
+		rowSeq     int64
+		isccID     sql.NullString
+		noteSchema sql.NullString
+	)
+	err := s.db.QueryRowContext(ctx,
+		"SELECT seq, iscc_id_str, note_schema FROM iscc_index WHERE hub_id = ? AND seq = ?",
+		hubID, int64(seq),
+	).Scan(&rowSeq, &isccID, &noteSchema)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RecordRow{}, false, nil
+	}
+	if err != nil {
+		return RecordRow{}, false, fmt.Errorf("store.RecordAt: hub %d seq %d: %w", hubID, seq, err)
+	}
+	return RecordRow{
+		Seq:        uint64(rowSeq),
+		IsccID:     isccID.String,
+		NoteSchema: noteSchema.String,
+	}, true, nil
 }
 
 // SeqsForISCCID is the one-to-many reader: it returns every seq a hub indexed under

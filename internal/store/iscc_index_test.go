@@ -412,6 +412,83 @@ func leafID(i int) string {
 	return "ISCC:LEAF" + string(rune('A'+i%26)) + string(rune('0'+i%10))
 }
 
+// TestRecordAt confirms the single-row reader returns the persisted projection row
+// (id / schema) for an existing seq with found=true, reads the columns back verbatim
+// (ADR-0008: nothing is interpreted), and returns found=false with a nil error for an
+// absent seq — the single-record page's "no projection indexed" miss, not an error.
+func TestRecordAt(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hub := newHub(t, s)
+
+	rec := ProjectionRecord{
+		HubID:        hub,
+		Seq:          7,
+		IsccID:       "ISCC:MAAGZTFQTTVIZ3IS",
+		NoteSchema:   "iscc-note-delete-0.8.0",
+		RecordSHA256: [32]byte{0x42},
+	}
+	if err := s.RecordProjections(ctx, []ProjectionRecord{rec}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+
+	row, found, err := s.RecordAt(ctx, hub, 7)
+	if err != nil {
+		t.Fatalf("RecordAt existing seq: %v", err)
+	}
+	if !found {
+		t.Fatalf("RecordAt(7) found = false, want true")
+	}
+	if row.Seq != 7 {
+		t.Errorf("row.Seq = %d, want 7", row.Seq)
+	}
+	if row.IsccID != rec.IsccID {
+		t.Errorf("row.IsccID = %q, want %q", row.IsccID, rec.IsccID)
+	}
+	if row.NoteSchema != rec.NoteSchema {
+		t.Errorf("row.NoteSchema = %q, want %q", row.NoteSchema, rec.NoteSchema)
+	}
+
+	// An absent seq is a plain miss: found=false, nil error, zero RecordRow.
+	row, found, err = s.RecordAt(ctx, hub, 999)
+	if err != nil {
+		t.Fatalf("RecordAt absent seq: unexpected error %v", err)
+	}
+	if found {
+		t.Errorf("RecordAt(999) found = true, want false")
+	}
+	if (row != RecordRow{}) {
+		t.Errorf("absent RecordAt row = %+v, want zero RecordRow", row)
+	}
+}
+
+// TestRecordAtScopedByHub confirms RecordAt is hub-scoped: a seq indexed under one hub
+// is not returned for another hub even though seq is the global primary key (so the
+// (hub_id, seq) pair, not seq alone, identifies the row the page reads).
+func TestRecordAtScopedByHub(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hubA := newHub(t, s)
+	hubB, err := s.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub hubB: %v", err)
+	}
+
+	if err := s.RecordProjections(ctx, []ProjectionRecord{
+		{HubID: hubA, Seq: 5, IsccID: leafID(0), NoteSchema: "iscc-note-0.8.0"},
+	}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+
+	if _, found, err := s.RecordAt(ctx, hubA, 5); err != nil || !found {
+		t.Fatalf("RecordAt(hubA, 5) found = %v, err = %v, want true / nil", found, err)
+	}
+	// hubB never indexed seq 5, so its read is a miss.
+	if _, found, err := s.RecordAt(ctx, hubB, 5); err != nil || found {
+		t.Errorf("RecordAt(hubB, 5) found = %v, err = %v, want false / nil (hub-scoped)", found, err)
+	}
+}
+
 // TestSeqsForISCCIDScopedByHub confirms the lookup is hub-scoped: two hubs indexing
 // the same iscc_id do not bleed into each other's result.
 func TestSeqsForISCCIDScopedByHub(t *testing.T) {

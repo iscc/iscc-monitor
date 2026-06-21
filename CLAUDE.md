@@ -67,7 +67,10 @@ After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSO
   the `GET /` line.
 - `GET /<domain>/log/records?from=…[&n=…]` — server-rendered HTML record list: a no-JS,
   newest-first, plain-link-paginated window over the hub's indexed records, each row linking to that
-  leaf's per-record bytes (`entries?index=<seq>`); an empty index renders an informative 200 empty state.
+  leaf's single-record page (`record?index=<seq>`); an empty index renders an informative 200 empty state.
+- `GET /<domain>/log/record?index=<seq>` — server-rendered HTML single-record page: one accepted
+  leaf's seq, kind label (declaration / deletion / unknown schema, the only interpretation), verbatim
+  ISCC-ID and `note.$schema`, and raw record bytes.
 - `GET /<domain>/log/checkpoint` — mirrored signed checkpoint (e.g. `/sb0.iscc.id/log/checkpoint`).
 - `GET /<domain>/log/tile/...` — raw mirrored tlog-tiles BLOBs.
 - `GET /<domain>/log/entries?index=<seq>` — single-leaf record bytes from the local mirror.

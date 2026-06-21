@@ -81,6 +81,37 @@ var recordsTmpl = func() *template.Template {
 	return template.Must(t.Parse(badge.Source))
 }()
 
+// recordSource is the embedded HTML single-record template, parsed once at package
+// init so a malformed template fails the build, not a request.
+//
+//go:embed record.html
+var recordSource string
+
+// recordTmpl is the parsed single-record template with the HubStatusBadge partial
+// associated into the same set, so the page invokes {{template "hubStatusBadge" .}}
+// over the recordData view (which exposes .Status and .Label), the same wiring
+// recordsTmpl / browserTmpl use. template.Must panics at init if either source fails
+// to parse. It is html/template (NOT text/template) so the id / schema / raw record
+// bytes auto-escape.
+var recordTmpl = func() *template.Template {
+	t := template.Must(template.New("record").Parse(recordSource))
+	return template.Must(t.Parse(badge.Source))
+}()
+
+// Record-kind labels mapping the verbatim note.$schema to a human-readable kind.
+// This is the ONLY interpretation the single-record page performs (ADR-0008): the
+// declaration / deletion schemas (CLAUDE.md glossary) map to friendly labels, and
+// anything else — including an empty schema — is the catch-all kindUnknown. The
+// mapping is fail-open: an unknown/empty schema still renders the page (never a 4xx/
+// 5xx), and the verbatim schema string is always shown alongside the label.
+const (
+	schemaDeclaration = "iscc-note-0.8.0"
+	schemaDeletion    = "iscc-note-delete-0.8.0"
+	kindDeclaration   = "Declaration"
+	kindDeletion      = "Deletion"
+	kindUnknown       = "Unknown record type"
+)
+
 // defaultPageSize is the record-list page size used when n is absent or non-numeric;
 // maxPageSize clamps a hostile n so it can never scan the whole index.
 const (
@@ -127,15 +158,21 @@ type StatusSource interface {
 // relative links into the entries and proof routes, so a human can browse the
 // mirror and a client can discover the proof surface.
 //
-// Finally it handles GET /records (optionally ?from=<seq>&n=<size>) — a no-JS,
+// It also handles GET /records (optionally ?from=<seq>&n=<size>) — a no-JS,
 // newest-first, plain-link-paginated HTML list of the hub's indexed records, each
-// row linking to that leaf's per-record bytes (entries?index=<seq>), with an
+// row linking to that leaf's single-record page (record?index=<seq>), with an
 // informative 200 empty state for a hub with no indexed records.
 //
+// Finally it handles GET /record?index=<seq> — a no-JS HTML page rendering one
+// accepted leaf: its seq, a kind label (declaration / deletion / unknown) derived
+// from the verbatim note.$schema, the verbatim ISCC-ID and schema, and the raw
+// record bytes the proof bundle commits to.
+//
 // Status mapping: non-GET → 405; an unmatched path → 404. The per-route flow
-// owns the rest (serveBrowser / serveRecords / serveInclusion / serveConsistency /
-// serveEntries / serveVerify); see each for its 400/404/500 mapping. CORS, caching,
-// and conditional GET are intentionally out of scope for this slice.
+// owns the rest (serveBrowser / serveRecords / serveRecord / serveInclusion /
+// serveConsistency / serveEntries / serveVerify); see each for its 400/404/500
+// mapping. CORS, caching, and conditional GET are intentionally out of scope for
+// this slice.
 //
 // statuses is the in-memory status overlay (the metrics registry) the log browser
 // uses to render the richer unresolvable / unverified verdicts the store cannot
@@ -155,6 +192,8 @@ func Handler(st *store.Store, hubID int64, statuses StatusSource) http.Handler {
 			serveBrowser(w, r, st, hubID, statuses)
 		case "/records":
 			serveRecords(w, r, st, hubID, statuses)
+		case "/record":
+			serveRecord(w, r, st, f, hubID, statuses)
 		case "/inclusion":
 			serveInclusion(w, r, st, f, hubID)
 		case "/consistency":
@@ -650,7 +689,7 @@ type recordsData struct {
 
 // serveRecords renders the HTML record list for the hub-log /records route: a
 // newest-first (seq DESC), plain-link-paginated window over the hub's iscc_index,
-// each row linking to that leaf's per-record bytes view (entries?index=<seq>). It
+// each row linking to that leaf's single-record page (record?index=<seq>). It
 // reads only persisted store rows (FollowState for the overlay status + ListRecords)
 // — no signature, RFC-6962, Merkle, or proof computation. The displayed hub status
 // overlays the store-provable subset with the in-memory live verdict (overlayStatus),
@@ -762,6 +801,156 @@ func serveRecords(w http.ResponseWriter, r *http.Request, st *store.Store, hubID
 	w.WriteHeader(http.StatusOK)
 	// Post-200 write-drop: the status is already committed, so a copy error can only
 	// signal a broken client connection (matching serveBrowser and the dashboard).
+	_, _ = buf.WriteTo(w)
+}
+
+// recordData is the single-record template view-model: the overlaid hub status and
+// its fixed-table badge label (rendered through the hubStatusBadge partial, the same
+// way browserData / recordsData do), the leaf's absolute Seq, the human-readable Kind
+// label and an IsDeletion flag (the only interpretation, mapped from the verbatim
+// note.$schema, ADR-0008), HasProjection reporting whether an iscc_index row exists
+// for this leaf (false → the id / schema cells render a "no projection indexed" state
+// since the bytes, not the projection, are the source of truth), the verbatim IsccID
+// and NoteSchema strings (never interpreted beyond Kind), and RecordBytes — the raw
+// opaque JCS-canonical log-entry envelope cast to a string for html/template auto-
+// escape (NOT template.HTML), shown verbatim for human inspection.
+type recordData struct {
+	Status        string
+	Label         string
+	Seq           uint64
+	Kind          string
+	IsDeletion    bool
+	HasProjection bool
+	IsccID        string
+	NoteSchema    string
+	RecordBytes   string
+}
+
+// recordKind maps the verbatim note.$schema to a human-readable kind label and a
+// deletion flag — the ONLY interpretation the single-record page performs (ADR-0008).
+// It is fail-open by construction: the declaration / deletion schemas map to their
+// friendly labels, and anything else (including an empty schema) is kindUnknown, so
+// an unknown or empty schema never gates or errors the page; the verbatim schema
+// string is shown alongside the label regardless.
+func recordKind(noteSchema string) (kind string, isDeletion bool) {
+	switch noteSchema {
+	case schemaDeclaration:
+		return kindDeclaration, false
+	case schemaDeletion:
+		return kindDeletion, true
+	default:
+		return kindUnknown, false
+	}
+}
+
+// serveRecord renders the HTML single-record page for the hub-log /record route: one
+// accepted leaf's seq, kind label (declaration / deletion / unknown, the only
+// interpretation, ADR-0008), verbatim ISCC-ID and note.$schema, and raw record bytes.
+// The bytes are the source of truth: the page does its work from the mirrored bundle
+// bytes (the same accepted-tree-capped bundle math serveEntries uses), while the
+// iscc_index projection only supplies the id / schema labels — so a leaf whose bytes
+// are mirrored but whose projection is absent still renders (HasProjection=false), the
+// id / schema shown as a "no projection indexed" state rather than a 404.
+//
+// Status mapping (mirroring serveEntries' accepted-tree contract): a missing or non-
+// numeric index → 400; no accepted checkpoint yet (LastSize == 0) or seq >= LastSize
+// (the leaf is not in the monitor's accepted tree) → 404; the bundle not yet mirrored
+// (a wrapped os.ErrNotExist) → 404; the bundle mirrored but only partial and not yet
+// covering this leaf (ErrLeafOutOfBundle) → 404; a FollowState / RecordAt / bundle-read
+// DB error → 500. A missing projection is NOT a 404 (the bytes are the truth). The page
+// is rendered into a buffer first so a template/store error is a 500 BEFORE any 200.
+func serveRecord(w http.ResponseWriter, r *http.Request, st *store.Store, f store.SQLiteFetcher, hubID int64, statuses StatusSource) {
+	ctx := r.Context()
+
+	seq, err := parseUint(r.URL.Query().Get("index"))
+	if err != nil {
+		http.Error(w, "missing or non-numeric index", http.StatusBadRequest)
+		return
+	}
+
+	fs, err := st.FollowState(ctx, hubID)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	size := fs.LastSize
+	if size == 0 {
+		http.Error(w, "no accepted checkpoint", http.StatusNotFound)
+		return
+	}
+	if seq >= size {
+		http.Error(w, "leaf not covered by accepted checkpoint", http.StatusNotFound)
+		return
+	}
+
+	// Read the leaf's raw record bytes from the mirrored entry bundle the same way
+	// serveEntries does: the final bundle of a non-multiple-of-256 tree is a partial,
+	// so request its expected p (the SQLiteFetcher does the partial→full fallback) —
+	// passing p == 0 unconditionally would 404 a real leaf in that final partial.
+	bundleIndex := seq / tiles.TileWidth
+	offset := seq % tiles.TileWidth
+	p := tiles.PartialTileSize(0, bundleIndex, size)
+	bundle, err := f.ReadEntryBundle(ctx, bundleIndex, p)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.Error(w, "bundle not mirrored", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	record, err := logclient.RecordBytesFromBundle(bundle, offset)
+	if err != nil {
+		if errors.Is(err, logclient.ErrLeafOutOfBundle) {
+			http.Error(w, "leaf not in mirrored bundle", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// The projection is a derived view (ADR-0008) that only supplies the id / schema
+	// labels; a missing row is a plain miss, not a fault. The bytes above are the
+	// source of truth, so HasProjection=false still renders the page.
+	row, found, err := st.RecordAt(ctx, hubID, seq)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	kind, isDeletion := recordKind(row.NoteSchema)
+
+	status := overlayStatus(fs, hubID, statuses)
+	// The hubStatusBadge partial reads .Label directly; precompute it from the badge
+	// package's single source of truth. The !ok fallback is defensive-only —
+	// overlayStatus only ever yields valid labels keys.
+	label, ok := badge.Label(status)
+	if !ok {
+		label = status
+	}
+
+	data := recordData{
+		Status:        status,
+		Label:         label,
+		Seq:           seq,
+		Kind:          kind,
+		IsDeletion:    isDeletion,
+		HasProjection: found,
+		IsccID:        row.IsccID,
+		NoteSchema:    row.NoteSchema,
+		// The record envelope is opaque bytes for human inspection — string-cast for
+		// html/template auto-escape, never parsed and never template.HTML.
+		RecordBytes: string(record),
+	}
+
+	var buf bytes.Buffer
+	if err := recordTmpl.Execute(&buf, data); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	// Post-200 write-drop: the status is already committed, so a copy error can only
+	// signal a broken client connection (matching serveBrowser / serveRecords).
 	_, _ = buf.WriteTo(w)
 }
 

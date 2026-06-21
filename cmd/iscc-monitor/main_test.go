@@ -434,9 +434,10 @@ func TestMirrorEntriesRoute(t *testing.T) {
 // on the same combined mux as the static mirror and the other proof routes: it seeds a
 // verified mirror with indexed projections and an accepted checkpoint, then asserts GET
 // /<origin>/log/records routes through the shared mux to the HTML list (200 text/html
-// containing a per-record entries link), while /<origin>/log/checkpoint still reaches
-// the static mirror. This is the binary-level routing proof the new /records mount does
-// not break the existing routing (the exact mount beats the "/" subtree dispatch).
+// containing a per-record single-record-page link), while /<origin>/log/checkpoint
+// still reaches the static mirror. This is the binary-level routing proof the new
+// /records mount does not break the existing routing (the exact mount beats the "/"
+// subtree dispatch).
 func TestMirrorRecordsRoute(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "records.db"))
@@ -481,8 +482,82 @@ func TestMirrorRecordsRoute(t *testing.T) {
 		if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
 			t.Errorf("Content-Type = %q, want text/html; charset=utf-8", ct)
 		}
-		if !bytes.Contains(rec.Body.Bytes(), []byte("entries?index=4")) {
-			t.Errorf("record list missing per-record link entries?index=4\n%s", rec.Body.String())
+		if !bytes.Contains(rec.Body.Bytes(), []byte("record?index=4")) {
+			t.Errorf("record list missing per-record link record?index=4\n%s", rec.Body.String())
+		}
+	})
+
+	// GET /sb0.iscc.id/log/checkpoint -> 200: the static mirror still routes.
+	t.Run("checkpoint still reaches the static mirror", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id/log/checkpoint", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200", rec.Code)
+		}
+	})
+}
+
+// TestMirrorRecordRoute proves the /record single-record-page route is mounted per hub
+// on the same combined mux: it seeds a verified mirror with one framed entry bundle, a
+// matching projection, and an accepted checkpoint, then asserts GET
+// /<origin>/log/record?index=<seq> routes through the shared mux to the HTML page (200
+// text/html showing the leaf's raw record bytes). Without the explicit /record mount
+// the path would fall through to the "/" subtree dispatch and on to tilesserve and 404,
+// which the proofserve unit tests (driving the handler directly) cannot catch — this is
+// the binary-level routing proof the new mount works.
+func TestMirrorRecordRoute(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "record.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	hub, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	const leaves = 5
+	records := make([][]byte, leaves)
+	for i := range records {
+		records[i] = []byte(fmt.Sprintf("record-%d", i))
+	}
+	at := time.Unix(1700000000, 0)
+	if err := st.RecordEntryBundle(ctx, hub, 0, uint8(leaves), frameEntryBundle(records), at); err != nil {
+		t.Fatalf("RecordEntryBundle: %v", err)
+	}
+	if err := st.RecordProjections(ctx, []store.ProjectionRecord{
+		{HubID: hub, Seq: 2, IsccID: "ISCC:LEAF2", NoteSchema: "iscc-note-0.8.0"},
+	}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+	if _, _, err := st.RecordCheckpoint(ctx, store.CheckpointRecord{
+		HubID: hub, TreeSize: leaves, Root: []byte("root"), Raw: []byte("checkpoint"), ObservedAt: at,
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint: %v", err)
+	}
+	if err := st.AdvanceFollowState(ctx, hub, leaves); err != nil {
+		t.Fatalf("AdvanceFollowState: %v", err)
+	}
+
+	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
+	mux := buildMux(st, routes, metrics.New())
+
+	// GET /sb0.iscc.id/log/record?index=2 -> 200 HTML page for the leaf.
+	t.Run("record at origin prefix returns the HTML page", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id/log/record?index=2", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+			t.Errorf("Content-Type = %q, want text/html; charset=utf-8", ct)
+		}
+		// The page renders the leaf's raw record bytes — proof it reached proofserve, not
+		// tilesserve (which would 404 the unknown path).
+		if !bytes.Contains(rec.Body.Bytes(), records[2]) {
+			t.Errorf("record page missing raw record bytes %q\n%s", records[2], rec.Body.String())
 		}
 	})
 

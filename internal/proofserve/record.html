@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ISCC Monitor — Record List</title>
+  <title>ISCC Monitor — Record</title>
   <!-- Shared ISCC Design System v2 token stylesheet (CDN-free, self-hosted).
        The path is a literal because templates cannot read Go consts; keep it in
        sync with web.TokensPath. -->
@@ -12,7 +12,7 @@
        /_ds/fonts/, no runtime CDN). The path is a literal; keep it in sync with
        web.FontsCSSPath. -->
   <link rel="stylesheet" href="/_ds/fonts.css">
-  <!-- Page-scoped layout for the Evidence-Ledger record list. Every rule is
+  <!-- Page-scoped layout for the Evidence-Ledger single-record page. Every rule is
        expressed through the embedded DS tokens (var(--*)) so the type resolves to
        the self-hosted Readex Pro / JetBrains Mono and the surfaces use the DS
        palette. Kept local to this page (not in the shared tokens.css) so it can
@@ -78,7 +78,7 @@
       font-weight: var(--weight-light);
     }
 
-    /* The ledger card: a bordered, shadowed surface holding the record rows. */
+    /* The ledger card: a bordered, shadowed surface holding this record's fields. */
     .ledger {
       background: var(--surface-card);
       border: var(--border-width) solid var(--border-default);
@@ -96,14 +96,18 @@
       background: var(--status-error-bg, rgba(245, 97, 105, 0.06));
     }
 
-    /* The status row pairs a mono label with the hub-status badge. */
-    .ledger-status {
+    /* Each definition row pairs a mono label with its value. The page shows ONE
+       leaf, so the rows are a small two-column grid, not a multi-leaf table. */
+    .ledger-row {
       display: grid;
       grid-template-columns: 160px 1fr;
       gap: var(--space-4);
       align-items: baseline;
       padding: var(--space-3) var(--space-5);
       border-bottom: var(--border-width) solid var(--border-subtle);
+    }
+    .ledger-row:last-child {
+      border-bottom: 0;
     }
     .row-label {
       font-family: var(--font-mono);
@@ -112,38 +116,19 @@
       text-transform: uppercase;
       color: var(--text-muted);
     }
-
-    /* The record list itself: each row is a seq + id + schema triple, newest
-       first, linking to the record's per-record view. Laid out as a CSS grid (no
-       <table>) so the whole page renders complete with JavaScript disabled. */
-    .records {
-      list-style: none;
-      margin: 0;
-      padding: 0;
-    }
-    .record-row {
-      display: grid;
-      grid-template-columns: 120px 1fr;
-      gap: var(--space-4);
-      align-items: baseline;
-      padding: var(--space-3) var(--space-5);
-      border-bottom: var(--border-width) solid var(--border-subtle);
-    }
-    .record-row:last-child {
-      border-bottom: 0;
-    }
-    .record-seq {
-      font-family: var(--font-mono);
-      font-size: var(--text-xs);
-      color: var(--text-link);
-    }
-    /* The record cell must be allowed to shrink below the id's min-content width
-       (grid items default to min-width:auto) so a long id wraps in the cell
-       rather than pushing the seq column out of view. */
-    .record-cell {
+    /* The id is long — it must stay fully readable and selectable, so it wraps
+       inside the value cell rather than truncating. The grid value column must be
+       allowed to shrink below the code's min-content width (grid items default to
+       min-width:auto) or the wrap never engages. */
+    .row-value {
       min-width: 0;
     }
-    .record-id {
+    .row-mono {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-body);
+    }
+    .row-id {
       display: block;
       font-family: var(--font-mono);
       font-size: var(--text-xs);
@@ -151,28 +136,44 @@
       word-break: break-all;
       overflow-wrap: anywhere;
     }
-    .record-schema {
-      font-family: var(--font-mono);
+    .row-kind {
+      font-weight: var(--weight-bold);
+      color: var(--text-heading);
+    }
+    .row-note {
       font-size: var(--text-2xs);
       color: var(--text-muted);
+      font-weight: var(--weight-light);
     }
 
-    /* Pagination: plain links, no JavaScript. */
-    .pager {
-      display: flex;
-      gap: var(--space-4);
-      padding: var(--space-4) var(--space-5);
-      border-top: var(--border-width) solid var(--border-subtle);
+    /* The raw record-bytes panel: the opaque JCS-canonical log-entry envelope,
+       shown verbatim for human inspection inside a scrollable <pre> so the page
+       renders complete with JavaScript disabled. */
+    .bytes {
+      padding: var(--space-4) var(--space-5) var(--space-5);
     }
-    .pager a {
+    .bytes-title {
+      font-family: var(--font-mono);
+      font-size: var(--text-2xs);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin: 0 0 var(--space-3);
+    }
+    .bytes-pre {
+      margin: 0;
+      padding: var(--space-3) var(--space-4);
+      background: var(--surface-page);
+      border: var(--border-width) solid var(--border-subtle);
+      border-radius: var(--radius-xs);
       font-family: var(--font-mono);
       font-size: var(--text-xs);
-      color: var(--text-link);
-    }
-    .pager span {
-      font-family: var(--font-mono);
-      font-size: var(--text-xs);
-      color: var(--text-faint);
+      color: var(--text-body);
+      white-space: pre-wrap;
+      word-break: break-all;
+      overflow-wrap: anywhere;
+      max-height: 480px;
+      overflow: auto;
     }
 
     .empty {
@@ -232,48 +233,55 @@
 
   <main class="page">
     <div class="ledger-head">
-      <h1 class="ledger-title">Records</h1>
-      <span class="ledger-count">The monitor's mirrored, accepted records for this hub, newest first.</span>
+      <h1 class="ledger-title">Record</h1>
+      <span class="ledger-count">One mirrored, accepted leaf of this hub's log — listed verbatim, interpreted nothing beyond its kind label.</span>
     </div>
 
     <div class="ledger" data-status="{{.Status}}">
-      <div class="ledger-status">
+      <div class="ledger-row">
         <span class="row-label">Status</span>
-        <span>{{template "hubStatusBadge" .}}</span>
+        <span class="row-value">{{template "hubStatusBadge" .}}</span>
       </div>
-      {{- if .Records}}
-      <ul class="records">
-        {{- range .Records}}
-        <li class="record-row">
-          <a class="record-seq" href="record?index={{.Seq}}">seq {{.Seq}}</a>
-          <span class="record-cell">
-            <code class="record-id">{{if .IsccID}}{{.IsccID}}{{else}}(no iscc_id){{end}}</code>
-            <span class="record-schema">{{if .NoteSchema}}{{.NoteSchema}}{{else}}(no schema){{end}}</span>
-          </span>
-        </li>
-        {{- end}}
-      </ul>
-      <div class="pager">
-        {{- if .HasNewer}}
-        <a href="records?from={{.NewerFrom}}&amp;n={{.PageSize}}">&larr; newer</a>
-        {{- else}}
-        <span>&larr; newer</span>
-        {{- end}}
-        <span>showing {{len .Records}} of {{.Total}}</span>
-        {{- if .HasOlder}}
-        <a href="records?from={{.OlderFrom}}&amp;n={{.PageSize}}">older &rarr;</a>
-        {{- else}}
-        <span>older &rarr;</span>
-        {{- end}}
+      <div class="ledger-row">
+        <span class="row-label">Seq</span>
+        <span class="row-value row-mono">{{.Seq}}</span>
       </div>
-      {{- else}}
-      <div class="empty">
-        <p>No records yet — this hub is followed and mirrored, but the monitor has not yet indexed any accepted records for it. Records appear here once a verified checkpoint covers them.</p>
+      <div class="ledger-row">
+        <span class="row-label">Kind</span>
+        <span class="row-value">
+          <span class="row-kind">{{.Kind}}</span>
+          {{- if .IsDeletion}}
+          <span class="row-note">— a new record marking the declaration redacted in derived views; it never removes the committed declaration.</span>
+          {{- end}}
+        </span>
       </div>
-      {{- end}}
+      <div class="ledger-row">
+        <span class="row-label">ISCC-ID</span>
+        <span class="row-value">
+          {{- if .HasProjection}}
+          <code class="row-id">{{if .IsccID}}{{.IsccID}}{{else}}(no iscc_id){{end}}</code>
+          {{- else}}
+          <span class="row-note">(no projection indexed for this leaf)</span>
+          {{- end}}
+        </span>
+      </div>
+      <div class="ledger-row">
+        <span class="row-label">note.$schema</span>
+        <span class="row-value">
+          {{- if .HasProjection}}
+          <code class="row-mono">{{if .NoteSchema}}{{.NoteSchema}}{{else}}(no schema){{end}}</code>
+          {{- else}}
+          <span class="row-note">(no projection indexed for this leaf)</span>
+          {{- end}}
+        </span>
+      </div>
+      <div class="bytes">
+        <p class="bytes-title">Raw record bytes</p>
+        <pre class="bytes-pre"><code>{{.RecordBytes}}</code></pre>
+      </div>
     </div>
 
-    <p class="footnote">Every record is listed verbatim — the monitor interprets neither the ISCC-ID nor the note schema. Each row links to that leaf's single-record page; guarantees hold only from coverage start, so records committed before the monitor began watching are mirrored but not vouched for.</p>
+    <p class="footnote">The record bytes are the source of truth — the kind label, ISCC-ID, and note schema above are a derived projection of them and the monitor interprets neither the ISCC-ID nor the schema beyond labelling its kind. Guarantees hold only from coverage start, so a record committed before the monitor began watching is mirrored but not vouched for.</p>
   </main>
 </body>
 </html>
