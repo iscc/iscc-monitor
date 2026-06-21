@@ -1,84 +1,59 @@
-## 2026-06-21 — Review of: Gate certificate §3 inclusion proof on `!hub.Frozen` (close the self-contradictory-proof critical)
+## 2026-06-21 — Fail-close certificate §3: verify the built proof rebuilds the accepted root (close the TOCTOU critical)
 
-**Verdict:** NEEDS_WORK
-**Loop:** CONTINUE
+**Done:** Replaced the §3 status-flag gate (`data.HasClause2 && !hub.Frozen`) with a fail-closed
+Merkle re-verification: `buildData` now reads the subject leaf's entry bundle from the mirror,
+derives its RFC-6962 leaf hash, and sets `HasClause3` only when `proof.VerifyInclusion` proves the
+built proof rebuilds the §2 accepted root. This subsumes the freeze gate (the `hub.Frozen` reference
+is gone) and fails closed against ANY tile↔root divergence — the fork-poll TOCTOU race AND the
+steady-state frozen case — making the rendered ✓ true by construction. Closes the open `critical`.
 
-**Summary:** The advance lands exactly the one-line guard `next.md` asked for
-(`} else if data.HasClause2 && !hub.Frozen {`, the only non-comment code change) plus thorough
-docstrings, and adds a genuinely non-vacuous `TestCertificateInclusionProofFrozen` (I reproduced the
-mutation: reverting the guard makes it FAIL, restoring passes). All gates are green, scope is clean
-(1 source + 1 test file), no gate weakening. BUT the chosen fix (a status-flag gate) is necessary
-but NOT sufficient: Codex raised a [P1] — reviewer-confirmed against the follower source — that a
-fork-poll TOCTOU window leaves the same self-contradictory §3 certificate reachable under
-concurrency, so the trust-root honesty critical is narrowed, not closed.
+**Files changed:**
+- `internal/certificate/handler.go`: rewrote the §3 branch in `buildData` — capture the raw `root`
+  bytes from §2's `CheckpointAt`, build the proof, then `ReadEntryBundle` →
+  `RecordBytesFromBundle` → `rfc6962.DefaultHasher.HashLeaf` → `proof.VerifyInclusion(hasher,
+  Position, LastSize, leafHash, builtProof, root) == nil`. Added imports
+  `merkle/proof`, `merkle/rfc6962`, `internal/tiles`; removed the `hub.Frozen` reference; rewrote the
+  file / `buildData` / `certData` docstrings + the §3 block comment to describe the rebuild
+  verification (the "rebuild gate") instead of the freeze flag.
+- `internal/certificate/handler_test.go`: added an `encodeBundle` helper (copied from
+  `logclient/fsck_test.go`) + `encoding/binary` import; `fixtureStoreTiled` now seeds byte-accurate
+  entry bundles (the `leaf-i` preimages, framed) for every `BundleCoords(size)` so the §3
+  verification can derive a leaf hash equal to `tree.LeafHash(seq)`. Converted
+  `TestCertificateInclusionProofFrozen` → `TestCertificateInclusionProofContradictory`: same
+  contradictory-tile fixture (mirror tree A, accept tree B's root) but `freeze=false`, asserting
+  §1+§2 render while §3 is absent **even though the hub is not frozen**.
 
-**Verification:**
-- [x] `mise run check` green (build + vet + test, all 21 packages `ok`).
-- [x] `go test -count=1 -run TestCertificate ./internal/certificate` → PASS uncached (full suite incl.
-  the new frozen test + the unchanged clean §3 and tile-gap tests).
-- [x] Mutation reproduced INDEPENDENTLY: reverting `&& !hub.Frozen` → `} else if data.HasClause2 {`
-  makes `TestCertificateInclusionProofFrozen` FAIL (the frozen hub renders §3 again); restoring it
-  passes. Backup-restored, tree clean (`git diff --stat` empty).
-- [x] Oracle/conformance gate uncached: `go test -count=1 ./internal/logclient ./cmd/notecheck` → both
-  `ok` (no crypto path changed — the §3 builder is byte-identical, only its render condition gained the
-  flag).
-- [x] `gofmt -l .` empty; `git diff --stat go.mod go.sum` empty; `GOOS=js GOARCH=wasm go build
-  ./internal/index ./internal/didweb` → exit 0; `proof/verify` closure still has no `net`/`net/http`/
-  `database/sql`/`sqlite` (purity intact).
-- [x] No gate circumvention across the unpushed commits (`@{upstream}..HEAD`): no
-  `nolint`/`t.Skip`/build-tag/swallowed-error/deleted-assertion; the cert-code diff is add-only
-  (no removed tests or assertions).
-- [x] Scope: 1 source (`handler.go`) + 1 test (`handler_test.go`); no `## Not In Scope` item touched
-  (no §4–§6, no proof-bundle download, no `registry.go`/`go.mod`/CI; `cert.html` correctly untouched —
-  the template already gates §3 on `{{if .HasClause3}}`).
-- [ ] §3 honesty under a fork poll — FAILS (concurrency): a request landing in the TOCTOU window
-  between `ingestTiles` overwriting the fork's tiles and `st.Freeze` committing the frozen flag reads
-  `hub.Frozen == false` while `CheckpointAt(LastSize)` returns the old accepted root, so §3 still
-  renders the fork's siblings under the old root's `✓`. The original critical is narrowed, not closed.
+**Verification:** `mise run check` → green (all 21 packages `ok`, `go build`/`go vet`/`go test`).
+Per-criterion:
+- `go test -count=1 -run TestCertificate ./internal/certificate` → PASS uncached (clean §3 proof,
+  tile-gap honest-decline, and the new non-frozen contradictory test).
+- Oracle/conformance gate: `go test -count=1 ./internal/logclient ./internal/proofserve
+  ./cmd/notecheck` → all `ok`.
+- Mutation (non-vacuity): replacing the §3 `proof.VerifyInclusion(...) == nil` guard with
+  `... == nil || true` (keeps `proof`/`leafHash` referenced so it still compiles) makes
+  `TestCertificateInclusionProofContradictory` FAIL while the clean `TestCertificateInclusionProof`
+  stays PASS; restored, tree clean. (The bare `if true` mutation in `next.md` won't compile — unused
+  `proof` import + unused `leafHash` — so I used the `|| true` variant, which is the same logical
+  mutation and keeps the build valid; review can reproduce it identically.)
+- `gofmt -l .` empty; `git diff --stat go.mod go.sum` empty; `GOOS=js GOARCH=wasm go build
+  ./internal/index ./internal/didweb` → exit 0; `git diff --stat internal/certificate/cert.html`
+  empty; no `hub.Frozen`/`Frozen` reference left in `handler.go`.
 
-**Issues found:**
-- **[critical, updated]** Certificate §3 can still render a self-contradictory proof in the fork-poll
-  TOCTOU window — the `!hub.Frozen` gate is necessary but incomplete because the HTTP server runs
-  concurrently with the follower and the flag is set (`st.Freeze`) AFTER `ingestTiles` overwrites the
-  same-size tiles, in separate transactions. Steady-state frozen case IS closed by this advance; the
-  race remains. The durable fix is the fail-closed `proof.VerifyInclusion`-against-the-accepted-root
-  variant the §3 plan explicitly deferred until "a non-frozen divergence is demonstrated" — which this
-  finding now demonstrates. Full mechanism + line refs + fix + test recipe in issues.md.
-
-**Codex second opinion:** One [P1] — "Bind §3 proofs to a consistent accepted root"
-(`handler.go:369`). **Confirmed real.** I traced the fork-poll ordering in `internal/follower/`:
-`ingestTiles` (follower.go:174) overwrites same-size tile rows in per-tile `RecordTile` transactions;
-`checkConsistency` then detects the fork; `freeze` (follower.go:194) calls `st.Freeze` as its LAST
-store write and records the contradictory checkpoint via `RecordCheckpoint` (NOT `AdvanceAccepted`), so
-`CheckpointAt(LastSize)` keeps the old root throughout. The follower and HTTP server run concurrently
-(no shared lock; the flag lives in a separately-updated `follow_state` row read via `ListHubs`), so the
-window between the first overwritten tile and the `st.Freeze` commit is real and the same
-self-contradictory certificate is reachable. The hard oracles (notecheck, golden vectors) are green and
-do not contradict this — they cover the clean signature/key path, not this concurrency window. No Codex
-findings dismissed.
-
-**Next:** Replace the status-flag gate with the fail-closed verification (the variant the plan
-deferred): in `buildData`'s §3 branch, before `HasClause3 = true`, read the subject leaf's entry bundle
-from the mirror, derive the leaf hash, decode `data.CheckpointRoot`, and `proof.VerifyInclusion(hasher,
-data.Position, hub.LastSize, proof, acceptedRootBytes, leafHash)` — set `HasClause3` only on a nil
-verdict. This fails closed against ANY tile↔root divergence (race or steady state) and subsumes the
-`!hub.Frozen` gate. Extend the test: a NON-frozen contradictory-tile fixture (mirror tree A, accept
-tree B's root, drop the freeze) must render §1+§2 but NO §3 `✓`, mutation-proven; `fixtureStoreTiled`
-must seed a byte-accurate entry bundle for the subject leaf (it currently seeds only hash tiles). Then
-resume §4 SIGNING KEY → §5 anchor → §6 record history → proof-bundle download.
+**Next:** Resume the §3-plan continuation now that the critical is closed and this can push: §4
+SIGNING KEY → §5 Bitcoin anchor → §6 record history, then the downloadable proof-bundle assembler
+(which shares this same build+verify crypto path and must keep the oracle/conformance gate green).
+The clean caps already proven here (`LastSize > 0`, `Position < LastSize`, entry-bundle seeding in
+`fixtureStoreTiled`) carry forward.
 
 **Notes:**
-- This advance is a real, correct improvement (steady-state frozen case is now honest, mutation-proven)
-  — it is NOT a regression and weakens no gate; it just does not fully close the trust-root critical, so
-  it cannot PASS and must not push (CI is green only at `17c4957`; the whole §3 effort is unpushed).
-- The fail-closed fix subsumes the freeze gate, so the next advance can REPLACE `&& !hub.Frozen` with
-  the `proof.VerifyInclusion` check (one source file again); keep `TestCertificateInclusionProofFrozen`
-  but make its assertion hold via the verification, not the flag (or fold it into the non-frozen
-  contradictory-tile test).
-- The same latent "built ≠ verified" gap exists in proofserve's `serveInclusion`, but proofserve
-  returns client-verifiable JSON without a `✓` validity assertion, so it is not an honesty defect there;
-  the certificate is strictly worse because it renders a verdict the page asserts as true.
-- Deferred backlog unchanged: `hubDomain` ForceQuery (`normal`), ADR-0011 Go 1.26/iscc-lib (`normal`),
-  five `low` items. M-UI certificate Verify is §1+§2 real + §3 landed-but-incomplete (concurrency
-  honesty hole); not yet DONE.
-- No remote push this cycle (NEEDS_WORK).
+- Reused the `root []byte` returned by §2's `CheckpointAt` for `VerifyInclusion` rather than
+  re-decoding `data.CheckpointRoot` (cleaner; `root` is only meaningful when `data.HasClause2`, which
+  is exactly the branch guard). `root` was already in scope from the §2 block.
+- `ErrLeafOutOfBundle` from `RecordBytesFromBundle` and `os.ErrNotExist` from `ReadEntryBundle` are
+  honest gaps → §3 declined (NOT 500), mirroring §2's split and proofserve's `serveVerify`. A
+  non-nil `VerifyInclusion` result is a silent §3 decline, never a 500.
+- **Out-of-scope working-tree changes were present and NOT committed by me:** `.claude/agents/review.md`,
+  `.claude/context/target.md`, `.devcontainer/Dockerfile`, and untracked
+  `.claude/adr/0012-agent-browser-visual-verification.md` + `.claude/skills/agent-browser/`. These
+  appeared in the tree independently of this work package (not mine to touch); I committed only
+  `handler.go`, `handler_test.go`, and this handoff. Flagging for review/loop hygiene.

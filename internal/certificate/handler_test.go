@@ -19,6 +19,7 @@ package certificate
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"html"
 	"net/http"
@@ -459,15 +460,34 @@ func treeNodeHash(t *testing.T, tree *testonly.Tree, treeLevel, treeIndex, size 
 	return h
 }
 
-// fixtureStoreTiled is fixtureStore with a REAL mirrored tile backing, so the §3
-// inclusion-proof clause has genuine tiles to rebuild the proof from. It builds an
+// encodeBundle frames raw records into a tlog-tiles entry bundle (each record
+// prefixed with its big-endian uint16 length, then concatenated) — the C2SP
+// encoding api.EntryBundle.UnmarshalText decodes inside RecordBytesFromBundle. This
+// is the test's independent encode path (copied from logclient/fsck_test.go), so the
+// leaf hash the §3 verification derives matches tree.LeafHash(seq).
+func encodeBundle(records [][]byte) []byte {
+	var out []byte
+	for _, rec := range records {
+		var prefix [2]byte
+		binary.BigEndian.PutUint16(prefix[:], uint16(len(rec)))
+		out = append(out, prefix[:]...)
+		out = append(out, rec...)
+	}
+	return out
+}
+
+// fixtureStoreTiled is fixtureStore with a REAL mirrored tile + entry-bundle backing,
+// so the §3 inclusion-proof clause has genuine tiles to rebuild the proof from AND a
+// genuine entry bundle to derive the subject leaf hash from. It builds an
 // internally-consistent RFC-6962 tree of `leaves` records (merkle's testonly.Tree
 // as the single source of truth), ingests every hash tile a complete mirror of that
 // tree needs (the level-0 leaf-hash rows plus any upper levels, each node recomputed
-// from the tree so the served tiles are byte-accurate), accepts the checkpoint at
-// `acceptedRoot` (AdvanceAccepted sets LastSize), optionally freezes the hub, and
-// indexes the golden leaf at `seq` under the production ISCC:-prefixed form. The
-// returned tree is the independent prover the §3 test cross-checks against.
+// from the tree so the served tiles are byte-accurate), ingests every entry bundle
+// (the record preimages framed via encodeBundle, so RecordBytesFromBundle returns the
+// exact leaf preimage and rfc6962.HashLeaf(record) == tree.LeafHash(seq)), accepts the
+// checkpoint at `acceptedRoot` (AdvanceAccepted sets LastSize), optionally freezes the
+// hub, and indexes the golden leaf at `seq` under the production ISCC:-prefixed form.
+// The returned tree is the independent prover the §3 test cross-checks against.
 //
 // acceptedRoot lets a caller deliberately make the mirror and the accepted root
 // belong to DIFFERENT trees (the frozen-after-fork case): pass nil for the clean,
@@ -529,6 +549,26 @@ func fixtureStoreTiled(t *testing.T, indexDomain, indexedID string, seq uint64, 
 		}
 		if err := st.RecordTile(ctx, target, c.Level, c.Index, c.Partial, raw, time.Unix(0, 0)); err != nil {
 			t.Fatalf("RecordTile (level %d index %d): %v", c.Level, c.Index, err)
+		}
+	}
+
+	// Ingest every entry bundle the mirror needs, framing the SAME leaf preimages the
+	// tree was built from (leaf-i). RecordBytesFromBundle then returns the exact
+	// preimage so rfc6962.HashLeaf(record) == tree.LeafHash(seq); that equality is what
+	// lets the §3 verification pass on the clean fixture (and FAIL on a contradictory
+	// accepted root). A <256-leaf tree is one partial bundle at index 0.
+	for _, c := range tiles.BundleCoords(size) {
+		first := c.Index * tiles.TileWidth
+		var records [][]byte
+		for n := uint64(0); n < tiles.TileWidth; n++ {
+			leaf := first + n
+			if leaf >= size {
+				break
+			}
+			records = append(records, []byte(fmt.Sprintf("leaf-%d", leaf)))
+		}
+		if err := st.RecordEntryBundle(ctx, target, c.Index, c.Partial, encodeBundle(records), time.Unix(0, 0)); err != nil {
+			t.Fatalf("RecordEntryBundle (index %d): %v", c.Index, err)
 		}
 	}
 
@@ -639,21 +679,24 @@ func TestCertificateInclusionProofTileGap(t *testing.T) {
 	}
 }
 
-// TestCertificateInclusionProofFrozen asserts the freeze gate: a FROZEN hub whose
-// mirrored tiles disagree with its accepted root (the frozen-after-fork case — the
-// follower ingested the contradictory tree's tiles before the freeze but never
-// advanced the accepted root) renders §1 SUBJECT + §2 CHECKPOINT but NO §3 INCLUSION
-// PROOF. The proof would still BUILD from the contradictory tiles, but it does not
-// rebuild the accepted root, so rendering it under the accepted-root ✓ would be a
-// self-contradictory certificate (ADR-0006 / the Proof-bundle contract). The fixture
-// mirrors tree A's tiles but accepts tree B's root (a different 5-leaf tree of the
-// same size), then freezes, so ListHubs reports Frozen == true.
+// TestCertificateInclusionProofContradictory asserts the fail-closed rebuild gate: a
+// NON-frozen hub whose mirrored tiles disagree with its accepted root (the fork-poll
+// window — the follower ingested the contradictory tree's tiles but has not committed
+// the freeze flag, so ListHubs still reports Frozen == false) renders §1 SUBJECT + §2
+// CHECKPOINT but NO §3 INCLUSION PROOF. The proof BUILDS from the contradictory tiles,
+// but it does not rebuild the accepted root, so proof.VerifyInclusion rejects it and
+// the certificate declines §3 rather than render a sibling chain under an accepted-root
+// ✓ the chain does not rebuild (a self-contradictory certificate — ADR-0006 / the
+// Proof-bundle contract). The fixture mirrors tree A's tiles + bundles but accepts tree
+// B's root (a different 5-leaf tree of the same size) and is NOT frozen (freeze=false),
+// proving the gate is the re-verification, not the status flag.
 //
-// Mutation (non-vacuity, review reproduces it): reverting the `&& !hub.Frozen` guard
-// in buildData's §3 branch to `} else if data.HasClause2 {` makes this test FAIL —
-// the frozen hub would then render §3 INCLUSION PROOF again (the proof builds from the
-// present tiles).
-func TestCertificateInclusionProofFrozen(t *testing.T) {
+// Mutation (non-vacuity, review reproduces it): replacing the §3
+// `proof.VerifyInclusion(...) == nil` guard in buildData with `true` (so §3 renders
+// whenever the proof builds) makes this test FAIL — the non-frozen contradictory hub
+// would then render §3 INCLUSION PROOF (the proof builds from the present tiles but
+// does not rebuild tree B's accepted root). Restoring the guard passes.
+func TestCertificateInclusionProofContradictory(t *testing.T) {
 	const seq = 0
 	const leaves = 5
 
@@ -668,7 +711,9 @@ func TestCertificateInclusionProofFrozen(t *testing.T) {
 		t.Fatalf("treeB.Size() = %d, want %d", treeB.Size(), leaves)
 	}
 
-	st, treeA := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, treeB.Hash(), true)
+	// freeze=false: the hub is NOT frozen, so a status-flag gate would render §3. Only
+	// the fail-closed re-verification against tree B's accepted root withholds it.
+	st, treeA := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, treeB.Hash(), false)
 	// Sanity: the two trees genuinely disagree, so this is a real contradictory-tile
 	// fixture (not an accidental same-root coincidence).
 	if string(treeA.Hash()) == string(treeB.Hash()) {
@@ -689,13 +734,13 @@ func TestCertificateInclusionProofFrozen(t *testing.T) {
 	// which a fork cannot corrupt, so the page is NOT blank.
 	for _, want := range []string{"§1 SUBJECT", "§2 CHECKPOINT"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("frozen certificate missing %q (the page must still render §1+§2)\n%s", want, body)
+			t.Errorf("contradictory certificate missing %q (the page must still render §1+§2)\n%s", want, body)
 		}
 	}
-	// §3 must be ABSENT — a frozen hub's mirror may diverge from its accepted root, so
-	// the certificate declines the inclusion-proof clause rather than render a proof
-	// that does not rebuild the accepted root.
+	// §3 must be ABSENT — the proof built from tree A's tiles does not rebuild tree B's
+	// accepted root, so the re-verification declines the clause even though the hub is
+	// not frozen.
 	if strings.Contains(body, "§3 INCLUSION PROOF") {
-		t.Errorf("a frozen-after-fork hub rendered a §3 INCLUSION PROOF clause\n%s", body)
+		t.Errorf("a non-frozen contradictory-tile hub rendered a §3 INCLUSION PROOF clause\n%s", body)
 	}
 }
