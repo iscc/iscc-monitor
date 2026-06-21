@@ -100,13 +100,16 @@ var recordTmpl = func() *template.Template {
 
 // Record-kind labels mapping the verbatim note.$schema to a human-readable kind.
 // This is the ONLY interpretation the single-record page performs (ADR-0008): the
-// declaration / deletion schemas (CLAUDE.md glossary) map to friendly labels, and
-// anything else — including an empty schema — is the catch-all kindUnknown. The
-// mapping is fail-open: an unknown/empty schema still renders the page (never a 4xx/
-// 5xx), and the verbatim schema string is always shown alongside the label.
+// declaration / deletion schemas map to friendly labels, and anything else —
+// including an empty schema — is the catch-all kindUnknown. The constants are the
+// FULL wire URIs the projection fold stores verbatim (CLAUDE.md's iscc-note-0.8.0
+// is prose shorthand, never the wire value); they must match
+// internal/logclient/projection_test.go byte-for-byte. The mapping is fail-open: an
+// unknown/empty schema still renders the page (never a 4xx/5xx), and the verbatim
+// schema string is always shown alongside the label.
 const (
-	schemaDeclaration = "iscc-note-0.8.0"
-	schemaDeletion    = "iscc-note-delete-0.8.0"
+	schemaDeclaration = "http://purl.org/iscc/schema/iscc-note-0.8.0.json"
+	schemaDeletion    = "http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json"
 	kindDeclaration   = "Declaration"
 	kindDeletion      = "Deletion"
 	kindUnknown       = "Unknown record type"

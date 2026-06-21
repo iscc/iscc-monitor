@@ -366,6 +366,14 @@ func TestRecordNonGET(t *testing.T) {
 // page: the rendered body links the embedded DS token + self-hosted-font stylesheets at
 // their literal /_ds/ paths, is styled through the DS font tokens, lays out without an
 // HTML <table>, and carries no external CDN URL (mirrors the records / browser pages).
+//
+// index=0 is a declaration, so its verbatim note.$schema —
+// http://purl.org/iscc/schema/iscc-note-0.8.0.json — renders as legitimate record data
+// in the <body>. The no-CDN scheme ban therefore runs ONLY over the document head (up to
+// </style>), the region where a CDN <link>/url( would actually appear; banning http:// over
+// the whole body would false-fail on that verbatim schema URI. The DS-shell + token markers
+// live in the head too, so they assert over the same region; the <table> absence holds for
+// the whole body.
 func TestRecordLinksTokensNoCDN(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
 	h := Handler(m.store, m.hubID, nil)
@@ -375,22 +383,30 @@ func TestRecordLinksTokensNoCDN(t *testing.T) {
 		t.Fatalf("status = %d, want 200", code)
 	}
 
+	// Scope the CDN ban + DS-shell asserts to the template/CDN region: the document
+	// head, ending at </style>. A CDN <link> or url() reference can only appear here;
+	// the <body> below carries verbatim record data (including the full schema URI).
+	head := body
+	if i := strings.Index(body, "</style>"); i >= 0 {
+		head = body[:i]
+	}
+
 	for _, want := range []string{
 		`href="/_ds/tokens.css"`,
 		`href="/_ds/fonts.css"`,
 		"var(--font-sans)",
 		"var(--font-mono)",
 	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("body missing DS-shell marker %q\n%s", want, body)
+		if !strings.Contains(head, want) {
+			t.Errorf("head missing DS-shell marker %q\n%s", want, head)
 		}
 	}
 	if strings.Contains(body, "<table") {
 		t.Errorf("body contains a <table> element; the ledger redress is incomplete\n%s", body)
 	}
 	for _, banned := range []string{"jsdelivr", "http://", "https://", "cdn."} {
-		if strings.Contains(body, banned) {
-			t.Errorf("body contains external CDN reference %q\n%s", banned, body)
+		if strings.Contains(head, banned) {
+			t.Errorf("head contains external CDN reference %q\n%s", banned, head)
 		}
 	}
 }
