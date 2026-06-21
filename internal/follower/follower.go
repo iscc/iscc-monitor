@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/iscc/iscc-monitor/internal/logclient"
+	"github.com/iscc/iscc-monitor/internal/metrics"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -49,6 +50,35 @@ import (
 // (email/webhook/log sink) and the backed-off evidence-only re-poll cadence of a
 // frozen hub are out of scope here; this only signals the transition.
 type AlertFunc func(hubID int64, kind string)
+
+// glossaryStatus maps a PollHub verdict to the glossary hub-status label set the
+// metrics leaf expects (verified/unresolvable/unverified/frozen), NOT
+// logclient.Status.String() (which returns "rotated", a non-glossary value).
+//
+// frozen takes precedence: a self-consistency violation freezes the hub even
+// though the signature was StatusVerified, so a frozen observation always maps to
+// "frozen". Otherwise StatusVerified -> "verified", StatusUnverified ->
+// "unverified", StatusUnresolvable -> "unresolvable", and StatusRotated ->
+// "unverified" (the glossary has no "rotated"; an out-of-window key is an
+// internally-broken / non-accepted hub whose checkpoint does not advance accepted
+// state, so it folds into "unverified"). "inactive" is the realm-registry
+// removed/paused state and is never produced here — the follower only polls active
+// hubs.
+func glossaryStatus(st logclient.Status, frozen bool) string {
+	if frozen {
+		return "frozen"
+	}
+	switch st {
+	case logclient.StatusVerified:
+		return "verified"
+	case logclient.StatusUnverified, logclient.StatusRotated:
+		return "unverified"
+	case logclient.StatusUnresolvable:
+		return "unresolvable"
+	default:
+		return "unverified"
+	}
+}
 
 // PollHub performs one observation of a hub's latest checkpoint.
 //
@@ -61,6 +91,14 @@ type AlertFunc func(hubID int64, kind string)
 // seam stays small. alert is fired exactly once per not-frozen -> frozen
 // transition; pass a no-op to ignore it.
 //
+// m is the optional metrics registry: on every non-error verdict PollHub records
+// the hub's glossary status and the observation timestamp, and on a freeze it
+// increments the violations counter. m may be nil (metrics disabled), in which
+// case every mutator call is skipped — metrics writes never alter control flow
+// (ADR-0006). The transport/garbled-body poll-failure counter is fired by the
+// caller (Tick) on PollHub's error return, since a fetch/accept fault returns
+// early before the verdict is known.
+//
 // The returned Status is the verdict for any of the four outcomes: a non-verified
 // verdict is a verdict, not a Go error, and a self-consistency violation freezes
 // the hub but still returns StatusVerified with a nil error (the signature was
@@ -69,7 +107,7 @@ type AlertFunc func(hubID int64, kind string)
 // verified-but-garbled body from AcceptCheckpoint (which returns a non-nil error
 // alongside StatusUnverified's zero value, so the error is checked before the
 // status), or a store failure. On any such fault accepted state does not advance.
-func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string, observedAt time.Time, alert AlertFunc) (logclient.Status, error) {
+func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string, observedAt time.Time, alert AlertFunc, m *metrics.Registry) (logclient.Status, error) {
 	raw, err := logclient.FetchCheckpoint(ctx, fetcher, baseURL)
 	if err != nil {
 		return logclient.StatusUnverified, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err)
@@ -85,6 +123,7 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	// Only a verified observation advances accepted state; the other verdicts are
 	// reported (and the hub is still mirrored elsewhere) but not persisted here.
 	if status != logclient.StatusVerified {
+		recordVerdict(m, hubID, status, false, observedAt)
 		return status, nil
 	}
 
@@ -99,6 +138,15 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 		return status, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err)
 	}
 	if violated {
+		// A violation froze the hub: record the glossary "frozen" status (not the
+		// StatusVerified enum, which the freeze does not change) and increment the
+		// cumulative violations counter. The counter re-fires on every re-detection
+		// (correct: re-detection is evidence), even though alert stays once-per-
+		// transition. Pure registry writes, so placement before freeze is fine.
+		recordVerdict(m, hubID, status, true, observedAt)
+		if m != nil {
+			m.IncViolation(hubID, string(kind))
+		}
 		return status, freeze(ctx, st, hubID, kind, prevRaw, raw, info, fs.Frozen, observedAt, alert)
 	}
 
@@ -127,7 +175,23 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	if err := cacheHubKey(ctx, st, fetcher, hubID, baseURL, raw, observedAt); err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: cache hub key: %w", hubID, err)
 	}
+	recordVerdict(m, hubID, status, false, observedAt)
 	return status, nil
+}
+
+// recordVerdict records the hub's glossary status and observation timestamp in the
+// metrics registry for one non-error verdict. It is nil-safe (a nil registry =
+// metrics disabled) and the only mutation point for the hub_status and
+// last_observed_at series, so the three verdict branches (non-verified, freeze,
+// verified-advance) all funnel through it. frozen is true only on the freeze
+// branch, where it overrides the StatusVerified enum to the glossary "frozen"
+// label. observedAt.Unix() is the timestamp; the registry never reads the clock.
+func recordVerdict(m *metrics.Registry, hubID int64, status logclient.Status, frozen bool, observedAt time.Time) {
+	if m == nil {
+		return
+	}
+	m.SetHubStatus(hubID, glossaryStatus(status, frozen))
+	m.SetLastObservedAt(hubID, observedAt.Unix())
 }
 
 // cacheHubKey refreshes the hub's did:web signing key in the hub_keys cache

@@ -15,6 +15,7 @@ package follower
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/iscc/iscc-monitor/internal/logclient"
+	"github.com/iscc/iscc-monitor/internal/metrics"
 	"github.com/iscc/iscc-monitor/internal/store"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for the inspector reads
@@ -173,6 +175,17 @@ func countRows(t *testing.T, dbPath, table string) int {
 	return n
 }
 
+// assertMetric confirms the registry's rendered Prometheus output contains an
+// exact sample line, asserting on the observable rendered text (Registry.String())
+// rather than on any follower or registry internal.
+func assertMetric(t *testing.T, reg *metrics.Registry, line string) {
+	t.Helper()
+	rendered := reg.String()
+	if !strings.Contains(rendered, line) {
+		t.Errorf("metrics output missing %q\n--- rendered ---\n%s", line, rendered)
+	}
+}
+
 // TestPollHubFork drives the fork freeze path end-to-end through the
 // outbound-fetch seam: the prior accepted checkpoint is seeded at the sb0 fixture
 // size (10183) with a deliberately different root, then PollHub observes the real
@@ -222,8 +235,9 @@ func TestPollHubFork(t *testing.T) {
 	fetcher := sb0VerifiedFetcher(t)
 	var alerts int
 	alert := func(int64, string) { alerts++ }
+	reg := metrics.New()
 
-	status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", sb0ObservedAt(), alert)
+	status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", sb0ObservedAt(), alert, reg)
 	if err != nil {
 		t.Fatalf("PollHub: %v", err)
 	}
@@ -232,6 +246,11 @@ func TestPollHubFork(t *testing.T) {
 	if status != logclient.StatusVerified {
 		t.Fatalf("status = %s, want verified (violation is a separate axis)", status)
 	}
+
+	// The freeze fires the violations counter (keyed on the real kind) and maps the
+	// hub status to the glossary "frozen" label, not StatusVerified's "verified".
+	assertMetric(t, reg, `iscc_monitor_violations_total{hub_id="1",kind="fork"} 1`)
+	assertMetric(t, reg, `iscc_monitor_hub_status{hub_id="1",status="frozen"} 1`)
 
 	assertViolation(t, path, hubID, "fork")
 	fs, err := s.FollowState(ctx, hubID)
@@ -266,7 +285,7 @@ func TestPollHubFork(t *testing.T) {
 
 	// Re-poll the already-frozen hub: re-detection is itself evidence, so a second
 	// violation row is recorded, but the alert must not fire again.
-	if _, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", sb0ObservedAt(), alert); err != nil {
+	if _, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", sb0ObservedAt(), alert, nil); err != nil {
 		t.Fatalf("second PollHub: %v", err)
 	}
 	if n := countRows(t, path, "violations"); n != 2 {
@@ -277,7 +296,7 @@ func TestPollHubFork(t *testing.T) {
 	}
 
 	// A clean verified poll of the second hub advances normally and stays unfrozen.
-	if _, err := PollHub(ctx, s, fetcher, hubB, "https://sb0.iscc.id", sb0ObservedAt(), noopAlert); err != nil {
+	if _, err := PollHub(ctx, s, fetcher, hubB, "https://sb0.iscc.id", sb0ObservedAt(), noopAlert, nil); err != nil {
 		t.Fatalf("PollHub hub B: %v", err)
 	}
 	fsB, err := s.FollowState(ctx, hubB)
@@ -349,7 +368,7 @@ func TestPollHubShrink(t *testing.T) {
 	var alerts int
 	alert := func(int64, string) { alerts++ }
 
-	status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", sb0ObservedAt(), alert)
+	status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", sb0ObservedAt(), alert, nil)
 	if err != nil {
 		t.Fatalf("PollHub: %v", err)
 	}
@@ -375,6 +394,32 @@ func TestPollHubShrink(t *testing.T) {
 	// A frozen/violating observation must not cache a key (verified-path only).
 	if n := countRows(t, path, "hub_keys"); n != 0 {
 		t.Errorf("hub_keys rows after a shrink freeze = %d, want 0 (a violation must not cache a key)", n)
+	}
+}
+
+// TestGlossaryStatus is the golden table for the verdict -> glossary-status
+// mapper. It pins the load-bearing remaps: a frozen observation is "frozen" even
+// though its enum is StatusVerified, and StatusRotated folds into "unverified"
+// (the glossary has no "rotated") — both distinct from logclient.Status.String().
+func TestGlossaryStatus(t *testing.T) {
+	cases := []struct {
+		name   string
+		status logclient.Status
+		frozen bool
+		want   string
+	}{
+		{"verified", logclient.StatusVerified, false, "verified"},
+		{"verified-but-frozen", logclient.StatusVerified, true, "frozen"},
+		{"unverified", logclient.StatusUnverified, false, "unverified"},
+		{"unresolvable", logclient.StatusUnresolvable, false, "unresolvable"},
+		{"rotated folds into unverified", logclient.StatusRotated, false, "unverified"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := glossaryStatus(tc.status, tc.frozen); got != tc.want {
+				t.Errorf("glossaryStatus(%v, frozen=%v) = %q, want %q", tc.status, tc.frozen, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -417,14 +462,20 @@ func TestPollHubVerifiedAdvances(t *testing.T) {
 	// observedAt inside sb0's validity window (the captured did.json is
 	// unconstrained, so any time is in-window) yields StatusVerified, not Rotated.
 	observedAt := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	reg := metrics.New()
 
-	status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert)
+	status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert, reg)
 	if err != nil {
 		t.Fatalf("PollHub: %v", err)
 	}
 	if status != logclient.StatusVerified {
 		t.Fatalf("status = %s, want verified", status)
 	}
+
+	// The verified verdict maps to the glossary "verified" status and records the
+	// observation timestamp (observedAt.Unix(), a non-zero value).
+	assertMetric(t, reg, `iscc_monitor_hub_status{hub_id="1",status="verified"} 1`)
+	assertMetric(t, reg, fmt.Sprintf(`iscc_monitor_last_observed_at{hub_id="1"} %d`, observedAt.Unix()))
 
 	fs, err := s.FollowState(ctx, hubID)
 	if err != nil {
@@ -451,7 +502,7 @@ func TestPollHubVerifiedAdvances(t *testing.T) {
 	}
 
 	// A second verified poll refreshes the same key in place: still exactly one row.
-	if _, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert); err != nil {
+	if _, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert, nil); err != nil {
 		t.Fatalf("second PollHub for key cache: %v", err)
 	}
 	if n := countRows(t, path, "hub_keys"); n != 1 {
@@ -476,7 +527,7 @@ func TestPollHubVerifiedAdvances(t *testing.T) {
 
 	// A second verified poll at a later time does not move the immutable start.
 	later := observedAt.Add(24 * time.Hour)
-	if _, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", later, noopAlert); err != nil {
+	if _, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", later, noopAlert, nil); err != nil {
 		t.Fatalf("second PollHub: %v", err)
 	}
 	cov2, err := s.Coverage(ctx, hubID)
@@ -506,14 +557,19 @@ func TestPollHubUnverifiedDoesNotAdvance(t *testing.T) {
 		didDoc:     didJSON(sb1Multibase),
 	}
 	observedAt := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	reg := metrics.New()
 
-	status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert)
+	status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert, reg)
 	if err != nil {
 		t.Fatalf("PollHub: %v", err)
 	}
 	if status != logclient.StatusUnverified {
 		t.Fatalf("status = %s, want unverified", status)
 	}
+
+	// A non-verified verdict still records the glossary status (here "unverified")
+	// and the observation timestamp on the early-return verdict path.
+	assertMetric(t, reg, `iscc_monitor_hub_status{hub_id="1",status="unverified"} 1`)
 
 	fs, err := s.FollowState(ctx, hubID)
 	if err != nil {
@@ -561,7 +617,7 @@ func TestPollHubCacheHitSkipsDidFetch(t *testing.T) {
 
 	// First poll (cold cache): AcceptCheckpoint resolves did.json once and the
 	// cache miss path resolves it again -> two did.json fetches total.
-	if status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert); err != nil {
+	if status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert, nil); err != nil {
 		t.Fatalf("first PollHub: %v", err)
 	} else if status != logclient.StatusVerified {
 		t.Fatalf("first poll status = %s, want verified", status)
@@ -573,7 +629,7 @@ func TestPollHubCacheHitSkipsDidFetch(t *testing.T) {
 
 	// Second poll (warm cache): AcceptCheckpoint resolves did.json once, but the
 	// cache hit in cacheHubKey must NOT resolve again -> exactly +1 fetch, not +2.
-	if status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert); err != nil {
+	if status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert, nil); err != nil {
 		t.Fatalf("second PollHub: %v", err)
 	} else if status != logclient.StatusVerified {
 		t.Fatalf("second poll status = %s, want verified", status)

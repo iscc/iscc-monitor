@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/iscc/iscc-monitor/internal/logclient"
+	"github.com/iscc/iscc-monitor/internal/metrics"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -40,11 +41,13 @@ type HubTarget struct {
 // Alert is fired once per not-frozen -> frozen transition (PollHub gates it).
 // Logger is the optional structured-logging sink; a nil Logger falls back to
 // slog.Default() via the logger() accessor, so a bare &Loop{…} works unchanged.
-// lastPoll holds each hub's most-recent successful-poll time in memory (keyed by
-// HubID); v1 does not persist it (no schema change), so a restart re-polls every
-// hub immediately, which is harmless — PollHub is idempotent on an unchanged
-// checkpoint. Because Tick runs in the single owning goroutine, lastPoll needs no
-// lock.
+// Metrics is the optional in-memory metrics registry threaded through to PollHub;
+// a nil Metrics disables metrics (every mutator call is skipped), so a bare
+// &Loop{…} works unchanged. lastPoll holds each hub's most-recent successful-poll
+// time in memory (keyed by HubID); v1 does not persist it (no schema change), so a
+// restart re-polls every hub immediately, which is harmless — PollHub is
+// idempotent on an unchanged checkpoint. Because Tick runs in the single owning
+// goroutine, lastPoll needs no lock.
 type Loop struct {
 	Store    *store.Store
 	Fetcher  logclient.Fetcher
@@ -53,6 +56,7 @@ type Loop struct {
 	Frozen   time.Duration
 	Alert    AlertFunc
 	Logger   *slog.Logger
+	Metrics  *metrics.Registry
 	lastPoll map[int64]time.Time
 }
 
@@ -98,6 +102,12 @@ func due(frozen bool, lastPoll, now time.Time, normal, frozenInterval time.Durat
 // NOT marked polled, so it is retried on the next due tick. Reading FollowState is
 // itself a store read that can fault; that error is treated the same way (logged,
 // recorded as the first error, the hub skipped, the pass continues).
+//
+// A PollHub error also increments the poll-failure counter for that hub (the
+// transport/garbled-body fault path): PollHub returns early before the verdict is
+// known on such a fault, so the counter fires here, on the same error branch as
+// the log, rather than inside PollHub. The increment is nil-safe (l.Metrics may be
+// nil) and never alters the log-and-continue control flow.
 func (l *Loop) Tick(ctx context.Context, now time.Time) error {
 	if l.lastPoll == nil {
 		l.lastPoll = make(map[int64]time.Time)
@@ -115,8 +125,11 @@ func (l *Loop) Tick(ctx context.Context, now time.Time) error {
 		if !due(fs.Frozen, l.lastPoll[target.HubID], now, l.Normal, l.Frozen) {
 			continue
 		}
-		if _, err := PollHub(ctx, l.Store, l.Fetcher, target.HubID, target.BaseURL, now, l.Alert); err != nil {
+		if _, err := PollHub(ctx, l.Store, l.Fetcher, target.HubID, target.BaseURL, now, l.Alert, l.Metrics); err != nil {
 			l.logger().ErrorContext(ctx, "poll hub failed", "hub_id", target.HubID, "err", err)
+			if l.Metrics != nil {
+				l.Metrics.IncPollFailure(target.HubID)
+			}
 			if firstErr == nil {
 				firstErr = err
 			}

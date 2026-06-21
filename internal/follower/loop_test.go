@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iscc/iscc-monitor/internal/metrics"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -238,6 +239,38 @@ func TestTickFrozenUnaffected(t *testing.T) {
 		t.Errorf("hub A LastSize = %d after re-poll, want 20000 (still no advance)", fsA.LastSize)
 	}
 	assertCleanAdvance(t, ctx, s, hubB)
+}
+
+// TestTickMetricsPollFailure proves the Tick-level poll-failure counter: a hub
+// whose fetcher always fails makes PollHub return early on the transport fault, so
+// Tick (not PollHub) increments iscc_monitor_poll_failures_total for that hub. The
+// counter is fired on the same error branch as the structured log, and is keyed by
+// the hub_id. Asserted on the registry's rendered output, not on Loop internals.
+func TestTickMetricsPollFailure(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	reg := metrics.New()
+	loop := &Loop{
+		Store:   s,
+		Fetcher: errFetcher{},
+		Targets: []HubTarget{{HubID: hubID, BaseURL: "https://sb0.iscc.id"}},
+		Normal:  10 * time.Minute,
+		Frozen:  time.Hour,
+		Alert:   noopAlert,
+		Metrics: reg,
+	}
+
+	// The faulting fetch surfaces as a non-nil Tick error (log-and-continue), and on
+	// that branch Tick fires the poll-failure counter for the hub.
+	if err := loop.Tick(ctx, sb0ObservedAt()); err == nil {
+		t.Fatal("Tick error = nil, want the per-hub fetch fault surfaced")
+	}
+	assertMetric(t, reg, `iscc_monitor_poll_failures_total{hub_id="1"} 1`)
 }
 
 // assertCleanAdvance confirms a hub advanced to the sb0 fixture size and stayed
