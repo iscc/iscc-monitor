@@ -1,66 +1,65 @@
-## 2026-06-21 — Land the pure inclusion cross-check `VerifyInclusionEvidence`
+## 2026-06-21 — Review of: Land the pure inclusion cross-check `VerifyInclusionEvidence`
 
-**Done:** Added the pure, golden-testable core of M2's second Verify half: `ParseInclusionEvidence`
-decodes a hub's `IsccLogInclusionProof` VC evidence member, and `VerifyInclusionEvidence` recomputes
-the inclusion proof from the monitor's mirrored tiles via `InclusionProofFromTiles` (its first
-production-shaped caller) and byte-compares it against the hub-supplied, base64-Std-encoded proof.
-Strictly additive — no existing production file changed; `PollHub`/`iscc_index` wiring is left for a
-later slice.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/logclient/inclusioncheck.go` (new): `InclusionEvidence` struct mirroring the hub VC member;
-  `ParseInclusionEvidence(raw)` (thin `json.Unmarshal`, rejects wrong `Type` and `TreeSize == 0`);
-  `VerifyInclusionEvidence(ctx, fetch, ev)` (guards `LeafIndex < TreeSize` before fetching, computes
-  from tiles, base64-Std-decodes each hub hash, length-then-`bytes.Equal` compares); package vars
-  `ErrInclusionMismatch` (descriptive sentinel) + `inclusionEvidenceType` const. Imports exactly
-  `bytes`/`context`/`encoding/base64`/`encoding/json`/`errors`/`fmt`.
-- `internal/logclient/inclusioncheck_test.go` (new): golden + mutation + edge tests (see below).
+**Summary:** `ParseInclusionEvidence` + `VerifyInclusionEvidence` land in a new
+`internal/logclient/inclusioncheck.go` — the pure core of M2's second Verify half: decode a hub's
+`IsccLogInclusionProof`, recompute the inclusion proof from mirrored tiles via
+`InclusionProofFromTiles` (its first production-shaped caller), and byte-compare against the
+hub-supplied base64-Std proof. Strictly additive (1 production file + 1 test file in `internal/logclient`,
+nothing else touched), oracle-exact against the `iscc_hub` reference, and the byte-comparison is
+mutation-proven load-bearing (reviewer reproduced + reverted). Every handoff claim I checked held.
 
-**Verification:** `mise run check` → green (all 11 packages `ok`; `go build`/`go vet`/`go test` pass).
-Per-criterion:
+**Verification:**
+- [x] `mise run check` — green (all 11 packages `ok`; build + vet + test).
 - [x] `go test -run TestVerifyInclusionEvidence -count=1 ./internal/logclient` — passes.
-- [x] Golden: `VerifyInclusionEvidence` returns `nil` for `{0, 5, 255, 256, 299}` on the 300-leaf
-  `testonly.Tree`, evidence's `inclusionProof` built base64-Std from `tree.InclusionProof(index, 300)`.
-- [x] Mutation: corrupted proof hash AND wrong `LeafIndex` (valid proof for leaf 5 claimed as leaf 6)
-  both return `errors.Is(err, ErrInclusionMismatch) == true`; missing-tile fetcher returns
-  `errors.Is(err, os.ErrNotExist) == true` and NOT `ErrInclusionMismatch`.
-- [x] `go test -run TestParseInclusionEvidence -count=1 ./internal/logclient` — passes (round-trips a
-  valid evidence JSON; rejects wrong `Type`, `TreeSize == 0`, and bad JSON).
-- [x] `git diff --quiet HEAD -- go.mod go.sum internal/store/schema.sql` — exit 0 (no dep/schema change).
-- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` — exit 0 (WASM purity guard unaffected).
+- [x] `go test -run TestParseInclusionEvidence -count=1 ./internal/logclient` — passes.
+- [x] Golden returns `nil` for `{0,5,255,256,299}` on the 300-leaf `testonly.Tree`, proof built
+  base64-Std from `tree.InclusionProof(index,300)` — verified across the 256-leaf tile boundary.
+- [x] Mutation: corrupted proof hash AND wrong `LeafIndex` both `errors.Is(err, ErrInclusionMismatch)`;
+  missing-tile fetcher `errors.Is(err, os.ErrNotExist)` and NOT `ErrInclusionMismatch` — all pass.
 - [x] `gofmt -l .` — empty.
-- [x] **Mutation, reproduced + reverted:** short-circuiting the length + `bytes.Equal` compares (kept
-  `bytes` referenced via `if false && …`) makes BOTH `TestVerifyInclusionEvidenceCorruptedProof` and
-  `TestVerifyInclusionEvidenceWrongLeafIndex` FAIL (function returns `nil`); revert → green. The
-  byte-comparison is load-bearing; a green-but-wrong check that ignored proof bytes cannot ship.
+- [x] `git diff --quiet HEAD -- go.mod go.sum internal/store/schema.sql` — exit 0 (no dep/schema change).
+- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` — exit 0 (WASM purity guard unaffected;
+  `./internal/logclient` also builds for js/wasm).
+- [x] **Oracle gate (APPLIES — RFC-6962 inclusion crypto):** struct + guards diffed against
+  `cauldron/iscc-hub/iscc_hub/log_tree.py inclusion_evidence` + `schema.py Evidence` (shape, `treeSize
+  ge=1`, `leafIndex ge=0` all match); Python `base64.b64encode` == Go `base64.StdEncoding` re-confirmed.
+  Three independent merkle paths (prover / tile-builder / base64+bytes), not a tautology. Trust-root
+  oracles green: `derive_vkey.py` reproduces `40b74463`/`22b08f3e`, `notecheck` passes,
+  `TestRunFsck`/`TestEquivocation*`/`TestInclusionProofFromTiles*` all pass uncached.
+- [x] **Mutation (reviewer-reproduced + reverted):** neutering the length+`bytes.Equal` compares
+  (short-circuit to `return nil`, `bytes` still referenced) → BOTH `…CorruptedProof` and
+  `…WrongLeafIndex` FAIL; revert → green. The byte-comparison is genuinely load-bearing.
+- [x] **Purity:** `inclusioncheck.go` imports exactly `bytes/context/encoding/base64/encoding/json/
+  errors/fmt` — no `net`/`os`/`sqlite`. The bundled `checkpoint` is decoded but never re-parsed.
+- [x] **Scope:** exactly the 2 files `next.md` scoped; nothing in `## Not In Scope` was done (no
+  `PollHub`/`iscc_index` wiring, no signature re-verify, no live fixtures, no go.mod/schema change).
+- [x] **Gate-integrity scan** of all unpushed commits (`cfb3f48`/`0ea6c9e`/`f5cfcc7`/`275bb95`) — no
+  `nolint`/`t.Skip`/build-tag/swallowed-error/deleted-assertion in the code diff (the two grep hits are
+  removed handoff prose, not code).
 
-**Next:** Wire this into `PollHub`/`follower.go`. That needs (a) the `iscc_index` projection writer
-(schema-agnostic `iscc_id → seq` table) to resolve a sampled `iscc_id → leafIndex`, and (b) a real or
-in-process `IsccLogInclusionProof` fixture + an entry-bundle to sample a leaf from. Pass
-`store.SQLiteFetcher.ReadTile` straight into `VerifyInclusionEvidence` (signature already matches
-`TileFetcher`), mirroring how `fsckMirror` sources tiles from the local mirror. Alternatively
-`define-next` could take the still-open `CheckpointAt ORDER BY` fix or the `fsckMirror`
-redundant-resolve efficiency item (both in `issues.md`).
+**Issues found:** (none new from this slice). The four pre-existing backlog issues are untouched by this
+additive slice and remain open — notably the **`critical`** "Growing equivocations can be accepted
+before candidate tiles are mirrored" (`follower.go:410-416` builds the consistency proof from the local
+mirror BEFORE `ingestTiles` at line 197, so a growing inconsistent root hits a missing-tile clean pass
+and advances accepted state — I re-confirmed this in code). That `critical` blocks DONE but not this
+slice's PASS; it lives in the follower, correctly out of scope for a logclient-only step.
+
+**Next:** Two strong candidates for `define-next`:
+1. **Fix the `critical`** growing-equivocation gap (`issues.md`): ensure the candidate-size tiles are
+   mirrored before the consistency check, or make a missing proof tile a retry/error rather than a clean
+   consistency pass — so a growing split view freezes and never advances to the inconsistent root.
+2. **Wire `VerifyInclusionEvidence` into `PollHub`** (this slice's natural successor): needs the
+   `iscc_index` projection writer (`iscc_id → seq`) to resolve a sampled leaf index + an entry-bundle to
+   sample from; pass `store.SQLiteFetcher.ReadTile` straight in (signature already matches `TileFetcher`).
+The `CheckpointAt ORDER BY` fix (`normal`) and the `fsckMirror` redundant-resolve (`normal`) also remain.
 
 **Notes:**
-- **Oracle gate (APPLIES — RFC-6962 inclusion crypto):** satisfied by three independent merkle paths.
-  The test plays the hub's role with `testonly.Tree.InclusionProof(index, 300)` (the prover),
-  base64-Std-encodes it into `InclusionEvidence` exactly as `iscc_hub/log_tree.py inclusion_evidence`
-  does (verified `base64.b64encode` = `StdEncoding`), serves tiles via the existing `tileFetcherFor`,
-  and `VerifyInclusionEvidence` recomputes via `InclusionProofFromTiles` (the builder) + decode + bytes
-  compare. Prover, tile-builder, and the base64/bytes compare are distinct → not a tautology. The
-  external `notecheck`/`derive_vkey.py` oracles are correctly N/A here (no signature/did:web path — the
-  embedded checkpoint sig is intentionally NOT re-verified, per `next.md` Not-In-Scope; that stays
-  `AcceptCheckpoint`'s job).
-- Per `next.md`, used the in-process `testonly.Tree` mirror, NOT live sb0/sb1 tiles or a captured real
-  `IsccLogInclusionProof` (consistent with the fsck-slice precedent — live leaf preimages were never
-  captured). `Checkpoint` is decoded into the struct but never re-parsed (`note.Open` not re-run).
-- `VerifyInclusionEvidence` is an intentional unused-until-wired export seam (like the consistency
-  triggers / `LeafHashes` / `RunFsck`) — `go vet` clean, not dead code. First caller is the M2
-  `PollHub`/`iscc_index` slice above.
-- Test helper `hubEvidenceFor(t, *testonly.Tree, index, leaves)` is the reusable "hub side" evidence
-  builder for the future wiring test; it lives beside the cross-check in the same `package logclient`.
-- No new imports → `go.mod`/`go.sum` byte-identical (`encoding/json`/`encoding/base64`/`bytes` stdlib;
-  `InclusionProofFromTiles` + `testonly` already in the package closure). File stays net-free at the
-  file level; the package's pre-existing `net/http` (via `didresolve.go`) is unaffected and the
-  load-bearing WASM purity invariant rides on `internal/didweb`, which still builds (verified).
+- M2's Verify bar now has BOTH pure halves built: `fsck` root-rebuild (wired into `PollHub`) and the
+  inclusion cross-check (this slice, pure + unwired). The inclusion half still needs `PollHub`/`iscc_index`
+  wiring before M2 is fully met — the loop continues.
+- `hubEvidenceFor(t, *testonly.Tree, index, leaves)` is the reusable "hub side" evidence builder for the
+  future wiring test; it reuses `buildTree`/`tileFetcherFor`/`treeLeaves` from `proofbuilder_test.go`.
+- Pushed to `origin/develop` (remote configured; branch was ahead). A human merges develop→main via CI.

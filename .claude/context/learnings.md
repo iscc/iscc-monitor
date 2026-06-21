@@ -283,6 +283,35 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   there is the real fabricated-checksum oracle. Combine with `go mod why -m` (proves a require-graph
   module never reaches a monitor package) to confirm a go.sum addition is legitimately graph-only.
 
+## Inclusion cross-check (`internal/logclient/inclusioncheck.go`)
+
+- **`VerifyInclusionEvidence(ctx, fetch TileFetcher, ev InclusionEvidence)` is the first
+  production-shaped caller of `InclusionProofFromTiles` and the second external oracle (the
+  hub-computed proof).** It guards `LeafIndex < TreeSize` BEFORE fetching (out-of-range never touches
+  the fetcher), recomputes the proof from mirrored tiles, base64-**Std**-decodes each `ev.InclusionProof[i]`,
+  then length-checks and `bytes.Equal`s each hash; a mismatch wraps `ErrInclusionMismatch` (a sentinel
+  for the future `PollHub` `errors.Is`), a tile fault rides the `%w`-wrap so `os.ErrNotExist` survives
+  and is NOT misreported as a mismatch (a dedicated negative test pins both). Imports are exactly
+  `bytes/context/encoding/base64/encoding/json/errors/fmt` (no `net`/`os`/`sqlite`); reviewer verified.
+- **The `InclusionEvidence` struct + guards are oracle-exact against `iscc_hub`.** Reviewer diffed the
+  Go struct against `cauldron/iscc-hub/iscc_hub/log_tree.py inclusion_evidence` (the dict shape) and
+  `schema.py Evidence` (the field constraints): `{type Literal "IsccLogInclusionProof", checkpoint,
+  treeSize ge=1, leafIndex ge=0, inclusionProof list[str]}` — `ParseInclusionEvidence`'s wrong-`Type`
+  and `TreeSize == 0` rejections mirror the `Literal` + `ge=1` floor exactly. Confirmed Python's
+  `base64.b64encode` == Go's `base64.StdEncoding` (standard `+/` alphabet, `=` padding) by re-running
+  both — so the hub's encoding and the monitor's decode are byte-compatible, not assumed.
+- **Oracle gate APPLIES (RFC-6962 inclusion crypto), reviewer-reproduced mutation.** The golden plays
+  the hub's role with `testonly.Tree.InclusionProof(index, 300)` (prover), the builder
+  `InclusionProofFromTiles` (independent path), and a base64+`bytes.Equal` compare — three paths, not a
+  tautology, across the 256-leaf boundary `{0,5,255,256,299}`. Reviewer neutered the length+`bytes.Equal`
+  compares (short-circuited to `return nil`, kept `bytes` referenced) → BOTH `…CorruptedProof` and
+  `…WrongLeafIndex` FAIL; reverted → green. A green-but-wrong check that ignored proof bytes cannot ship.
+  Wrong-leaf is the sharp negative: a *valid* proof for leaf 5 re-labelled leaf 6 still fails, because
+  the monitor recomputes leaf 6's (different) proof. `notecheck`/`derive_vkey.py` correctly N/A (no
+  signature/did:web path — the bundled `checkpoint` is decoded but NEVER re-parsed; that stays
+  `AcceptCheckpoint`'s job). Unwired export seam (`go vet` clean); first caller is the `PollHub`/
+  `iscc_index` slice that resolves `iscc_id → leafIndex` and passes `SQLiteFetcher.ReadTile` straight in.
+
 ## Entry-bundle leaf hasher (`internal/logclient/leafhasher.go`)
 
 - **`LeafHashes(bundle []byte) ([][]byte, error)` is a verbatim-in-shape port of `runfsck`'s
