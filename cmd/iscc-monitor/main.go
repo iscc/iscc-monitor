@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 
@@ -34,6 +35,9 @@ func main() {
 // error for any startup or shutdown fault so main owns the single os.Exit; on a
 // clean SIGINT shutdown Loop.Run returns ctx.Err(), which run reports as nil.
 func run() error {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	slog.SetDefault(logger)
+
 	cfg, err := config.Load(os.LookupEnv)
 	if err != nil {
 		return err
@@ -68,7 +72,8 @@ func run() error {
 		Targets: targets,
 		Normal:  cfg.Normal,
 		Frozen:  cfg.Frozen,
-		Alert:   alert,
+		Alert:   alertFunc(logger),
+		Logger:  logger,
 	}
 	if err := loop.Run(ctx); err != nil && err != context.Canceled {
 		return err
@@ -98,9 +103,15 @@ func registerHubs(ctx context.Context, st *store.Store, entries []registry.Entry
 	return targets, nil
 }
 
-// alert is the placeholder freeze alert: it logs the not-frozen -> frozen
-// transition to stderr. Real delivery (email/webhook) is a later step; this only
-// signals the transition so a frozen hub is never silent.
-func alert(hubID int64, kind string) {
-	fmt.Fprintf(os.Stderr, "iscc-monitor: ALERT hub %d frozen: %s violation\n", hubID, kind)
+// alertFunc builds the freeze alert sink over the given logger: it emits a
+// structured WARN record on each not-frozen -> frozen transition (PollHub gates
+// it once per transition). A freeze is an operator-actionable condition rather
+// than a process fault, so WARN — not ERROR — is the right severity; real
+// delivery (email/webhook) is a later step, this only signals the transition so a
+// frozen hub is never silent. The logger is captured here rather than read from a
+// global so the alert sink is injectable and testable.
+func alertFunc(logger *slog.Logger) follower.AlertFunc {
+	return func(hubID int64, kind string) {
+		logger.Warn("hub frozen", "hub_id", hubID, "kind", kind)
+	}
 }

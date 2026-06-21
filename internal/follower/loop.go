@@ -17,6 +17,7 @@ package follower
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/iscc/iscc-monitor/internal/logclient"
@@ -37,6 +38,8 @@ type HubTarget struct {
 // goroutine. Normal is the poll interval for a clean hub; Frozen is the longer
 // backed-off interval for a frozen hub (Frozen >= Normal encodes the back-off).
 // Alert is fired once per not-frozen -> frozen transition (PollHub gates it).
+// Logger is the optional structured-logging sink; a nil Logger falls back to
+// slog.Default() via the logger() accessor, so a bare &Loop{…} works unchanged.
 // lastPoll holds each hub's most-recent successful-poll time in memory (keyed by
 // HubID); v1 does not persist it (no schema change), so a restart re-polls every
 // hub immediately, which is harmless — PollHub is idempotent on an unchanged
@@ -49,7 +52,18 @@ type Loop struct {
 	Normal   time.Duration
 	Frozen   time.Duration
 	Alert    AlertFunc
+	Logger   *slog.Logger
 	lastPoll map[int64]time.Time
+}
+
+// logger returns the Loop's injected Logger or slog.Default() when none is set,
+// so every log call site is nil-safe and a bare &Loop{…} (as in the tests and
+// the binary) needs no logger to run.
+func (l *Loop) logger() *slog.Logger {
+	if l.Logger != nil {
+		return l.Logger
+	}
+	return slog.Default()
 }
 
 // due reports whether a hub is due for a poll at now given when it was last
@@ -78,11 +92,12 @@ func due(frozen bool, lastPoll, now time.Time, normal, frozenInterval time.Durat
 // in lastPoll so a second Tick at the same now does not re-poll it.
 //
 // Errors do not kill the pass: a flaky single hub (transport fault, garbled body,
-// store error) must never stall the whole network's loop, so Tick attempts every
-// due hub and returns the first error encountered (nil if all succeeded). A hub
-// whose poll errored is NOT marked polled, so it is retried on the next due tick.
-// Reading FollowState is itself a store read that can fault; that error is treated
-// the same way (recorded as the first error, the hub skipped, the pass continues).
+// store error) must never stall the whole network's loop, so Tick logs each fault
+// as a structured record (with the hub_id), attempts every due hub, and returns
+// the first error encountered (nil if all succeeded). A hub whose poll errored is
+// NOT marked polled, so it is retried on the next due tick. Reading FollowState is
+// itself a store read that can fault; that error is treated the same way (logged,
+// recorded as the first error, the hub skipped, the pass continues).
 func (l *Loop) Tick(ctx context.Context, now time.Time) error {
 	if l.lastPoll == nil {
 		l.lastPoll = make(map[int64]time.Time)
@@ -91,6 +106,7 @@ func (l *Loop) Tick(ctx context.Context, now time.Time) error {
 	for _, target := range l.Targets {
 		fs, err := l.Store.FollowState(ctx, target.HubID)
 		if err != nil {
+			l.logger().ErrorContext(ctx, "follow state read failed", "hub_id", target.HubID, "err", err)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -100,6 +116,7 @@ func (l *Loop) Tick(ctx context.Context, now time.Time) error {
 			continue
 		}
 		if _, err := PollHub(ctx, l.Store, l.Fetcher, target.HubID, target.BaseURL, now, l.Alert); err != nil {
+			l.logger().ErrorContext(ctx, "poll hub failed", "hub_id", target.HubID, "err", err)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -115,9 +132,9 @@ func (l *Loop) Tick(ctx context.Context, now time.Time) error {
 // this one goroutine, so the single-writer discipline holds. The ticker fires at
 // the Normal cadence (the most-frequent interval any hub needs); due() throttles a
 // frozen hub down to the Frozen cadence within those ticks. A Tick error does not
-// stop the loop — a flaky hub never aborts the network's polling — so Run logs
-// nothing here (structured logging is a later step) and continues to the next
-// tick; only context cancellation ends the loop. Run never panics.
+// stop the loop — a flaky hub never aborts the network's polling — so Run emits
+// the per-tick error as a structured log record and continues to the next tick;
+// only context cancellation ends the loop. Run never panics.
 func (l *Loop) Run(ctx context.Context) error {
 	ticker := time.NewTicker(l.Normal)
 	defer ticker.Stop()
@@ -126,10 +143,13 @@ func (l *Loop) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case t := <-ticker.C:
-			// A per-tick error is intentionally not propagated: one flaky hub
-			// must not abort the whole network's loop. Tick already isolates
-			// per-hub faults; the error surfaces via the store/metrics later.
-			_ = l.Tick(ctx, t)
+			// A per-tick error is logged but intentionally not propagated: one
+			// flaky hub must not abort the whole network's loop. Tick already
+			// isolates per-hub faults; logging makes the previously-swallowed
+			// error observable without stopping the loop.
+			if err := l.Tick(ctx, t); err != nil {
+				l.logger().ErrorContext(ctx, "poll tick failed", "err", err)
+			}
 		}
 	}
 }
