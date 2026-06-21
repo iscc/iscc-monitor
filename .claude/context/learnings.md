@@ -510,6 +510,19 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   packages, `tilesserve` serves opaque BLOBs (no signature/RFC-6962/Merkle/did:web/fsck path);
   store stays a leaf (`go list -deps ./internal/store | grep tilesserve` empty — dep is binary→
   tilesserve→store), go.mod/go.sum/schema byte-identical.
+- **`/healthz` is a `metricshttp`-style leaf that pings the store WITHOUT importing it.** `internal/
+  healthz` declares its own 1-method `Pinger interface { Ping(context.Context) error }` (NOT a `store`
+  import); `*store.Store` satisfies it structurally via a thin `Ping(ctx) error` → `db.PingContext`
+  (`%w`-wrapped). Verified the dep stays one-directional both ways: `go list -deps ./internal/healthz`
+  has neither `internal/store` nor `database/sql`, and `go list -deps ./internal/store` has neither
+  `net/http` nor `internal/healthz`. Mounts as an EXACT path `mux.Handle("/healthz", …)` next to
+  `/metrics` in `buildMux` — no collision with the per-hub `/<domain>/log/` *subtree* prefixes (those
+  need the trailing slash to match; `/healthz` is exact). The `_, _ = io.WriteString(w, body)` drop is
+  the documented post-status-write convention (a fixed byte-literal body cannot fail for content
+  reasons; only a broken client conn, unrecoverable after `WriteHeader`), identical to `metricshttp`
+  /`proofserve.writeEvidence` — NOT a swallowed-error gate dodge. Oracle gate correctly N/A (HTTP wiring
+  + a DB ping; no signature/RFC-6962/Merkle/did:web/fsck/proof path); WASM purity rides `internal/
+  didweb` (untouched, builds green); go.mod/go.sum/schema byte-identical.
 
 ## Follower composition (`internal/follower`)
 
