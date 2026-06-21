@@ -63,22 +63,6 @@ filed it and does **not** affect priority.
   let the test assert on it. Verify fixed: `out` is either gone or written to. Low — skipped by the loop.
 - **Spec:** KISS / YAGNI (CLAUDE.md code standards); no spec contract.
 
-## Growing equivocations can be accepted before candidate tiles are mirrored
-- **Priority:** critical
-- **Source:** [review]
-- **What / where / how to verify:** `internal/follower/follower.go:411-415` builds the growing
-  checkpoint consistency proof before `ingestTiles`, so a normal mirror only has tiles for the
-  previously accepted size. `ConsistencyProofFromTiles` then misses the candidate-size tiles, and
-  `checkConsistency` treats that missing-tile error as a clean non-violation. The caller records and
-  advances `last_size` to the inconsistent root; later polls compare against that new accepted root,
-  so the split view is never frozen. Fix by ensuring the candidate tiles needed for the consistency
-  proof are available before accepting the growing checkpoint, or by making missing proof tiles a
-  retry/error path rather than a clean consistency pass. Verify fixed with a growing split-view poll
-  where the prior checkpoint is accepted and the candidate root is inconsistent: the hub must freeze
-  and must not advance accepted state to the candidate root.
-- **Spec:** ADR-0006 (self-consistency violations freeze and preserve evidence); ADR-0005 (mirrored
-  tiles back consistency proofs/root rebuilds).
-
 ## Frozen hubs still advance accepted state on later clean-looking polls
 - **Priority:** normal
 - **Source:** [review]

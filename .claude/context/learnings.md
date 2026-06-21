@@ -492,6 +492,23 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   The `AlertFunc func(int64,string)` is a func seam (YAGNI, not an interface); the `modernc.org/sqlite`
   blank import is added to the follower *test only* (production imports stay `{context,fmt,logclient,
   store,time}`, store stays a leaf, go.mod/go.sum byte-identical).
+- **`ingestTiles` MUST run before `checkConsistency` in `PollHub` — this is the load-bearing order, and
+  the closed `critical` gap.** The equivocation trigger builds its RFC-6962 consistency proof from the
+  LOCAL mirror (`ConsistencyProofFromTiles` over `SQLiteFetcher`), so the candidate-size tiles must be
+  mirrored first or the proof hits a missing-tile error that `checkConsistency` swallows as a clean pass
+  → the hub silently advances to the inconsistent root. The fix was a pure reorder (move the single
+  `ingestTiles` call up to right after `FollowState`, before `checkConsistency`); the missing-tile
+  swallow at `checkConsistency`'s equivocation branch stays as a robustness guard for the genuine
+  no-mirror case (a hub that advanced before tiles existed). Verify the order with `grep -n`: `FollowState`
+  → `ingestTiles` → `checkConsistency` → `freeze`/`RecordCheckpoint`+`AdvanceFollowState`. An `ingestTiles`
+  fault now aborts the poll BEFORE accepted state advances (missing proof tile → error, not clean pass).
+- **The growing-split-view freeze test (`TestPollHubGrowingSplitViewFreezes`) is non-vacuous because the
+  SAME `buildVerifiedMirror(mirrorLeaves=300)` fixture is polled clean by `TestPollHubVerifiedAdvances`
+  (`prevSize==0`, advances, `Frozen==false`).** So an "always freezes" wiring breaks Advances and a "never
+  freezes" wiring breaks GrowingSplitView. The freeze case seeds a prior accepted checkpoint at size 5
+  whose root is `flipByte(m.tree.HashAt(5))` (the real root with one byte flipped) — the candidate
+  checkpoint the fetcher signs is internally valid at 300, so the inconsistency is purely between the
+  fabricated prior accepted root and the candidate root = a growing split view against THIS monitor.
 - **Re-detection of a fork relies on `CheckpointAt`'s `LIMIT 1` returning the PRIOR root, not the
   contradictory one.** The freeze path records the contradicting checkpoint as evidence, so after the
   first detection there are two rows at the same `tree_size` (prior seed root + new root). On the next
