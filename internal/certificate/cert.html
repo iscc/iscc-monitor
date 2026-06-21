@@ -336,7 +336,10 @@
       {{if .HasClause2}}
       <div class="clause">
         <div class="clause-marker">§2 CHECKPOINT</div>
-        <div class="clause-value"></div>
+        <div class="clause-value">
+          <div class="clause-mono">size {{.CheckpointSize}} · root {{.CheckpointRoot}}</div>
+          <div class="clause-note">The accepted checkpoint (size + RFC-6962 tree head) this monitor vouches for; this id's position ({{.Position}}) falls within it.</div>
+        </div>
       </div>
       {{end}}
       {{if .HasClause3}}

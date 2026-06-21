@@ -18,6 +18,7 @@ package certificate
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -156,6 +157,8 @@ func TestCertificateKnownID(t *testing.T) {
 		"sb1.amlet.id",       // the RESOLVED hub domain (the non-vacuous derived value)
 		"24815",              // the subject position seqs[0]
 		"§1 SUBJECT",         // the §1 clause marker
+		"§2 CHECKPOINT",      // the §2 clause marker
+		"size 24816",         // the accepted checkpoint tree size (hub.LastSize = seq+1)
 		"← Realm index",      // the back-link
 		"monitor.iscc.codes", // the tier-2 verify link
 		"Tier 1",             // the two-tier honesty panel
@@ -164,6 +167,11 @@ func TestCertificateKnownID(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q\n%s", want, body)
 		}
+	}
+	// §2 renders the REAL accepted root the fixture committed (base64-Std), not a
+	// fabricated/hardcoded one — rendering a wrong root fails this assert.
+	if wantRoot := base64.StdEncoding.EncodeToString([]byte("root")); !strings.Contains(body, wantRoot) {
+		t.Errorf("body missing the §2 accepted root %q\n%s", wantRoot, body)
 	}
 	// The resolved hub at slot 1 is sb1.amlet.id, NOT the slot-0 sb0.iscc.id; if the
 	// decode/resolve chain were bypassed the wrong (or no) domain would render.
@@ -236,6 +244,10 @@ func TestCertificateNotInLog(t *testing.T) {
 	if strings.Contains(body, "is included in the transparency log") {
 		t.Errorf("not-in-log id rendered a certifiable subject banner\n%s", body)
 	}
+	// A non-certifiable id renders NO §2 CHECKPOINT clause.
+	if strings.Contains(body, "§2 CHECKPOINT") {
+		t.Errorf("a not-in-log id rendered a §2 CHECKPOINT clause\n%s", body)
+	}
 }
 
 // TestCertificatePrefixedLookup asserts the canonicalization: with the leaf indexed
@@ -284,6 +296,10 @@ func TestCertificateUnacceptedLeaf(t *testing.T) {
 		if strings.Contains(body, "is included in the transparency log") {
 			t.Errorf("an unaccepted leaf rendered a certifiable subject banner\n%s", body)
 		}
+		// A non-certifiable id renders NO §2 CHECKPOINT clause.
+		if strings.Contains(body, "§2 CHECKPOINT") {
+			t.Errorf("an unaccepted leaf rendered a §2 CHECKPOINT clause\n%s", body)
+		}
 	})
 
 	t.Run("no accepted checkpoint yet", func(t *testing.T) {
@@ -301,6 +317,10 @@ func TestCertificateUnacceptedLeaf(t *testing.T) {
 		}
 		if strings.Contains(body, "is included in the transparency log") {
 			t.Errorf("a hub with no accepted checkpoint rendered a certifiable subject banner\n%s", body)
+		}
+		// A non-certifiable id renders NO §2 CHECKPOINT clause.
+		if strings.Contains(body, "§2 CHECKPOINT") {
+			t.Errorf("a hub with no accepted checkpoint rendered a §2 CHECKPOINT clause\n%s", body)
 		}
 	})
 }

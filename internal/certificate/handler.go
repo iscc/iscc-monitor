@@ -15,11 +15,13 @@
 // left an unaccepted projection) or a hub with no accepted checkpoint yet renders
 // an honest cannot-certify state, never an affirmative claim.
 //
-// This is the verifiable skeleton of the certificate: §1 Subject plus the
-// documented honesty states. Clauses §2-§6 (checkpoint, inclusion proof, signing
-// key, Bitcoin anchor, record history) and the downloadable proof bundle are gated
-// placeholders that render nothing yet — later sub-steps grow the template without
-// rework. The Download-proof-bundle action renders as a disabled placeholder.
+// The certificate grows clause by clause: §1 Subject and §2 Checkpoint (the
+// accepted (size, root) the subject position falls within) are real for a
+// certifiable id, alongside the documented honesty states. Clauses §3-§6
+// (inclusion proof, signing key, Bitcoin anchor, record history) and the
+// downloadable proof bundle are gated placeholders that render nothing yet — later
+// sub-steps grow the template without rework. The Download-proof-bundle action
+// renders as a disabled placeholder.
 //
 // Fail-closed / coverage-honesty discipline (ADR-0001): every "cannot certify"
 // branch — a malformed id, an id resolving to no listed slot, a resolved domain
@@ -39,6 +41,7 @@ package certificate
 import (
 	"bytes"
 	_ "embed"
+	"encoding/base64"
 	"html/template"
 	"net/http"
 	"strings"
@@ -77,13 +80,13 @@ type StatusSource interface {
 	Status(hubID int64) (string, bool)
 }
 
-// certData is the certificate template view-model. The skeleton populates only the
-// §1 SUBJECT clause and the subject banner: whether the id could be certified, the
-// subject id, the resolved hub domain, and the subject position. NotFound carries
-// the honest "cannot certify" state with a human-readable Reason; the subject id is
-// echoed back even on a not-found so the page names what was looked up. The §2-§6
-// HasClauseX flags are all false in the skeleton so the template's gated clause
-// placeholders render nothing yet.
+// certData is the certificate template view-model. For a certifiable id it
+// populates the §1 SUBJECT clause + subject banner (subject id, resolved hub
+// domain, subject position) and the §2 CHECKPOINT clause (the accepted (size,
+// root)). It carries the honest "cannot certify" state with a human-readable
+// Reason; the subject id is echoed back even on a not-found so the page names what
+// was looked up. The §3-§6 HasClauseX flags are all false so the template's gated
+// clause placeholders render nothing yet.
 type certData struct {
 	// IsccID is the subject id as supplied by the caller (echoed verbatim, never
 	// interpreted beyond the decode). It is shown even on a not-found.
@@ -104,9 +107,21 @@ type certData struct {
 	// (e.g. "not a valid ISCC-ID", "not found in log"). Empty when Certifiable.
 	Reason string
 
+	// CheckpointSize is the hub's accepted checkpoint tree size (hub.LastSize, the
+	// accepted tree the subject position falls within). Meaningful only when
+	// HasClause2 — the §2 CHECKPOINT clause renders it.
+	CheckpointSize uint64
+	// CheckpointRoot is the accepted checkpoint's RFC-6962 tree head at
+	// CheckpointSize, base64-Std encoded (matching the log browser and verify-for-me
+	// so the root string is byte-identical across surfaces). Read back via
+	// store.CheckpointAt; meaningful only when HasClause2.
+	CheckpointRoot string
+
 	// HasClause2..6 gate the later clauses (checkpoint, inclusion proof, signing
-	// key, Bitcoin anchor, record history). All false in this skeleton so the
-	// gated placeholders render nothing; later sub-steps set them.
+	// key, Bitcoin anchor, record history). HasClause2 is set when the accepted
+	// checkpoint's (size, root) is read for a certifiable id; the rest are false in
+	// this skeleton so their gated placeholders render nothing; later sub-steps set
+	// them.
 	HasClause2 bool
 	HasClause3 bool
 	HasClause4 bool
@@ -176,6 +191,10 @@ func Handler(hubList *registry.HubList, st *store.Store, statuses StatusSource) 
 //     seqs[0] >= LastSize (indexed but above the accepted checkpoint) → "not in
 //     accepted tree"; only seqs[0] < LastSize certifies, with subject position
 //     seqs[0] (ascending, the deterministic default, ADR-0008).
+//  6. For a certifiable id, read the accepted checkpoint's root back via
+//     CheckpointAt(hub.LastSize) and populate the §2 CHECKPOINT clause with the
+//     accepted (size, root). A DB error here is a 500; an absent row leaves §2
+//     unrendered (no fabricated checkpoint).
 func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawID string) (certData, int) {
 	if rawID == "" {
 		return certData{Reason: "no ISCC-ID supplied"}, http.StatusOK
@@ -250,6 +269,25 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 	// interpreted.
 	data.Certifiable = true
 	data.Position = seqs[0]
+
+	// §2 CHECKPOINT: render the accepted (size, root) the cap above keys on. The
+	// size is hub.LastSize (already proven > 0 by the cap), so only the root needs a
+	// store read. CheckpointAt reads back the accepted root the follow_state does not
+	// persist (ADR-0001 coverage honesty: only the accepted-tree checkpoint, never a
+	// contradicted one). A DB error is a 500 (buffered before any 200); a found ==
+	// false is the rare honest gap — leave HasClause2 false rather than fabricate a
+	// root (AdvanceAccepted records the checkpoint at the same tree_size it advances
+	// LastSize to, so found is realistically always true on this path). The root is
+	// base64-Std encoded to match the log browser and verify-for-me.
+	root, _, found, err := st.CheckpointAt(r.Context(), hub.HubID, hub.LastSize)
+	if err != nil {
+		return certData{}, http.StatusInternalServerError
+	}
+	if found {
+		data.CheckpointSize = hub.LastSize
+		data.CheckpointRoot = base64.StdEncoding.EncodeToString(root)
+		data.HasClause2 = true
+	}
 	return data, http.StatusOK
 }
 
