@@ -1,149 +1,148 @@
 # Next Work Package
 
-## Step: Fail-close certificate §3 — verify the built proof rebuilds the accepted root (close the TOCTOU critical)
+## Step: Certificate §4 SIGNING KEY — render the cached did:web key that signed the accepted checkpoint
 
 ## Advances
-Closes the one open **`critical`** issue ("Certificate §3 can still render a self-contradictory
-proof in the fork-poll TOCTOU window — the `!hub.Frozen` gate is incomplete"), which **preempts all
-milestone-feature work** (issue priority `critical`). It is also the explicit `review` handoff
-`**Next:**`. The critical blocks the active **M-UI — Evidence Ledger frontend** milestone Verify
-criterion:
+M-UI (Evidence Ledger frontend) Verify criterion — the certificate-clause requirement:
 
-> "the **realm-wide certificate** (`/inclusion/{iscc_id}` …) for a known id renders the numbered
-> evidence clauses (subject + position; checkpoint `(size, root)`; **inclusion proof**; …)"
+> the **realm-wide certificate** (`/inclusion/{iscc_id}`, keyed by the self-describing ISCC-IDv1 …) for
+> a known id renders the numbered evidence clauses (subject + position; checkpoint `(size, root)`;
+> inclusion proof; **signing key**; anchor state; full per-id record history incl. any deletion) …
 
-— a rendered inclusion proof under a `✓` it does not rebuild violates the M-UI oracle/conformance
-gate ("the proof-bundle assembler shares the crypto path and MUST keep the conformance/oracle gate
-green") and the glossary **Proof bundle** / **Verifiable cache** contract (a client verifies the
-artifact itself). Until §3 is honest the certificate Verify criterion cannot pass, no `critical` may
-remain open at DONE, and the §3 cycle cannot push (CI is green only at `17c4957`, not at HEAD).
+§1 SUBJECT, §2 CHECKPOINT, and §3 INCLUSION PROOF are PASS-verified; `HasClause4..6` are all still
+`false` and never set (`handler.go:160`, the empty `§4` placeholder at `cert.html:356-361`). This step
+closes the **§4 signing key** sub-clause — the next unmet piece of the single open M-UI certificate
+criterion, continuing the established clause-by-clause arc (the review handoff `**Next:**` from `96f6ed9`
+names "§4 SIGNING KEY → §5 → §6"). Milestone work, not a preempting issue.
 
 ## Goal
-Replace the §3 status-flag gate (`data.HasClause2 && !hub.Frozen`) with a fail-closed Merkle
-re-verification: set `HasClause3` only when the built inclusion proof actually rebuilds the accepted
-checkpoint root. This fails closed against ANY tile↔root divergence — the fork-poll race AND the
-steady-state frozen case — so it subsumes and removes the `!hub.Frozen` gate, making the rendered `✓`
-true by construction rather than by a racily-read flag.
+Render the certificate's §4 SIGNING KEY clause: the did:web-resolved Ed25519 key that *actually signed*
+the §2 accepted checkpoint — its key id derived from that checkpoint's own raw signature line, then
+looked up in the `hub_keys` cache. This grounds the certificate's "the hub vouched for this with key X"
+claim in the irreplaceable signed checkpoint, and fails closed (omits §4, never fabricates a key) when
+the key is not cached.
 
 ## Scope
 - **Create**: (none)
-- **Modify**:
-  - `/workspace/iscc-monitor/internal/certificate/handler.go` — rewrite the §3 branch in `buildData`
-    (lines 325-381): keep building the proof, then read the subject leaf's entry bundle → leaf hash →
-    `proof.VerifyInclusion` against the accepted root; set `HasClause3` only on a nil verdict. Add the
-    `merkle/proof` + `merkle/rfc6962` + `internal/tiles` imports; remove the `hub.Frozen` reference;
-    update the file / `buildData` / `certData` docstrings to describe the rebuild verification (not the
-    freeze flag). Only non-test source file (≤3 budget: 1).
-  - `/workspace/iscc-monitor/internal/certificate/handler_test.go` — seed a byte-accurate entry bundle
-    for the subject leaf in `fixtureStoreTiled`; convert `TestCertificateInclusionProofFrozen` into a
-    NON-frozen contradictory-tile assertion (mirror tree A, accept tree B's root, `freeze=false`) →
-    §1+§2 render, §3 absent; mutation-proven. Test file, not counted toward the ≤3 budget.
+- **Modify** (2 non-test source files, within the ≤3 budget):
+  - `/workspace/iscc-monitor/internal/certificate/handler.go` — capture the accepted checkpoint's raw
+    bytes from `CheckpointAt` (currently discarded), derive `key_id` via `KeyIDFromCheckpoint`, look up
+    the cached key via `LookupHubKey`, populate the §4 `certData` fields + `HasClause4`; add the §4
+    view-model fields with evergreen docstrings; update the file/`buildData`/`certData` docstrings to
+    describe §4.
+  - `/workspace/iscc-monitor/internal/certificate/cert.html` — fill the existing empty `§4 SIGNING KEY`
+    `clause-value` placeholder (`<div class="clause-value"></div>`, cert.html:356-361) with the key
+    fields, reusing the existing `clause-mono` / `clause-note` classes (no new CSS).
+  - `/workspace/iscc-monitor/internal/certificate/handler_test.go` — test file, not counted toward the
+    ≤3 budget. Add the two §4 tests + thread a real signed-note checkpoint `Raw` into `fixtureStoreTiled`.
 - **Reference** (read before implementing):
-  - `/workspace/iscc-monitor/internal/proofserve/handler.go` lines 535-575 — the EXACT fail-closed
-    pattern to port: `bundleIndex := leafIndex/tiles.TileWidth`, `offset := leafIndex%tiles.TileWidth`,
-    `p := tiles.PartialTileSize(0, bundleIndex, size)`, `f.ReadEntryBundle(ctx, bundleIndex, p)`,
-    `logclient.RecordBytesFromBundle(bundle, offset)`, `rfc6962.DefaultHasher.HashLeaf(record)`,
-    `proof.VerifyInclusion(rfc6962.DefaultHasher, leafIndex, size, leafHash, builtProof, root) == nil`.
-  - `/workspace/iscc-monitor/internal/logclient/entries.go` — `RecordBytesFromBundle(bundle, offset)`
-    + the `ErrLeafOutOfBundle` sentinel (checkable via `errors.Is`).
-  - `/workspace/iscc-monitor/.claude/context/learnings/certificate.md` — the §3 / "built ≠ verified" /
-    base64-Std / `html/template` escape (`+`→`&#43;`) notes.
-  - `/workspace/iscc-monitor/.claude/context/learnings/logclient.md` — `InclusionProofFromTiles`; the
-    `VerifyInclusion(hasher, index, size, leafHash, proof, root)` arg-order gotcha (leafHash precedes
-    proof, unlike `VerifyConsistency`).
-  - `/workspace/iscc-monitor/.claude/context/learnings/store.md` — `SQLiteFetcher.ReadEntryBundle`
-    p→width + partial→full fallback; `os.ErrNotExist` survives `errors.Is`.
-  - `/workspace/iscc-monitor/internal/logclient/fsck_test.go` lines 62-75 — the `encodeBundle` helper
-    (manual `binary.BigEndian.PutUint16` framing) to copy into the cert test fixture.
+  - `/workspace/iscc-monitor/.claude/context/learnings/certificate.md` — package-local mechanics:
+    buffer-then-200 500 discipline, base64-Std cross-surface, the `html/template` `+`→`&#43;` escape
+    trap, the §2 `CheckpointAt` read that already exposes the raw bytes.
+  - `/workspace/iscc-monitor/.claude/context/learnings/didweb.md` — `HubKey` semantics; did:web is the
+    only key source (ADR-0009); the `unresolvable`/`unverified`/rotation distinctions (context only —
+    §4 reads the *cache*, it does NOT re-resolve did.json).
+  - `/workspace/iscc-monitor/internal/logclient/checkpointkey.go` — `KeyIDFromCheckpoint(raw) (name,
+    keyID uint32, err)`: the pure (stdlib + sumdb/note) raw-checkpoint key-id recovery; rejects a
+    non-note input with an error (no panic).
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go:62-78` (`HubKey` struct) and `:443-485`
+    (`LookupHubKey(hubID, keyID) (HubKey, found, err)` — absent row is `(HubKey{}, false, nil)`, not an
+    error; only a real query fault is non-nil).
+  - `/workspace/iscc-monitor/internal/follower/follower.go:263-356` (`cacheHubKey` /
+    `KeyIDFromCheckpoint` / `RecordHubKey`) — the production WRITE side §4 reads back; §4 is its mirror.
+  - `/workspace/iscc-monitor/.claude/design/ISCC Monitor - Certificate.dc.html:65` — the §4 mockup: a
+    mono DID line (`did:web:hub.iscc.id#key-2025`) + note "Ed25519, resolved from the hub's did:web
+    document."
 
 ## Not In Scope
-- Clauses **§4–§6** (signing key, Bitcoin anchor, record history) and the downloadable proof-bundle
-  assembler — the next step once this critical is closed and pushed.
-- The deferred `internal/registry` `hubDomain` `ForceQuery` fix (`normal`) — this step does not touch
-  `registry.go`; fold it in when `hubDomain` is next edited.
-- The ADR-0011 Go 1.26 / iscc-lib bump (`normal`) — separate foundational increment.
-- Any change to `cert.html` — the template already gates §3 on `{{if .HasClause3}}`; only the
-  view-model condition changes. Keep `cert.html` byte-unchanged.
-- Any change to `proofserve`'s `serveVerify` — it already does this verification and returns a
-  client-verifiable JSON verdict (no asserted `✓`), so it is not an honesty defect; do not refactor it.
+- §5 Bitcoin anchor and §6 record history (`HasClause5`/`HasClause6` stay `false`) — separate later
+  sub-steps in the same arc.
+- The downloadable proof-bundle assembler (`{checkpoint, inclusion/consistency proof, record bytes,
+  hub key, ots?}`) — its own oracle-gated step; the §4 key it bundles can reuse this read path later.
+- Re-resolving the hub's `did.json` live, or ANY `net`/`net/http` work — §4 reads the `hub_keys` cache
+  only. Do not add an HTTP fetch to the handler.
+- A CID 1.0 validity-window engine (`DIDKey.ValidAt`). The cache row carries a `Revoked` instant; you
+  may surface it if present, but do not build validity/rotation evaluation here.
+- The deferred `internal/registry` `hubDomain` `ForceQuery` fix — this step does not touch `registry.go`.
+- Any change to `proofserve`'s `serveVerify` or to §1/§2/§3 logic — additive only.
 
 ## Implementation Notes
-- **Port, do not invent.** `proofserve.serveVerify` (handler.go:535-575) already performs exactly the
-  fail-closed verification this step needs. Lift that logic into the §3 branch of
-  `certificate.buildData` (handler.go:325-381). The handler already has `f := store.SQLiteFetcher{Store:
-  st, HubID: hub.HubID}`, `data.Position` (== `seqs[0]`), `hub.LastSize`, and `data.CheckpointRoot`
-  (base64-Std). Capture the raw `root []byte` from the §2 `CheckpointAt` call (currently discarded into
-  `data.CheckpointRoot`) and reuse those bytes for `VerifyInclusion` — cleaner than re-decoding
-  `data.CheckpointRoot`. The accepted-tree cap above already proved `hub.LastSize > 0` and
-  `data.Position < hub.LastSize`, so the leaf is in range.
-- **Sequence inside the §3 branch** (after `InclusionProofFromTiles` builds `proof`):
-  `bundleIndex := data.Position / tiles.TileWidth`, `offset := data.Position % tiles.TileWidth`,
-  `p := tiles.PartialTileSize(0, bundleIndex, hub.LastSize)`,
-  `bundle, err := f.ReadEntryBundle(r.Context(), bundleIndex, p)`,
-  `record, err := logclient.RecordBytesFromBundle(bundle, offset)`,
-  `leafHash := rfc6962.DefaultHasher.HashLeaf(record)`. Set `HasClause3 = true` ONLY when
-  `data.HasClause2 && proof.VerifyInclusion(rfc6962.DefaultHasher, data.Position, hub.LastSize,
-  leafHash, builtProof, root) == nil` (keep gating on `HasClause2` because §3 renders the §2 root
-  chip). Otherwise leave §3 unrendered — §1/§2 still show.
-- **Arg-order gotcha (learnings):** `VerifyInclusion(hasher, index, size, leafHash, proof, root)` —
-  `leafHash` precedes `proof`. Do NOT transpose with `VerifyConsistency`'s `(…, proof, root1, root2)`.
-- **Fail-closed error mapping (ADR-0001), mirror §2's split:** an `os.ErrNotExist` from
-  `InclusionProofFromTiles`/`ReadEntryBundle`, or `logclient.ErrLeafOutOfBundle` from
-  `RecordBytesFromBundle`, is an honest tile/bundle gap → leave §3 unrendered (NOT a 500, NOT a
-  fabricated proof). Any OTHER error (a genuine store/decode fault) → `return certData{},
-  http.StatusInternalServerError` (buffered before any 200). A `VerifyInclusion` non-nil result is a
-  silent decline of §3 (the proof did not rebuild the root), never a 500 — the certificate can decline
-  a clause.
-- **Remove the `!hub.Frozen` gate.** The verification subsumes it: a frozen-after-fork hub whose mirror
-  diverges from the accepted root fails `VerifyInclusion`, so §3 is declined without reading
-  `hub.Frozen`. Drop `&& !hub.Frozen` and the `hub.Frozen` reference. Rewrite the §3 block comment +
-  the file / `buildData` / `certData` docstrings (they currently describe the freeze-gate mechanism) to
-  describe the rebuild verification — evergreen wording, no "now"/"changed from".
-- **Imports:** add `"github.com/transparency-dev/merkle/proof"`,
-  `"github.com/transparency-dev/merkle/rfc6962"`, and `"github.com/iscc/iscc-monitor/internal/tiles"`.
-  All are already in the build closure via `proofserve`/`logclient` — `go.mod`/`go.sum` stay
-  byte-unchanged. Confirmed: `certificate` currently imports neither merkle package nor `tiles`.
-- **Correctness rule (learnings index):** `proof/verify` is the shared crypto path — reuse the
-  oracle-gated builder + `merkle/proof` verifier; never hand-roll Merkle math. base64 is **Std** (`+/`,
-  `=` padding), byte-identical across the log browser / verify-for-me / §2. Also: "A self-consistency
-  violation freezes, never crashes (ADR-0006)" + "Coverage honesty (ADR-0001) — never render a
-  guarantee the accepted state does not support."
-- **Test fixture (`fixtureStoreTiled`, handler_test.go:479):** today it seeds only HASH tiles, so
-  `RecordBytesFromBundle` would miss → the new verification would never get a leaf hash. Add a
-  byte-accurate ENTRY BUNDLE for the subject leaf so the derived `HashLeaf(record)` equals
-  `tree.LeafHash(seq)` (that equality is what makes the clean `TestCertificateInclusionProof` pass
-  THROUGH the new verification). The tree is built from `[]byte(fmt.Sprintf("leaf-%d", i))`; copy
-  `encodeBundle` (manual `binary.BigEndian.PutUint16` length-prefix per record) from
-  `internal/logclient/fsck_test.go:62-75`, and for each `BundleCoord` in `tiles.BundleCoords(size)`
-  write `st.RecordEntryBundle(ctx, target, c.Index, c.Partial, encodeBundle(records), time.Unix(0,0))`
-  with that bundle's slice of preimages (a 5-leaf tree is one partial bundle at index 0, partial 5).
-- **Convert the test to a NON-frozen contradictory-tile assertion.** Change
-  `TestCertificateInclusionProofFrozen`'s fixture call to `fixtureStoreTiled(..., treeB.Hash(),
-  false)` (mirror tree A's tiles, accept tree B's root, `freeze=false`). Assert §1+§2 render but §3 is
-  ABSENT **even though the hub is not frozen** (the proof builds from tree-A tiles but does not rebuild
-  tree-B's accepted root, so `VerifyInclusion` rejects it). Rename to reflect the verification (e.g.
-  `TestCertificateInclusionProofContradictory`). The clean `TestCertificateInclusionProof` (mirror and
-  accepted root agree) MUST stay green — that proves the verification ACCEPTS a real proof, not just
-  rejects everything. Leave `TestCertificateInclusionProofTileGap` untouched and green.
-- **Non-vacuity (mandatory — review reproduces it).** Replacing the §3 `proof.VerifyInclusion(...) ==
-  nil` guard with `true` (so §3 renders whenever the proof builds) must make the new contradictory-tile
-  test FAIL; restoring it passes. State this in the test docstring and confirm locally before handoff.
+- **Derive the key id from the §2 accepted checkpoint, not synthetically.** `CheckpointAt` already
+  returns the accepted checkpoint's raw bytes as its second return value (today discarded with `_` in
+  `buildData`'s §2 branch). Capture it (`root, raw, found, err := st.CheckpointAt(...)`) and, INSIDE the
+  `if found` / `data.HasClause2` region (so §4 is meaningful only alongside §2), call
+  `name, keyID, err := logclient.KeyIDFromCheckpoint(raw)`. This is the exact key the hub signed the
+  accepted checkpoint with — the right key to display; it equals `KeyIDFromVerifier` of the resolved
+  vkey (proven by `logclient/checkpointkey_test.go`). The `name` return is unused for rendering (the
+  DID is built from the resolved `data.Domain`); discard or assert it as you prefer.
+- **Read the cache, fail closed.** `key, found4, err := st.LookupHubKey(r.Context(), hub.HubID, keyID)`.
+  Set `HasClause4 = true` ONLY on `found4`. On a `KeyIDFromCheckpoint` error (malformed sig line — e.g.
+  the cheap `[]byte("raw")` fixtures) or a cache miss (`!found4`), leave §4 unrendered: an honest
+  decline, NOT a 500, NOT a fabricated key (the same discipline as §3's honest tile-gap). A real
+  `LookupHubKey` DB error is a 500, buffered before any 200 (`return certData{},
+  http.StatusInternalServerError`) — the buffer-then-200 invariant is already in place.
+- **View-model fields** (add to `certData` with evergreen docstrings like the existing §2/§3 fields):
+  - `SigningKeyDID string` — `"did:web:" + data.Domain` (the hub's did:web identifier; matches ADR-0009
+    "domain ownership is identity").
+  - `SigningKeyID string` — `fmt.Sprintf("%08x", keyID)`, the BE-uint32 signed-note keyhash in hex
+    (matching how the codebase prints key ids, e.g. `LookupHubKey`'s `%08x` error format).
+  - `SigningKeyMultibase string` — `key.PubkeyZ`, the z6Mk… multibase (may be empty if the cache row
+    stored NULL pubkey_z; render that chip conditionally in the template).
+  - (optional) `SigningKeyRevoked string` — only set when `key.Revoked` is non-zero (RFC-3339); omit
+    otherwise. Keep these names parallel to the §2 `Checkpoint*` / §3 `Proof*` fields.
+- **Template (`cert.html` §4 block):** render the DID mono line + the hex key id + (conditionally) the
+  multibase chip, plus the mockup note "Ed25519, resolved from the hub's did:web document." Reuse
+  `clause-mono` / `clause-note` (same markup as §2/§3). No external/CDN URL; no new `<style>` rule.
+- **Correctness rule (learnings index):** did:web is the only key source (ADR-0009). §4 must read the
+  cached resolution (`hub_keys`), never invent a key; a cache miss is an honest "key not yet resolved"
+  decline, not an affirmative claim. The displayed key MUST be the one tied to the accepted checkpoint
+  (derive via `KeyIDFromCheckpoint`), so the certificate can never show a key that did not sign what §2
+  vouches for. Also: coverage honesty (ADR-0001) — never render a guarantee the accepted state does not
+  support.
+- **`html/template` escape (learnings):** the hex key id is `[0-9a-f]` and the z6Mk multibase is base58
+  (no `+`/`/`), so the `+`→`&#43;` entity escaping is unlikely to bite, but a test asserting on rendered
+  values should `html.UnescapeString(body)` first defensively (the §3 test already does this).
+- **Test fixture — make §4 testable without weakening §3.** `fixtureStoreTiled` (handler_test.go:499)
+  currently passes `Raw: []byte("raw")` to `AdvanceAccepted`, which `KeyIDFromCheckpoint` rejects (the
+  honest-decline path — fine for the §3 tests). Thread the checkpoint `Raw` in as a helper parameter
+  (or add a thin `fixtureStoreTiledKey` wrapper) so the existing §3 callers keep the cheap
+  `[]byte("raw")` and ONLY the §4 happy-path test supplies a REAL signed note. For the real note, read
+  `testdata/live/sb0.iscc.id_checkpoint` (its sig line yields keyID `0x40b74463`, pinned in
+  `logclient/checkpointkey_test.go`) and pass it as `CheckpointRecord.Raw`; then `st.RecordHubKey(ctx,
+  store.HubKey{HubID: target, KeyID: 0x40b74463, PubkeyRaw: <32 bytes>, PubkeyZ: "z6Mk…test",
+  ResolvedAt: <some time>})`. `KeyIDFromCheckpoint` does not verify the signature, so the live sb0 note
+  seeds an sb1-indexed fixture fine (it only reads the BE-uint32 keyhash).
+  - Locate the repo-root `testdata/` from the test's package dir — the certificate package is two levels
+    under root, so the path is `filepath.Join("..", "..", "testdata", "live", "sb0.iscc.id_checkpoint")`
+    (verify against how a sibling package reads it; `logclient` uses a `readCheckpoint` helper with its
+    own relative base — do not assume the same base).
+- **Two new tests:**
+  - `TestCertificateSigningKey` — tiled fixture WITH a real note `Raw` + a seeded `RecordHubKey`:
+    assert the body contains `§4 SIGNING KEY`, the `did:web:<domain>` line, the `40b74463` key id, and
+    the seeded multibase. §1/§2/§3 must also still render (regression).
+  - `TestCertificateSigningKeyUncached` — same real-note tiled fixture but NO `RecordHubKey`: body has
+    §1/§2/§3 but NOT `§4 SIGNING KEY` (the honest cache-miss decline; status 200).
+  - Existing `TestCertificateInclusionProof*` / `TestCertificate*` must stay green; if you change
+    `fixtureStoreTiled`'s signature, update its callers.
+- **Non-vacuity (mandatory — review reproduces it):** forcing `HasClause4 = true` unconditionally (or
+  rendering §4 on a cache miss) must make `TestCertificateSigningKeyUncached` FAIL; restoring the gate
+  passes. State this in the test docstring and confirm locally before handoff.
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -count=1 -run TestCertificate ./internal/certificate` passes uncached (full cert suite,
-  incl. the clean §3 proof, the tile-gap honest-decline, and the new non-frozen contradictory test).
-- Oracle/conformance gate stays green (the crypto path is touched):
-  `go test -count=1 ./internal/logclient ./internal/proofserve ./cmd/notecheck` all `ok`.
-- **Mutation (non-vacuity):** replacing the §3 `proof.VerifyInclusion(...) == nil` guard with `true`
-  makes `go test -run TestCertificateInclusionProofContradictory ./internal/certificate` FAIL;
-  restoring it passes. (Run, confirm, revert — leave the tree clean.)
-- `go.mod` / `go.sum` byte-unchanged: `git diff --stat go.mod go.sum` is empty.
-- WASM/purity unaffected: `GOOS=js GOARCH=wasm go build ./internal/index ./internal/didweb` exits 0.
-- `cert.html` untouched: `git diff --stat internal/certificate/cert.html` empty.
+- `go test -count=1 -run TestCertificate ./internal/certificate` passes uncached (all existing §1/§2/§3
+  tests plus `TestCertificateSigningKey` and `TestCertificateSigningKeyUncached`).
+- Oracle/conformance gate (the signed-note key-id path is touched):
+  `go test -count=1 ./internal/logclient ./internal/follower ./cmd/notecheck` all `ok`.
+- **Mutation (non-vacuity):** forcing `HasClause4 = true` unconditionally makes
+  `go test -run TestCertificateSigningKeyUncached ./internal/certificate` FAIL; restoring the gate
+  passes. (Run, confirm, revert — leave the tree clean.)
+- WASM/purity unaffected: `GOOS=js GOARCH=wasm go build ./internal/index ./internal/didweb` exits 0
+  (no `net`/`net/http` added to any WASM-shared leaf).
+- No new dependency: `git diff --stat go.mod go.sum` is empty.
 
 ## Done When
-`mise run check` is green, the new non-frozen contradictory-tile test asserts §1+§2-render-but-§3-absent
-(mutation-proven) while the clean §3 test stays green, the §3 render is gated on `proof.VerifyInclusion`
-against the accepted root rather than on `hub.Frozen`, and `go.mod`/`go.sum` are byte-unchanged —
-closing the open `critical`.
+`mise run check` is green and the certificate renders a §4 SIGNING KEY clause for a known id whose
+did:web key (derived from the accepted checkpoint and read from `hub_keys`) is cached, while honestly
+omitting §4 — no 500, no fabricated key — on a cache miss, proven non-vacuous by the two new
+`TestCertificateSigningKey*` tests.
