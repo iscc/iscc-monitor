@@ -1,95 +1,88 @@
 # Next Work Package
 
-## Step: Cache-Control on the tlog-tiles mirror (immutable full tiles/bundles vs. revalidating partials + checkpoint)
+## Step: Conditional GET (strong ETag + If-None-Match → 304) on the tlog-tiles mirror
 
 ## Goal
-Make the raw tlog-tiles mirror cacheable correctly: serve content-addressed **full**
-tiles/entry-bundles with a long-lived immutable `Cache-Control` and serve **partials** and the
-size-varying **checkpoint** with a revalidating (`no-cache`) policy. This is the next M3 cross-cutting
-HTTP slice (review handoff `**Next:**`) and it respects the partial-tile discipline (ADR-0005): only a
-full resource is immutable, partials are overwritten every poll and must never be cached as immutable.
+Add HTTP conditional-GET support to the raw tlog-tiles mirror handler so caches and verifiers can
+revalidate with a 304 instead of re-downloading a BLOB. This is the deferred follow-up the last
+`review` handoff named (`**Next:**`) and it completes the cross-cutting cache plumbing on the mirror
+(Cache-Control landed last slice; conditional GET is its companion) before the M3 dashboard /
+verify-for-me arc.
 
 ## Scope
-- **Modify**: `internal/tilesserve/handler.go` (the only production file — set `Cache-Control` per
-  route, using the cacheability signal already in hand at each handler).
+- **Modify**: `internal/tilesserve/handler.go` (the only production file; 1 of ≤3)
+- **Modify (test)**: `internal/tilesserve/handler_test.go`
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/tilesserve/handler.go` — current routes; `serveCheckpoint` /
-    `serveTile` / `serveEntries` / `writeBlob`; the parsed `width` (tessera path-API: `0 == full`,
-    `>0 == partial` leaf count) is available in `serveTile`/`serveEntries` before `writeBlob`.
-  - `/workspace/iscc-monitor/internal/store/fetcher.go` — confirms the `p`/`width` convention
-    (`p == 0 → full width 256`) and the partial→full promotion semantics this policy must honor.
-  - `/workspace/iscc-monitor/internal/tiles/layout.go` — `IsFull(width int) bool == width == TileWidth`
-    and `TileWidth == 256`. NOTE the two vocabularies: in the tessera *path-API* a full resource is
-    `width 0`, while the *store* uses `width 256` for full. This slice works in the path-API vocabulary
-    (the parsed `width` from `layout.ParseTile*`), so "full" here is `width == 0`. Do not confuse them.
-  - `/workspace/iscc-monitor/internal/corsmw/corsmw.go` — the existing single CORS leaf, to confirm the
-    `buildMux` wrap only sets `Access-Control-*` (never `Cache-Control`), so per-route `Cache-Control`
-    here neither duplicates nor conflicts with it.
+  - `/workspace/iscc-monitor/internal/tilesserve/handler.go` — current `writeBlob` / `serve*`
+    structure; the `immutable bool` discriminant is already threaded through every served BLOB and the
+    docstring currently says conditional GET is out of scope (flip that).
+  - `/workspace/iscc-monitor/internal/corsmw/corsmw.go` — confirms CORS sets only `Access-Control-*`
+    headers, so adding an `ETag` here cannot collide with the single CORS wrap.
+  - `/workspace/iscc-monitor/internal/tilesserve/handler_test.go` — reuse `newServer` (seeds one full
+    tile / partial tile / bundle / checkpoint over `httptest`) and the `getWithHeader` helper that
+    already returns the response header.
 
 ## Not In Scope
-- **Conditional GET** — no `ETag` / `If-None-Match` / `Last-Modified` / `If-Modified-Since` and no 304
-  responses this slice. That is a deliberately separate follow-up slice (the review handoff lists both;
-  keep this step to `Cache-Control` only so it stays one small, single-file change).
-- The computed-proof surfaces (`proofserve`: `/inclusion`, `/consistency`, `/entries`) — their
-  cacheability is size-dependent and tied to `LastSize`; leave them uncached here (a later slice).
-- `/metrics`, `/healthz`, and any change to `corsmw` or `cmd/iscc-monitor/main.go` wiring.
-- Draining any `normal` issue (`TestPollHubFork` cleanup, frozen-advance, `AcceptCheckpoint` context
-  reuse, tile-writer `p` vocab, `AdvanceAccepted`, `CheckConsistency` collapse) — weighed and deferred
-  to finish the coherent M3 HTTP-plumbing arc first.
+- Cache-Control or conditional GET on the size-dependent **proof** surfaces
+  (`/inclusion` / `/consistency` / `/entries` in `proofserve`) — those are tied to `LastSize` and are a
+  separate later slice. Touch only `tilesserve`.
+- `Last-Modified` / `If-Modified-Since` time-based validators. A strong content `ETag` fully covers the
+  mirror's needs (BLOBs are content-addressed or overwritten-in-place); a second validator is YAGNI here.
+- HTTP range requests / `Accept-Ranges`. Do **not** switch to `http.ServeContent` — it would re-sniff
+  Content-Type and add Range handling, fighting the explicit `Content-Type` / `Cache-Control` already set.
+- Draining any `normal` issue (frozen-advance, `TestPollHubFork`, `AcceptCheckpoint` context reuse,
+  tile-writer `p` vocab, `AdvanceAccepted`, `CheckConsistency` collapse) — keep this slice scope-clean to
+  finish the coherent M3 HTTP-plumbing arc first.
 
 ## Implementation Notes
-- **Cacheability is known at the route — no new store lookup needed.** The checkpoint is always
-  size-varying; tiles/bundles carry the parsed partial `width` already (`layout.ParseTileLevelIndexPartial`
-  returns `width`; `layout.ParseTileIndexPartial` returns `width`). In the tessera path-API vocabulary a
-  **full** resource parses to `width == 0` and a **partial** parses to its actual leaf count (`> 0`) —
-  the same convention `store.SQLiteFetcher` documents (`p == 0 → full`). So the predicate is simply
-  `full := width == 0`.
-- **Plumb a cacheability bool into `writeBlob`**, e.g. `writeBlob(w, data, immutable bool)`:
-  - `serveCheckpoint` → `immutable == false` (the checkpoint is overwritten as the tree grows).
-  - `serveTile` / `serveEntries` → `immutable := (width == 0)` (full = immutable; partial = revalidate).
-  Keep the change minimal: add the one parameter and set the header before the existing `w.Write`.
-- **Header values** (define fixed, documented `const`s in the file):
-  - Immutable: `Cache-Control: public, max-age=31536000, immutable` (one year; content-addressed full
-    tiles/bundles never change — the RFC-8246 `immutable` directive lets browsers skip revalidation).
-  - Revalidate: `Cache-Control: no-cache` (cache may store but must revalidate before reuse; correct for
-    partials that are overwritten in place and for the size-varying checkpoint). Do **not** use
-    `no-store` — we *want* the response cacheable-with-revalidation, just not reusable-without-checking.
-- **Header-write order**: set `Content-Type` and `Cache-Control` BEFORE the first `w.Write` (the 200 is
-  sent on first write and freezes the header map) — mirror the existing `writeBlob` comment about the
-  status being sent on first write. Error paths (`http.Error` 400/404/405/500) need no `Cache-Control`.
-- **Correctness rule (learnings.md → "Partial-tile discipline", ADR-0005):** "Mark a tile/bundle BLOB
-  `is_full` (immutable) only at `width == 256`; re-fetch partials every poll and overwrite. Never
-  promote a partial." The HTTP cache policy must mirror that exactly: a partial response must NOT carry
-  the `immutable` directive, or a client would cache a soon-overwritten partial forever. A wrong
-  predicate here (marking partials immutable) is the load-bearing bug this step guards against — pin it
-  with an explicit partial-tile assertion.
-- **Oracle/conformance gate is N/A** for this slice: pure HTTP header wiring on opaque BLOBs, no
-  signature / RFC-6962 / Merkle / did:web / fsck path touched. Do not add `//nolint`, `t.Skip`, or weaken
-  any check. No new import (`net/http` + `strings` + `tessera/api/layout` are already in the closure), so
-  `go.mod` / `go.sum` / `schema.sql` must stay byte-unchanged.
-- **Tests** (`internal/tilesserve/handler_test.go` already seeds a full tile, a 44-leaf partial tile, a
-  full bundle, and a checkpoint over `httptest`): extend the existing `200` subtests to read
-  `resp.Header.Get("Cache-Control")` and assert the per-route policy. Reuse `newServer`; assert on HTTP
-  output only (per PRD testing decisions), never on handler internals. Keep the body-equality assertions
-  intact. Note `get()` currently discards the response header — either widen it to return the header or
-  add a small sibling that does; do not assert headers on the existing body-only path by guessing.
+- **Compute a strong ETag from the BLOB bytes already in memory** inside `writeBlob`:
+  `etag := fmt.Sprintf("\"%x\"", sha256.Sum256(data))` — quoted hex per RFC 7232; a *strong* validator
+  has **no** `W/` prefix. Set it with `w.Header().Set("ETag", etag)` alongside the existing
+  `Content-Type` / `Cache-Control` sets, BEFORE the conditional check and BEFORE the first `w.Write`
+  (the 200/304 status freezes the header map on first write).
+- **`If-None-Match` short-circuit**: read `inm := r.Header.Get("If-None-Match")`. If `inm == "*"` (the
+  wildcard, which always matches an existing resource) OR `inm == etag`, call
+  `w.WriteHeader(http.StatusNotModified)` and `return` WITHOUT writing the body. Keep the match to
+  exact-token-or-`*`; do not hand-roll a full comma-separated list parser (a client echoes back the exact
+  ETag the server sent — single-token match is sufficient and avoids a brittle parser).
+- **`writeBlob` needs the request** to read `If-None-Match`. Change its signature to
+  `writeBlob(w http.ResponseWriter, r *http.Request, data []byte, immutable bool)` and update the three
+  callers (`serveCheckpoint`, `serveTile`, `serveEntries`) — each already has `r` in scope.
+- **Header order** (RFC 7232 §4.1: a 304 still carries the validating headers): set `Content-Type`,
+  `Cache-Control`, and `ETag` first; then the `If-None-Match` branch; then `w.Write(data)` on the 200
+  path. Setting the headers before the branch makes the 304 carry the right `ETag` / `Cache-Control` for
+  free. The `http.Error` 400/404/405/500 paths are untouched (no ETag needed).
+- **Leaf / WASM posture**: add `crypto/sha256` and `fmt` to the import block — both stdlib, WASM-safe, no
+  `net`/`sqlite` edge beyond what is already imported; the package stays a clean tilesserve→store leaf.
+- **Docstring sync**: the package doc and the `Handler` doc currently state "conditional GET (ETag /
+  If-None-Match) is intentionally out of scope for this slice." Flip that to describe the now-present
+  behavior: a strong content ETag on every 200 and an `If-None-Match` (exact tag or `*`) → 304. This is a
+  doc-in-code edit in the same file, so no separate doc file changes.
+- **Correctness rule (learnings.md):** this is **pure HTTP header wiring on opaque BLOBs** — the
+  oracle/conformance gate (`notecheck` / `derive_vkey.py` / `fsck`) is **N/A** (no signature / RFC-6962 /
+  Merkle / did:web / fsck / proof path). Do not weaken any gate (`//nolint` / `t.Skip` / swallowed
+  errors). The two cache vocabularies (path-API full = `width 0` vs store-column full = `256`) do not
+  re-enter here — this slice only consumes the already-correct `immutable bool` and the raw BLOB bytes.
+- **No new dependency**: `crypto/sha256` + `fmt` are stdlib, so `go.mod` / `go.sum` / `schema.sql` must
+  stay byte-unchanged.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass; `gofmt -l .`
-  empty).
-- `go test -count=1 ./internal/tilesserve` passes.
-- Full tile `GET tile/0/000` response carries `Cache-Control: public, max-age=31536000, immutable`
-  (asserted in the test).
-- Full entry bundle `GET tile/entries/000` response carries
-  `Cache-Control: public, max-age=31536000, immutable`.
-- Partial tile `GET tile/0/001.p/44` response carries `Cache-Control: no-cache` (NOT `immutable`) — the
-  load-bearing partial-tile assertion.
-- Checkpoint `GET checkpoint` response carries `Cache-Control: no-cache`.
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass).
+- `gofmt -l internal/tilesserve/handler.go` prints nothing.
+- `go test -count=1 -run TestHandler ./internal/tilesserve` passes — the existing byte-equality and
+  Cache-Control subtests stay green (ETag/304 must not regress the 200 body or the Cache-Control header).
+- New subtest: a GET to the full-tile path returns a non-empty, quoted, **strong** `ETag` on its 200
+  (assert the header is non-empty and does NOT start with `W/`).
+- New subtest (load-bearing): re-issuing the same GET with `If-None-Match: <that exact ETag>` returns
+  **304 Not Modified** with an **empty body** and the same `ETag` echoed.
+- New subtest: a GET with `If-None-Match: "deadbeef"` (a non-matching tag) returns **200** with the full
+  seeded body bytes (a mismatch must NOT suppress the body).
+- New subtest: two distinct resources (full tile vs entry bundle, distinct seeded bytes) produce
+  **different** ETags — proving the tag is content-derived, not a constant.
 - `git diff --quiet -- go.mod go.sum internal/store/schema.sql` exits 0 (no dependency/schema change).
-- `grep -rn "immutable" internal/tilesserve/handler.go` shows the directive in exactly one place (the
-  immutable branch), and `grep -rn "no-store" internal/tilesserve/handler.go` is empty.
 
 ## Done When
-`mise run check` is green and the four route-level `Cache-Control` assertions (full tile + full bundle =
-immutable; partial tile + checkpoint = `no-cache`) pass in `go test ./internal/tilesserve`, with
-`go.mod` / `go.sum` / `schema.sql` byte-unchanged.
+`advance` has added a strong content ETag to every tlog-tiles 200 and an `If-None-Match` (exact tag or
+`*`) → 304 short-circuit in `internal/tilesserve/handler.go`, the docstring reflects it, and all new
+subtests above plus every prior `TestHandler` subtest are green under `mise run check`, with scope limited
+to that one production file (+ its test) and `go.mod` / `go.sum` / `schema.sql` byte-unchanged.
