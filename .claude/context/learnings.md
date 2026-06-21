@@ -515,6 +515,36 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   `follower.go:145` documents the ordering choice. Watch this only if a future slice makes `freeze`'s
   error path mean "violation not actually recorded."
 
+## Metrics HTTP exposure (`internal/metricshttp` + `cmd/iscc-monitor`)
+
+- **`internal/metricshttp.Handler(*metrics.Registry) http.Handler` is the net/http wrapper that keeps
+  `internal/metrics` WASM-pure.** Its only internal dep is `internal/metrics` (verified `go list -deps`),
+  and `net/http` stays out of the metrics leaf's closure (grep empty, WASM build green). The mid-write
+  `_ = r.WriteText(w)` swallow is justified inline (the 200 is already on the wire after the first
+  write; the only failure is a broken client connection) — NOT a gate dodge; the leaf's `WriteText`
+  still propagates writer errors to other callers. Oracle gate correctly N/A (pure HTTP plumbing over
+  an already-tested renderer; no signature/RFC-6962/Merkle/did:web/proof/tile line changed —
+  grep-confirmed, go.mod/go.sum byte-identical).
+- **The handler test asserts the LITERAL content type, not the package `contentType` constant.** A test
+  comparing the served header against the same constant the handler sets is a tautology (a wrong-value
+  mutation would still pass). Reviewer re-ran both mutations independently (reverted): (1) handler
+  `0.0.4→0.0.3` → test FAILS on Content-Type; (2) append `EXTRA` after `WriteText` → body
+  byte-equality FAILS (and the failure output confirms the served body equals `m.String()` with the
+  populated `fork`/`verified` samples). Non-vacuous.
+- **`serveMetrics` is a background goroutine; the follower loop stays the foreground blocker.** Smoke
+  test (built binary, `ISCC_MONITOR_ADDR=127.0.0.1:41999`, `NORMAL=10m` so no tick fires): GET
+  `/metrics` → 200 + the four families + the exposition Content-Type; an unknown path (`/healthz`) →
+  404 (ONLY `/metrics` is served — no M3 scope creep); SIGINT exits 0 (the `<-ctx.Done()` →
+  `srv.Shutdown(5s)` path closes cleanly). A bad `Addr` is logged (ERROR) from `ListenAndServe`, never
+  fatal; `http.ErrServerClosed` is the clean-shutdown discriminator (logged, not surfaced) mirroring
+  `Run`'s `context.Canceled`. `serveMetrics` itself is untested directly (goroutine + listener
+  plumbing, no branching beyond the `ErrServerClosed` check) — acceptable, like `Loop.Run`.
+- **`config.optional(get, key, fallback)` is the absent-OR-empty → fallback helper for non-validated
+  keys** (distinct from `required` which fails closed, and `duration` which parses+validates). `Addr`
+  takes default `:9464`; a bad address surfaces at `ListenAndServe`, not at config — matching the
+  no-validation-beyond-default contract. The config golden + defaults tests assert both the `:9464`
+  default (key absent) and the injected value, plus an empty-value→default case.
+
 ## Realm registry (`internal/registry`)
 
 - **`Parse([]byte) ([]Entry, error)` is the pure domains-only membership leaf (ADR-0009).** Line-based,
