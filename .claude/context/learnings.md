@@ -932,6 +932,29 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   `derive_vkey.py` still reproduces `40b74463`/`22b08f3e` (the did:web cache path through `PollHub` is
   composed, not modified). Trust root re-arms at the `fsck`-over-`SQLiteFetcher` slice (next), which is
   where the mirrored tiles first face the RFC-6962 root-rebuild oracle.
+- **`projectEntryBundle` wires the `iscc_index` fold into `ingestEntryBundles`, right after each
+  `RecordEntryBundle`, reusing the already-fetched `raw` (no re-fetch).** `baseSeq = bundleIndex *
+  tiles.TileWidth` is the load-bearing math — reviewer independently mutation-proved it two ways
+  (reverted): (1) `BundleProjections(raw, 0)` → bundle-1 leaves (seq 256-299) collide onto bundle-0
+  seqs (0-43) under `ON CONFLICT(seq) DO UPDATE`, `TestPollHubRecordsProjections` FAILS (read-back
+  `[]`/wrong seq); (2) dropping the `RecordProjections` call → read-back empty. `tiles.TileWidth` is an
+  untyped const so `uint64 * TileWidth` types cleanly as `uint64`. Store stays a leaf — `logclient.
+  Projection → store.ProjectionRecord` is copied field-by-field at the call site (verified `go list`
+  shows no `internal/logclient`/`net/http` in store's closure). A malformed/non-JSON record or store
+  fault is wrapped `project entry bundle index %d: %w` and aborts the poll before accepted state
+  advances (decode/store fault, NOT a self-consistency violation — never freezes, ADR-0008+0006).
+- **The verified-path fixture `leafPreimages` had to become valid JSON envelopes (test-only, load-bearing),
+  not just an additive test.** Once `ingestEntryBundles` folds every bundle, the old `leaf-%d` plaintext
+  is a genuine `BundleProjections` JSON-parse fault on every verified poll → the poll aborts. The fix
+  emits `{"$schema":"log-entry","iscc_id":<distinct>,"note":{"$schema":<declSchema>}}` per leaf; because
+  `buildVerifiedMirror` rebuilds the tree AND frames the SAME preimages into the bundles, the signed root
+  stays self-consistent and fsck still rebuilds it (confirmed: `TestPollHubFsck` green, "Successfully
+  fsck'd log with size 300"). Distinct per-leaf `iscc_id` (`ISCC:LEAF%08d`) makes the read-back a clean
+  one-seq-per-id lookup; `SeqsForISCCID(leafISCCID(i)) == [i]` because leaf `i` sits in bundle `i/256` at
+  local index `i%256`, so `baseSeq + local == i`. `equivocation_test.go` is unaffected (own inline tree,
+  never calls `BundleProjections`). `TestIngestTilesWidthMapping`'s `recordingFetcher` likewise had to
+  frame a valid one-record bundle for `/tile/entries/` URLs only (hash-tile URLs are `tile/<digit>/`,
+  no collision) — the width-mapping assertions themselves are unchanged.
 
 ## fsck root-rebuild wired into PollHub (`fsckMirror`) + the real-sb0-fixture retirement
 
