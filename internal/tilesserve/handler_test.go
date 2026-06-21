@@ -80,6 +80,15 @@ func newServer(t *testing.T) (*httptest.Server, seeded) {
 // get issues a GET for path and returns the status and full body bytes.
 func get(t *testing.T, base, path string) (int, []byte) {
 	t.Helper()
+	status, _, body := getWithHeader(t, base, path)
+	return status, body
+}
+
+// getWithHeader issues a GET for path and returns the status, response header,
+// and full body bytes — the sibling of get for asserting on response headers
+// (e.g. Cache-Control) without changing get's body-only call sites.
+func getWithHeader(t *testing.T, base, path string) (int, http.Header, []byte) {
+	t.Helper()
 	resp, err := http.Get(base + "/" + path)
 	if err != nil {
 		t.Fatalf("GET %s: %v", path, err)
@@ -89,7 +98,7 @@ func get(t *testing.T, base, path string) (int, []byte) {
 	if err != nil {
 		t.Fatalf("read body %s: %v", path, err)
 	}
-	return resp.StatusCode, body
+	return resp.StatusCode, resp.Header, body
 }
 
 // TestHandlerServesSeededBytes drives every served path and asserts a 200 with
@@ -103,43 +112,65 @@ func TestHandlerServesSeededBytes(t *testing.T) {
 	bundlePath := tiles.EntriesPath(0, 0)      // tile/entries/000
 	missingTilePath := tiles.TilePath(0, 5, 0) // tile/0/005 (never mirrored)
 
+	const (
+		cacheImmutable  = "public, max-age=31536000, immutable"
+		cacheRevalidate = "no-cache"
+	)
+
 	t.Run("full tile", func(t *testing.T) {
-		status, body := get(t, srv.URL, fullTilePath)
+		status, header, body := getWithHeader(t, srv.URL, fullTilePath)
 		if status != http.StatusOK {
 			t.Fatalf("status = %d, want 200", status)
 		}
 		if !bytes.Equal(body, sd.fullTile) {
 			t.Errorf("body mismatch for %s", fullTilePath)
 		}
+		// A full, content-addressed tile is cached as immutable.
+		if got := header.Get("Cache-Control"); got != cacheImmutable {
+			t.Errorf("Cache-Control = %q, want %q", got, cacheImmutable)
+		}
 	})
 
 	t.Run("partial tile", func(t *testing.T) {
-		status, body := get(t, srv.URL, partTilePath)
+		status, header, body := getWithHeader(t, srv.URL, partTilePath)
 		if status != http.StatusOK {
 			t.Fatalf("status = %d, want 200", status)
 		}
 		if !bytes.Equal(body, sd.partTile) {
 			t.Errorf("body mismatch for %s", partTilePath)
 		}
+		// The load-bearing assertion: a partial tile is overwritten every poll, so
+		// it must revalidate and must NOT carry the immutable directive.
+		if got := header.Get("Cache-Control"); got != cacheRevalidate {
+			t.Errorf("Cache-Control = %q, want %q", got, cacheRevalidate)
+		}
 	})
 
 	t.Run("entry bundle", func(t *testing.T) {
-		status, body := get(t, srv.URL, bundlePath)
+		status, header, body := getWithHeader(t, srv.URL, bundlePath)
 		if status != http.StatusOK {
 			t.Fatalf("status = %d, want 200", status)
 		}
 		if !bytes.Equal(body, sd.bundle) {
 			t.Errorf("body mismatch for %s", bundlePath)
 		}
+		// A full entry bundle is cached as immutable.
+		if got := header.Get("Cache-Control"); got != cacheImmutable {
+			t.Errorf("Cache-Control = %q, want %q", got, cacheImmutable)
+		}
 	})
 
 	t.Run("checkpoint", func(t *testing.T) {
-		status, body := get(t, srv.URL, "checkpoint")
+		status, header, body := getWithHeader(t, srv.URL, "checkpoint")
 		if status != http.StatusOK {
 			t.Fatalf("status = %d, want 200", status)
 		}
 		if !bytes.Equal(body, sd.checkpoint) {
 			t.Errorf("checkpoint body = %q, want %q", body, sd.checkpoint)
+		}
+		// The checkpoint is size-varying, so it revalidates and is never immutable.
+		if got := header.Get("Cache-Control"); got != cacheRevalidate {
+			t.Errorf("Cache-Control = %q, want %q", got, cacheRevalidate)
 		}
 	})
 

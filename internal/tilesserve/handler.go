@@ -29,14 +29,34 @@ import (
 // bundle), so they are returned as opaque octet streams.
 const contentType = "application/octet-stream"
 
+const (
+	// cacheImmutable is the Cache-Control policy for a content-addressed FULL
+	// tile/entry-bundle (width == 0 in the path-API vocabulary). A full resource
+	// never changes once mirrored, so it is cached for a year and the RFC-8246
+	// immutable directive lets browsers skip revalidation entirely.
+	cacheImmutable = "public, max-age=31536000, immutable"
+	// cacheRevalidate is the Cache-Control policy for resources that are
+	// overwritten in place: a PARTIAL tile/bundle (re-fetched and overwritten
+	// every poll, ADR-0005) and the size-varying checkpoint. no-cache lets a
+	// cache store the response but forces revalidation before reuse — it must NOT
+	// carry the immutable directive or a client would pin a soon-overwritten
+	// partial forever.
+	cacheRevalidate = "no-cache"
+)
+
 // Handler returns an http.Handler that serves one hub's mirrored tlog-tiles
 // artifacts from f. It routes the three canonical paths to f.ReadCheckpoint /
 // f.ReadTile / f.ReadEntryBundle and writes the raw BLOB bytes verbatim.
 //
 // Status mapping: a path-parse failure → 400; a missing mirror row
 // (errors.Is(err, os.ErrNotExist), the SQLiteFetcher sentinel) → 404; any other
-// read error → 500; a non-GET method → 405; an unmatched path → 404. CORS,
-// caching, and conditional GET are intentionally out of scope for this slice.
+// read error → 500; a non-GET method → 405; an unmatched path → 404.
+//
+// Each 200 carries a Cache-Control policy keyed on cacheability: a content-
+// addressed FULL tile/entry-bundle (path-API width == 0) is immutable, while a
+// PARTIAL tile/bundle and the size-varying checkpoint revalidate (no-cache). CORS
+// is set once by the corsmw wrap; conditional GET (ETag / If-None-Match) is
+// intentionally out of scope for this slice.
 func Handler(f store.SQLiteFetcher) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -63,14 +83,15 @@ func Handler(f store.SQLiteFetcher) http.Handler {
 	})
 }
 
-// serveCheckpoint writes the hub's latest checkpoint BLOB.
+// serveCheckpoint writes the hub's latest checkpoint BLOB. The checkpoint is
+// size-varying (overwritten as the tree grows), so it is never immutable.
 func serveCheckpoint(w http.ResponseWriter, r *http.Request, f store.SQLiteFetcher) {
 	data, err := f.ReadCheckpoint(r.Context())
 	if err != nil {
 		writeReadError(w, err)
 		return
 	}
-	writeBlob(w, data)
+	writeBlob(w, data, false)
 }
 
 // serveTile parses rest as "<L>/<index...>" (the chunked index may itself contain
@@ -92,7 +113,9 @@ func serveTile(w http.ResponseWriter, r *http.Request, f store.SQLiteFetcher, re
 		writeReadError(w, err)
 		return
 	}
-	writeBlob(w, data)
+	// In the tessera path-API vocabulary width == 0 is a FULL tile (immutable);
+	// any width > 0 is a partial that is overwritten every poll (revalidate).
+	writeBlob(w, data, width == 0)
 }
 
 // serveEntries parses index as the chunked bundle index (with optional ".p/<W>"
@@ -109,7 +132,9 @@ func serveEntries(w http.ResponseWriter, r *http.Request, f store.SQLiteFetcher,
 		writeReadError(w, err)
 		return
 	}
-	writeBlob(w, data)
+	// width == 0 is a FULL entry bundle (immutable); width > 0 is a partial that
+	// is overwritten every poll (revalidate).
+	writeBlob(w, data, width == 0)
 }
 
 // writeReadError maps a fetcher read error to its HTTP status: the
@@ -122,9 +147,19 @@ func writeReadError(w http.ResponseWriter, err error) {
 	http.Error(w, "internal error", http.StatusInternalServerError)
 }
 
-// writeBlob sets the octet-stream content type and writes the raw BLOB bytes.
-func writeBlob(w http.ResponseWriter, data []byte) {
+// writeBlob sets the octet-stream content type, the Cache-Control policy, and
+// writes the raw BLOB bytes. immutable selects the long-lived immutable policy
+// for content-addressed full tiles/bundles; false selects the revalidating
+// policy for partials and the size-varying checkpoint. Both headers are set
+// before the first write because the 200 is sent on first write and freezes the
+// header map.
+func writeBlob(w http.ResponseWriter, data []byte, immutable bool) {
 	w.Header().Set("Content-Type", contentType)
+	if immutable {
+		w.Header().Set("Cache-Control", cacheImmutable)
+	} else {
+		w.Header().Set("Cache-Control", cacheRevalidate)
+	}
 	// The 200 is sent on the first write; a mid-write error cannot un-send it and
 	// the only failure mode here is a broken client connection, so it is dropped
 	// deliberately rather than writing a misleading second status (matching
