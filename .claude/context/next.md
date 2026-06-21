@@ -1,107 +1,91 @@
 # Next Work Package
 
-## Step: Pure ISCC-IDv1 decoder (`internal/index`) — realm + 12-bit hub_id, golden-tested
+## Step: Validate the ISCC-IDv1 Length nibble in `internal/index.Decode`
 
 ## Advances
-M-UI (Evidence Ledger frontend), the last open M-UI Verify criterion:
-
-> "the **realm-wide certificate** (`/inclusion/{iscc_id}`, keyed by the self-describing ISCC-IDv1 —
-> decode realm + 12-bit `hub_id`, resolve the issuing hub via the registry) for a known id renders the
-> numbered evidence clauses … and offers a **downloadable proof bundle** …"
-
-The certificate is too large for one ≤3-file step (it needs: this decoder → a 12-bit-`hub_id`→hub
-resolver / registry-format change → the HTML certificate handler with §1–§6 clauses → the proof-bundle
-assembler that re-engages the oracle gate). This step lays the **verifiable skeleton**: the pure,
-self-contained codec the whole slice is keyed on. ADR-0010 §"The inclusion certificate is a realm-wide
-endpoint" + §"Implementation note" make this decoder the first concrete piece ("decode `(realm, hub_id)`
-from the id — port the codec from `iscc/iscc-core` `iscc_id.py` … into the not-yet-built `internal/index`
-`index/iscc.go`"). A wrong decode resolves the wrong hub and proves the wrong leaf, so this unit IS the
-trust-root oracle for the certificate — it earns a golden-vector test (target Quality bar: "Pure units …
-get table-driven golden-vector tests").
+Closes the open `normal` issue **"ISCC-IDv1 decoder accepts a nonzero Length nibble (fail-closed gap
+on the trust root)"** — Codex-found P2, reviewer-confirmed against the hub schema + golden vectors,
+and the explicit `**Next:**` in `handoff.md`. This preempts new milestone feature work because it is
+the trust root of the M-UI **certificate of inclusion** Verify criterion: the realm-wide certificate
+is "keyed by the self-describing ISCC-IDv1 — decode realm + 12-bit `hub_id`, resolve the issuing hub
+via the registry" (`target.md` M-UI Verify). A wrong/lenient decode routes a malformed id to a real
+hub and proves the wrong leaf, so the decoder must fail closed before the next sub-step (the
+`hub_id` → hub resolver) consumes it. The fix also restores the decoder's own fail-closed contract
+("a header that is not an ISCC-IDv1 ... must return a descriptive error").
 
 ## Goal
-Add `internal/index` with a pure `Decode(isccID string) (ISCCID, error)` that parses an ISCC-IDv1 string
-into its realm (header SubType nibble), 12-bit `hub_id` (`body & 0xFFF`), and 52-bit microsecond
-`timestamp` (`body >> 12`), rejecting any input that is not a well-formed ISCC-IDv1. This is the
-foundation every later certificate sub-step builds on, and it is WASM-shareable (no I/O), so it must
-stay import-clean.
+Make `Decode` reject any ISCC-IDv1 whose header **Length nibble** (`raw[1] & 0xF`) is nonzero, so a
+non-canonical header like `MAIQAAAAAAAAAAAA` (byte1 = 0x11) is rejected instead of mis-read as a
+64-bit body. Both real golden vectors (Length nibble 0) must keep decoding unchanged.
 
 ## Scope
-- **Create**: `internal/index/iscc.go` (the package + the pure decoder)
-- **Create**: `internal/index/iscc_test.go` (golden-vector + error-path table test)
-- **Modify**: (none — new leaf package; do NOT touch `cmd/iscc-monitor`, registry, or any handler this
-  step)
+- **Create**: (none)
+- **Modify**:
+  - `internal/index/iscc.go` (add the Length-nibble guard before reading the body; the file's own
+    docstring already lists Length as a header nibble it validates, so this also makes the doc true)
+  - `internal/index/iscc_test.go` (test — does not count against the ≤3 non-test/doc budget)
 - **Reference**:
-  - `.claude/adr/0010-evidence-ledger-frontend.md:83-119` — the authoritative ISCC-IDv1 layout: 80-bit
-    code = 16-bit header + 64-bit body; **SubType nibble = realm** (0 = test/sandbox, 1 = operational);
-    body big-endian `uint64`; `timestamp = body >> 12` (52 bits, µs since epoch); `hub_id = body & 0xFFF`
-    (12 bits, slot 0–4095). This file wins over any guess.
-  - `iscc/iscc-core` `iscc_id.py` (public package, **not vendored in `cauldron/`** — port from the public
-    source / ISO 24138 codec, do not invent): the `encode_base32`/`decode_base32` alphabet and the
-    `write_header`/`read_header` nibble layout (MainType, SubType, Version, Length). The canonical ISCC
-    base32 alphabet is RFC 4648 (`ABCDEFGHIJKLMNOPQRSTUVWXYZ234567`), **uppercase, no `=` padding** —
-    confirm against the reference before relying on it.
-  - `.claude/derive_vkey.py` — the precedent for a small, dependency-free Go port grounded in a Python
-    reference, and the "keep a defensive length check before the assert so a short input errors instead of
-    index-panicking" pattern (learnings index: "Keep this guard when porting crypto").
-  - `.claude/context/learnings.md` (index) — the `proof/verify` purity rule applies by analogy: keep this
-    decoder free of `net`/`net/http`/`database/sql`/`os` so it stays WASM-shareable.
+  - `.claude/context/learnings/index.md` (layout facts; the open Length-gap note; the
+    "golden test tied to ground truth, not the symbol" rule)
+  - `.claude/context/learnings.md` (the always-loaded index — the `proof/verify` purity rule applies:
+    keep `internal/index` import-clean / WASM-shareable)
 
 ## Not In Scope
-- The HTTP handler `/inclusion/{iscc_id}` and the certificate HTML template (`.dc.html` §1–§6 clauses,
-  two-tier honesty panel, Download-proof-bundle action) — a later sub-step, after resolution exists.
-- The 12-bit-`hub_id` → hub resolver and the `internal/registry` move from domains-only `realm.txt` to
-  the iscc-hub `hubs/<network>.yaml` Hub-List (ADR-0010 §"Hub-id resolution adopts the iscc-hub
-  Hub-List") — its own M1/registry step; this decoder only PRODUCES the `(realm, hub_id)` it consumes.
-- The downloadable proof-bundle assembler and re-plumbing `serveVerify` to retain the raw checkpoint
-  bytes + resolved hub key — the oracle-gate sub-step; not touched here.
-- ENCODING ISCC-IDs into strings as a public API (the monitor only ever decodes ids it is handed). Add a
-  small *unexported* encode helper only if the golden test genuinely needs it to round-trip a vector —
-  keep the package's public surface to `Decode` + the result type (YAGNI).
-- Wiring the decoder into any existing call site (`SeqsForISCCID`, dashboard, dossier) — pure leaf only.
+- The 12-bit-`hub_id` → issuing-hub resolver (registry / ADR-0010 Hub-List) — the next sub-step *after*
+  this lands and pushes; do not start it here.
+- The `/inclusion/{iscc_id}` HTML certificate page or the downloadable proof-bundle assembler (the
+  oracle-gate slice) — later iterations.
+- Exporting `encode` or widening the public surface beyond `Decode` + `ISCCID` (YAGNI, per
+  `learnings/index.md`).
+- Refactoring the hardcoded header-nibble constants is optional polish; adding a single `lengthV1`
+  const next to `versionV1` for the literal `0` is fine, but keep the change minimal — do not rework
+  the existing constants.
+- The `low` "single-record label test is vacuous" issue and the other 5 `low` items — loop-skipped.
 
 ## Implementation Notes
-- **Port, don't invent.** The base32 alphabet and the header-nibble (varnibble) encoding are external
-  facts owned by `iscc/iscc-core` `iscc_id.py` / ISO 24138. Port them faithfully; cite the source in the
-  file docstring. Do not approximate the alphabet from memory — confirm it is RFC 4648 uppercase-no-pad.
-- **Decode pipeline (per ADR-0010):** strip an optional `ISCC:` prefix → base32-decode the body chars to
-  bytes → read the 16-bit header (validate it is an ISCC-IDv1: MainType = ID, Version = 1; the **SubType
-  nibble is the realm**) → the remaining 8 bytes are the big-endian `uint64` body → `timestamp = body >>
-  12`, `hub_id = uint16(body & 0xFFF)`. Return realm + hub_id + timestamp.
-- **Fail closed, never panic** (learnings index — the `derive_vkey.py` short-key guard). Guard length
-  BEFORE every slice/index: empty string, missing/garbage base32 chars, a header that is not an
-  ISCC-IDv1 (wrong MainType/Version), and a body shorter than 8 bytes must each return a descriptive
-  `error`, not an index-out-of-range panic. A "decode random/short junk never panics" sub-test is cheap
-  insurance.
-- **Keep it pure / WASM-shareable** (learnings: `proof/verify` purity rule by analogy). No
-  `net`/`net/http`/`database/sql`/`os` imports. `fmt` (→ transitively `os`) and `encoding/base32`,
-  `encoding/binary` are fine; verify with `GOOS=js GOARCH=wasm go build ./internal/index`.
-- **Golden-vector test grounding (the load-bearing part).** The existing test ISCC-IDs (`ISCC:MAAGZTFQ…`,
-  `ISCC:MEAJU5BQ…`, `ISCC:MAIG…`) are NOT guaranteed valid ISCC-IDv1s — do NOT assume they decode; some
-  carry a different MainType. Seed the golden test with a vector whose realm/hub_id/timestamp are
-  documented from first principles: construct the header+body bytes per the ADR/iscc-core layout in the
-  test (or hard-code the canonical string AND its decoded fields), then assert `Decode` returns exactly
-  those fields. If you add the unexported encode helper, prove the round-trip
-  (`Decode(encode(realm,hubID,ts)) == {realm,hubID,ts}`) for at least one **test-realm (0)** vector AND
-  one **operational-realm (1)** vector, with a **non-zero `hub_id`** (e.g. slot 1) exercised, so realm 0
-  vs realm 1 and a real slot are both covered. Cite where each expected value comes from in a comment —
-  never write the test to mirror the implementation's own arithmetic (the "tie a test to ground truth,
-  not the symbol under test" lesson, `learnings/http-surface.md`).
-- **Result shape.** Return a small named struct (`type ISCCID struct { Realm uint8; HubID uint16;
-  Timestamp uint64 }`) with an `error`, not a 4-value tuple — easier for the later resolver to consume.
-  Write an evergreen docstring on the package and the function.
+- **The guard.** After the existing Version check in `internal/index/iscc.go` (currently lines 91-94)
+  and before `realm := raw[0] & 0xF` / the body read `binary.BigEndian.Uint64(raw[2:10])`
+  (lines 95-96), add a check on the low nibble of `raw[1]`:
+  - a canonical ISCC-IDv1 has **Length nibble 0** (a 64-bit body); reject `raw[1] & 0xF != 0` with a
+    descriptive `fmt.Errorf` in the same style as the MainType/Version errors (include the offending
+    nibble value and the `isccID`), e.g.
+    `"index: ISCC-IDv1 Length nibble %d is unsupported (want 0): %q"`.
+  - This is a ≤1-line guard plus the error return; do not touch the body-decode arithmetic.
+- **Test (mirror `TestDecodeWrongVersion`'s shape — it is the right ground-truth pattern).** Add a
+  focused test (e.g. `TestDecodeRejectsNonzeroLength`) that:
+  1. constructs the malformed header bytes directly:
+     `raw := []byte{0x60, 0x11, 0, 0, 0, 0, 0, 0, 0, 0}` (MainType 6, Version 1, **Length 1**),
+     `s := iscBase32.EncodeToString(raw)`, and asserts `Decode(s)` returns a non-nil error. Building
+     from raw bytes ties the test to the header contract, not to a string literal. You may also add the
+     `"MAIQAAAAAAAAAAAA"` literal as a second sub-case since the issue/handoff name it explicitly.
+  2. as a sanity counterpart (same pattern as the Version test), flip `raw[1]` to `0x10` (Length 0),
+     re-encode, and assert `Decode` now succeeds — proving the rejection is specifically the Length
+     check, not a codec/length error.
+  - Do **not** add this case into `TestDecodeGoldenVectors` (those assert decoded *fields*); the
+    rejection belongs with the other reject/version tests.
+- **Keep both existing golden vectors passing** — they have byte1 = 0x10 (Length nibble 0), so the
+  guard must not affect them. `TestDecodeGoldenVectors` and `TestDecodeRoundTrip` stay green
+  (`encode` always writes `raw[1] = versionV1 << 4 = 0x10`, Length nibble 0).
+- **Mutation check (do this, don't just claim it).** Temporarily flip the guard's condition
+  (`!= 0` → `== 0`, or comment the guard out) and confirm a test FAILS; then restore. A guard with no
+  failing test is vacuous — `learnings/index.md` explicitly warns the golden test alone does not
+  exercise every header field.
+- **Purity / WASM rule (always-loaded learnings).** `internal/index` is a pure leaf shared with the
+  future WASM verifier — add no imports beyond what is already present (`encoding/base32`,
+  `encoding/binary`, `fmt`, `strings`). Confirm `GOOS=js GOARCH=wasm go build ./internal/index` still
+  succeeds.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -count=1 ./internal/index` passes (the golden-vector + error-path table test).
-- `go list -deps ./internal/index | grep -E '^net/http$|^database/sql$'` is empty (pure leaf, no HTTP/SQL
-  in the closure).
-- `GOOS=js GOARCH=wasm go build ./internal/index` succeeds (WASM-shareable).
-- For the golden vector, `Decode` returns the realm, `hub_id`, and timestamp documented in the test
-  comment; for each error case (empty, non-base32, wrong MainType/Version, truncated body) `Decode`
-  returns a non-nil error and does NOT panic.
+- `mise run check` is green (build + vet + all packages + `gofmt -l .` empty).
+- `go test -count=1 ./internal/index` passes (all existing sub-tests + the new Length-nibble case).
+- Assertion: `Decode("MAIQAAAAAAAAAAAA")` returns a **non-nil** error (byte1 = 0x11, Length nibble 1).
+- Assertion: `Decode("MAIGHFECJMOPMIAB")` still returns `{Realm:0, HubID:1, Timestamp:1751831876325218}`
+  with nil error, and `Decode("MEIGHFECJMOPMIAC")` still returns `{Realm:1, HubID:2, ...}` (both
+  Length-0 golden vectors unchanged).
+- `GOOS=js GOARCH=wasm go build ./internal/index` succeeds (still WASM-shareable; no new imports).
+- Mutation proof: flipping/removing the Length guard makes a test in `./internal/index` FAIL (the
+  guard is non-vacuous); restored clean before commit.
 
 ## Done When
-`internal/index` exists with a pure, golden-tested `Decode` that yields the correct `(Realm, HubID,
-Timestamp)` for a documented ISCC-IDv1 vector and fails closed (error, no panic) on malformed input,
-with `mise run check` green and the package WASM-buildable.
+`internal/index.Decode` rejects any nonzero Length nibble with a descriptive error, both golden
+vectors still decode, the new test fails if the guard is flipped, and `mise run check` is green.
