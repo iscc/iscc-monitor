@@ -20,19 +20,13 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   skeleton's tests are non-vacuous (reviewer reproduced: `Resolve(id.HubID+1)` →
   known-id FAILS; swallow the `Decode` error → malformed FAILS).
 
-- **§1 SUBJECT now gates on the accepted-tree cap (`seqs[0] < hub.LastSize`).**
-  `buildData` carries `LastSize` out of the one `ListHubs` scan via `followedHub`
-  (returns `store.HubSummary`, no second store round-trip) and renders the honest
-  cannot-certify states: `LastSize == 0` → "no accepted checkpoint yet";
-  `seqs[0] >= LastSize` → "not in accepted tree" (a frozen/failed poll left an
-  unaccepted `iscc_index` projection ABOVE the accepted checkpoint — the documented
-  http-surface trap). Only `len(seqs) > 0 && seqs[0] < LastSize` certifies, matching
-  `serveInclusion`/`serveEntries`/`serveRecord`. A tree of size N has leaves 0..N-1,
-  so seq `LastSize-1` is the last certifiable leaf — `>=` is the correct boundary.
-  A frozen hub's `LastSize` is its last ACCEPTED size (freeze stops advance,
-  ADR-0006), so the same cap caps it at its accepted window with no frozen branch.
-  Mutation-proven non-vacuous (review): neutering the cap → `TestCertificateUnacceptedLeaf`
-  FAILS.
+- **§1 SUBJECT gates on the accepted-tree cap (`seqs[0] < hub.LastSize`).** `LastSize` rides out of
+  the one `ListHubs` scan via `followedHub` (no second round-trip). Honest declines: `LastSize==0`
+  → "no accepted checkpoint yet"; `seqs[0] >= LastSize` → "not in accepted tree" (an unaccepted
+  `iscc_index` projection ABOVE the accepted checkpoint — the http-surface trap). A size-N tree has
+  leaves 0..N-1, so `>=` is the right boundary; matches `serveInclusion`/`serveEntries`. A frozen
+  hub's `LastSize` is its last ACCEPTED size (ADR-0006), so the same cap caps it — no frozen branch.
+  Mutation: neutering the cap fails `TestCertificateUnacceptedLeaf`.
 
 - **Lookup key is canonicalized to the stored `ISCC:`-prefixed form.** `buildData`
   builds `lookupID := "ISCC:" + strings.TrimPrefix(rawID, "ISCC:")` after a
@@ -46,19 +40,13 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   (review): reverting to bare `rawID` → `TestCertificateKnownID` +
   `TestCertificatePrefixedLookup` FAIL ("not found in log").
 
-- **§2 CHECKPOINT reads the accepted root back via `CheckpointAt(hub.HubID, hub.LastSize)`.**
-  follow_state does NOT persist the accepted root (store.md), so `buildData`'s certifiable
-  branch reads it: size is `hub.LastSize` (the cap already proved `> 0`, no second read), root
-  is `base64.StdEncoding.EncodeToString(root)` — base64-**Std**, byte-identical to the log
-  browser + verify-for-me (`proofserve` `browserData.Root`/`VerifyVerdict.Root`). A DB `err` →
-  500 (buffer-then-200 in place); `found == false` leaves `HasClause2 = false` (no fabricated
-  root — honest absence, NOT a 500, deliberately divergent from proofserve verify-for-me which
-  500s on `!found` because it has already committed to serving a proof). `found` is realistically
-  always true (`AdvanceAccepted` records the checkpoint at the same `tree_size` it advances
-  `last_size` to). The §2 test asserts the REAL committed root (`EncodeToString([]byte("root"))`,
-  `cm9vdA==`), not a literal — mutation-proven (review): corrupt the rendered root or neuter
-  `HasClause2` → `TestCertificateKnownID` FAILS. Oracle gate still N/A (pure store read + render);
-  it RE-ENGAGES at §3 (inclusion proof must be non-vacuous vs `IsccLogInclusionProof`/`notecheck`).
+- **§2 CHECKPOINT reads the accepted root back via `CheckpointAt(hub.HubID, hub.LastSize)`**
+  (follow_state does NOT persist the root — store.md). Root is base64-**Std**, byte-identical to
+  the log browser + verify-for-me. A DB `err` → 500 (buffer-then-200); `!found` leaves
+  `HasClause2=false` (honest absence, NOT a 500 — deliberately divergent from verify-for-me which
+  500s once it has committed to serving a proof). `found` is realistically always true
+  (`AdvanceAccepted` records the checkpoint at the `tree_size` it advances to). Oracle gate N/A
+  here (pure store read); it RE-ENGAGES at §3.
 
 - **Interim Hub-List wiring lives in `cmd/iscc-monitor` (`hubListFromEntries`), not
   in config/registry.** Production has no real Hub-List document path yet; the
@@ -67,38 +55,22 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `internal/config` stay untouched. The `Hub` literal needs `*uint16` HubIDs.
 
 - **§3 INCLUSION PROOF is gated on a fail-closed re-VERIFICATION, not a status flag.**
-  `buildData` calls `logclient.InclusionProofFromTiles(f.ReadTile, data.Position,
-  hub.LastSize)` over a `store.SQLiteFetcher`, then ports proofserve's `serveVerify`
-  path verbatim: `bundleIndex/offset/p` → `f.ReadEntryBundle` →
-  `logclient.RecordBytesFromBundle(bundle, offset)` → `rfc6962.DefaultHasher.HashLeaf`
-  → `proof.VerifyInclusion(hasher, data.Position, hub.LastSize, leafHash, builtProof,
-  root) == nil`, and sets `HasClause3` ONLY on the nil verdict (siblings base64-Std
-  encoded — never hand-roll Merkle math). `root` is the `[]byte` from §2's
-  `CheckpointAt`, reused in place (meaningful only inside the `data.HasClause2` branch
-  guard, so no re-decode). Fail-closed error split: `os.ErrNotExist` (missing
-  tile/bundle) and `logclient.ErrLeafOutOfBundle` are honest gaps → §3 omitted, page
-  keeps §1/§2; a non-nil `VerifyInclusion` result is a SILENT §3 decline (the proof did
-  not rebuild the accepted root), never a 500; any other read/build fault → 500
-  (buffered before any 200). This subsumes and REPLACED the `!hub.Frozen` gate: it fails
-  closed against the steady-state frozen-after-fork case AND the fork-poll TOCTOU race
-  (no flag read), closing the trust-root critical. The durable cross-cutting rule (re-
-  verify, don't trust a flag) is promoted to the index.
-  - **`fixtureStoreTiled` must seed entry bundles, not just hash tiles**, or
-    `RecordBytesFromBundle` misses and §3 never gets a leaf hash. Copy `encodeBundle`
-    (manual `binary.BigEndian.PutUint16` framing) from `logclient/fsck_test.go`; for each
-    `tiles.BundleCoords(size)` write the `leaf-i` preimages so
-    `HashLeaf(record) == tree.LeafHash(seq)` (a <256-leaf tree is one partial bundle at
-    index 0). That equality is what makes the clean §3 test pass THROUGH the verification.
-  - **Mutation-proven non-vacuous (reviewer reproduced):** replacing the
-    `proof.VerifyInclusion(...) == nil` guard with `... == nil || true` makes
-    `TestCertificateInclusionProofContradictory` (mirror tree A, accept tree B's root,
-    `freeze=false`) FAIL while the clean `TestCertificateInclusionProof` stays PASS. (The
-    bare `if true` from next.md won't compile — unused `proof`/`leafHash`; the `|| true`
-    variant is the same logical mutation and keeps the build valid.)
-  - settled: §3 history — `d95bea8` built the proof but rendered it unconditionally
-    (self-contradictory for frozen-after-fork); `a687f5e` added `!hub.Frozen` (steady-
-    state only, TOCTOU race remained); `681a2c6` replaced it with this re-verification.
-    git history keeps the detail.
+  `buildData` ports proofserve's `serveVerify` path verbatim over a `store.SQLiteFetcher`:
+  `InclusionProofFromTiles` → `ReadEntryBundle` → `RecordBytesFromBundle` → `HashLeaf` →
+  `proof.VerifyInclusion(hasher, Position, LastSize, leafHash, builtProof, root) == nil`, setting
+  `HasClause3` ONLY on the nil verdict (siblings base64-Std; never hand-roll Merkle). `root` is §2's
+  `CheckpointAt` `[]byte`, reused inside the `HasClause2` guard. Error split: `os.ErrNotExist` +
+  `ErrLeafOutOfBundle` are honest gaps → §3 omitted; a non-nil `VerifyInclusion` is a SILENT decline
+  (proof didn't rebuild the root), never a 500; any other fault → 500 (buffered before any 200).
+  Replaced the `!hub.Frozen` gate — closes steady-state frozen-after-fork AND the fork-poll TOCTOU
+  (no flag read); the re-verify rule is promoted to the index.
+  - **`fixtureStoreTiled` must seed entry bundles, not just hash tiles** (copy `encodeBundle` from
+    `logclient/fsck_test.go`; write `leaf-i` preimages so `HashLeaf(record)==tree.LeafHash(seq)`),
+    or `RecordBytesFromBundle` misses and §3 never gets a leaf hash.
+  - Mutation: `proof.VerifyInclusion(...) == nil` → `... == nil || true` fails
+    `TestCertificateInclusionProofContradictory`, clean test still PASS. (`if true` won't compile —
+    unused `proof`/`leafHash`; `|| true` is the same logical mutation.)
+  - settled: §3 gate evolved unconditional → `!hub.Frozen` → re-verification (git history).
 
 - **§4 SIGNING KEY derives the key id from the accepted checkpoint's own raw bytes, not synthetically.**
   `buildData` now captures the `raw` return of `CheckpointAt` (was `_`), recovers the key id via
@@ -148,3 +120,31 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   no per-record time, so the impl renders `label · seq N` only. Adding the timestamp needs
   a store schema change (out of scope) — filed `normal` visual-delta. The primary §6
   affordance (kind + seq + deletion note) is complete; the missing time is cosmetic.
+
+## Downloadable proof bundle (`GET /inclusion/{iscc_id}.bundle`)
+
+- **`.bundle` is dispatched inside `Handler` by `CutSuffix` BEFORE `index.Decode`** (the suffix
+  is not part of the id), so `/inclusion/<id>` and `/inclusion/<id>.bundle` share the one
+  decode→resolve→build chain; `main.go` stays untouched (the mount is already the subtree). The
+  bundle reuses `buildData`'s §3 crypto path verbatim — `buildData` now returns
+  `(certData, bundleArtifacts, int)`, the HTML path ignores the middle value, the bundle path reads
+  it — so the §3 re-verification is the SINGLE gate for both the page ✓ and the bundle (`HasBundle =
+  HasClause3`). `serveBundle` writes a fixed-shape `proofBundle` (base64-Std binary fields,
+  verbatim signed-note `checkpoint` text matching `InclusionEvidence.Checkpoint`) with the
+  drop-the-write-after-200 posture; the §3-declined / non-certifiable path is an honest 200
+  `{iscc_id,error}` with NO attachment header and NO `IsccLogInclusionProof` member.
+  Mutation-proven (review reproduced both): `proof.VerifyInclusion(...) == nil || true` fails the
+  contradictory bundle+page tests; an unconditional `data.HasBundle = true` serves a fabricated
+  bundle (empty proof/record — the artifacts are themselves gate-populated) and fails the gap test.
+- **TRAP (review, Codex-confirmed): `href="{{.IsccID}}.bundle"` renders `#ZgotmplZ` for the
+  `ISCC:`-prefixed form.** `cert.html:397` builds the download href directly from `.IsccID`, which
+  carries the RAW request id verbatim (`certData{IsccID: rawID}`). For the explicitly-supported
+  `/inclusion/ISCC:MAIG…` form, `html/template`'s URL-context escaper reads `ISCC:` as an unknown
+  scheme and emits `href="#ZgotmplZ.bundle"` — a dead link to the headline affordance. The bare
+  form works; the canonical prefixed form (the `.dc.html` shows the prefixed id as primary) breaks.
+  Filed critical. Fix: root the href (`/inclusion/{{.IsccID}}.bundle`) or strip the `ISCC:` prefix
+  into a canonical-id template field; add a prefixed-form link-render test. Any template emitting a
+  user-supplied id into a `url`/`href` context must path-root it, never let `ISCC:` lead.
+- **`bundle.Hub.DID` reuses §4's `"did:web:"+Domain` and inherits the `host:port` bug**
+  (the same already-filed `normal` issue, now carried on a second surface). Fix both DID-building
+  sites together when next touched; `%3A`-encode the port (reuse the resolver's encoding).
