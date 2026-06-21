@@ -1,142 +1,126 @@
 # Next Work Package
 
-## Step: verify-for-me JSON verdict — `GET /<domain>/log/verify?iscc_id=<id>`
+## Step: Server-rendered dashboard at `GET /` listing every realm hub (status + coverage)
 
 ## Advances
-M3 — Trust API + dashboard. Closes the nearest unmet M3 Verify criterion:
+M3 Verify criterion (the nearest unmet one, brings M3 → 3/4):
 
-> `GET /<domain>/log/verify?iscc_id=<known-id>` returns the documented `verify-for-me` JSON verdict
-> (hub status + checkpoint `(size, root)` + inclusion result), and a malformed/unknown id returns the
-> documented non-verified verdict, never a 5xx.
+> `GET /` returns `200 text/html` listing **every** realm hub with its glossary status + coverage
+> window (golden-tested on a fixture store)
 
-This is also the explicit `review` handoff `**Next:**` (the proof-bundle / verify-for-me REST surface)
-and the #1 item in `state.md`'s convergence-driven order. M3 is 1/4 — this brings it to 2/4 and breaks
-the loop's 5-iteration polish/infra streak by attacking a Verify criterion.
+This is the third of M3's four Verify criteria. Two are met (CORS on every GET; verify-for-me JSON
+verdict). The HTML log browser (`GET /<domain>/log/`) is the fourth and is the *next* sub-step in this
+same HTML arc — see `## Not In Scope`. It is also the #1 item in `state.md`'s convergence-driven order
+and the `review` handoff `**Next:**`. No `critical`/`normal` issue is open (the one open issue is
+`low`, loop-skipped), so milestone work proceeds.
 
 ## Goal
-Add a `verify` route to the existing per-hub `proofserve.Handler` that returns a single self-contained
-JSON verdict for an `iscc_id`: the hub's persisted status, the accepted checkpoint `(size, root)`, and
-a real RFC-6962 inclusion result (recomputed from the local mirror and Merkle-verified against the
-accepted root). This is the monitor's weaker, caller-trusts-the-verdict path; it composes the proof
-machinery M2 already built, so the in-browser verifier (later) can reuse the same store/fetcher seam.
+Add a server-rendered HTML dashboard at the root path that enumerates every hub the monitor follows,
+showing each hub's store-provable status (frozen / verified / inactive) and its coverage window
+(`monitored_since` size + time, accepted `last_size`). This closes the third M3 Verify criterion and
+gives the monitor its first human-facing surface.
 
 ## Scope
-- **Create**: (none — the route lives in the existing handler file; the test is a new `_test.go`)
+- **Create**:
+  - `internal/dashboard/handler.go` — a new HTTP leaf: `Handler(st *store.Store) http.Handler` that
+    renders the hub list as `200 text/html` from one store read. Use `html/template` with a single
+    embedded template parsed once at package init (`template.Must`); GET-only (405 otherwise); handle
+    only exact `/` (404 any other path — see Implementation Notes). This package owns the HTML;
+    `cmd/iscc-monitor` only wires it. Mirror the leaf shape of `internal/healthz` / `internal/metricshttp`
+    — a thin package-local handler whose only internal dep is `internal/store`.
+  - `internal/dashboard/handler_test.go` — golden test at the HTTP seam (`httptest.ResponseRecorder`)
+    against a fixture `store.Open(filepath.Join(t.TempDir(), "dash.db"))` populated with ≥2 hubs (one
+    verified with coverage, one frozen) via `UpsertHub` + `AdvanceAccepted`/`AdvanceFollowState` +
+    `SetCoverage` + `Freeze`. Assert: 200, `Content-Type: text/html; charset=utf-8`, body contains
+    **every** hub's domain/origin and its status string (the frozen hub renders `frozen`, the verified
+    one `verified`). Non-GET → 405; `GET /unknown` → 404.
 - **Modify**:
-  - `internal/proofserve/handler.go` — add the `"/verify"` case to the `Handler` path switch, a
-    `serveVerify` function, and a `VerifyVerdict` response struct. (Adds `merkle/proof` +
-    `merkle/rfc6962` imports — both already used by this package's tests.)
-  - `cmd/iscc-monitor/main.go` — mount `/verify` on the per-hub mux in `hubHandler` (one
-    `mux.Handle("/verify", proofs)` line next to the existing three exact mounts).
-  - `CLAUDE.md` — add the new `GET /<domain>/log/verify?iscc_id=<id>` line to the
-    "Running a local dev instance" endpoint list, so the documented HTTP surface stays in sync.
+  - `internal/store/hubs.go` (NEW file inside the existing `store` package — a store edit, not a new
+    package) — add `ListHubs(ctx context.Context) ([]HubSummary, error)`: one query LEFT JOINing
+    `hubs` + `follow_state` returning, per hub ordered by `hub_id`, the domain, origin, `active`,
+    `last_size`, `frozen`, and `monitored_since_{size,time}`. Add the `HubSummary` struct. Store stays
+    a leaf (returns plain Go types; imports only `database/sql` + stdlib; no `logclient`/`net/http`).
+    Putting `ListHubs` in the existing `checkpoints.go` instead is acceptable — either way keep it ≤3
+    production files and do NOT create a second package.
+  - `cmd/iscc-monitor/main.go` — mount `dashboard.Handler(st)` at the **exact** path `/` in `buildMux`
+    (`mux.Handle("/", dashboard.Handler(st))`), next to the existing exact `/metrics` and `/healthz`
+    mounts; add the import.
+  - `CLAUDE.md` — update the "Running a local dev instance" section: `/` no longer returns 404; it now
+    serves the HTML dashboard. (Current text says "no dashboard UI yet (M3)" and "`/` returns 404".)
 - **Reference** (read before editing — exact paths):
-  - `/workspace/iscc-monitor/internal/proofserve/handler.go` — existing `serveInclusion` / `serveEntries`
-    flow, `selectSeq`, `parseUint`, `writeEvidence` post-status-write idiom (port the guard ladder from
-    `serveInclusion`; reuse the bundle-read pattern from `serveEntries`).
-  - `/workspace/iscc-monitor/internal/proofserve/handler_test.go` — the `buildMirror` 300-leaf
-    `testonly.Tree` fixture, `leafISCCID`, and the `getEvidence` HTTP-seam test idiom (the new test
-    reuses all of these).
-  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — `FollowState` (`LastSize`, `Frozen`) and
-    `CheckpointAt(ctx, hubID, size)` (the verdict's status + `(size, root)` source).
-  - `/workspace/iscc-monitor/internal/logclient/entries.go` — `RecordBytesFromBundle`,
-    `ErrLeafOutOfBundle`; `/workspace/iscc-monitor/internal/logclient/proofbuilder.go` —
-    `InclusionProofFromTiles`.
-  - `/workspace/iscc-monitor/.claude/context/learnings/http-surface.md` — proofserve route conventions,
-    status mapping, post-status write-drop, mutation-proven non-vacuousness expectation, dep direction
-    `proofserve → {store, logclient}` never reverse, and the `VerifyInclusion(hasher, index, size,
-    leafHash, proof, root)` arg-order gotcha.
-  - `/workspace/iscc-monitor/.claude/context/learnings/store.md` — `SQLiteFetcher` p→width and the
-    partial→full fallback for the final bundle (`serveEntries` already shows the
-    `tiles.PartialTileSize(0, bundleIndex, size)` pattern).
+  - `/workspace/iscc-monitor/.claude/context/learnings/cmd-monitor.md` — `buildMux` mount discipline;
+    exact-path vs trailing-slash subtree matching (the `/` exact mount must NOT shadow the per-hub
+    `/<domain>/log/` subtrees or the exact `/metrics`/`/healthz`). Read before touching `main.go`.
+  - `/workspace/iscc-monitor/.claude/context/learnings/http-surface.md` — the leaf-handler conventions
+    and the post-status write-drop idiom (note: buffer the template into `bytes.Buffer` first, THEN
+    write, so a render error is a 500 before any 200 — see Implementation Notes).
+  - `/workspace/iscc-monitor/.claude/context/learnings/store.md` — store-leaf purity rule and the
+    `monitored_since` set-once coverage semantics before adding `ListHubs`.
+  - `/workspace/iscc-monitor/internal/proofserve/handler.go` lines 475-486 (`hubStatus`) — the
+    store-provable status mapping to mirror (`frozen` else `verified`); extend with `inactive` when
+    `active == 0`.
+  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — `FollowState`, `CoverageInfo`,
+    `UpsertHub`, `AdvanceAccepted`, `AdvanceFollowState`, `Freeze`, `SetCoverage` signatures for
+    building the fixture store in the test.
+  - `/workspace/iscc-monitor/internal/healthz/handler.go` — the thin leaf-handler + GET-gate shape to
+    mirror.
 
 ## Not In Scope
-- The HTML dashboard (`GET /`) and the HTML log browser (`GET /<domain>/log/`) — the other two open M3
-  Verify criteria. They are the next sub-steps in this same arc, not this slice.
-- A full proof-bundle assembler that packages `{checkpoint, inclusion proof, record bytes, hub key,
-  ots?}` into one downloadable artifact (the authoritative client-verifies-it-itself path). This slice
-  is the *weaker* verify-for-me verdict only; the bundle is a later slice.
-- Persisting richer hub status (verified/unverified/unresolvable/rotated) into the store. Today only
-  `FollowState.Frozen` and "has an accepted checkpoint" are persisted; the metrics registry holds the
-  rest in memory. Derive the verdict's `hub_status` from what the store persists; do NOT add a status
-  column or thread the metrics registry into proofserve.
-- CORS / Cache-Control / ETag / conditional-GET on `/verify` (CORS already lands via the single
-  `corsmw.Handler` wrap at the mux; per-route caching for the size-dependent proof surfaces is a
-  separate later slice, like the other proofserve routes).
-- The WASM verifier and OTS anchoring (later milestones).
+- The HTML **log browser** `GET /<domain>/log/` (the fourth M3 Verify criterion) — that is the next
+  sub-step in this arc; do not start it here. It mounts under the per-hub subtree, a different mount.
+- Lag / violations / OTS columns and the richer in-memory metrics statuses
+  (`unverified`/`unresolvable`/`rotated`): the dashboard derives status from the **store-provable
+  subset only** (frozen / verified / inactive), exactly as `proofserve.hubStatus` does, so it stays
+  golden-testable on a fixture store. Threading the `metrics.Registry` into the dashboard is later work.
+- Any CSS framework / JS / WASM progressive-enhancement hook — plain semantic HTML only. WASM is a
+  separate milestone.
+- ETag / Cache-Control / conditional-GET on the dashboard (not a Verify criterion; the page is dynamic).
+- Changing CORS or the `corsmw` wrap — `buildMux` already wraps the whole mux once, so the dashboard
+  inherits `Access-Control-Allow-Origin: *` for free.
 
 ## Implementation Notes
-- **Route wiring mirrors the existing three exact mounts.** In `proofserve.Handler`, add
-  `case "/verify": serveVerify(w, r, st, f, hubID)` to the `switch r.URL.Path`. In
-  `cmd/iscc-monitor/main.go` `hubHandler`, add `mux.Handle("/verify", proofs)` — exact mounts beat the
-  `/` → tilesserve subtree via `http.ServeMux` most-specific match (same as `/inclusion`).
-- **`serveVerify` reuses `serveInclusion`'s guard ladder, but a bad id is a 200 verdict, never a 5xx.**
-  The Verify criterion requires a malformed/unknown id to return the *documented non-verified verdict,
-  never a 5xx*. So the route returns HTTP 200 with `verified:false` + a `reason` for every id-shaped
-  input fault, reserving non-200 for genuine infra faults:
-  - Missing/empty `iscc_id` → 200 verdict `{verified:false, reason:"missing iscc_id"}` (the
-    most-literal satisfaction of "never a 5xx for a bad id"; do NOT 400 it the way `serveInclusion`
-    does — verify-for-me always yields a verdict for id input).
-  - `FollowState`/`CheckpointAt`/bundle-read DB faults → 500 (a real infra fault, allowed — these are
-    not "a bad id").
-  - `LastSize == 0` (no accepted checkpoint) → 200 verdict `{verified:false, reason:"no accepted
-    checkpoint"}`, `hub_status` from `Frozen`.
-  - `SeqsForISCCID` empty (unknown id) → 200 verdict `{verified:false, reason:"iscc_id not found"}`.
-  - leaf resolved + `leafIndex < size`: build + verify the inclusion proof (below) →
-    `{verified:true, included:true, tree_size, leaf_index, root}`. A tile/bundle miss
-    (`errors.Is(err, os.ErrNotExist)`) or `ErrLeafOutOfBundle` → 200 verdict
-    `{verified:false, reason:"tile not mirrored"}` (the leaf is accepted but the mirror has not caught
-    up — a verdict, not a 5xx). A non-`os.ErrNotExist` build/read error → 500.
-- **The inclusion result is a REAL Merkle check, not a stub (the oracle gate APPLIES).** Compute the
-  accepted root via `st.CheckpointAt(ctx, hubID, size)` (returns the persisted `root []byte` for the
-  accepted size — the RFC-6962 tree head the monitor vouches for). Read the leaf bytes the same way
-  `serveEntries` does (`bundleIndex := leafIndex / tiles.TileWidth`, `offset := leafIndex %
-  tiles.TileWidth`, `p := tiles.PartialTileSize(0, bundleIndex, size)`, `f.ReadEntryBundle(ctx,
-  bundleIndex, p)` → `logclient.RecordBytesFromBundle(bundle, offset)`). Compute
-  `leafHash := rfc6962.DefaultHasher.HashLeaf(record)`. Build the proof with
-  `logclient.InclusionProofFromTiles(ctx, f.ReadTile, leafIndex, size)`. Verify with
-  `proof.VerifyInclusion(rfc6962.DefaultHasher, leafIndex, size, leafHash, builtProof, root)` →
-  `included := (err == nil)`. **Arg-order gotcha (learnings):** `VerifyInclusion(hasher, index, size,
-  leafHash, proof, root)` — `leafHash` precedes `proof`, unlike `VerifyConsistency`.
-- **`hub_status` is the glossary subset the store can prove:** `frozen` if `FollowState.Frozen`; else
-  `verified` if `LastSize > 0` (only signature-verified checkpoints advance `LastSize`, ADR-0006). Do
-  not invent a status the store cannot substantiate. Use the exact glossary strings (`CLAUDE.md` "Hub
-  status" entry) — no synonyms.
-- **`VerifyVerdict` struct** (snake_case JSON, like `ConsistencyEvidence`): e.g.
-  `{ "iscc_id": string, "hub_status": string, "tree_size": uint64, "root": string (base64-Std of the
-  accepted root), "leaf_index": uint64, "included": bool, "verified": bool, "reason": string }`.
-  `reason` is empty on success; `verified` is the overall verdict (true only when the leaf resolved AND
-  `proof.VerifyInclusion` accepted). Keep `root` base64-Std to match the package's existing encoding.
-  Reuse the `writeEvidence` post-status-write-drop idiom (`json.NewEncoder(w).Encode`, drop the
-  post-200 write error — a fixed-shape struct marshal cannot fail for content reasons).
-- **Dep direction must hold:** `proofserve → {store, logclient, merkle}`, never the reverse. Adding
-  `merkle/proof` + `merkle/rfc6962` to `proofserve` is fine (the test already imports both; go.sum
-  carries them via logclient). go.mod/go.sum/schema must stay byte-unchanged.
-- **Correctness rule (learnings.md, ADR-0008):** `iscc_id → seq` is one-to-many and verification is
-  schema-agnostic — default to `seqs[0]` via `selectSeq`; interpret nothing about the id.
-- **Test (golden, HTTP seam, non-vacuous):** add `internal/proofserve/verify_test.go` reusing
-  `buildMirror(t, 300)`. Assert `GET /verify?iscc_id=` + `leafISCCID(5)` → 200, `verified:true`,
-  `included:true`, `tree_size==300`, `leaf_index==5`, `root` base64-decodes to `tree.Hash()`. Assert an
-  unknown id → 200, `verified:false`, non-empty `reason`, never 5xx. Cross the 256-leaf tile boundary
-  (e.g. `leafISCCID(256)`) so the partial-bundle path is exercised. Make it mutation-resistant: a
-  handler that hard-codes `verified:true` must fail the unknown-id case, and one that drops
-  `proof.VerifyInclusion` must fail a corrupted-root / wrong-leaf negative — note this expectation for
-  the advance author so the inclusion check is non-vacuous (matching `serveInclusion`'s test posture).
+- **Mount collision (load-bearing):** `http.ServeMux` matches the most-specific registered pattern, so
+  `mux.Handle("/", dashboard.Handler(st))` is the lowest priority — the existing `/metrics`,
+  `/healthz`, and each `/<domain>/log/` subtree all still win. Mounting the dashboard at `/` therefore
+  does NOT shadow any existing route; it only catches what matches nothing else. But `mux.Handle("/",
+  ...)` also receives `/anything-unknown`, so the handler must guard: `if r.URL.Path != "/" {
+  http.NotFound(w, r); return }`. Confirm the existing `cmd/iscc-monitor` mux tests still pass after
+  wiring (they assert `/metrics` and the mirror subtrees resolve).
+- **Status mapping:** reuse the `proofserve.hubStatus` logic and extend it for the realm-registry
+  `inactive` glossary status: `active == 0` → `inactive`; else `frozen` → `frozen`; else `verified`.
+  Do NOT invent `unverified`/`unresolvable`/`rotated` — those live in the in-memory metrics registry,
+  are not store-provable, and are documented out of scope. Use the exact glossary strings (CLAUDE.md
+  "Hub status").
+- **Template safety:** use `html/template` (NOT `text/template`) so hub domains auto-escape. Render
+  into a `bytes.Buffer` first; if `tmpl.Execute` errors, `http.Error(w, ..., 500)` and return. Only on
+  success set `Content-Type: text/html; charset=utf-8`, `WriteHeader(200)`, then copy the buffer to
+  `w` (a post-200 write-drop is fine — the page is already committed). This avoids a half-rendered 200.
+- **Store leaf purity (learnings):** `ListHubs` returns `[]HubSummary` of plain types; it must not
+  import `logclient` or `net/http`. Use `LEFT JOIN follow_state` so a hub with no follow_state row
+  still appears (its `last_size`/`frozen` read as NULL/0 via `sql.NullInt64`/`sql.NullBool` →
+  zero-value). Verify with `go list -deps ./internal/store | grep -E 'net/http|internal/dashboard|internal/logclient'`
+  → empty. The dashboard imports `store`, never the reverse.
+- **Coverage rendering (correctness rule — ADR-0001 coverage honesty):** show the `monitored_since`
+  size+time when set, else render an explicit "no coverage yet" — never imply pre-coverage guarantees
+  (CLAUDE.md "Coverage" glossary). Show the accepted `last_size` as the current observed size. The
+  dashboard must show the coverage window and never imply pre-coverage guarantees.
+- **Skeleton-first:** this is the minimal verifiable dashboard skeleton — hub list + status + coverage,
+  exactly the columns the Verify criterion names ("status + coverage window"). Lag/violations/OTS
+  columns and the metrics registry are deferred; the log browser is the next sub-step in this arc.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass) and
-  `gofmt -l .` is empty.
-- `go test -count=1 -run TestVerify ./internal/proofserve` passes (golden + unknown-id + boundary).
-- `go test -count=1 ./internal/proofserve ./cmd/iscc-monitor` passes uncached (route mount + handler).
-- `go list -deps ./internal/store | grep -E 'proofserve|net/http'` is empty (store stays a leaf);
-  `git diff --stat -- go.mod go.sum internal/store/schema.sql` is empty.
-- `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (WASM verifier seam untouched).
-- For the fixture log: `GET /verify?iscc_id=<leaf-5-id>` returns HTTP 200 with `verified==true`,
-  `included==true`, `tree_size==300`, `leaf_index==5`, and base64-decoded `root == tree.Hash()`; an
-  unknown `iscc_id` returns HTTP 200 with `verified==false` and a non-empty `reason` (never 5xx).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
+- `go test -count=1 ./internal/dashboard` passes (the new golden HTTP-seam test).
+- `go test -count=1 ./internal/store ./cmd/iscc-monitor` passes uncached (ListHubs + mux wiring intact).
+- `go list -deps ./internal/store | grep -E 'net/http|internal/dashboard|internal/logclient'` is empty
+  (store stays a leaf); `git diff --stat -- go.mod go.sum internal/store/schema.sql` is empty
+  (no schema/dep change — the dashboard reads existing columns only).
+- At the HTTP seam on the fixture store: `GET /` → 200, `Content-Type: text/html; charset=utf-8`, and
+  the body contains the domain/origin of **every** fixture hub plus each hub's status string (the
+  frozen fixture hub renders `frozen`, the verified one `verified`).
+- `GET /` with method `POST` → 405; `GET /unknown` → 404 (the handler serves only exact `/`).
 
 ## Done When
-`mise run check` is green and the verify-for-me route returns the documented JSON verdict (real
-Merkle-verified inclusion result + hub status + checkpoint `(size, root)`) for a known id and a
-non-verified 200 verdict for an unknown/malformed id, proven at the HTTP seam by
-`go test -run TestVerify ./internal/proofserve`.
+`GET /` serves a `200 text/html` dashboard listing every realm hub with its store-provable glossary
+status and coverage window, golden-tested on a fixture store by `go test ./internal/dashboard`, with
+`mise run check` green and `internal/store` still a leaf.
