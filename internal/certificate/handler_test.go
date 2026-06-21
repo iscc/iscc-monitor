@@ -24,6 +24,7 @@ import (
 	"html"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -496,7 +497,13 @@ func encodeBundle(records [][]byte) []byte {
 // mirrored tiles do not rebuild the accepted root. freeze runs Freeze so ListHubs
 // reports Frozen == true. Pick a `leaves`/`seq` that yields a multi-hash proof (e.g.
 // a 5-leaf tree, leaf 0) so the proof is substantive, never empty.
-func fixtureStoreTiled(t *testing.T, indexDomain, indexedID string, seq uint64, leaves int, acceptedRoot []byte, freeze bool) (*store.Store, *testonly.Tree) {
+//
+// checkpointRaw is the raw checkpoint bytes the accepted-checkpoint record carries;
+// KeyIDFromCheckpoint (the §4 signing-key derivation) reads its signature line. The
+// §3 callers pass the cheap []byte("raw") (which KeyIDFromCheckpoint rejects — the
+// honest §4 decline they don't exercise); the §4 callers pass a real signed-note
+// checkpoint so the key id recovers.
+func fixtureStoreTiled(t *testing.T, indexDomain, indexedID string, seq uint64, leaves int, acceptedRoot []byte, freeze bool, checkpointRaw []byte) (*store.Store, *testonly.Tree) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -584,7 +591,7 @@ func fixtureStoreTiled(t *testing.T, indexDomain, indexedID string, seq uint64, 
 		HubID:    target,
 		TreeSize: size,
 		Root:     acceptedRoot,
-		Raw:      []byte("raw"),
+		Raw:      checkpointRaw,
 	}); err != nil {
 		t.Fatalf("AdvanceAccepted: %v", err)
 	}
@@ -608,7 +615,7 @@ func TestCertificateInclusionProof(t *testing.T) {
 	const leaves = 5
 	// Clean, non-frozen hub: the mirror and the accepted root are the SAME tree, so
 	// §3 renders the proof that rebuilds the accepted root.
-	st, tree := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false)
+	st, tree := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, []byte("raw"))
 	h := Handler(testnetHubList(), st, nil)
 
 	rec := get(t, h, goldenID)
@@ -713,7 +720,7 @@ func TestCertificateInclusionProofContradictory(t *testing.T) {
 
 	// freeze=false: the hub is NOT frozen, so a status-flag gate would render §3. Only
 	// the fail-closed re-verification against tree B's accepted root withholds it.
-	st, treeA := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, treeB.Hash(), false)
+	st, treeA := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, treeB.Hash(), false, []byte("raw"))
 	// Sanity: the two trees genuinely disagree, so this is a real contradictory-tile
 	// fixture (not an accidental same-root coincidence).
 	if string(treeA.Hash()) == string(treeB.Hash()) {
@@ -742,5 +749,124 @@ func TestCertificateInclusionProofContradictory(t *testing.T) {
 	// not frozen.
 	if strings.Contains(body, "§3 INCLUSION PROOF") {
 		t.Errorf("a non-frozen contradictory-tile hub rendered a §3 INCLUSION PROOF clause\n%s", body)
+	}
+}
+
+// liveCheckpointRaw loads a captured live signed checkpoint from the module-root
+// testdata/live/ directory (two levels up from this package, matching logclient's
+// readCheckpoint). Its signature line carries a real BE-uint32 keyhash, so
+// KeyIDFromCheckpoint recovers a key id the §4 clause can look up.
+func liveCheckpointRaw(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "live", name))
+	if err != nil {
+		t.Fatalf("read checkpoint fixture %q: %v", name, err)
+	}
+	return data
+}
+
+// hubIDForDomain reads a followed hub's hub_id back from the store by domain — the
+// §4 tests need it to seed RecordHubKey for the same hub the fixture indexed.
+func hubIDForDomain(t *testing.T, st *store.Store, domain string) int64 {
+	t.Helper()
+	summaries, err := st.ListHubs(context.Background())
+	if err != nil {
+		t.Fatalf("ListHubs: %v", err)
+	}
+	for _, s := range summaries {
+		if s.Domain == domain {
+			return s.HubID
+		}
+	}
+	t.Fatalf("no followed hub for domain %q", domain)
+	return 0
+}
+
+// sb0CheckpointKeyID is the BE-uint32 signed-note keyhash recovered from the live
+// sb0.iscc.id checkpoint's signature line (pinned in
+// logclient/checkpointkey_test.go). KeyIDFromCheckpoint reads only the keyhash, not
+// the signature, so this live sb0 note seeds an sb1-indexed fixture fine.
+const sb0CheckpointKeyID = uint32(0x40b74463)
+
+// TestCertificateSigningKey is the §4 happy path: with the accepted checkpoint
+// carrying a REAL signed-note checkpoint (so KeyIDFromCheckpoint recovers its key id)
+// and that key seeded into the hub_keys cache (RecordHubKey), the certificate renders
+// the §4 SIGNING KEY clause — the hub's did:web identifier, the hex key id, and the
+// cached multibase — while §1/§2/§3 still render (regression). The key id is the live
+// sb0 keyhash (0x40b74463), derived from the checkpoint, not synthesized.
+func TestCertificateSigningKey(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
+	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, raw)
+
+	// Seed the cached did:web key the §4 clause reads back, keyed on the SAME key id
+	// the live checkpoint's signature line carries (so the derive→lookup chain hits).
+	const multibase = "z6MktestKeyMultibaseValue000000000000000000000"
+	if err := st.RecordHubKey(context.Background(), store.HubKey{
+		HubID:      hubIDForDomain(t, st, "sb1.amlet.id"),
+		KeyID:      sb0CheckpointKeyID,
+		PubkeyRaw:  make([]byte, 32),
+		PubkeyZ:    multibase,
+		ResolvedAt: time.Unix(1700000000, 0),
+	}); err != nil {
+		t.Fatalf("RecordHubKey: %v", err)
+	}
+
+	h := Handler(testnetHubList(), st, nil)
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := html.UnescapeString(rec.Body.String())
+
+	// §1/§2/§3 must still render (regression) alongside the new §4.
+	for _, want := range []string{
+		"§1 SUBJECT",
+		"§2 CHECKPOINT",
+		"§3 INCLUSION PROOF",
+		"§4 SIGNING KEY",
+		"did:web:sb1.amlet.id", // the resolved hub's did:web identifier
+		"40b74463",             // the hex key id derived from the accepted checkpoint
+		multibase,              // the seeded cached multibase
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing §4 marker %q\n%s", want, body)
+		}
+	}
+}
+
+// TestCertificateSigningKeyUncached is the §4 honest cache-miss decline: the SAME
+// real-note tiled fixture but with NO RecordHubKey seeded, so the key the accepted
+// checkpoint was signed with is not in hub_keys. The body renders §1/§2/§3 but NOT
+// §4 SIGNING KEY (status 200, never a 500, never a fabricated key).
+//
+// Mutation (non-vacuity, review reproduces it): forcing HasClause4 = true
+// unconditionally in buildData (or rendering §4 on a cache miss) makes this test FAIL
+// — the uncached hub would then render §4 SIGNING KEY. Restoring the cache-miss gate
+// passes.
+func TestCertificateSigningKeyUncached(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
+	// No RecordHubKey: the key the checkpoint was signed with is not cached.
+	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, raw)
+
+	h := Handler(testnetHubList(), st, nil)
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := html.UnescapeString(rec.Body.String())
+
+	// §1/§2/§3 still render — the cache miss only withholds §4.
+	for _, want := range []string{"§1 SUBJECT", "§2 CHECKPOINT", "§3 INCLUSION PROOF"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("uncached-key certificate missing %q (the page must still render §1-§3)\n%s", want, body)
+		}
+	}
+	// §4 must be ABSENT — an uncached key is an honest decline, not a fabricated key.
+	if strings.Contains(body, "§4 SIGNING KEY") {
+		t.Errorf("an uncached-key hub rendered a §4 SIGNING KEY clause\n%s", body)
 	}
 }

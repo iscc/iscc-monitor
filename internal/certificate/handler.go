@@ -16,19 +16,26 @@
 // an honest cannot-certify state, never an affirmative claim.
 //
 // The certificate grows clause by clause: §1 Subject, §2 Checkpoint (the accepted
-// (size, root) the subject position falls within), and §3 Inclusion Proof (the
-// RFC-6962 leaf→siblings→root chain recomputed from the hub's mirrored tiles) are
-// real for a certifiable id, alongside the documented honesty states. §3 is gated on
-// a fail-closed re-VERIFICATION: the built proof must rebuild the accepted checkpoint
-// root (proof.VerifyInclusion against the §2 root) before the clause renders its ✓.
-// This makes the rendered ✓ true by construction — the certificate asserts inclusion
-// only when the proof it shows actually rebuilds the root it shows — and fails closed
-// against ANY tile↔root divergence (a frozen-after-fork hub whose mirror holds the
-// contradictory tree's tiles, or a request landing in the fork-poll window before the
-// freeze commits). The buildData §3 branch documents the mechanism. Clauses §4-§6
-// (signing key, Bitcoin anchor, record history) and the downloadable proof bundle are
-// gated placeholders that render nothing yet — later sub-steps grow the template
-// without rework. The Download-proof-bundle action renders as a disabled placeholder.
+// (size, root) the subject position falls within), §3 Inclusion Proof (the
+// RFC-6962 leaf→siblings→root chain recomputed from the hub's mirrored tiles), and
+// §4 Signing Key (the did:web-resolved Ed25519 key that signed the accepted
+// checkpoint) are real for a certifiable id, alongside the documented honesty
+// states. §3 is gated on a fail-closed re-VERIFICATION: the built proof must rebuild
+// the accepted checkpoint root (proof.VerifyInclusion against the §2 root) before the
+// clause renders its ✓. This makes the rendered ✓ true by construction — the
+// certificate asserts inclusion only when the proof it shows actually rebuilds the
+// root it shows — and fails closed against ANY tile↔root divergence (a
+// frozen-after-fork hub whose mirror holds the contradictory tree's tiles, or a
+// request landing in the fork-poll window before the freeze commits). The buildData
+// §3 branch documents the mechanism. §4 derives the key id from the §2 accepted
+// checkpoint's own raw signature line (logclient.KeyIDFromCheckpoint) and reads the
+// cached resolution back from hub_keys (store.LookupHubKey), so the certificate can
+// only ever show the key that actually signed what §2 vouches for; a cache miss (key
+// not yet resolved) honestly omits §4 rather than fabricate a key (ADR-0009: did:web
+// is the only key source). Clauses §5-§6 (Bitcoin anchor, record history) and the
+// downloadable proof bundle are gated placeholders that render nothing yet — later
+// sub-steps grow the template without rework. The Download-proof-bundle action
+// renders as a disabled placeholder.
 //
 // Fail-closed / coverage-honesty discipline (ADR-0001): every "cannot certify"
 // branch — a malformed id, an id resolving to no listed slot, a resolved domain
@@ -51,10 +58,12 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"html/template"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
@@ -98,14 +107,17 @@ type StatusSource interface {
 // certData is the certificate template view-model. For a certifiable id it
 // populates the §1 SUBJECT clause + subject banner (subject id, resolved hub
 // domain, subject position), the §2 CHECKPOINT clause (the accepted (size, root)),
-// and the §3 INCLUSION PROOF clause (the RFC-6962 sibling-hash chain that rebuilds
-// the accepted root from the subject leaf). §3 is withheld unless the built proof
-// is re-verified against the accepted root, so a hub whose mirror diverges from its
-// accepted root renders §1+§2 but no §3 (the rebuild gate in buildData). It carries
-// the honest "cannot certify" state with a human-readable Reason; the subject id is
-// echoed back even on a not-found so the page names what was looked up. The §4-§6
-// HasClauseX flags are all false so the template's gated clause placeholders render
-// nothing yet.
+// the §3 INCLUSION PROOF clause (the RFC-6962 sibling-hash chain that rebuilds the
+// accepted root from the subject leaf), and the §4 SIGNING KEY clause (the
+// did:web-resolved key that signed the §2 accepted checkpoint). §3 is withheld
+// unless the built proof is re-verified against the accepted root, so a hub whose
+// mirror diverges from its accepted root renders §1+§2 but no §3 (the rebuild gate
+// in buildData). §4 is withheld unless the key the accepted checkpoint was signed
+// with is found in the hub_keys cache, so a hub whose key is not yet resolved renders
+// §1+§2(+§3) but no §4 (the cache-miss decline in buildData). It carries the honest
+// "cannot certify" state with a human-readable Reason; the subject id is echoed back
+// even on a not-found so the page names what was looked up. The §5-§6 HasClauseX
+// flags are all false so the template's gated clause placeholders render nothing yet.
 type certData struct {
 	// IsccID is the subject id as supplied by the caller (echoed verbatim, never
 	// interpreted beyond the decode). It is shown even on a not-found.
@@ -148,13 +160,35 @@ type certData struct {
 	// (the rebuild gate withholds §3 on any tile↔root divergence).
 	ProofHashes []string
 
+	// SigningKeyDID is the hub's did:web identifier ("did:web:" + Domain), the §4
+	// SIGNING KEY clause subject (ADR-0009: domain ownership is identity). Meaningful
+	// only when HasClause4.
+	SigningKeyDID string
+	// SigningKeyID is the BE-uint32 signed-note keyhash of the key that signed the §2
+	// accepted checkpoint, hex-formatted (%08x, matching how the codebase prints key
+	// ids). It is derived from the accepted checkpoint's own raw signature line
+	// (logclient.KeyIDFromCheckpoint), so it always names the key that actually signed
+	// what §2 vouches for. Meaningful only when HasClause4.
+	SigningKeyID string
+	// SigningKeyMultibase is the cached key's z6Mk… multibase Ed25519 public key
+	// (store.HubKey.PubkeyZ). It may be empty (the cache row stored a NULL pubkey_z);
+	// the template renders this chip conditionally. Meaningful only when HasClause4.
+	SigningKeyMultibase string
+	// SigningKeyRevoked is the cached key's revocation instant (RFC-3339), set only
+	// when the hub_keys row carries a non-zero revoked_at; empty otherwise (the common
+	// case). It surfaces the cached revocation timestamp as-is; this clause does NOT
+	// evaluate CID 1.0 validity windows. Meaningful only when HasClause4.
+	SigningKeyRevoked string
+
 	// HasClause2..6 gate the later clauses (checkpoint, inclusion proof, signing
 	// key, Bitcoin anchor, record history). HasClause2 is set when the accepted
 	// checkpoint's (size, root) is read for a certifiable id; HasClause3 when the
 	// inclusion proof built from the mirror re-verifies against that accepted root
 	// (proof.VerifyInclusion succeeds, so the rendered ✓ is true by construction);
-	// the rest are false so their gated placeholders render nothing; later sub-steps
-	// set them.
+	// HasClause4 when the key that signed the accepted checkpoint is found in the
+	// hub_keys cache (an honest cache-miss decline leaves it false, never a fabricated
+	// key); the rest are false so their gated placeholders render nothing; later
+	// sub-steps set them.
 	HasClause2 bool
 	HasClause3 bool
 	HasClause4 bool
@@ -238,6 +272,13 @@ func Handler(hubList *registry.HubList, st *store.Store, statuses StatusSource) 
 //     unlike verify-for-me which has committed to serving a proof); a proof that does
 //     not rebuild the accepted root silently declines §3; any other build/read error
 //     is a 500 (buffered before any 200).
+//  8. For a certifiable id, derive the key id from the §2 accepted checkpoint's own
+//     raw signature line (KeyIDFromCheckpoint) and read the cached did:web key back
+//     from hub_keys (LookupHubKey); §4 renders the did:web identifier + key id (+ the
+//     cached multibase) ONLY when that key is cached. A KeyIDFromCheckpoint error
+//     (malformed sig line) or a cache miss leaves §4 unrendered (an honest "key not
+//     yet resolved" decline, never a fabricated key — ADR-0009 did:web is the only key
+//     source); only a real LookupHubKey DB fault is a 500 (buffered before any 200).
 func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawID string) (certData, int) {
 	if rawID == "" {
 		return certData{Reason: "no ISCC-ID supplied"}, http.StatusOK
@@ -322,7 +363,7 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 	// root (AdvanceAccepted records the checkpoint at the same tree_size it advances
 	// LastSize to, so found is realistically always true on this path). The root is
 	// base64-Std encoded to match the log browser and verify-for-me.
-	root, _, found, err := st.CheckpointAt(r.Context(), hub.HubID, hub.LastSize)
+	root, raw, found, err := st.CheckpointAt(r.Context(), hub.HubID, hub.LastSize)
 	if err != nil {
 		return certData{}, http.StatusInternalServerError
 	}
@@ -415,6 +456,39 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 					data.ProofHashes = hashes
 					data.HasClause3 = true
 				}
+			}
+		}
+	}
+
+	// §4 SIGNING KEY: show the did:web-resolved key the §2 accepted checkpoint was
+	// signed with. The key id is recovered from the accepted checkpoint's OWN raw
+	// signature line (KeyIDFromCheckpoint reads the BE-uint32 keyhash without resolving
+	// did.json — it does not verify the signature), so the displayed key is always the
+	// one that actually signed what §2 vouches for; it equals KeyIDFromVerifier of the
+	// resolved vkey. The clause is meaningful only alongside §2 (it grounds itself in
+	// the accepted checkpoint's raw bytes), so it renders inside the HasClause2 guard.
+	//
+	// Cache-miss decline (ADR-0009: did:web is the only key source): §4 reads the
+	// cached resolution back from hub_keys (LookupHubKey, populated by the follower's
+	// cacheHubKey on every verified poll) and renders ONLY on a cache hit. A
+	// KeyIDFromCheckpoint error (a synthetic/garbled checkpoint with no well-framed sig
+	// line) or a cache miss leaves §4 unrendered — an honest "key not yet resolved"
+	// decline, NOT a 500 and NOT a fabricated key (the same discipline as §3's honest
+	// tile-gap). Only a real LookupHubKey DB fault is a 500 (buffered before any 200).
+	if data.HasClause2 {
+		if _, keyID, err := logclient.KeyIDFromCheckpoint(raw); err == nil {
+			key, found4, err := st.LookupHubKey(r.Context(), hub.HubID, keyID)
+			if err != nil {
+				return certData{}, http.StatusInternalServerError
+			}
+			if found4 {
+				data.SigningKeyDID = "did:web:" + data.Domain
+				data.SigningKeyID = fmt.Sprintf("%08x", keyID)
+				data.SigningKeyMultibase = key.PubkeyZ
+				if !key.Revoked.IsZero() {
+					data.SigningKeyRevoked = key.Revoked.Format(time.RFC3339)
+				}
+				data.HasClause4 = true
 			}
 		}
 	}

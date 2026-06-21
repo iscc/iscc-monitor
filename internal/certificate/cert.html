@@ -356,7 +356,12 @@
       {{if .HasClause4}}
       <div class="clause">
         <div class="clause-marker">§4 SIGNING KEY</div>
-        <div class="clause-value"></div>
+        <div class="clause-value">
+          <div class="clause-mono">{{.SigningKeyDID}} · key {{.SigningKeyID}}</div>
+          {{if .SigningKeyMultibase}}<div class="clause-mono">{{.SigningKeyMultibase}}</div>{{end}}
+          {{if .SigningKeyRevoked}}<div class="clause-mono">revoked {{.SigningKeyRevoked}}</div>{{end}}
+          <div class="clause-note">Ed25519, resolved from the hub's did:web document. This is the key that signed the §2 accepted checkpoint.</div>
+        </div>
       </div>
       {{end}}
       {{if .HasClause5}}
