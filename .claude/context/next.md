@@ -1,148 +1,142 @@
 # Next Work Package
 
-## Step: Certificate §4 SIGNING KEY — render the cached did:web key that signed the accepted checkpoint
+## Step: Certificate §6 RECORD HISTORY — render the per-id record list (declaration + any deletion)
 
 ## Advances
-M-UI (Evidence Ledger frontend) Verify criterion — the certificate-clause requirement:
+target.md **M-UI — Evidence Ledger frontend**, Verify criterion: the realm-wide certificate
+"for a known id renders the numbered evidence clauses (subject + position; checkpoint `(size, root)`;
+inclusion proof; signing key; anchor state; **full per-id record history incl. any deletion**)".
+This step closes the **record-history** sub-item of that criterion — the last clause that is fully
+backed by data the monitor already holds. It is also a named-region of the certificate mockup
+(`.claude/design/ISCC Monitor - Certificate.dc.html` §6 "RECORD HISTORY", lines 67-69): the per-record
+`label · seq` rows plus the "a deletion is a new record — the declaration is preserved" note.
 
-> the **realm-wide certificate** (`/inclusion/{iscc_id}`, keyed by the self-describing ISCC-IDv1 …) for
-> a known id renders the numbered evidence clauses (subject + position; checkpoint `(size, root)`;
-> inclusion proof; **signing key**; anchor state; full per-id record history incl. any deletion) …
-
-§1 SUBJECT, §2 CHECKPOINT, and §3 INCLUSION PROOF are PASS-verified; `HasClause4..6` are all still
-`false` and never set (`handler.go:160`, the empty `§4` placeholder at `cert.html:356-361`). This step
-closes the **§4 signing key** sub-clause — the next unmet piece of the single open M-UI certificate
-criterion, continuing the established clause-by-clause arc (the review handoff `**Next:**` from `96f6ed9`
-names "§4 SIGNING KEY → §5 → §6"). Milestone work, not a preempting issue.
+Milestone work, not a preempting issue. `HasClause6` is `false` and never set; its `cert.html`
+placeholder (lines 373-378) is an empty `clause-value`.
 
 ## Goal
-Render the certificate's §4 SIGNING KEY clause: the did:web-resolved Ed25519 key that *actually signed*
-the §2 accepted checkpoint — its key id derived from that checkpoint's own raw signature line, then
-looked up in the `hub_keys` cache. This grounds the certificate's "the hub vouched for this with key X"
-claim in the irreplaceable signed checkpoint, and fails closed (omits §4, never fabricates a key) when
-the key is not cached.
+Render §6 RECORD HISTORY for a certifiable id: the full one-to-many list of seqs the hub indexed under
+that ISCC-ID (`SeqsForISCCID`, already fetched in `buildData`), each row labelled by its
+`note.$schema` kind (declaration / deletion / unknown), with the deletion note shown when any record
+in the history is a deletion. This is the last data-grounded certificate clause; it reuses the
+schema→kind interpretation pattern already proven in `internal/proofserve` and adds no new store seam.
 
 ## Scope
 - **Create**: (none)
 - **Modify** (2 non-test source files, within the ≤3 budget):
-  - `/workspace/iscc-monitor/internal/certificate/handler.go` — capture the accepted checkpoint's raw
-    bytes from `CheckpointAt` (currently discarded), derive `key_id` via `KeyIDFromCheckpoint`, look up
-    the cached key via `LookupHubKey`, populate the §4 `certData` fields + `HasClause4`; add the §4
-    view-model fields with evergreen docstrings; update the file/`buildData`/`certData` docstrings to
-    describe §4.
-  - `/workspace/iscc-monitor/internal/certificate/cert.html` — fill the existing empty `§4 SIGNING KEY`
-    `clause-value` placeholder (`<div class="clause-value"></div>`, cert.html:356-361) with the key
-    fields, reusing the existing `clause-mono` / `clause-note` classes (no new CSS).
+  - `/workspace/iscc-monitor/internal/certificate/handler.go` — in `buildData`, after the §4 block,
+    build the §6 record-history view-model from the `seqs` already in hand (one `store.RecordAt` per
+    seq for its `NoteSchema`), set `HasClause6 = true` for a certifiable id, derive `HasDeletion`; add
+    the §6 view-model fields + a local `RecordKind` helper with evergreen docstrings; update the
+    file/`buildData`/`certData` docstrings to describe §6.
+  - `/workspace/iscc-monitor/internal/certificate/cert.html` — fill the existing empty
+    `{{if .HasClause6}}` §6 `clause-value` placeholder (lines 373-378) with the record-history rows +
+    the conditional deletion note, reusing the existing `clause-mono` / `clause-note` classes (no new
+    CSS, no CDN URL).
   - `/workspace/iscc-monitor/internal/certificate/handler_test.go` — test file, not counted toward the
-    ≤3 budget. Add the two §4 tests + thread a real signed-note checkpoint `Raw` into `fixtureStoreTiled`.
+    ≤3 budget. Add `TestCertificateRecordHistory` + a fixture seeding a declaration and a later deletion
+    under one id.
 - **Reference** (read before implementing):
   - `/workspace/iscc-monitor/.claude/context/learnings/certificate.md` — package-local mechanics:
-    buffer-then-200 500 discipline, base64-Std cross-surface, the `html/template` `+`→`&#43;` escape
-    trap, the §2 `CheckpointAt` read that already exposes the raw bytes.
-  - `/workspace/iscc-monitor/.claude/context/learnings/didweb.md` — `HubKey` semantics; did:web is the
-    only key source (ADR-0009); the `unresolvable`/`unverified`/rotation distinctions (context only —
-    §4 reads the *cache*, it does NOT re-resolve did.json).
-  - `/workspace/iscc-monitor/internal/logclient/checkpointkey.go` — `KeyIDFromCheckpoint(raw) (name,
-    keyID uint32, err)`: the pure (stdlib + sumdb/note) raw-checkpoint key-id recovery; rejects a
-    non-note input with an error (no panic).
-  - `/workspace/iscc-monitor/internal/store/checkpoints.go:62-78` (`HubKey` struct) and `:443-485`
-    (`LookupHubKey(hubID, keyID) (HubKey, found, err)` — absent row is `(HubKey{}, false, nil)`, not an
-    error; only a real query fault is non-nil).
-  - `/workspace/iscc-monitor/internal/follower/follower.go:263-356` (`cacheHubKey` /
-    `KeyIDFromCheckpoint` / `RecordHubKey`) — the production WRITE side §4 reads back; §4 is its mirror.
-  - `/workspace/iscc-monitor/.claude/design/ISCC Monitor - Certificate.dc.html:65` — the §4 mockup: a
-    mono DID line (`did:web:hub.iscc.id#key-2025`) + note "Ed25519, resolved from the hub's did:web
-    document."
+    buffer-then-200 500 discipline, fail-closed clause decline, base64-Std cross-surface, the
+    `html/template` `+`→`&#43;` escape trap (not load-bearing here — seqs/labels are plain ASCII).
+  - `/workspace/iscc-monitor/internal/proofserve/handler.go:111-112` — the `schemaDeclaration` /
+    `schemaDeletion` full wire-URI constants; `:832-847` — `recordKind` (the schema→label+isDeletion
+    mapping to mirror).
+  - `/workspace/iscc-monitor/internal/store/iscc_index.go:80-84` (`RecordRow`), `:157-192` (`RecordAt`),
+    `:194-208` (`SeqsForISCCID`).
+  - `/workspace/iscc-monitor/.claude/design/ISCC Monitor - Certificate.dc.html` lines 67-69 + 98-101 —
+    the §6 region (rows are `label` + `seq · at`; a `claimHistory` of declaration + deletion) and the
+    deletion note wording.
+  - `/workspace/iscc-monitor/internal/certificate/handler_test.go:77-130` (`fixtureStore` /
+    `fixtureStoreUnaccepted` — they already seed `RecordProjections`, so a deletion row is one extra
+    `ProjectionRecord` with the deletion `note.$schema`) and `:506-596` (`fixtureStoreTiled`).
 
 ## Not In Scope
-- §5 Bitcoin anchor and §6 record history (`HasClause5`/`HasClause6` stay `false`) — separate later
-  sub-steps in the same arc.
-- The downloadable proof-bundle assembler (`{checkpoint, inclusion/consistency proof, record bytes,
-  hub key, ots?}`) — its own oracle-gated step; the §4 key it bundles can reuse this read path later.
-- Re-resolving the hub's `did.json` live, or ANY `net`/`net/http` work — §4 reads the `hub_keys` cache
-  only. Do not add an HTTP fetch to the handler.
-- A CID 1.0 validity-window engine (`DIDKey.ValidAt`). The cache row carries a `Revoked` instant; you
-  may surface it if present, but do not build validity/rotation evaluation here.
-- The deferred `internal/registry` `hubDomain` `ForceQuery` fix — this step does not touch `registry.go`.
-- Any change to `proofserve`'s `serveVerify` or to §1/§2/§3 logic — additive only.
+- **§5 BITCOIN ANCHOR.** It needs the OTS/anchor store seam, which does **not** exist yet (OTS
+  anchoring is "not started"; there is no `anchor`/`ots` store method — only an `ots` table name appears
+  in a store test fixture). Doing §5 honestly now means either building that seam first (a separate,
+  larger step) or rendering only a content-free "pending" placeholder. Defer until the anchor store seam
+  lands; render §6 first because it is fully data-grounded today. (`HasClause5` stays `false`.)
+- **The downloadable proof-bundle assembler** `{checkpoint, inclusion/consistency proof, record bytes,
+  hub key, ots?}` — its own oracle-gated step (re-engages the conformance gate); the §6 list is a
+  store-read render with no crypto path.
+- **The §4 `did:web:` + raw-domain `host:port` mis-render fix** (filed `normal`). `internal/didweb`
+  exposes only the DID→URL direction (`DocumentURL`), no domain→DID `%3A` encoder, so fixing it cleanly
+  means adding an encoder — a separate concern that would dilute this single §6 increment. Leave it
+  filed; fold it in when a step deliberately touches the §4 DID-building path or adds the encoder.
+- **The `internal/registry` `hubDomain` `ForceQuery` fix** (filed `normal`) — different file
+  (`registry.go`), not touched here.
+- Interpreting the id or schema beyond the kind label (ADR-0008: verification is schema-agnostic; §6
+  shows the verbatim seqs + a fail-open kind label, nothing else — no projection of owner/gateway/etc.).
+- Re-resolving `did.json` or ANY `net`/`net/http` work — §6 is a pure store read + render.
 
 ## Implementation Notes
-- **Derive the key id from the §2 accepted checkpoint, not synthetically.** `CheckpointAt` already
-  returns the accepted checkpoint's raw bytes as its second return value (today discarded with `_` in
-  `buildData`'s §2 branch). Capture it (`root, raw, found, err := st.CheckpointAt(...)`) and, INSIDE the
-  `if found` / `data.HasClause2` region (so §4 is meaningful only alongside §2), call
-  `name, keyID, err := logclient.KeyIDFromCheckpoint(raw)`. This is the exact key the hub signed the
-  accepted checkpoint with — the right key to display; it equals `KeyIDFromVerifier` of the resolved
-  vkey (proven by `logclient/checkpointkey_test.go`). The `name` return is unused for rendering (the
-  DID is built from the resolved `data.Domain`); discard or assert it as you prefer.
-- **Read the cache, fail closed.** `key, found4, err := st.LookupHubKey(r.Context(), hub.HubID, keyID)`.
-  Set `HasClause4 = true` ONLY on `found4`. On a `KeyIDFromCheckpoint` error (malformed sig line — e.g.
-  the cheap `[]byte("raw")` fixtures) or a cache miss (`!found4`), leave §4 unrendered: an honest
-  decline, NOT a 500, NOT a fabricated key (the same discipline as §3's honest tile-gap). A real
-  `LookupHubKey` DB error is a 500, buffered before any 200 (`return certData{},
-  http.StatusInternalServerError`) — the buffer-then-200 invariant is already in place.
-- **View-model fields** (add to `certData` with evergreen docstrings like the existing §2/§3 fields):
-  - `SigningKeyDID string` — `"did:web:" + data.Domain` (the hub's did:web identifier; matches ADR-0009
-    "domain ownership is identity").
-  - `SigningKeyID string` — `fmt.Sprintf("%08x", keyID)`, the BE-uint32 signed-note keyhash in hex
-    (matching how the codebase prints key ids, e.g. `LookupHubKey`'s `%08x` error format).
-  - `SigningKeyMultibase string` — `key.PubkeyZ`, the z6Mk… multibase (may be empty if the cache row
-    stored NULL pubkey_z; render that chip conditionally in the template).
-  - (optional) `SigningKeyRevoked string` — only set when `key.Revoked` is non-zero (RFC-3339); omit
-    otherwise. Keep these names parallel to the §2 `Checkpoint*` / §3 `Proof*` fields.
-- **Template (`cert.html` §4 block):** render the DID mono line + the hex key id + (conditionally) the
-  multibase chip, plus the mockup note "Ed25519, resolved from the hub's did:web document." Reuse
-  `clause-mono` / `clause-note` (same markup as §2/§3). No external/CDN URL; no new `<style>` rule.
-- **Correctness rule (learnings index):** did:web is the only key source (ADR-0009). §4 must read the
-  cached resolution (`hub_keys`), never invent a key; a cache miss is an honest "key not yet resolved"
-  decline, not an affirmative claim. The displayed key MUST be the one tied to the accepted checkpoint
-  (derive via `KeyIDFromCheckpoint`), so the certificate can never show a key that did not sign what §2
-  vouches for. Also: coverage honesty (ADR-0001) — never render a guarantee the accepted state does not
-  support.
-- **`html/template` escape (learnings):** the hex key id is `[0-9a-f]` and the z6Mk multibase is base58
-  (no `+`/`/`), so the `+`→`&#43;` entity escaping is unlikely to bite, but a test asserting on rendered
-  values should `html.UnescapeString(body)` first defensively (the §3 test already does this).
-- **Test fixture — make §4 testable without weakening §3.** `fixtureStoreTiled` (handler_test.go:499)
-  currently passes `Raw: []byte("raw")` to `AdvanceAccepted`, which `KeyIDFromCheckpoint` rejects (the
-  honest-decline path — fine for the §3 tests). Thread the checkpoint `Raw` in as a helper parameter
-  (or add a thin `fixtureStoreTiledKey` wrapper) so the existing §3 callers keep the cheap
-  `[]byte("raw")` and ONLY the §4 happy-path test supplies a REAL signed note. For the real note, read
-  `testdata/live/sb0.iscc.id_checkpoint` (its sig line yields keyID `0x40b74463`, pinned in
-  `logclient/checkpointkey_test.go`) and pass it as `CheckpointRecord.Raw`; then `st.RecordHubKey(ctx,
-  store.HubKey{HubID: target, KeyID: 0x40b74463, PubkeyRaw: <32 bytes>, PubkeyZ: "z6Mk…test",
-  ResolvedAt: <some time>})`. `KeyIDFromCheckpoint` does not verify the signature, so the live sb0 note
-  seeds an sb1-indexed fixture fine (it only reads the BE-uint32 keyhash).
-  - Locate the repo-root `testdata/` from the test's package dir — the certificate package is two levels
-    under root, so the path is `filepath.Join("..", "..", "testdata", "live", "sb0.iscc.id_checkpoint")`
-    (verify against how a sibling package reads it; `logclient` uses a `readCheckpoint` helper with its
-    own relative base — do not assume the same base).
-- **Two new tests:**
-  - `TestCertificateSigningKey` — tiled fixture WITH a real note `Raw` + a seeded `RecordHubKey`:
-    assert the body contains `§4 SIGNING KEY`, the `did:web:<domain>` line, the `40b74463` key id, and
-    the seeded multibase. §1/§2/§3 must also still render (regression).
-  - `TestCertificateSigningKeyUncached` — same real-note tiled fixture but NO `RecordHubKey`: body has
-    §1/§2/§3 but NOT `§4 SIGNING KEY` (the honest cache-miss decline; status 200).
-  - Existing `TestCertificateInclusionProof*` / `TestCertificate*` must stay green; if you change
-    `fixtureStoreTiled`'s signature, update its callers.
-- **Non-vacuity (mandatory — review reproduces it):** forcing `HasClause4 = true` unconditionally (or
-  rendering §4 on a cache miss) must make `TestCertificateSigningKeyUncached` FAIL; restoring the gate
-  passes. State this in the test docstring and confirm locally before handoff.
+- **Reuse, don't re-derive, the kind mapping.** Mirror `proofserve.recordKind` (handler.go:838-847):
+  switch the verbatim `NoteSchema` on the two full wire URIs
+  (`http://purl.org/iscc/schema/iscc-note-0.8.0.json` → declaration;
+  `http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json` → deletion; everything else, incl. empty →
+  unknown). The proofserve constants are unexported in another package, so define the two schema
+  constants LOCALLY in `certificate` and a small pure `recordKind(noteSchema) (label string,
+  isDeletion bool)` helper (keeps it testable and import-clean). **Correctness rule (learnings
+  index):** `iscc_id → seq` is one-to-many and verification is schema-agnostic — index by seq, never
+  gate on schema; an unknown/empty schema is listed verbatim with the unknown label and never errors
+  the page.
+- **Data source already in hand.** `buildData` already holds `seqs []uint64` (ascending) from
+  `SeqsForISCCID`. For each seq call `st.RecordAt(r.Context(), hub.HubID, seq)` to read its
+  `NoteSchema`. A `found == false` row (a projection gap) is an honest gap — list the seq with the
+  unknown/empty-schema label, do NOT 500. A real `RecordAt` DB error IS a 500 — keep the buffer-then-200
+  discipline: `return certData{}, http.StatusInternalServerError` BEFORE any 200 is committed (every
+  other clause in `buildData` does this).
+- **Cap the listed seqs to the accepted tree.** §1 already certified `seqs[0] < hub.LastSize`; list only
+  rows with `seq < hub.LastSize` in §6 so a deletion (or any record) indexed ABOVE the accepted
+  checkpoint — an unaccepted projection left by a frozen/failed poll — is never implied to be vouched
+  for (ADR-0001 coverage honesty; the same cap `ListRecords`/`serveRecord`/§1 apply). The history always
+  has at least `seqs[0]`, so the list is non-empty for a certifiable id.
+- **View-model.** Add to `certData`: `RecordHistory []HistoryRow` (each
+  `HistoryRow{Seq uint64; Label string; IsDeletion bool}`) and `HasDeletion bool`; set
+  `HasClause6 = true` for a certifiable id. Render §6 unconditionally for a certifiable id — unlike
+  §3/§4 there is no crypto/cache gate to fail closed on; the seqs are the irreplaceable accepted-tree
+  projections §1 already certified against. Give the fields evergreen docstrings parallel to the §2/§3/§4
+  fields, and bump the `HasClause6` doc comment (currently "false so their gated placeholders render
+  nothing").
+- **Template (`cert.html` §6 block).** Fill the existing `{{if .HasClause6}}` `clause-value`: a
+  `{{range .RecordHistory}}` over the rows, each a `clause-mono` line like `{{.Label}} · seq {{.Seq}}`,
+  then `{{if .HasDeletion}}<div class="clause-note">This id was later deleted. A deletion is a new
+  record — the declaration above is preserved and still proves inclusion.</div>{{end}}` (wording from
+  mockup line 69). Reuse `clause-mono` / `clause-note`; add no `<style>` rule and no external/CDN URL
+  (the `noExternalCDN` body invariant + the no-JS baseline hold; §6 is plain server-rendered markup).
+- **Test (`handler_test.go`).** Add `TestCertificateRecordHistory`: seed a fixture where the subject id
+  has TWO projections under the SAME id — a declaration at `seqs[0]` and a later deletion at a higher
+  seq still `< LastSize`. Extend `fixtureStore`/`fixtureStoreUnaccepted` to take extra
+  `ProjectionRecord`s, or add a sibling helper (note `RecordProjections` keys uniqueness on
+  `(hub, seq)`, so the deletion row needs a distinct seq under the same `iscc_id`). Assert the rendered
+  body contains BOTH `seq <decl>` with the declaration label AND `seq <del>` with the deletion label AND
+  the deletion note. **Make it non-vacuous**: the assertion must fail if §6 is neutered.
+- **Oracle/conformance gate is N/A for this step** (a store read + render; no signature / Merkle / proof
+  code touched), but still run the oracle suite to prove no regression (see Verification).
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -count=1 -run TestCertificate ./internal/certificate` passes uncached (all existing §1/§2/§3
-  tests plus `TestCertificateSigningKey` and `TestCertificateSigningKeyUncached`).
-- Oracle/conformance gate (the signed-note key-id path is touched):
-  `go test -count=1 ./internal/logclient ./internal/follower ./cmd/notecheck` all `ok`.
-- **Mutation (non-vacuity):** forcing `HasClause4 = true` unconditionally makes
-  `go test -run TestCertificateSigningKeyUncached ./internal/certificate` FAIL; restoring the gate
-  passes. (Run, confirm, revert — leave the tree clean.)
+- `go test -count=1 -run TestCertificate ./internal/certificate` passes (all existing §1-§4 tests plus
+  the new `TestCertificateRecordHistory`).
+- `go test -count=1 -v -run TestCertificateRecordHistory ./internal/certificate` shows the new test
+  PASS, asserting BOTH the declaration row (`seq <decl>` + declaration label) AND the deletion row
+  (`seq <del>` + deletion label) AND the deletion note are present in the rendered HTML.
+- **Mutation (non-vacuity — advance runs + reverts):** setting `data.HasClause6 = false` in `buildData`
+  (or dropping the deletion row from `RecordHistory`) makes `TestCertificateRecordHistory` FAIL; revert
+  leaves the tree clean and tests green.
+- Oracle gate unbroken: `go test -count=1 ./internal/logclient ./internal/follower ./cmd/notecheck`
+  all `ok` (no crypto path touched, so this must stay green).
 - WASM/purity unaffected: `GOOS=js GOARCH=wasm go build ./internal/index ./internal/didweb` exits 0
   (no `net`/`net/http` added to any WASM-shared leaf).
-- No new dependency: `git diff --stat go.mod go.sum` is empty.
+- No new dependency: `git diff --stat HEAD -- go.mod go.sum` is empty.
+- Scope discipline: exactly 2 non-test source files changed
+  (`internal/certificate/handler.go`, `internal/certificate/cert.html`) plus the test file; no §5 /
+  proof-bundle / §4-DID / registry work done.
 
 ## Done When
-`mise run check` is green and the certificate renders a §4 SIGNING KEY clause for a known id whose
-did:web key (derived from the accepted checkpoint and read from `hub_keys`) is cached, while honestly
-omitting §4 — no 500, no fabricated key — on a cache miss, proven non-vacuous by the two new
-`TestCertificateSigningKey*` tests.
+`mise run check` is green, `TestCertificateRecordHistory` passes and is mutation-proven non-vacuous
+(`HasClause6 = false` makes it fail), the oracle suite stays `ok`, and `git diff` shows no `go.mod` /
+`go.sum` change — i.e. the certificate renders the full per-id record history incl. any deletion for a
+certifiable id, closing the record-history sub-item of the M-UI certificate Verify criterion.
