@@ -1,60 +1,44 @@
-<!-- assessed-at: fa8d62464aa9207d931b56069220ca011850c490 -->
+<!-- assessed-at: 706eb1e4ae42a33258efe6e0a9af61d877b845ce -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: M3 (Trust API + dashboard) — tlog-tiles mirror HTTP arc + all three computed proofs
-complete; verify-for-me, the server-rendered dashboard, the log browser, the WASM verifier, and OTS
-anchoring all remain unstarted.
+## Phase: M3 (Trust API + dashboard) — tlog-tiles mirror HTTP arc + all three computed proofs +
+verify-for-me JSON verdict complete; the server-rendered dashboard, the HTML log browser, the WASM
+verifier, and OTS anchoring remain.
 
-The monitor follows + mirrors + verifies hubs (M1 met) and serves all three computed proofs per hub
-from the local mirror (M2 met: `/inclusion`, `/consistency`, `/entries`). M3 has the raw tlog-tiles
-mirror fully plumbed (CORS → Cache-Control → conditional GET); the bulk of M3 (verify-for-me,
-dashboard, log browser), the WASM verifier, and OTS anchoring remain.
-
-**This assessment is a no-op on production code.** Incremental review of
-`650f965..HEAD` (HEAD `fa8d624` on `develop`). The diff (`git diff 650f965..HEAD --stat -- cmd/
-internal/ go.mod go.sum mise.toml .github/` is **empty**) touches **only loop infrastructure**: the
-five commits since the last assessment are `.claude/agents/*` prompt edits, splitting `learnings.md`
-into per-package detail files, the CID convergence-steering prompt change, a Codex second-opinion
-review hook, and a `.devcontainer` memory/parallelism cap. **No `cmd/`, `internal/`, `go.mod`, or
-`mise.toml` change.** Every milestone section below is carried forward from the `650f965` assessment
-and re-confirmed by spot-check (see Quality gates). The last *production* commit remains `650f965`,
-whose `review` handoff is **PASS / CONTINUE** with CI green.
-
-**Branch note:** active work happens on `develop` (HEAD `fa8d624`, **working tree clean**, ahead of
-`origin/develop` by 5 commits — the loop-infra commits are unpushed). A human merges
-`develop`→`main`. `main` lags. The `.devcontainer` tuning is now committed (was uncommitted at the
-last assessment).
+The monitor follows + mirrors + verifies hubs (M1 met), serves all three computed proofs per hub from
+the local mirror (M2 met), and now answers the verify-for-me verdict route
+(`GET /<domain>/log/verify`). M3 is at 2/4 Verify criteria; the two HTML surfaces (dashboard + log
+browser), the WASM verifier, and OTS anchoring are the remaining v1 work.
 
 ## Convergence
 - **Remaining Verify criteria:**
-  - **M3: 3/4 open** — CORS-on-every-GET is met (the only closed M3 criterion); still open:
-    `verify-for-me` JSON verdict (`GET /<domain>/log/verify`), `GET /` HTML dashboard (every realm
-    hub + status + coverage), `GET /<domain>/log/` HTML log browser.
+  - **M3: 2/4 open** — closed: `Access-Control-Allow-Origin: *` on every GET, and the verify-for-me
+    JSON verdict (`GET /<domain>/log/verify?iscc_id=<id>`, hub status + checkpoint `(size, root)` +
+    Merkle-verified inclusion result, id-faults → 200 non-verified, never 5xx). Still open: `GET /`
+    HTML dashboard (every realm hub + status + coverage), `GET /<domain>/log/` HTML log browser.
   - **WASM verifier: 1/1 open** (not started — no `internal/proof`, no `syscall/js`).
   - **OTS anchoring: 1/1 open** (not started — `nbd-wtf/opentimestamps` not imported).
   - M1: 0 open (met). M2: 0 open (met).
-- **Last ~10 iterations: ~1 milestone-Verify / ~9 refactor·polish·test·infra — a drift signal.**
-  Only the CORS slice closed an M3 Verify criterion. The rest were refactor/collapse
-  (`RecordTile p uint8` single-source, `AdvanceAccepted` tx, `CheckConsistency` collapse,
-  `AcceptCheckpoint` context reuse), mirror polish (Cache-Control, conditional GET), a test-only
-  slice, an M1 correctness edge (frozen-evidence-only), and now a run of pure loop-tooling commits.
-  **The five newest commits are 100% loop/context/devcontainer infra — zero production code.** The
-  three biggest, clearly-reachable M3 Verify criteria (verify-for-me, dashboard, log browser) plus
-  WASM and OTS have not been touched while the loop has spent its recent budget on internal cleanups
-  and meta-tooling. **Flag:** the next iterations should attack an open Verify criterion (start the
-  verify-for-me / dashboard arc) rather than further refactor or tooling.
+- **Last ~10 iterations: ~2 milestone-Verify / ~8 refactor·polish·test·infra.** The polish-streak
+  drift flagged last assessment broke: the loop landed the verify-for-me slice
+  (`562a4d8`/`b537abe`/`8f0aa9d`), closing a second M3 Verify criterion after a run of
+  refactor/infra commits (`RecordTile p uint8`, learnings split, CID-steering prompt, Codex hook,
+  devcontainer cap). HEAD `706eb1e` is a one-line loop-infra fix (Codex launch command) with zero
+  production code. Convergence is back on track; the next two M3 criteria (dashboard + log browser)
+  are the same HTML arc and clearly reachable — keep attacking Verify criteria, not tooling.
 
 ## M1 — Read-only Monitor
-**Status**: met — carried forward; no production change since `650f965`. All Verify criteria remain
-satisfied: `origin`/`vkey` golden, all three triggers (fork/shrink/equivocation) golden-tested
-end-to-end with freeze + alert-once + restart survival, coverage tracked, structured logs,
-`/metrics` served over HTTP. **CI-gated & green at the last production HEAD.**
+**Status**: met — carried forward; no production change in the assessed range
+(`fa8d624..706eb1e` touched only `proofserve`, `cmd/iscc-monitor/main.go`, and loop context). All
+Verify criteria remain satisfied: `origin`/`vkey` golden, all three triggers
+(fork/shrink/equivocation) golden-tested end-to-end with freeze + alert-once + restart survival,
+coverage tracked, structured logs, `/metrics` served over HTTP. **CI-gated & green.**
 
-- **Test totals at HEAD**: **207 `func Test`** across `cmd/` + `internal/`, **48** `_test.go` files
-  (both re-counted, unchanged from `650f965`).
+- **Test totals at HEAD**: **215 `func Test`** across `cmd/` + `internal/`, **49** `_test.go` files
+  (up from 207/48 — the +8 tests / +1 file are the new `proofserve/verify_test.go`).
 - **Packages present (re-verified)**: `cmd/{iscc-monitor,notecheck}`; **13 internal packages** —
   `config, corsmw, didweb, follower, healthz, logclient, metrics, metricshttp, proofserve,
   registry, store, tiles, tilesserve`. Module `github.com/iscc/iscc-monitor`, `go 1.24.0` (no
@@ -74,7 +58,7 @@ end-to-end with freeze + alert-once + restart survival, coverage tracked, struct
   resolve is a larger design change, not on the Verify bar.
 - **Fixtures**: `testdata/live/` (repo root) still holds **only the two checkpoints**
   (`sb0.iscc.id_checkpoint`, `sb1.amlet.id_checkpoint`) — **no tiles, entry bundles, or did.json**
-  (re-verified by `ls`). Tile/fsck/inclusion/consistency/entries tests run against in-process
+  (re-verified by `ls`). Tile/fsck/inclusion/consistency/entries/verify tests run against in-process
   fixtures. Stale `sb1.amlet.id` did.json drift (pre-rotation key) captured in tests; not refreshed.
 - **Reuse imports wired** (carried forward): `golang.org/x/mod/sumdb/note`, `modernc.org/sqlite`,
   `transparency-dev/merkle` (`rfc6962`, `proof.Inclusion`+`proof.Consistency`),
@@ -90,63 +74,68 @@ mirror in `internal/follower/inclusion_test.go`). The served proof surface is co
 computed proofs — `inclusion`, `consistency`, `entries` — served from the local mirror, never
 re-hitting the hub. The mirror write API is single-source on `p` — `RecordTile(…, p uint8, …)` /
 `RecordEntryBundle(…, p uint8, …)` with the store the only `p→width` authority (`widthForP` at
-`internal/store/fetcher.go:113`, **re-verified as the single definition**; the follower's duplicate
-was deleted). **Nothing remains on the M2 Verify bar.**
+`internal/store/fetcher.go`). **Nothing remains on the M2 Verify bar.**
 
 ## M3 — Trust API + dashboard
-**Status**: **in progress** (1/4 Verify criteria met). The raw tlog-tiles mirror is fully plumbed:
-(1) CORS on every public GET via the single `corsmw.Handler` wrap — **closes the
-`Access-Control-Allow-Origin: *` Verify criterion**; (2) per-route `Cache-Control`; (3) a strong
-content ETag + `If-None-Match`→`304` conditional GET on every 200. The binary's mux serves
-`/metrics`, `/healthz`, the per-hub raw tlog-tiles subtrees, and the per-hub `/inclusion` +
-`/consistency` + `/entries` computed-proof endpoints, all behind CORS.
+**Status**: **in progress** (2/4 Verify criteria met). The raw tlog-tiles mirror is fully plumbed:
+CORS on every public GET via the single `corsmw.Handler` wrap (closes the
+`Access-Control-Allow-Origin: *` criterion); per-route `Cache-Control`; a strong content ETag +
+`If-None-Match`→`304` conditional GET on the static-mirror 200s.
+
+**Verify-for-me landed** (`internal/proofserve/handler.go`, `serveVerify` + `VerifyVerdict`, mounted
+at `/verify` in `cmd/iscc-monitor/main.go:205`): `GET /<domain>/log/verify?iscc_id=<id>` returns the
+store-provable `hub_status`, the accepted checkpoint `(size, root)`, and a REAL RFC-6962 inclusion
+result recomputed from the local mirror and Merkle-verified against the accepted root
+(`proof.VerifyInclusion`). Every id-shaped fault (missing/unknown id, leaf not covered, tile not
+mirrored, no accepted checkpoint) is a 200 non-verified verdict; non-200 is reserved for genuine infra
+faults. Golden-tested across the 256-leaf boundary; the inclusion check was reviewer-mutation-proven
+non-vacuous through the HTTP seam (handoff PASS). **Closes the second M3 Verify criterion.**
 
 **Still absent (re-verified by grep at this assessment):**
-- `verify-for-me` verdict surface — no `GET /<domain>/log/verify` route, no `html/template` /
-  `text/template` import anywhere (grep clean). **M3 Verify open.**
 - Server-rendered dashboard `GET /` (status/coverage/lag/violations/OTS) — absent (`/` returns 404).
-  **M3 Verify open.**
+  No `html/template`/`text/template` import anywhere (grep clean). **M3 Verify open.**
 - Log browser `GET /<domain>/log/` HTML — absent. **M3 Verify open.**
 - ETag/Cache-Control/conditional-GET on the size-dependent proof surfaces (`internal/proofserve`
-  carries none — tied to `LastSize`); not a Verify criterion but a noted gap.
+  carries none — tied to `LastSize`; `/verify` has no caching either); not a Verify criterion.
 
 ## WASM verifier · OTS anchoring
 **Status**: **not started** (re-verified). `nbd-wtf/opentimestamps` is not imported (grep → no hits
 in `cmd/`+`internal/`+`go.mod`); no `internal/proof` package (`ls` → no such directory); no WASM
 build target (`syscall/js` not in source — grep clean). The WASM-shared verifier seam continues to
-ride on `internal/didweb`; `logclient.CheckConsistency` could share a WASM seam later.
+ride on `internal/didweb`; `serveVerify` now composes most of the proof-bundle pieces the in-browser
+verifier will share (it discards the raw checkpoint bytes and the resolved hub key, which the bundle
+path will need).
 
 ## Quality gates
 **Status**: **green** — enforced in CI.
 - `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.24.0`, no `toolchain` line); `mise
-  run check` runnable. `cmd/`/`internal/`/`go.mod`/`go.sum`/`mise.toml` **byte-unchanged since the
-  last assessment** (`git diff 650f965..HEAD --stat` over those paths is empty).
+  run check` runnable.
 - **CI configured and passing.** `.github/workflows/ci.yml` runs the inlined `mise run check` gate
   (`go build`/`go vet`/`go test ./...`) + the `cmd/notecheck` oracle shell-out on push/PR to
   `develop`/`main`. Remote `origin` = `github.com/iscc/iscc-monitor.git`. **Latest run on `develop`:
-  `conclusion: success`** at HEAD `650f965` (run 27899275324) — the most recent *production* HEAD.
-  The 5 commits since are loop/docs/infra only (no Go source), so no newer production CI run applies.
-- Latest *production* `review` handoff (2026-06-21, **PASS / CONTINUE**, for `650f965`) records `mise
-  run check` green (15 packages `ok`, `go vet`/`gofmt -l .` clean), the public-surface `widthForP`
-  invariant reviewer-mutation-proven non-vacuous, oracle gate correctly N/A with the four
-  mirror-consuming packages re-run uncached, store confirmed a leaf, gate-integrity scan clean.
+  `conclusion: success`** at HEAD `8f0aa9d` (run 27906233830) — the verify-for-me production HEAD.
+  HEAD `706eb1e` is a one-line loop-infra fix (no Go source), so no newer production CI run applies.
+- Latest `review` handoff (2026-06-21, **PASS / CONTINUE**, for the `/verify` route) records `mise run
+  check` green (15 packages `ok`, `go vet`/`gofmt -l .` clean), the RFC-6962 inclusion path
+  reviewer-mutation-proven non-vacuous through the HTTP seam, store confirmed a leaf, gate-integrity
+  scan clean. The Codex second opinion was unavailable (env denied the bypass flag) — recorded as a
+  graceful-degradation note, not a blocker.
 - **No open `critical` or `normal` issue.** **Open `low` issue (loop-skipped, not a DONE blocker):** 1
   in `issues.md` — `cmd/notecheck`'s vestigial `out io.Writer` param.
 
 ## Next Milestone
-**M1/M2 met; M3 in progress (1/4 Verify) — the tlog-tiles mirror HTTP arc + three computed proofs
-are done and the `normal` backlog is drained. The last five iterations were loop/refactor/infra with
-no Verify-criterion progress — break the polish streak and attack an open M3 Verify criterion.**
-CI green, no `critical`/`normal` open, so feature work proceeds.
+**M1/M2 met; M3 in progress (2/4 Verify). The verify-for-me slice broke the polish streak and closed a
+Verify criterion — continue the same HTML arc to finish M3.** CI green, no `critical`/`normal` open,
+so feature work proceeds.
 
 Convergence-driven order:
-1. **verify-for-me REST surface** — `GET /<domain>/log/verify?iscc_id=<id>` returning the documented
-   JSON verdict (hub status + checkpoint `(size, root)` + inclusion result; malformed/unknown id →
-   documented non-verified verdict, never 5xx). Directly closes an M3 Verify criterion; reads the
-   unified store/`SQLiteFetcher` seam. Pair with the shared proof-bundle assembler
-   (`{checkpoint, inclusion proof, record bytes, hub key, ots?}`) the in-browser verifier also needs.
-2. **`GET /` dashboard** + **`GET /<domain>/log/` log browser** — the remaining two M3 Verify
-   criteria (server-rendered HTML, golden-tested at the HTTP seam on a fixture store).
-3. **sb1 fixture refresh** (stale did.json key) and **real alert transport** (close M1's alert path)
-   — connective tissue, off the Verify bar.
-4. **WASM verifier → OTS anchoring** remain the last v1 milestones (each 1/1 Verify open).
+1. **`GET /` dashboard** — `200 text/html` listing **every** realm hub with its glossary status +
+   coverage window (lag, violations, OTS), golden-tested at the HTTP seam on a fixture store. Closes
+   the third M3 Verify criterion.
+2. **`GET /<domain>/log/` log browser** — `200 text/html` exposing the mirrored checkpoint
+   `(size, root)` with links into `entries`/proofs. Closes the fourth (final) M3 Verify criterion.
+3. **Proof-bundle assembler** — `{checkpoint, inclusion proof, record bytes, hub key, ots?}` as one
+   downloadable client-verifiable artifact (the authoritative path the in-browser verifier shares);
+   `serveVerify` already composes most pieces. Connective tissue toward the WASM milestone.
+4. **sb1 fixture refresh** (stale did.json key) and **real alert transport** — off the Verify bar.
+5. **WASM verifier → OTS anchoring** remain the last v1 milestones (each 1/1 Verify open).
