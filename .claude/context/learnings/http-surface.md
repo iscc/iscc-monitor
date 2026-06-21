@@ -39,82 +39,71 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## Computed consistency proof HTTP surface (`internal/proofserve` + `CheckpointAt ORDER BY rowid`)
 
-- **settled:** the `/consistency` RFC-6962 proof seam is landed + stable — one `proofserve.Handler`
-  mounted at both exact paths via the inner path switch (both beat the `/` subtree by most-specific
-  match), oracle gate APPLIES and was mutation-proven non-vacuous (`TestConsistencyServedProofVerifies`
-  over the 300-leaf fixture; corrupting `encoded[0]` FAILS both byte-equal + `VerifyConsistency`), and
-  `notecheck`/`derive_vkey.py` correctly N/A. (Detail in git history pre-2026-06-21.) The two durable
-  traps: **`VerifyConsistency(hasher, size1, size2, proof, root1, root2)`** — `proof` precedes the two
-  roots, UNLIKE `VerifyInclusion` where `leafHash` precedes `proof`; and the degenerate-boundary rules
-  below.
-- **The degenerate `from == 0` and `from == LastSize` cases are a 200 with an empty `consistencyProof`
-  array, not a 400** — `ConsistencyProofFromTiles` returns a nil proof without touching the fetcher.
-  `from == 0` SKIPS the `CheckpointAt(from)` row requirement (there is no checkpoint at size 0 by
-  construction); `from == LastSize` still REQUIRES the accepted-size row (`buildMirror` records it). The
-  literal `next.md` status table ("unknown `from` → 404") and the degenerate note conflicted only at
-  `from == 0`; the `from > 0` guard around `CheckpointAt` resolves it. `TestConsistencyDegenerateBoundaries`
-  pins both. Status mapping (all pinned): missing/non-numeric → 400; `LastSize==0` → 404; `from>LastSize`
-  → 400 (RFC-6962 `M ≤ N`); unrecorded `from` → 404; non-GET → 405; tile-miss `os.ErrNotExist` → 404.
-- **`CheckpointAt`'s `ORDER BY rowid LIMIT 1` fix is correct because `id INTEGER PRIMARY KEY` aliases
-  `rowid` in SQLite — so rowid is monotonic by insertion and the first-recorded (prior accepted) row is
-  returned over a later same-`tree_size` contradicting-evidence row.** `RecordCheckpoint` dedupes on
-  `UNIQUE(hub_id, tree_size, root)`, so two DIFFERENT roots at one size are two rows (the fork-evidence
-  case); the prior accepted root was recorded first → lowest rowid. Reviewer reversed the order to `DESC`
-  → `TestCheckpointAtDeterministicOnFork` FAILS (returns the contradicting row), then reverted → green.
-  Store stays a leaf (returns `[]byte`, no `logclient` type). **Knock-on:** the follower-test comment at
-  `follower_test.go:280` claiming the query is "unordered … non-deterministic" is now STALE; rewiring
-  `TestPollHubFork` to re-detect via a second `PollHub` (not a direct `freeze`) is the remaining
-  follow-up — tracked in issues.md, out of scope for the store-only slice.
+- **settled:** the `/consistency` RFC-6962 proof seam is landed + stable (oracle gate APPLIES, mutation-
+  proven by corrupting `encoded[0]`, reverted). Three durable traps survive: (1)
+  **`VerifyConsistency(hasher, size1, size2, proof, root1, root2)`** — `proof` precedes the two roots,
+  UNLIKE `VerifyInclusion` (`leafHash` precedes `proof`); (2) degenerate `from == 0` / `from == LastSize`
+  → 200 with empty `consistencyProof` (nil proof, fetcher untouched); `from == 0` SKIPS the
+  `CheckpointAt(from)` row requirement, `from == LastSize` still REQUIRES it. Status mapping (pinned):
+  missing/non-numeric → 400; `LastSize==0` → 404; `from>LastSize` → 400 (`M ≤ N`); unrecorded `from` →
+  404; tile-miss → 404. (Detail in git history pre-2026-06-21.)
+- **`CheckpointAt`'s `ORDER BY rowid LIMIT 1` is correct because `id INTEGER PRIMARY KEY` aliases `rowid`
+  in SQLite — rowid is monotonic by insertion, so the first-recorded (prior accepted) row wins over a
+  later same-`tree_size` contradicting-evidence row** (`RecordCheckpoint` dedupes on
+  `UNIQUE(hub_id, tree_size, root)`, so two roots at one size are two rows = the fork-evidence case).
+  Mutation `DESC` → `TestCheckpointAtDeterministicOnFork` FAILS, reverted. Store stays a leaf.
 
 ## Computed record-bytes HTTP surface (`/entries` + `internal/logclient/entries.go`)
 
-- **`GET /entries?index=<seq>` completes M2's proof surface (3-of-3 served) and is the simplest of the
-  three — a pure decode + index, NOT crypto.** `logclient.RecordBytesFromBundle(bundle, offset)` is a
-  verbatim `leafhasher.go` sibling: `api.EntryBundle{}.UnmarshalText` then `eb.Entries[offset]` returned
-  RAW (the JCS-canonical envelope, never re-hashed/verified). It imports exactly `errors`+`fmt`+
-  `tessera/api` (WASM-pure, verified `GOOS=js GOARCH=wasm` green); `ErrLeafOutOfBundle` is the sentinel
-  the handler maps via `errors.Is` (offset >= `len(Entries)` -> 404, a partial bundle not yet covering the
-  leaf). Served `application/octet-stream` via `writeRecord` (post-status write-drop convention, like
-  `tilesserve.writeBlob`). Oracle gate correctly N/A (no signature/RFC-6962/Merkle/did:web/fsck path);
-  go.mod/go.sum/schema byte-identical. Three exact mounts (`/inclusion`,`/consistency`,`/entries`) now
-  share one `proofserve.Handler` via the inner path switch; all beat `/`->tilesserve by most-specific match.
-- **`next.md`'s `p == 0` (full-bundle request) note was WRONG for the final partial bundle — advance
-  correctly fixed it to `p := tiles.PartialTileSize(0, bundleIndex, size)`.** Passing `p == 0`
-  unconditionally queries the mirror at width 256, but the final bundle of any non-multiple-of-256 tree
-  (and every tree < 256 leaves) is stored only at its partial width; `SQLiteFetcher`'s partial->full
-  fallback fires ONLY for `p > 0` (`errors.Is(err, os.ErrNotExist) && p > 0` in `fetcher.go`), so `p == 0`
-  would 404 a leaf that IS in the accepted tree. `PartialTileSize` (entry bundles are level-0) returns the
-  exact `p`-qualifier the proof builders already use -> a partial later promoted to full still resolves.
-  This is the same partial-bundle gotcha the inclusion/consistency builders handle; remember it for any
-  future bundle/tile read keyed on an absolute index. The 300-leaf test (`{256,260,299}` land in the
-  44-leaf partial bundle 1) and the 5-leaf binary test both exercise it — both would 404 under `p == 0`.
-- **`serveEntries` accepted-tree guards mirror `serveInclusion` exactly:** `FollowState.LastSize == 0`
-  -> 404 "no accepted checkpoint"; `seq >= LastSize` -> 404 "leaf not covered by accepted checkpoint";
-  bundle-miss `os.ErrNotExist` -> 404; `ErrLeafOutOfBundle` -> 404; missing/non-numeric `index` (reused
-  `parseUint`) -> 400; non-GET -> 405. The index is the absolute leaf **seq**, schema-agnostic (ADR-0008) —
-  this route interprets nothing (no ISCC-ID codec, no `note.$schema`). Reviewer mutation-proved the tests
-  non-vacuous: forcing the extractor to `eb.Entries[0]` FAILED the golden across the bundle boundary AND
-  the binary routing test (`record-0` vs `record-2`), then reverted -> green.
+- **settled:** `GET /entries?index=<seq>` completes M2's served proof surface (3-of-3) — a pure decode +
+  index, NOT crypto. `logclient.RecordBytesFromBundle` (`UnmarshalText` then `eb.Entries[offset]`, RAW)
+  is WASM-pure; `ErrLeafOutOfBundle` → 404 via `errors.Is`; served `application/octet-stream`. Three exact
+  mounts (`/inclusion`,`/consistency`,`/entries`) share one `proofserve.Handler` via the inner path switch.
+  Mutation-proven (extractor `eb.Entries[0]`) then reverted. (Detail in git history at-2026-06-21.) Two
+  durable traps survive below.
+- **Bundle reads keyed on an absolute index must compute `p := tiles.PartialTileSize(0, bundleIndex,
+  size)`, NEVER pass `p == 0` unconditionally.** The final bundle of any non-multiple-of-256 tree (and
+  every tree < 256 leaves) is stored only at its partial width; `SQLiteFetcher`'s partial→full fallback
+  fires ONLY for `p > 0`, so `p == 0` would 404 a leaf that IS in the accepted tree. `serveEntries` AND
+  `serveVerify` both do this; copy it for any future bundle/tile read by absolute index.
+- **`serveEntries` accepted-tree guards mirror `serveInclusion` exactly (this is the contract every
+  record-facing route must follow):** `LastSize == 0` → 404; **`seq >= LastSize` → 404 "leaf not covered
+  by accepted checkpoint"**; bundle-miss `os.ErrNotExist` → 404; `ErrLeafOutOfBundle` → 404; missing/
+  non-numeric `index` → 400; non-GET → 405. The index is the absolute leaf **seq**, schema-agnostic
+  (ADR-0008) — nothing interpreted. **NOTE the `>= LastSize` cap: `serveRecords`/`ListRecords` is the one
+  record-facing route that omits it (open `[review]` issue) — `iscc_index` can hold projections ABOVE
+  `LastSize` (ingest writes them before accept; a freeze/fault leaves them), so an uncapped list shows
+  unaccepted leaves whose `entries?index=` links this route then 404s.**
+
+## HTML record list at `/records` (`serveRecords` + `store.ListRecords`)
+
+- **settled:** the no-JS, newest-first (`seq DESC`), seq-cursor-paginated record list is landed (DS shell,
+  no `<table>`, no CDN, unquoted `[data-status=…]` CSS so the negative overlay assert stays honest, badge
+  partial reuse, render-into-buffer-then-200). Pure store-read (oracle gate N/A): `FollowState` +
+  `ListRecords` only; store stays a leaf; go.mod/go.sum/schema byte-identical. `ListRecords` newest-first
+  + hub-scope mutation-proven (`DESC→ASC` FAILS store + proofserve tests), reverted.
+- **`from == 0` is OVERLOADED as both a cursor value AND the "start at newest" sentinel — two confirmed
+  bugs both root here (open `[review]` issues):** (1) the older-link `OlderFrom = oldest-1` emits
+  `from=0` whenever a page ends at seq 1, but `ListRecords` reads `from==0` as "newest", so clicking
+  older jumps back to the newest page and **seq 0 is unreachable** via navigation; (2) `serveRecords`
+  parses `n` via `parseUint` then `int(n)` BEFORE the `> maxPageSize` clamp — a huge `n` (e.g.
+  `9223372036854775808`) wraps to a NEGATIVE `int`, the `> 200` check misses it, and modernc SQLite
+  treats a negative `LIMIT` as UNLIMITED (reviewer-confirmed: 10 rows returned for `n=-5`), so the
+  intended anti-DoS clamp is bypassed and the whole index renders. **Durable lessons for any cursor
+  pagination here:** never overload 0 (carry a separate `has-from` bool or use a 1-based/`+1` cursor);
+  clamp page size while still `uint64` BEFORE the `int()` conversion; `parseUint` itself has no overflow
+  guard (it wraps silently in `n = n*10 + …`), so an upstream cap is mandatory, not optional.
 
 ## verify-for-me JSON verdict (`/verify` + `serveVerify`)
 
-- **`/verify` INVERTS the other proof routes' status mapping: an id-shaped fault is a 200 verdict, never
-  4xx/5xx.** `serveVerify` composes the same machinery the other three routes use (FollowState ->
-  CheckpointAt -> SeqsForISCCID -> ReadEntryBundle -> InclusionProofFromTiles -> proof.VerifyInclusion),
-  but missing-id / unknown-id / no-accepted-checkpoint / leaf-out-of-tree / tile-not-mirrored ALL return
-  `200 {verified:false, reason}`. Non-200 is reserved for genuine infra faults ONLY (DB read error on
-  FollowState/CheckpointAt/SeqsForISCCID, a `CheckpointAt found==false` at the accepted size = a real
-  store inconsistency, or a non-`os.ErrNotExist` proof build/read error -> 500). This is the documented
-  weaker "caller trusts the verdict" path — remember it when adding tests for any future verify-for-me
-  surface (the bundle assembler is the stronger client-verifies path with different posture).
-- **Oracle gate APPLIES (RFC-6962 inclusion crypto) and is reviewer-mutation-proven non-vacuous.** The
-  verdict's `included`/`verified` is a REAL `proof.VerifyInclusion` against the persisted accepted root,
-  not a stub. Reviewer reverted-mutated `serveVerify` to ignore the Merkle result (`included := true`):
-  `TestVerifyInclusionIsNonVacuous` (corrupted accepted root) FAILS all three asserts, reverted -> green.
-  `hub_status` is the store-provable subset only (`frozen` if `FollowState.Frozen`, else `verified` —
-  ADR-0006: only signature-verified checkpoints advance `LastSize`); the richer
-  unverified/unresolvable/rotated statuses live in the in-memory metrics registry and are deliberately
-  NOT threaded into proofserve (a documented limitation, not a defect).
+- **settled + durable trap:** `/verify` INVERTS the other proof routes' status mapping — an id-shaped
+  fault (missing/unknown id, no-accepted-checkpoint, leaf-out-of-tree, tile-not-mirrored) is a
+  `200 {verified:false, reason}`, NOT 4xx/5xx; non-200 is reserved for genuine infra faults only (DB
+  read error, `CheckpointAt found==false` at accepted size, or a non-`os.ErrNotExist` proof error → 500).
+  The `included`/`verified` field is a REAL `proof.VerifyInclusion` against the persisted accepted root
+  (oracle gate APPLIES; mutation-proven `included:=true` → `TestVerifyInclusionIsNonVacuous` FAILS,
+  reverted). `hub_status` is store-provable only (`frozen` else `verified`). Remember the inverted posture
+  for any future verify-for-me surface (the bundle assembler is the stronger client-verifies path).
 
 ## HTML log browser at the hub-log root (`GET /` + `serveBrowser`)
 
