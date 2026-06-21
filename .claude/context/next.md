@@ -1,112 +1,96 @@
 # Next Work Package
 
-## Step: `iscc_index` store writer + `iscc_id → []seq` read-back
+## Step: Wire the iscc_index projection into PollHub's entry-bundle ingestion
 
 ## Goal
-Persist the schema-agnostic projection records (`BundleProjections` output) into the
-`iscc_index` table and add the `iscc_id → []seq` one-to-many read query. This lands the
-store half of the M2 `iscc_index` projection (the pure decoder landed last slice) and
-directly unblocks the next slice — resolving a sampled `iscc_id → leafIndex` to wire
-`VerifyInclusionEvidence` into `PollHub`.
+Turn the two built-but-unwired `iscc_index` halves into a running projection: as `ingestEntryBundles`
+mirrors each entry bundle on a verified poll, decode it via `logclient.BundleProjections` and persist
+the per-leaf records via `store.RecordProjections`. This is the first half of M2's projection bar —
+after this slice a real poll populates `iscc_index`, so a later slice can resolve `iscc_id → leafIndex`
+for the inclusion cross-check.
 
 ## Scope
-- **Create**: `internal/store/iscc_index.go` — `ProjectionRecord` struct + `RecordProjections`
-  writer + `SeqsForISCCID` reader.
-- **Create (test, not counted)**: `internal/store/iscc_index_test.go` — table-driven round-trip +
-  idempotency + one-to-many tests.
-- **Modify**: (none — `schema.sql` already defines the `iscc_index` table and its index)
+- **Modify**: `internal/follower/ingest.go` — in `ingestEntryBundles`, after `RecordEntryBundle`
+  succeeds for a bundle coord, decode the same raw bundle bytes with
+  `logclient.BundleProjections(raw, baseSeq)` (baseSeq = `c.Index * tiles.TileWidth`), copy each
+  `logclient.Projection → store.ProjectionRecord` at the call site (set `HubID`), and call
+  `st.RecordProjections(ctx, recs)`. (1 non-test/doc file.)
+- **Modify (tests, not counted toward the 3-file limit)**:
+  - `internal/follower/fsck_test.go` — change `leafPreimages` to emit valid JSON-envelope records so
+    `buildVerifiedMirror`'s entry bundles decode under `BundleProjections`.
+  - `internal/follower/ingest_test.go` — add an integration test asserting the projection read-back.
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/store/tiles.go` — the upsert/round-trip CRUD pattern to mirror
-    (`RecordTile` composite-PK upsert at lines 37-51; `ReadTileBlob` "absent is not an error" at 76-89).
-  - `/workspace/iscc-monitor/internal/store/checkpoints.go` — the store-owned-plain-struct convention
-    (`CheckpointRecord`/`HubKey` at lines 26-49, 62-70; `RecordHubKey` at 324; `LookupHubKey` at 365)
-    and the `unixOrNil`/`nullStringOrNil` helpers.
-  - `/workspace/iscc-monitor/internal/store/schema.sql` lines 99-113 — the `iscc_index` columns
-    (`hub_id`, `seq` PRIMARY KEY, `iscc_id` BLOB, `iscc_id_str` TEXT, `note_schema` TEXT,
-    `record_sha256` BLOB) and the `iscc_index_by_iscc_id` index on the `iscc_id` BLOB column.
-  - `/workspace/iscc-monitor/internal/logclient/projection.go` — the `Projection` struct whose fields
-    (`Seq`, `IsccID`, `NoteSchema`, `RecordSHA256`) the follower will later copy into
-    `ProjectionRecord` at the call site (do NOT import logclient from store).
-  - `/workspace/iscc-monitor/internal/store/sqlite_test.go` lines 1-40 — the `t.TempDir()` open +
-    observable-state test setup to reuse; also `internal/store/tiles_test.go` for register-hub-then-CRUD.
+  - `/workspace/iscc-monitor/internal/logclient/projection.go` — `BundleProjections` /
+    `Projection` field names + the JSON-envelope shape it decodes (`recordEnvelope`: top-level
+    `iscc_id`, inner `note.$schema`).
+  - `/workspace/iscc-monitor/internal/store/iscc_index.go` — `ProjectionRecord` fields +
+    `RecordProjections` / `SeqsForISCCID` contracts (empty slice = no-op; absent lookup = nil).
+  - `/workspace/iscc-monitor/internal/logclient/projection_test.go` lines 38-86, 101-116 — the
+    canonical JSON-envelope fixture form to copy into `leafPreimages`.
+  - `/workspace/iscc-monitor/internal/follower/fsck_test.go` lines 115-253 — `leafPreimages`,
+    `encodeBundle`, `buildVerifiedMirror` (the tree is built from the same preimages, so changing them
+    keeps the signed root self-consistent and fsck still rebuilds it).
+  - `/workspace/iscc-monitor/internal/follower/ingest_test.go` lines 159-218 — `TestPollHubMirrorsTiles`,
+    the integration-test pattern (poll `buildVerifiedMirror`, assert on store read-back) to mirror.
 
 ## Not In Scope
-- **Wiring into `PollHub`/`follower`** — no production caller this slice. `RecordProjections` is an
-  intentional unused-until-wired export seam (like `RecordTile`/`LookupHubKey` were). Do not touch
-  `internal/follower`.
-- **Wiring `VerifyInclusionEvidence`** — that is the *next* slice; `SeqsForISCCID` exists to unblock
-  it, not to call it now.
-- **ISCC-ID interpretation** — do NOT decode the `ISCC:`-prefixed string into a structured ISCC-ID,
-  do NOT import iscc-lib, do NOT validate maintype/subtype. ADR-0008: the index interprets nothing.
-  Store the raw string and its UTF-8 bytes only.
-- **`note_schema` validation** — store the raw `note.$schema` verbatim; never check it against a
-  known-schema list.
-- **`go.mod`/`go.sum`/`schema.sql` changes** — the `iscc_index` DDL already exists; no new dep
-  (the new file needs only stdlib already in the store closure).
+- **Do NOT wire `VerifyInclusionEvidence` / the inclusion cross-check** — that needs an
+  `IsccLogInclusionProof` fixture (none captured yet) and `SeqsForISCCID`-driven `iscc_id → leafIndex`
+  resolution; it is the very next slice. This step only persists the projection.
+- Do NOT add an ISCC-ID codec, a deletion-status projection, or known-schema validation (ADR-0008:
+  the index is a raw fold — interpret nothing).
+- Do NOT touch `schema.sql`, `go.mod`, or `go.sum` (the `iscc_index` table and its index already
+  exist; `BundleProjections`/`RecordProjections` are already in the build closure).
+- Do NOT address the open `normal` follower issues (frozen-hub advance, `CheckpointAt` ordering,
+  `AcceptCheckpoint` did.json re-fetch, tile `p`/`width` duplication) in this slice — they are weighed
+  at the inclusion-cross-check slice that more deeply reworks the verified path.
 
 ## Implementation Notes
-- **Store stays a leaf (load-bearing).** `internal/store` must NOT import `internal/logclient` (it
-  pulls `net/http` via `didresolve.go`). Mirror `checkpoints.go`'s convention: define a store-owned
-  plain `ProjectionRecord` struct; the follower will copy `logclient.Projection` → `ProjectionRecord`
-  at the call site in the later wiring slice. Verify with the package-imports grep in Verification.
-  Imports for the new file: `context`, `database/sql`, `errors`, `fmt` only (no `crypto/sha256` —
-  the hash arrives pre-computed in the record).
-- **`ProjectionRecord` fields** map 1:1 to the columns: `HubID int64`, `Seq uint64`, `IsccID string`
-  (the raw `ISCC:`-prefixed string from `Projection.IsccID`), `NoteSchema string`, `RecordSHA256
-  [32]byte`. Keep it a plain value struct like `CheckpointRecord`/`HubKey`.
-- **`iscc_id` BLOB vs `iscc_id_str` TEXT decision (the review's open question):** store the raw
-  string into **both** — `iscc_id_str` gets the verbatim `ISCC:`-prefixed string, and `iscc_id` BLOB
-  gets its UTF-8 bytes (`[]byte(r.IsccID)`). This keeps the existing `iscc_index_by_iscc_id` index
-  (on the BLOB column) usable for `iscc_id → []seq` lookups WITHOUT any ISCC-ID codec, honoring
-  ADR-0008's "interpret nothing". An empty `IsccID` writes an empty BLOB + empty string (not NULL) —
-  the decoder already indexes empty ids verbatim (ADR-0008), so do not special-case it. (A real
-  base32 BLOB decode is a deliberate future option if a binary-keyed lookup is ever needed; it is out
-  of scope and explicitly NOT required now.)
-- **`RecordProjections(ctx, recs []ProjectionRecord) error`** writes the batch. Because `seq` is the
-  PRIMARY KEY, re-ingesting an already-mirrored bundle MUST be idempotent — use `INSERT INTO
-  iscc_index (hub_id, seq, iscc_id, iscc_id_str, note_schema, record_sha256) VALUES (?,?,?,?,?,?)
-  ON CONFLICT(seq) DO UPDATE SET hub_id=excluded.hub_id, iscc_id=excluded.iscc_id,
-  iscc_id_str=excluded.iscc_id_str, note_schema=excluded.note_schema,
-  record_sha256=excluded.record_sha256` per row, mirroring `RecordTile`'s composite-PK upsert. Pass
-  `int64(r.Seq)`, `[]byte(r.IsccID)`, `r.IsccID`, `r.NoteSchema`, `r.RecordSHA256[:]` as the SQLite
-  bindings. Wrap errors `%w` with a `store.RecordProjections: seq %d: %w` prefix. An empty slice is a
-  no-op returning nil. Single-writer discipline holds — plain `db.ExecContext` calls on the capped
-  pool (ADR-0005/0007); a per-row loop is fine (no explicit transaction needed; match `RecordTile`).
-- **`SeqsForISCCID(ctx, hubID int64, isccID string) ([]uint64, error)`** is the one-to-many reader:
-  `SELECT seq FROM iscc_index WHERE hub_id = ? AND iscc_id = ? ORDER BY seq` (query the BLOB column
-  with `[]byte(isccID)` so it uses the index; `ORDER BY seq` makes the result deterministic). Return
-  a nil/empty slice + nil error for no matches — "absent is not an error", mirroring `LookupHubKey`.
-  Scan each row into an `int64` then convert to `uint64` (the column is INTEGER, matching how the
-  codebase binds `int64(seq)` on the write side). `defer rows.Close()` and check `rows.Err()` after
-  the loop. Wrap any query/scan fault `%w` with a `store.SeqsForISCCID: hub %d: %w` prefix.
-- **Correctness rule (learnings.md):** "`iscc_id → seq` is one-to-many, schema-agnostic (ADR-0008) —
-  index by `seq`; store the raw `note.$schema`; lookups return a list; unknown schemas are indexed +
-  proof-able but never interpreted." The test MUST exercise the list-return (one `iscc_id` with a
-  declaration + a deletion at two different seqs → `SeqsForISCCID` returns both).
-- **FK note:** `iscc_index.hub_id` REFERENCES `hubs(hub_id)` and `foreign_keys=ON`, so the test must
-  register a hub first (reuse the `RegisterHub`/insert helper that `tiles_test.go` already uses) before
-  inserting projection rows — a dangling `hub_id` will fail the FK constraint.
-- Start the file with a docstring (project convention) explaining it is the `iscc_index` writer +
-  one-to-many reader, that it stores the raw `iscc_id`/`note.$schema` without interpretation
-  (ADR-0008), and that it is an unwired-until-M2 export seam.
+- **Where**: the projection write belongs in `ingestEntryBundles` (`ingest.go` lines 67-78), right
+  after the successful `st.RecordEntryBundle` call, reusing the already-fetched `raw` bytes — do not
+  re-fetch. Decode once per bundle coord and persist that bundle's slice. `RecordProjections` is
+  idempotent (`ON CONFLICT(seq) DO UPDATE`), so a re-poll overwrites in place, matching the tile
+  mirror.
+- **baseSeq**: a bundle at tile-space `c.Index` starts at absolute leaf index `c.Index * tiles.TileWidth`
+  (256). `tiles.TileWidth` is already imported in `ingest.go`. `BundleProjections` makes each leaf's
+  `Seq` absolute via this base — pass `c.Index * tiles.TileWidth`, never a per-call counter.
+- **Store stays a leaf (Correctness rule)**: copy `logclient.Projection → store.ProjectionRecord`
+  field-by-field at the call site (`HubID: hubID, Seq, IsccID, NoteSchema, RecordSHA256`). The store
+  must not import `logclient`; verify with `go list -f '{{join .Imports " "}}' ./internal/store`.
+- **Error discipline (ADR-0008 + ADR-0006)**: a malformed/non-JSON record is a genuine fault, so
+  propagate `BundleProjections`'s error and `RecordProjections`'s error wrapped with `%w` (e.g.
+  `project entry bundle index %d: %w`). This is a decode/store fault, NOT a self-consistency violation
+  — it returns up through `ingestTiles → PollHub` and aborts the poll before accepted state advances
+  (same posture as a tile-write fault); it must never freeze the hub.
+- **Fixture (test-only, load-bearing)**: `leafPreimages` currently emits `leaf-%d` plaintext, which is
+  not valid JSON and would make `BundleProjections` error on every verified-path poll. Change it to
+  emit one valid JSON envelope per leaf with a **distinct** `iscc_id` (e.g. `ISCC:` + a per-index
+  suffix) and a real inner `note.$schema` (copy the `declSchema` URI from `projection_test.go`). The
+  tree is rebuilt from these same preimages (`buildVerifiedMirror` calls `tree.AppendData(preimages)`
+  and frames the SAME preimages into the bundles), so the signed root stays self-consistent and the
+  existing fsck/mirror tests keep passing — confirm by re-running the WHOLE follower package, not just
+  the new test. `leafPreimages` is used only by `buildVerifiedMirror`; `equivocation_test.go` builds
+  its own inline `leaf-%d` tree and never calls `BundleProjections`, so it is unaffected.
+- **Relevant learning**: "`iscc_id → seq` is one-to-many, verification is schema-agnostic (ADR-0008) —
+  index by `seq`, store the raw `note.$schema`, lookups return a list." Use distinct ids per leaf in
+  the fixture so the read-back assertion is a clean one-seq-per-id lookup (a one-to-many declaration +
+  deletion sharing an id is already covered by the store-level `iscc_index_test.go` and can stay there).
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -run TestRecordProjections -count=1 ./internal/store` passes (uncached).
-- `go test -run TestSeqsForISCCID -count=1 ./internal/store` passes (uncached).
-- One-to-many assertion: write two `ProjectionRecord`s with the SAME `IsccID` but different `Seq`
-  (e.g. a declaration at seq 256 + a deletion at seq 257, distinct `NoteSchema`) →
-  `SeqsForISCCID(hubID, id)` returns `[]uint64{256, 257}` (both, ordered).
-- Idempotency assertion: calling `RecordProjections` twice with the same `seq` leaves exactly one
-  row for that `seq` (re-query `SELECT COUNT(*) … WHERE seq = ?` == 1; an `UPDATE`d `note_schema`
-  field round-trips to the second write's value).
-- Schema-agnostic assertion: a record with an unmodeled `NoteSchema` (e.g. `"iscc-note-future-9.9.9"`)
-  and a record with an empty `IsccID` both persist and read back verbatim (no rejection).
-- Leaf-purity assertion: `go list -f '{{join .Imports "\n"}}' ./internal/store | grep -E
-  'internal/logclient|net/http'` is empty.
+- `go test -run TestPollHub -count=1 ./internal/follower` passes (the existing verified-path + mirror
+  tests survive the `leafPreimages` JSON-envelope change — proving the signed root stays consistent and
+  fsck still rebuilds it).
+- A new integration test in `ingest_test.go` (e.g. `TestPollHubRecordsProjections`) drives a verified
+  `PollHub` over `buildVerifiedMirror(t, mirrorLeaves)` and asserts, via the store read seam, that the
+  projection was persisted: for a known fixture leaf's `iscc_id`, `st.SeqsForISCCID(ctx, hubID, id)`
+  returns the expected `[]uint64{seq}` (asserting on observable store output, never follower
+  internals). `go test -run TestPollHubRecordsProjections -count=1 ./internal/follower` passes.
+- `go list -f '{{join .Imports " "}}' ./internal/store | grep -E 'internal/logclient|net/http'` is
+  empty (store stays a leaf).
 - `git diff --quiet HEAD -- internal/store/schema.sql go.mod go.sum` exits 0 (no schema/dep change).
 
 ## Done When
-`internal/store/iscc_index.go` exposes `RecordProjections` (idempotent upsert keyed on `seq`) and
-`SeqsForISCCID` (ordered one-to-many `iscc_id → []seq`), all Verification checks pass, store stays a
-leaf (no logclient/net/http import), and `schema.sql`/`go.mod`/`go.sum` are byte-unchanged.
+A verified `PollHub` persists the `iscc_index` projection for every mirrored entry bundle, the new
+`SeqsForISCCID` read-back integration test passes, all existing follower tests stay green under the
+JSON-envelope fixture, the store stays a leaf, and `mise run check` is green.
