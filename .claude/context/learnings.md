@@ -585,6 +585,28 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   re-polled every `Normal` tick (no back-off) — keep freeze on the nil-error path. `due()` uses `>=`
   (exactly-at-interval is due); zero `lastPoll` is always due (fresh hub polled on tick 1, restart
   re-polls all — harmless, `PollHub` is idempotent on an unchanged checkpoint).
+- **The ADR-0006 already-frozen evidence-only short-circuit is `if fs.Frozen { recordVerdict(m,
+  hubID, status, true, observedAt); return status, nil }`, placed AFTER `checkConsistency` + the
+  `violated` branch and BEFORE `RecordCheckpoint`.** Placement is the whole correctness story: a frozen
+  hub that re-serves a *fresh* contradiction still flows through the `violated` branch above (records
+  the re-detection as evidence, re-fires the violations counter); the short-circuit catches only the
+  *clean* re-poll (no fresh violation) and suppresses `RecordCheckpoint`/`SetCoverage`/
+  `AdvanceFollowState`/`cacheHubKey`/`fsckMirror`. `ingestTiles` (run earlier) is deliberately NOT
+  skipped — tiles are rebuildable evidence, not accepted state. `frozen=true` maps to the glossary
+  `"frozen"` label (not the `StatusVerified` enum), and the return stays `(status, nil)` because the
+  signature was valid (freezing is a separate axis). Reviewer mutation-proved non-vacuous: deleting the
+  block makes `TestPollHubFrozenCleanRepollIsEvidenceOnly` FAIL on `status="verified"` (the hub would
+  re-advance the cursor, coverage, key cache). Oracle gate correctly N/A — pure freeze-decision wiring,
+  no signature/RFC-6962/Merkle/did:web/fsck path touched; go.mod/go.sum/schema byte-unchanged.
+- **The frozen-clean re-poll test seeds the freeze via `store.Freeze` directly, then re-polls the SAME
+  300-leaf `buildVerifiedMirror` at the same size/root.** This is the deterministic way to reach the
+  short-circuit: with `prevSize==info.TreeSize==300` and identical root, `CheckShrink`/`CheckFork` are
+  both false and the equivocation branch short-circuits on `info.TreeSize <= prevSize`, so
+  `violated==false` and `fs.Frozen==true` → the new branch fires. Driving the freeze through a first
+  `PollHub`-into-violation would re-engage the `TestPollHubFork` re-detection fragility (a separate
+  deferred issue); the direct `store.Freeze` seed is the clean isolation. The metric assertion uses a
+  *fresh* `metrics.New()` on the re-poll only (seed poll passes `m=nil`), so `status="frozen" 1` present
+  + `status="verified"` absent is a clean single-verdict assert.
 - **`Run` is deliberately untested and that is correct here** — it is a 12-line `select` over
   `ctx.Done()`/`ticker.C` with `defer ticker.Stop()` and one documented `_ = l.Tick(ctx, t)` (a flaky
   hub must not abort the network loop; `Tick` already surfaces the error to its caller, so this is not

@@ -1,64 +1,64 @@
-## 2026-06-21 — Frozen hubs are evidence-only: stop the clean re-poll from advancing accepted state
+## 2026-06-21 — Review of: Frozen hubs are evidence-only — stop the clean re-poll from advancing accepted state
 
-**Done:** Added the ADR-0006 already-frozen evidence-only short-circuit to `PollHub`: after the
-self-consistency check and the `violated` branch, when `fs.Frozen` is true and the poll did NOT
-re-detect a fresh violation, `PollHub` records the verdict metric (glossary `"frozen"`) and returns
-`(status, nil)` WITHOUT `RecordCheckpoint`, `SetCoverage`, `AdvanceFollowState`, `cacheHubKey`, or
-`fsckMirror`. This closes the silent freeze bypass where a frozen hub still advanced `last_size`,
-coverage, the key cache, and ran fsck on a later clean-looking poll.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/follower/follower.go`: new `if fs.Frozen { recordVerdict(m, hubID, status, true,
-  observedAt); return status, nil }` short-circuit placed after the `violated` branch and before
-  building the `CheckpointRecord`; updated the `PollHub` doc comment (evergreen) to state an
-  already-frozen hub is re-polled evidence-only and never advances accepted state. No other control
-  flow touched — `ingestTiles` still runs before the consistency check, the `violated`/freeze path
-  is untouched.
-- `internal/follower/follower_test.go` (test): added `TestPollHubFrozenCleanRepollIsEvidenceOnly` —
-  one clean verified poll seeds accepted state, `store.Freeze` freezes the hub directly, then a
-  second poll over the SAME mirror (same size, same signed root → no shrink/fork/equivocation) is
-  verified-and-clean. Asserts `LastSize` unchanged, `Coverage` unchanged, `hub_keys` count unchanged,
-  hub stays `Frozen`, and the metric is `status="frozen"` (and NOT `status="verified"`). Reuses the
-  existing `buildVerifiedMirror`/`mirrorLeaves`/`countRows`/`assertMetric` helpers — no new fixtures.
+**Summary:** `PollHub` now short-circuits an already-frozen hub to evidence-only on a clean verified
+re-poll: `if fs.Frozen { recordVerdict(m, hubID, status, true, observedAt); return status, nil }`,
+placed after `checkConsistency` + the `violated` branch and before `RecordCheckpoint`, so no
+checkpoint record, coverage, follow-cursor advance, key cache, or fsck runs (ADR-0006). The change is
+scope-clean (1 production file + its test + handoff), trust-root code is byte-unchanged, the new test
+is reviewer-mutation-proven non-vacuous, and the full gate is green.
 
-**Verification:** `mise run check` → green (build + vet + all 15 packages `ok`; `gofmt -l .` empty).
-Per-criterion:
-- `go test -count=1 -run TestPollHub ./internal/follower` → PASS (new frozen-clean-repoll test +
-  `TestPollHubFork`/`Shrink`/`VerifiedAdvances`/`Unverified`/`CacheHit`/`Fsck`; no regression).
-- `go test -count=1 -run TestTickFrozenUnaffected ./internal/follower` → PASS unchanged (the
-  re-violation re-poll path is untouched; verbose output shows it still records 2 violations / 1
-  alert and re-fires fsck on each due poll).
-- New test asserts (verbose run confirms): after the clean frozen re-poll `LastSize` ==
-  pre-repoll value, `Coverage().Set/Size/Since` unchanged, `hub_keys` count unchanged, hub stays
-  `Frozen`, `hub_status{hub_id="1",status="frozen"} 1` emitted and no `status="verified"` line.
-- `git diff --quiet -- go.mod go.sum internal/store/schema.sql` → exit 0 (pure control-flow fix).
+**Verification:**
+- [x] `mise run check` green — `go build`/`go vet`/`go test ./...` all 15 packages `ok`; re-ran
+  `go test -count=1 ./...` uncached → all `ok`.
+- [x] `gofmt -l .` empty — clean.
+- [x] `go test -count=1 -run TestPollHub ./internal/follower` — PASS (new frozen-clean-repoll test +
+  Fork/Shrink/VerifiedAdvances/Unverified/CacheHit/Fsck, no regression).
+- [x] `go test -count=1 -run TestTickFrozenUnaffected ./internal/follower` — PASS unchanged (the
+  re-violation re-poll path is untouched).
+- [x] New test asserts after the clean frozen re-poll: `LastSize` unchanged, `Coverage` unchanged,
+  `hub_keys` row count unchanged, hub stays `Frozen`, `hub_status{hub_id="1",status="frozen"} 1`
+  emitted and NO `status="verified"` line. Verbose run confirms the fsck log line fires once (seed
+  poll only) — the re-poll did not re-run fsck.
+- [x] `git diff --quiet HEAD~1..HEAD -- go.mod go.sum internal/store/schema.sql` exits 0 — no
+  dependency or schema change.
+- [x] Mutation check (reviewer-reproduced, reverted): deleting the short-circuit makes
+  `TestPollHubFrozenCleanRepollIsEvidenceOnly` FAIL on `status="verified"` (the hub re-advances). A
+  green-but-wrong implementation cannot ship.
+- [x] Oracle/conformance gate — correctly N/A for the trust-root math, but exercised anyway: this
+  slice touches only the freeze *decision wiring* (`checkConsistency`/`freeze`/`fsckMirror`/`RunFsck`/
+  `AcceptCheckpoint`/merkle/didweb all byte-unchanged). Fresh `TestPollHubFsck`/`Equivocation`/
+  `Inclusion` pass; `derive_vkey.py` reproduces both golden vectors (`40b74463`, `22b08f3e`). CI
+  `notecheck` signature-parity oracle is unaffected (checkpoint bytes + verification code untouched).
+- [x] Gate-integrity scan over unpushed commits (`@{upstream}..HEAD`) — no `//nolint`/`t.Skip`/
+  build-tag/swallowed-error/deleted-assertion in code (the only matches are context-doc prose).
+- [x] Scope discipline — only the two authorized files; nothing from `## Not In Scope` touched
+  (`freeze`, `CheckpointAt`, `TestPollHubFork`, metrics surface, HTTP surfaces all untouched). Purity
+  invariant holds (`GOOS=js GOARCH=wasm go build ./internal/didweb` OK; `internal/proof` not yet
+  born).
 
-**Mutation check (non-vacuous):** removed the short-circuit → the new test FAILS on the
-`status="verified"` assertion (and the cursor/coverage/key would all advance), confirming a
-green-but-wrong implementation cannot ship. Restored.
+**Issues found:** (none) — the `normal` issue "Frozen hubs still advance accepted state on later
+clean-looking polls" is verified fixed and removed from `issues.md`.
 
-**Next:** The ADR-0006 frozen-advance gap (the highest-value `normal` issue) is now closed. Two
-remaining cluster items from the same issue set: (1) the `TestPollHubFork` re-detection-via-second-
-`PollHub` cleanup + the stale "unordered LIMIT 1" comment in `CheckpointAt` (a follower-*test*
-behavior change, explicitly deferred this slice); (2) collapsing the self-consistency decision into a
-pure `logclient.CheckConsistency` and/or adding a deep `store.AdvanceAccepted` transaction method.
-Alternatively begin the proof-bundle JSON + verify-for-me arc.
+**Next:** Drain another ADR-0006 `normal` issue or begin the proof-surface cache arc. Highest-value
+candidates: (1) the `TestPollHubFork` re-detection-via-second-`PollHub` cleanup + stale "unordered
+LIMIT 1" comment removal (a quick win now that `CheckpointAt` is deterministic); (2) collapse the
+self-consistency decision into a pure `logclient.CheckConsistency`; (3) `AcceptCheckpoint` resolved-
+context reuse so verified polls stop re-fetching `did.json`; or (4) extend ETag/Cache-Control to the
+size-varying `/inclusion`/`/consistency`/`/entries` proof surfaces.
 
 **Notes:**
-- Conformance/oracle gate: this slice touches the freeze *decision wiring* but NOT signature
-  verification, RFC-6962 consistency math, or proof code — `checkConsistency`/`freeze`/`fsckMirror`/
-  `RunFsck` are byte-unchanged. All existing conformance tests (`TestPollHubFsck`,
-  `TestPollHubFork`/`Shrink`, the equivocation/inclusion tests, didweb/logclient goldens) pass under
-  `mise run check`; the fsck root-rebuild runs green (`Successfully fsck'd log with size 300 and root
-  e7077fda…`). The `notecheck` oracle runs in CI.
-- Behavioral nuance for review: the short-circuit means `fsckMirror` no longer runs on a frozen clean
-  re-poll. That is correct — a frozen hub is evidence-only; the mirror rebuild already ran on the
-  polls that established accepted state, `ingestTiles` still runs (tiles stay mirrored for
-  `fsck`-verifiability via the `SQLiteFetcher`), and re-running fsck would only re-verify already-
-  accepted state on a hub that can no longer advance. The verbose test output confirms the re-poll
-  emits no second fsck log line, unlike the unfrozen `TestTickFrozenUnaffected` clean hub B.
-- The test seeds the freeze via `store.Freeze` directly (one of the two paths `next.md` allowed)
-  rather than driving a first `PollHub` into a violation, because freezing directly keeps the seed
-  deterministic and avoids the `CheckpointAt` unordered-`LIMIT 1` re-detection fragility that
-  `TestPollHubFork` documents (and which is its own deferred slice). The re-poll is clean because it
-  is the SAME mirror at the SAME size/root — neither shrink, fork, nor equivocation can trip.
+- 5 `normal` issues remain open (was 6); none is `critical`, none blocks this slice's PASS, all block
+  DONE. M3 (verify-for-me, dashboard, log browser), the WASM verifier, and OTS anchoring are the bulk
+  of the remaining v1 work — Loop is CONTINUE, not DONE.
+- Behavioral nuance confirmed correct: the short-circuit means `fsckMirror` no longer runs on a frozen
+  clean re-poll. That is right — the mirror rebuild already ran on the polls that established accepted
+  state, `ingestTiles` still runs (tiles stay mirrored for `fsck`-verifiability), and re-running fsck
+  would only re-verify already-accepted state on a hub that can no longer advance. Verbose test output
+  shows exactly one fsck log line (the seed poll), none on the re-poll.
+- The test seeds the freeze via `store.Freeze` directly rather than driving a first `PollHub` into a
+  violation — the cleanest isolation of the already-frozen re-poll path, and it sidesteps the
+  `TestPollHubFork` re-detection fragility (its own deferred issue).
+- Branch is `develop`, in sync with `origin/develop`; remote `origin` configured. Pushing on PASS.

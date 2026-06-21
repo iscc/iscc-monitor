@@ -63,19 +63,6 @@ filed it and does **not** affect priority.
   let the test assert on it. Verify fixed: `out` is either gone or written to. Low — skipped by the loop.
 - **Spec:** KISS / YAGNI (CLAUDE.md code standards); no spec contract.
 
-## Frozen hubs still advance accepted state on later clean-looking polls
-- **Priority:** normal
-- **Source:** [review]
-- **What / where / how to verify:** `internal/follower/follower.go:181` still reaches
-  `AdvanceFollowState` when `fs.Frozen` is already true and the newly verified checkpoint is not a
-  fresh violation relative to `LastSize`. That path also records checkpoints, coverage/key-cache
-  state, tile mirrors, and fsck work even though ADR-0006 treats frozen hubs as evidence-only until a
-  manual unfreeze. Fix by short-circuiting already-frozen hubs out of the accepted-state path after
-  verification/re-detection evidence handling. Verify fixed by polling an already-frozen hub with a
-  clean-looking larger checkpoint and asserting `last_size` and accepted-state side effects do not
-  advance while re-detected violations can still be recorded as evidence.
-- **Spec:** ADR-0006 (frozen hubs are evidence-only until manual unfreeze).
-
 ## Tile writers require `width`, duplicating the tlog `p` translation in the follower
 - **Priority:** normal
 - **Source:** [review]
