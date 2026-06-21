@@ -20,3 +20,25 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   existing `didweb`/`logclient`/`follower` fixtures and `derive_vkey.py`'s HUBS — not invented. The
   registry→`HubTarget` mapping is deferred to wiring (needs `HubID` from `store.UpsertHub`), so
   `Loop`/`HubTarget`/`cmd/` stay untouched here, as scoped.
+
+## Hub-List parser (`ParseHubList` / `HubList.Resolve`, ADR-0010)
+
+- **Pure additive leaf beside `Parse`.** `ParseHubList([]byte) (*HubList, error)` parses the iscc-hub
+  `{version, network, hubs:[{hub_id, url, active, pubkey?}]}` YAML; `Resolve(hubID uint16) (domain, ok)`
+  maps the embedded 12-bit slot (0-4095, NOT the `store.UpsertHub` surrogate PK) to the issuing hub's
+  domain. `pubkey` is parsed-and-ignored (no field — keys come from did:web, ADR-0009). Inactive hubs
+  still resolve (`ok == true`; the badge conveys inactivity); `ok == false` is reserved for an unknown
+  slot. Stays WASM-shareable: `yaml.v3` + `net/url` are pure (`net/url` pulls `net/netip`, NOT
+  `net`/`net/http`); `os` appears only transitively via `fmt` (the documented purity nuance) — prove
+  with `GOOS=js GOARCH=wasm go build`, not by grepping `os`.
+- **`hubDomain` is fail-OPEN on a scheme'd path-bearing url — known gap, see issues.md.** It only checks
+  `u.Host == ""`, so `https://host/path` parses and `Resolve` returns `host`, dropping the path —
+  despite next.md/docstring/handoff all claiming path-bearing is rejected. The scheme-LESS test case
+  (`host/path`) is rejected via the *no-host* branch, masking the real gap. A genuine path-bearing
+  reject needs a `u.Path != ""` check. Treat any url-host-extraction helper as fail-open until it
+  rejects path/query/fragment AND a scheme'd-path test proves it.
+- **YAML zero-value fail-open: a missing `hub_id` decodes to slot 0** (a plain `uint16` cannot tell
+  absent from `0`). Same trap as any required scalar YAML field — presence-track (`*uint16` /
+  `yaml.Node` / custom `UnmarshalYAML`) if absence must fail closed. See issues.md.
+- **`KnownFields(false)`** is deliberate: unknown keys (notably `pubkey`, future fields) are tolerated,
+  not rejected — the parse-and-ignore contract. Do not flip to `true` without re-deciding `pubkey`.
