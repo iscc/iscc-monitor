@@ -1,63 +1,52 @@
-## 2026-06-21 — Make the certificate §1 inclusion claim sound — accepted-tree cap + ISCC:-prefixed lookup
+## 2026-06-21 — Review of: Make the certificate §1 inclusion claim sound — accepted-tree cap + ISCC:-prefixed lookup
 
-**Done:** Closed the two open `critical` certificate defects in ONE slice: `buildData` now (a)
-canonicalizes the lookup id to the stored `ISCC:`-prefixed form before `SeqsForISCCID`, and (b) gates
-the affirmative inclusion claim on the accepted-tree cap (`len(seqs) > 0 && seqs[0] < LastSize`),
-rendering honest cannot-certify states ("no accepted checkpoint yet" / "not in accepted tree")
-otherwise. `LastSize` is carried out of the existing `ListHubs` scan via `followedHub` (now returns the
-matched `store.HubSummary`) with no second store round-trip. Fixtures re-grounded to the production wire
-format (prefixed id + an accepted checkpoint via `AdvanceAccepted`).
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/certificate/handler.go` (only non-test source file, 1 of ≤3): `followedHub` returns
-  `store.HubSummary` (carries `HubID` + `LastSize`); `buildData` builds `lookupID := "ISCC:" +
-  strings.TrimPrefix(rawID, "ISCC:")`, looks up the prefixed form, and applies the accepted-tree cap
-  before setting `Certifiable`. Package/`buildData`/`certData.Certifiable` doc comments updated to match.
-- `internal/certificate/handler_test.go` (test, not counted): `fixtureStore` now indexes under
-  `"ISCC:"+indexedID` and seeds an accepted checkpoint (`LastSize = seq+1`); new
-  `fixtureStoreUnaccepted` helper takes an explicit `LastSize`. Added `TestCertificatePrefixedLookup`
-  (bare + prefixed request both certify) and `TestCertificateUnacceptedLeaf` (above-accepted-tree +
-  no-checkpoint subtests render cannot-certify). Updated `TestCertificateKnownID` docstring.
-- `cmd/iscc-monitor/main_test.go` (test, not counted): re-grounded `TestCertificateRouteMounted` —
-  indexes the golden id as `"ISCC:MAIGHFECJMOPMIAB"` and accepts a checkpoint at size 24816 — so the
-  end-to-end mux route still certifies under the new (correct) gating.
+**Summary:** The advance closes both open `critical` certificate defects in one slice exactly as
+`next.md` asked: `buildData` now canonicalizes the lookup id to the stored `ISCC:`-prefixed form and
+gates the affirmative §1 inclusion claim on the accepted-tree cap (`len(seqs) > 0 && seqs[0] <
+LastSize`), with honest cannot-certify states otherwise. `LastSize` is carried out of the existing
+`ListHubs` scan via a `followedHub` return-type change (no second store round-trip), and fixtures are
+re-grounded to production's wire format (prefixed id + an accepted checkpoint). Scope is clean (one
+non-test source file), all gates green, and both mutation checks reproduced independently.
 
-**Verification:** `mise run check` → green (build + vet + all 22 packages; `gofmt -l .` empty).
-- `go test -count=1 ./internal/certificate` → pass uncached.
-- `TestCertificateKnownID` → pass: bare-suffix request certifies the prefixed leaf within the accepted
-  tree, position 24815, §1 SUBJECT, sb1.amlet.id.
-- `TestCertificateUnacceptedLeaf` → pass (both subtests): seq >= LastSize → "not in accepted tree";
-  LastSize == 0 → "no accepted checkpoint yet"; neither shows the subject banner.
-- `TestCertificatePrefixedLookup` → pass: `/inclusion/MAIGHFECJMOPMIAB` and
-  `/inclusion/ISCC:MAIGHFECJMOPMIAB` both certify the same leaf.
-- Mutation checks (reviewer-reproducible, tree restored after each):
-  (a) removing the `seqs[0] >= LastSize` / `LastSize == 0` cap → `TestCertificateUnacceptedLeaf` FAILS
-  (renders the certifiable banner);
-  (b) reverting `lookupID` to bare `rawID` → `TestCertificateKnownID` + `TestCertificatePrefixedLookup`
-  FAIL ("not found in log"). Both non-vacuous.
+**Verification:**
+- [x] `mise run check` green (build + vet + test) — confirmed uncached: build + vet pass, all 21 packages `ok`.
+- [x] `go test -count=1 ./internal/certificate` passes uncached — 11 tests pass.
+- [x] `TestCertificateKnownID` — passes: bare-suffix request certifies the prefixed leaf within the accepted tree, position 24815, sb1.amlet.id.
+- [x] `TestCertificateUnacceptedLeaf` (both subtests) — `seqs[0] >= LastSize` → "not in accepted tree"; `LastSize == 0` → "no accepted checkpoint yet"; neither renders the subject banner.
+- [x] `TestCertificatePrefixedLookup` — `/inclusion/MAIGHFECJMOPMIAB` and `/inclusion/ISCC:MAIGHFECJMOPMIAB` both certify the same leaf.
+- [x] Mutation (a) — neutering the `LastSize == 0` / `seqs[0] >= LastSize` cap → `TestCertificateUnacceptedLeaf` FAILS (renders the certifiable banner). Reproduced; tree restored.
+- [x] Mutation (b) — reverting the lookup to bare `rawID` → `TestCertificateKnownID` + `TestCertificatePrefixedLookup` FAIL ("not found in log"). Reproduced; tree restored.
+- [x] `gofmt -l .` empty.
+- [x] No gate circumvention in unpushed commits (no `nolint`/`t.Skip`/build-tag/deleted-test patterns); `go.mod`/`go.sum` byte-unchanged (no new deps).
+- [x] Scope: exactly 1 non-test source file (`handler.go`); 2 test files (`certificate/handler_test.go` + `cmd/iscc-monitor/main_test.go`, both re-grounding the same two bugs). Within budget.
 
-**Next:** §1 is now sound — proceed to the §2 Checkpoint clause (`HasClause2`), which reads
-`FollowState`/`CheckpointAt(hubID, LastSize)` to render the accepted `(size, root)` the cap already
-keys on. The accepted-checkpoint plumbing this slice introduced (the `HubSummary.LastSize` carry) is
-the same data §2 displays, so it should reuse it. After §2, §3 Inclusion proof re-engages the
-oracle/conformance gate (the proof bundle must be mutation-proven non-vacuous against the hub's
-`IsccLogInclusionProof`).
+**Issues found:** (none) — both `critical` issues are resolved by this slice and deleted from `issues.md`.
+
+**Codex second opinion:** Clean verdict, no findings. Codex confirms: "the certificate handler now
+correctly normalizes lookups to the prefixed stored form and gates affirmative inclusion on the
+accepted tree size. The added tests cover the key regression paths, and the full test suite passes."
+Nothing to triage.
+
+**Next:** §1 is now sound. Proceed to the §2 Checkpoint clause (`HasClause2`): render the accepted
+`(size, root)` the cap already keys on, reusing the `HubSummary.LastSize` carry this slice introduced
+(read `FollowState`/`CheckpointAt(hubID, LastSize)`). After §2, §3 Inclusion proof re-engages the
+oracle/conformance gate — the served proof bundle's inclusion proof must be mutation-proven
+non-vacuous against the hub's `IsccLogInclusionProof`.
 
 **Notes:**
-- The oracle/conformance gate is still N/A this slice: it remains a pure HTML render of decode +
-  registry resolve + store reads (no signature/RFC-6962/Merkle/did:web/fsck/proof path). `go.mod`/
-  `go.sum` byte-unchanged (no new deps). The gate APPLIES starting at §3.
-- No template edit was needed (as next.md predicted): both new cannot-certify states route through the
-  existing `cert.html` `{{else}}` not-found branch via `data.Reason`. `data.Domain = domain` is set on
-  every post-resolve branch so the page names the hub.
-- `cmd/iscc-monitor/main_test.go` was an unavoidable third file to touch, but it is a TEST file
-  (scope counts non-test source files; only `handler.go` is source). It was a pre-existing
-  fixture-matched-to-code instance of the SAME two bugs (bare id, no accepted checkpoint) — re-grounding
-  it to ground truth was required to keep `mise run check` green and is exactly the fix this slice is
-  about.
-- The frozen-hub edge case needs no separate branch: a frozen hub's `LastSize` is its last *accepted*
-  size (freeze stops advance, ADR-0006), so the `seqs[0] < LastSize` cap already caps a frozen hub at
-  its accepted window. Documented in the code comment.
-- The two `critical` issues in `issues.md` are now closed by this change (review should delete them).
-- `learnings/certificate.md` has two OPEN (review-blocking) bullets describing exactly these fixes;
-  they can be marked resolved.
+- Oracle/conformance gate is N/A this slice: still a pure HTML render of decode + registry resolve +
+  store reads (no signature/RFC-6962/Merkle/did:web/fsck/proof path). The gate APPLIES starting at §3.
+- The boundary is correct: a tree of size N has leaves 0..N-1, so seq `LastSize-1` is the last
+  certifiable leaf and `seqs[0] >= LastSize` is the right reject condition (verified against
+  `AdvanceAccepted`, which sets `last_size = TreeSize`).
+- No template edit was needed (as predicted): both new cannot-certify states route through the
+  existing `cert.html` `{{else}}` not-found branch via `data.Reason`; the "is included in the
+  transparency log of" banner stays under `{{if .Certifiable}}`.
+- `cmd/iscc-monitor/main_test.go` was a justified third file (TEST file, not counted against the
+  ≤3 non-test source budget): the same two bugs were baked into its end-to-end fixture, so re-grounding
+  it to ground truth was required to keep `mise run check` green.
+- `learnings/certificate.md`'s two OPEN review-blocking bullets are marked resolved (collapsed into
+  settled notes with the mutation proof recorded); the index gist updated to drop "OPEN".

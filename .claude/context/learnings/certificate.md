@@ -20,30 +20,31 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   skeleton's tests are non-vacuous (reviewer reproduced: `Resolve(id.HubID+1)` →
   known-id FAILS; swallow the `Decode` error → malformed FAILS).
 
-- **OPEN (review-blocking, NEEDS_WORK): the §1 SUBJECT clause must gate on the
-  accepted-tree cap (`seqs[0] < FollowState.LastSize`), like EVERY sibling
-  record route.** The skeleton sets `Certifiable` on `len(seqs) > 0` alone, so it
-  affirmatively renders "is included in the transparency log at position N" for a
-  leaf in NO accepted tree (the golden test even certifies with `LastSize == 0`).
-  `PollHub` writes `iscc_index` projections BEFORE the consistency/freeze checks and
-  `AdvanceAccepted`, so a frozen/failed poll leaves unaccepted rows behind (the
-  documented http-surface trap: "iscc_index can hold projections ABOVE LastSize").
-  The fix is the same `fs := FollowState(hubID); seqs[0] >= fs.LastSize → cannot
-  certify` cap that `serveInclusion`/`serveEntries`/`serveRecord`/`serveVerify` all
-  apply. This is the next-slice (§2 Checkpoint) work since it reads `FollowState`.
+- **§1 SUBJECT now gates on the accepted-tree cap (`seqs[0] < hub.LastSize`).**
+  `buildData` carries `LastSize` out of the one `ListHubs` scan via `followedHub`
+  (returns `store.HubSummary`, no second store round-trip) and renders the honest
+  cannot-certify states: `LastSize == 0` → "no accepted checkpoint yet";
+  `seqs[0] >= LastSize` → "not in accepted tree" (a frozen/failed poll left an
+  unaccepted `iscc_index` projection ABOVE the accepted checkpoint — the documented
+  http-surface trap). Only `len(seqs) > 0 && seqs[0] < LastSize` certifies, matching
+  `serveInclusion`/`serveEntries`/`serveRecord`. A tree of size N has leaves 0..N-1,
+  so seq `LastSize-1` is the last certifiable leaf — `>=` is the correct boundary.
+  A frozen hub's `LastSize` is its last ACCEPTED size (freeze stops advance,
+  ADR-0006), so the same cap caps it at its accepted window with no frozen branch.
+  Mutation-proven non-vacuous (review): neutering the cap → `TestCertificateUnacceptedLeaf`
+  FAILS.
 
-- **OPEN (review-blocking, NEEDS_WORK): the path-suffix lookup key is mismatched
-  against the production storage format.** `logclient` stores `iscc_id` in
-  `iscc_index` VERBATIM and PREFIXED (`projection.go:32` "raw `ISCC:`-prefixed
-  iscc_id string"; `projection_test.go` uses `"ISCC:MAIG..."`). The certificate
-  passes the bare path suffix (`/inclusion/MAIG...`) to `SeqsForISCCID`, which is an
-  exact-bytes match — so a real prefixed row is reported "not found in log". The
-  skeleton's tests pass only because the fixture seeds the BARE form (a
-  fixture-matched-to-code bug). `proofserve` dodges this by taking `?iscc_id=` as a
-  query param the caller supplies prefixed; a PATH route must normalize/canonicalize
-  (look up the stored `ISCC:`-prefixed form, or try both) after decode. Any future
-  store seam keyed on `iscc_id` must use the canonical prefixed form ground truth
-  (`projection.go`/`projection_test.go`), never the bare decode input.
+- **Lookup key is canonicalized to the stored `ISCC:`-prefixed form.** `buildData`
+  builds `lookupID := "ISCC:" + strings.TrimPrefix(rawID, "ISCC:")` after a
+  successful `index.Decode`, accepting either `/inclusion/MAIG…` or
+  `/inclusion/ISCC:MAIG…` and never double-prefixing; `index.iscPrefix` is
+  unexported so the literal `"ISCC:"` is used. Production stores `iscc_id` VERBATIM
+  and PREFIXED (`projection.go:31-32`), and `SeqsForISCCID` is an exact-bytes match,
+  so any store seam keyed on `iscc_id` must use the prefixed ground truth, never the
+  bare decode input. Fixtures are re-grounded to the prefixed form + an accepted
+  checkpoint (`AdvanceAccepted`, which sets `last_size = TreeSize`). Mutation-proven
+  (review): reverting to bare `rawID` → `TestCertificateKnownID` +
+  `TestCertificatePrefixedLookup` FAIL ("not found in log").
 
 - **Interim Hub-List wiring lives in `cmd/iscc-monitor` (`hubListFromEntries`), not
   in config/registry.** Production has no real Hub-List document path yet; the
