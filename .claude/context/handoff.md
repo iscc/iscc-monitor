@@ -1,71 +1,64 @@
 # Handoff
 
-## 2026-06-21 — Review of: Wire CI — `mise run check` + the `notecheck` signature-parity oracle shell-out
+## 2026-06-21 — Port `InclusionProofFromTiles` — the tile-sourced RFC-6962 inclusion proof builder
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added the exported `InclusionProofFromTiles(ctx, fetch TileFetcher, index, size uint64)
+([][]byte, error)` to `internal/logclient/proofbuilder.go` — a faithful mirror of the sibling
+`ConsistencyProofFromTiles`, swapping `proof.Consistency(smaller, larger)` for `proof.Inclusion(index,
+size)` and passing `size` as the `logSize` arg to the unchanged `getNode`. Added the golden test
+`inclusionproof_test.go` reusing the shared helpers from `proofbuilder_test.go`. Purely additive — no
+production caller yet (intentional unused-until-wired seam, like `CheckEquivocation`/`LeafHashes`/
+`RunFsck`), no `go.mod`/`go.sum` change.
 
-**Summary:** `advance` added `.github/workflows/ci.yml`: one `ubuntu-latest` job (`CGO_ENABLED=0`) that
-inlines the `mise run check` gate (build + vet + test) and shells out the fully-independent
-`cmd/notecheck` signature oracle against the captured `sb0.iscc.id` checkpoint — asserting the exact
-accept string (`OK sb0.iscc.id/log`, exit 0) and that a corrupted signature line is rejected. The diff
-is purely additive (only `ci.yml` + this handoff; zero Go source, `go.mod`/`go.sum`, `mise.toml`
-untouched), scoped exactly to `next.md`, and reproduced byte-for-byte locally. This closes the sole
-open `normal` issue (no CI).
+**Files changed:**
+- `internal/logclient/proofbuilder.go`: added `InclusionProofFromTiles` + doc comment, placed between
+  `ConsistencyProofFromTiles` and `tileKey`. Reuses `getNode`/`tileKey`/`TileFetcher` unchanged;
+  `ConsistencyProofFromTiles` is byte-identical (verified — the change is strictly additive).
+- `internal/logclient/inclusionproof_test.go` (new): `package logclient` golden test, reuses
+  `buildTree`/`tileFetcherFor`/`equalProof`/`fmtProof` from `proofbuilder_test.go` (not redefined).
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green, all 11 packages `ok` uncached (`-count=1`).
-- [x] `gofmt -l .` (outside gitignored `cauldron/`) — clean.
-- [x] `.github/workflows/ci.yml` is valid YAML — PyYAML/yamllint absent locally; validated via the
-      cached `gopkg.in/yaml.v3@v3.0.1` in a throwaway module → "YAML valid".
-- [x] Accept reproduces — `/tmp/notecheck --vkey "sb0…E2ZE5" < testdata/live/sb0.iscc.id_checkpoint`
-      → `OK sb0.iscc.id/log`, exit 0.
-- [x] Reject(corrupted) reproduces — `sed 's/QLdEY/QLdEZ/' … | /tmp/notecheck …` → exit 1; the `QLdEY`
-      token occurs only once (start of the line-5 base64 sig), so the flip genuinely corrupts the
-      *signature*, not the body. Bad vkey → exit 2.
-- [x] The verbatim CI `notecheck` `run:` block under `bash -c 'set -euo pipefail …'` → "accept +
-      reject-corrupted both held", overall exit 0 (the corrupted input's intentional exit-1 is caught
-      by the guard, not propagated).
-- [x] Inlined CI commands byte-identical to `mise.toml [tasks.check]`; GitHub Actions runs `run:` with
-      `bash -e`, so a non-zero `go build`/`go vet` aborts the step like the `&&` short-circuit.
-- [x] go.mod/go.sum byte-identical (`git diff HEAD~1..HEAD -- go.mod go.sum` empty); working tree clean.
-- [x] Gate-integrity scan over all 3 unpushed commits — no `//nolint`/`t.Skip`/swallowed-error/
-      build-tag/deleted-assertion patterns; no `.go` file changed at all (only context md + `ci.yml`).
-- [x] **Oracle gate (APPLIES — this wires the external signature oracle into CI):** reviewer
-      mutation-proved the reject guard with a stdin-draining always-accept stub → the CI block exits 1
-      (a realistic green-but-wrong verify regression IS caught). No crypto/derivation code changed, so
-      `derive_vkey.py`/`fsck`/golden re-derivation are N/A for the change set; the embedded golden vkey
-      is the one already confirmed from ground truth.
-- [ ] Pushed-`develop` `gh run list … conclusion == success` — confirmable only *after* push (CI runs
-      post-push). `gh` + remote are present; the push below triggers it. Everything CI executes is
-      reproduced locally, so failure risk is low (action-version availability aside).
+**Verification:** `mise run check` → green (all 11 packages `ok`; logclient/follower ran uncached).
+Per-criterion:
+- [x] `mise run check` (build + vet + test) — green.
+- [x] `gofmt -l internal/logclient/` — empty (ran `mise run fmt` first).
+- [x] `go test -run TestInclusionProofFromTiles ./internal/logclient` — passes (3 subtests).
+- [x] `go test -run 'TestConsistencyProofFromTiles|TestInclusionProofFromTiles' ./internal/logclient`
+      — passes (consistency goldens still green; additive change confirmed).
+- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` — exits 0 (WASM-share purity invariant intact).
+- [x] `git diff --quiet HEAD -- go.mod go.sum` — exits 0 (no dependency change; no new import —
+      `proof.Inclusion`/`proof.VerifyInclusion`/`tree.InclusionProof` were already in the closure).
 
-**Issues found:**
-- (none blocking) Robustness nuance recorded in learnings, not filed: the CI reject guard's correctness
-  leans on the downstream process draining stdin before exiting. The real `notecheck` does
-  (`io.ReadAll` before deciding), so reject → exit 1 and a wrongly-accepting regression → exit 0
-  (caught). The one case the `sed | tool` + `pipefail` shape *misses* is a tool that exits 0 without
-  reading stdin (then `sed` dies of SIGPIPE 141, `pipefail` masks the accept) — but a signature verifier
-  cannot do that, so the trust-root gate is sound. Future guards piping into possibly-short-circuiting
-  tools should use a temp-file + explicit `$?` check instead.
-- (low, still open) `cmd/notecheck`'s `run` has a vestigial `out io.Writer` param — untouched this slice.
+**Oracle gate (APPLIES — RFC-6962 inclusion crypto):** satisfied by three independent merkle paths.
+The golden builds a 300-leaf `testonly.Tree` (crosses the 256-leaf tile boundary: tile 0 full, tile 1
+= 44-leaf partial at index 1), serves its tiles via `tileFetcherFor`, and for indices
+`{0, 5, 200, 255, 256, 260, 299}` asserts the tile-built proof **byte-equals** `tree.InclusionProof`
+AND **verifies** via `proof.VerifyInclusion(rfc6962.DefaultHasher, index, 300, tree.LeafHash(index),
+got, tree.HashAt(300))`. The prover (`testonly.Tree.InclusionProof`), the verifier
+(`proof.VerifyInclusion`), and the builder are independent → not a tautology. Mutation-proven
+non-vacuous: forcing `proof.Inclusion(index+1, size)` (wrong leaf) made the byte-equality AND
+`VerifyInclusion` FAIL for boundary indices (e.g. 256, 260) and tripped out-of-bounds at 299 — then
+reverted. A green-but-wrong builder cannot ship. `notecheck`/`derive_vkey.py`/`fsck` ground-truth
+oracles are correctly N/A for this slice (no signature/did:web/tile-rebuild path introduced; they
+re-arm at the cross-check-vs-real-`IsccLogInclusionProof` slice).
 
-**Next:** Start the inclusion cross-check vs the hub's `IsccLogInclusionProof` — the second half of M2's
-Verify bar and the first independent conformance check beyond signature parity. Needs a captured
-`IsccLogInclusionProof` fixture + `proof.VerifyInclusion` over the mirrored tiles; pair it with the
-`fsck` root-rebuild over `SQLiteFetcher` (`RunFsck` already landed, still unwired) once the live
-tile-ingestion writer exists. A `go mod tidy` drift gate can be a later additive CI step.
+**Next:** The fixture-and-wiring half deferred by this `next.md` — the inclusion **cross-check** that
+asserts `InclusionProofFromTiles` byte-equals a hub's real `evidence.IsccLogInclusionProof`. Blocked
+on two artifacts that do not exist yet: (1) captured `IsccLogInclusionProof` + tile + entry-bundle
+fixtures in `testdata/live/`, and (2) the live tile-ingestion writer (making `PollHub` mirror real
+tiles/bundles so `SQLiteFetcher.ReadTile` can source proof nodes). Pair it with the `fsck` root-rebuild
+over `SQLiteFetcher` (`RunFsck` landed, still unwired) once that writer exists — both want the same
+real tile fixtures. The live tile-ingestion writer is the natural next slice since it unblocks both.
 
 **Notes:**
-- **CI-is-live confirmation happens at push, not before.** This is inherent to CI (runs after push),
-  not a gap in the work — the `[ ]` above is the only unmet `next.md` criterion and is unmeetable
-  pre-push. The verdict is PASS on the strength of the full local reproduction + a sound, mutation-proven
-  reject gate.
-- **`notecheck` build artifact at repo root is NOT gitignored**, but CI builds it on an ephemeral
-  runner so it never reaches the repo; no local dev step does `go build -o notecheck` either. Harmless,
-  not filed. (If a future local script emits it, add `/notecheck` to `.gitignore` alongside the
-  existing `/iscc-monitor` entries.)
-- **Single-source-of-truth tradeoff:** the inlined CI commands duplicate `mise.toml [tasks.check]`. They
-  are byte-identical today, but if `[tasks.check]` changes, `ci.yml` must be updated in lockstep. An
-  acceptable KISS choice (avoids needing `mise` on the runner); worth a glance whenever `mise.toml`
-  changes.
+- The change is intentionally additive — `ConsistencyProofFromTiles` and its `getNode` helper are
+  untouched, per `next.md`'s "do not extract a shared `fetchNodes`" KISS direction. Duplicating the
+  tiny per-call fetch loop keeps the sibling byte-identical.
+- Added one beyond-`next.md`-minimum subtest (`TestInclusionProofFromTilesIndexOutOfRange`) — `next.md`
+  marked the `index >= size` case optional; it asserts a wrapped non-nil error and no panic (the
+  fetcher is never reached), exercising `proof.Inclusion`'s precondition. No new assertions weakened.
+- `proof.VerifyInclusion`'s arg order is `(hasher, index, size, leafHash, proof, root)` — note
+  `leafHash` precedes `proof`, unlike `VerifyConsistency`'s `(…, size1, size2, proof, root1, root2)`.
+  Confirmed against `merkle@v0.0.2/proof/verify.go:46`. The test uses `tree.HashAt(300)` for `root` and
+  `tree.LeafHash(index)` for `leafHash`.
+- (low, still open, untouched) `cmd/notecheck`'s `run` has a vestigial `out io.Writer` param — loop-
+  skipped per `next.md`'s Not In Scope.

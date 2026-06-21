@@ -83,6 +83,49 @@ func ConsistencyProofFromTiles(ctx context.Context, fetch TileFetcher, smaller, 
 	return proofHashes, nil
 }
 
+// InclusionProofFromTiles builds the RFC-6962 inclusion proof for the leaf at
+// index within a tree of tree size size, sourcing every proof node from mirrored
+// hash tiles via fetch. The returned [][]byte is the proof verified by
+// proof.VerifyInclusion(hasher, index, size, leafHash, proof, root) and is the
+// monitor-side counterpart to a hub's IsccLogInclusionProof for the M2 inclusion
+// cross-check.
+//
+// It ports tessera's ProofBuilder.InclusionProof + fetchNodes: proof.Inclusion
+// yields the node IDs sufficient to build the proof; each is resolved to a hash via
+// getNode; proof.Nodes.Rehash then folds the ephemeral node and returns the proof.
+//
+// index selects the leaf and must satisfy 0 <= index < size (proof.Inclusion's
+// precondition); size is both the tree the proof is computed against and the log
+// size passed to layout.PartialTileSize, so each tile's partial qualifier reflects
+// that tree (matching tessera's nodeCache.logSize). A genuine tile-fetch or
+// tile-parse fault is returned as a wrapped Go error (errors.Is(err,
+// os.ErrNotExist) survives a missing tile).
+func InclusionProofFromTiles(ctx context.Context, fetch TileFetcher, index, size uint64) ([][]byte, error) {
+	nodes, err := proof.Inclusion(index, size)
+	if err != nil {
+		return nil, fmt.Errorf("InclusionProofFromTiles: compute node list for (index %d, size %d): %w", index, size, err)
+	}
+
+	// A simple per-call cache keyed by (tileLevel, tileIndex) avoids re-fetching
+	// and re-parsing the same tile for sibling nodes within one proof (KISS — same
+	// as ConsistencyProofFromTiles).
+	tiles := make(map[tileKey]api.HashTile)
+	hashes := make([][]byte, 0, len(nodes.IDs))
+	for _, id := range nodes.IDs {
+		h, err := getNode(ctx, fetch, tiles, size, id)
+		if err != nil {
+			return nil, fmt.Errorf("InclusionProofFromTiles: get node %+v: %w", id, err)
+		}
+		hashes = append(hashes, h)
+	}
+
+	proofHashes, err := nodes.Rehash(hashes, rfc6962.DefaultHasher.HashChildren)
+	if err != nil {
+		return nil, fmt.Errorf("InclusionProofFromTiles: rehash proof: %w", err)
+	}
+	return proofHashes, nil
+}
+
 // tileKey identifies a fetched tile in the per-call cache.
 type tileKey struct {
 	level uint64
