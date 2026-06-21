@@ -26,15 +26,17 @@ mechanics are here.
   step adds a second entry point (e.g. a parent template passing an arbitrary `view`), it MUST
   route status through the same `labels` lookup or the fail-closed guarantee is lost. Keep the
   `view` struct unexported.
-- **Surface is intentionally minimal: `Render(w, status)` (direct) + `Source` (embedded src) +
-  `PartialName` ("hubStatusBadge").** A parent page composes via
-  `template.Must(parent.Parse(badge.Source))` then `{{template "hubStatusBadge" .}}` over a value
-  exposing `.Status` and `.Label` — the standard `html/template` associated-template idiom, tested
-  by `TestPartialComposesIntoParent`. No `MustParseInto` wrapper was added (YAGNI). When wiring
-  into the dashboard: the dashboard `row` view-model must expose BOTH `.Status` AND a fixed-table
-  `.Label` (the partial reads `.Label` directly — it does NOT re-derive the label from `.Status`),
-  so the wiring step either threads `badge.labels` (currently unexported) or gives the row a
-  pre-computed `Label`. Decide that at wiring time.
+- **Surface is `Render(w, status)` (direct) + `Source` (embedded src) + `PartialName`
+  ("hubStatusBadge") + `Label(status) (string, bool)` (fixed-table accessor).** A parent page
+  composes via `template.Must(parent.Parse(badge.Source))` then `{{template "hubStatusBadge" .}}`
+  over a value exposing `.Status` and `.Label` — the standard `html/template` associated-template
+  idiom, tested by `TestPartialComposesIntoParent`. No `MustParseInto` wrapper was added (YAGNI).
+  The partial reads `.Label` DIRECTLY (it does NOT re-derive the label from `.Status`), so a parent
+  row MUST carry a precomputed `.Label`. `labels` stays unexported; `Label` is the single-sourced,
+  fail-closed (`("", false)` on miss) way to precompute it — never re-implement the table at a
+  caller. settled: dashboard wiring resolved this — `dashboard.buildRows` calls `badge.Label(status)`
+  with a `!ok → label = status` defensive fallback (defensive-only: `dashboard.hubStatus` only ever
+  yields valid `labels` keys). Reuse that exact pattern for the next page (dossier / log browser).
 - **Pure WASM-shareable leaf: closure is stdlib only (`bytes`/`embed`/`html/template`/`io`/`fmt`
   and their transitive stdlib — `os` shows up only via `fmt`, unavoidable).** No `net/http`, no
   `internal/store`. `html/template` (NOT `text/template`) is mandatory for auto-escaping. Parsed

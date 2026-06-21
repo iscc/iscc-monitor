@@ -37,8 +37,19 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   coverage). Never render the observed `last_size` as if it were a coverage guarantee.
 - **`store.ListHubs` is a pure read returning plain Go types (`HubSummary` + `CoverageInfo`), so store
   stays a leaf** (`go list -deps ./internal/store | grep -E 'net/http|internal/dashboard|internal/logclient'`
-  empty). The dashboard imports `store`, never the reverse; its own closure is `bytes embed html/template
-  net/http internal/store`. `html/template` (NOT `text/template`) auto-escapes hub domains; render into a
-  `bytes.Buffer` first so a template/store error is a 500 BEFORE any 200 (the post-200 `buf.WriteTo(w)`
-  drop is the documented broken-client convention). Oracle gate N/A — pure HTML of persisted rows, no
-  signature/RFC-6962/Merkle/did:web/fsck/proof path; go.mod/go.sum/schema byte-identical.
+  empty). The dashboard imports `store` AND `internal/badge`, never the reverse; its closure is `bytes
+  embed html/template net/http internal/store internal/badge`. `html/template` (NOT `text/template`)
+  auto-escapes hub domains; render into a `bytes.Buffer` first so a template/store error is a 500 BEFORE
+  any 200 (the post-200 `buf.WriteTo(w)` drop is the documented broken-client convention). Oracle gate
+  N/A — pure HTML of persisted rows, no signature/RFC-6962/Merkle/did:web/fsck/proof path;
+  go.mod/go.sum/schema byte-identical.
+- **The status cell renders through the `hubStatusBadge` partial, not the bare word.** The partial is
+  associated into the page set once at init (`template.Must(template.New("dashboard").Parse(pageTemplate))`
+  then `template.Must(t.Parse(badge.Source))`, wrapped in an init closure since `template.Must` returns
+  one value); `<td>{{template "hubStatusBadge" .}}</td>` resolves over each `row` (which carries `.Status`
+  + a precomputed `.Label`). `buildRows` precomputes `.Label` via `badge.Label(status)` with a
+  `!ok → label = status` fallback that is defensive-only (`hubStatus` only ever emits valid `labels` keys).
+  Still only 3/5 statuses appear here (the store-provable subset); wiring the badge did NOT add the richer
+  taxonomy — that is the pending `metrics.Registry` thread-through. `TestDashboardRendersEveryHub` asserts
+  the badge markup (`class="hub-status-badge"` + `>Verified<`/`M8.4 12.3` + `>Frozen<`/`M8.2 3.3h7.6`),
+  so a regression to `{{.Status}}` fails the test (reviewer mutation-confirmed).
