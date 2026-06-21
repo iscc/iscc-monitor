@@ -1,95 +1,84 @@
 # Next Work Package
 
-## Step: Port `InclusionProofFromTiles` — the tile-sourced RFC-6962 inclusion proof builder
+## Step: Pure entry-bundle coordinate enumeration for a tree of size N (`tiles.BundleCoords`)
 
 ## Goal
-Add the pure inclusion-proof *source* the M2 inclusion cross-check needs: build an RFC-6962
-inclusion proof for a leaf index from a hub's mirrored hash tiles, mirroring the already-landed
-`ConsistencyProofFromTiles`. This is the first, golden-testable half of the handoff's "inclusion
-cross-check vs the hub's `IsccLogInclusionProof`" — broken out as a pure unit before the
-fixture-and-wiring half that depends on captured `IsccLogInclusionProof`/tile fixtures and the
-live tile-ingestion writer (neither exists yet).
+Add the pure, golden-testable function that says *which* entry bundles a complete
+mirror of a tree of size N must hold — the `(index, partial)` coordinate list. This is
+the first, foundational slice of the M2 live tile-ingestion writer: the fetch loop and
+the `PollHub` wiring both build on it, and it must be exact at the 256-leaf boundary.
+Doing the pure enumeration first (before any I/O or store wiring) keeps the riskiest
+part — the boundary math — isolated and oracle-checkable against tessera.
 
 ## Scope
-- **Modify**: `internal/logclient/proofbuilder.go` — add one exported function
-  `InclusionProofFromTiles(ctx, fetch TileFetcher, index, size uint64) ([][]byte, error)` plus a
-  doc comment. Reuse the existing `getNode`, `tileKey`, and `TileFetcher` already in this file
-  unchanged. (1 non-test/doc file.)
-- **Create**: `internal/logclient/inclusionproof_test.go` — golden test in `package logclient`
-  reusing the helpers already defined in `proofbuilder_test.go` (`buildTree`, `tileFetcherFor`,
-  `equalProof`, `fmtProof`, `bytesEqual`) — do NOT redefine them (same package → redefinition won't
-  compile).
+- **Create**:
+  - `internal/tiles/coords.go` — the new `BundleCoord` type + `BundleCoords(treeSize uint64) []BundleCoord`.
+  - `internal/tiles/coords_test.go` — table-driven golden test (test file, not counted).
+- **Modify**: (none — purely additive)
 - **Reference**:
-  - `/workspace/iscc-monitor/internal/logclient/proofbuilder.go` (the sibling
-    `ConsistencyProofFromTiles` to mirror exactly).
-  - `/workspace/iscc-monitor/internal/logclient/proofbuilder_test.go` (the golden-test pattern + the
-    shared helpers to reuse).
-  - `/workspace/iscc-monitor/cauldron/tessera/client/client.go` lines ~197-249
-    (`ProofBuilder.InclusionProof` + `fetchNodes` — the upstream this ports; note it calls
-    `proof.Inclusion(index, treeSize)`).
+  - `/home/dev/go/pkg/mod/github.com/transparency-dev/tessera@v1.0.2/api/layout/paths.go`
+    (`Range` at line 49, `RangeInfo` at line 99, `EntriesPath` at line 121) — the oracle to delegate to.
+  - `/workspace/iscc-monitor/internal/tiles/layout.go` — the existing seam; match its delegation + doc style.
+  - `/workspace/iscc-monitor/internal/tiles/layout_test.go` — match its table-driven golden-vector test style.
+  - `/workspace/iscc-monitor/internal/store/tiles.go` — confirms the downstream
+    `RecordEntryBundle(hubID, bundleIndex, width, …)` signature this list will eventually feed (width is
+    the leaf count; `p==0` ⇒ 256, via `widthForP` in `internal/store/fetcher.go`).
 
 ## Not In Scope
-- The inclusion *cross-check* itself (asserting our proof byte-equals the hub's
-  `evidence.IsccLogInclusionProof`) — needs real captured `IsccLogInclusionProof` + tile +
-  entry-bundle fixtures that do not exist in `testdata/live/` yet. Defer.
-- Wiring `InclusionProofFromTiles` into `follower.PollHub` or any production caller — it lands as an
-  intentional unused-until-wired export seam (like `CheckEquivocation`, `LeafHashes`, `RunFsck`).
-- The live tile-ingestion writer (making `PollHub` mirror real tiles/bundles) — separate later slice.
-- Refactoring `ConsistencyProofFromTiles` or extracting a shared `fetchNodes` helper — keep the change
-  additive; duplicating the tiny per-call fetch loop is the KISS choice and leaves the existing
-  function byte-identical.
-- The `cmd/notecheck` `out io.Writer` low issue — loop-skipped.
+- **No hash-tile (multi-level) enumeration.** Hash tiles span tile-levels `0, 1, 2, …` (tree-levels
+  `0, 8, 16, …`) and need their own boundary reasoning — that is the *next* slice. This step is entry
+  bundles only.
+- **No I/O, no fetch, no store writes.** Do not add a tile/bundle *fetch* primitive, do not call
+  `RecordEntryBundle`, do not touch `PollHub`/`follower`. This function is pure.
+- **No `PollHub`/follower wiring** — the live ingestion writer that calls this is a later slice.
+- Do not touch the open `low` issue (`cmd/notecheck` vestigial `out`).
 
 ## Implementation Notes
-- Port from tessera `ProofBuilder.InclusionProof`: it is `proof.Inclusion(index, treeSize)` then
-  `fetchNodes`. Your version is structurally identical to `ConsistencyProofFromTiles` with exactly two
-  swaps: call `proof.Inclusion(index, size)` instead of `proof.Consistency(smaller, larger)`, and pass
-  `size` (the only tree size) as the `logSize` argument to `getNode` (matching how `larger` is the
-  logSize in the consistency builder — `index` selects the leaf, `size` is the tree the proof is
-  computed against). Reuse the same per-call `tiles := make(map[tileKey]api.HashTile)` cache + loop +
-  final `nodes.Rehash(hashes, rfc6962.DefaultHasher.HashChildren)`.
-- `proof.Inclusion` is already in the closure (`github.com/transparency-dev/merkle/proof`, used by
-  `ConsistencyProofFromTiles`). Signature: `func Inclusion(index, size uint64) (Nodes, error)`,
-  requires `0 <= index < size`. `proof.VerifyInclusion(hasher, index, size, leafHash, proof, root)` is
-  the verifier for the test. No new import, no `go.mod`/`go.sum` change — confirm after with
-  `git diff --quiet HEAD -- go.mod go.sum`.
-- Keep purity (Correctness rule: `proof/verify` is pure / WASM-shareable): import only what
-  `proofbuilder.go` already imports; do NOT add `net`/`net/http`/`database/sql`/`os`. A missing tile
-  must stay a `%w`-wrapped error so `errors.Is(err, os.ErrNotExist)` survives — `getNode` already does
-  this; you only forward its error wrapped with an `InclusionProofFromTiles:` prefix (this file never
-  references `os` directly, same as the sibling).
-- Error wrap style: mirror `ConsistencyProofFromTiles` exactly — wrap `proof.Inclusion`'s error as
-  `InclusionProofFromTiles: compute node list for (index %d, size %d): %w`, `getNode`'s error as
-  `InclusionProofFromTiles: get node %+v: %w`, and `nodes.Rehash`'s error as
-  `InclusionProofFromTiles: rehash proof: %w`.
-- Test (oracle gate APPLIES — RFC-6962 inclusion crypto): reuse `buildTree(treeLeaves)` (300 leaves,
-  crosses the 256-leaf tile boundary) and `tileFetcherFor(t, tree, treeLeaves)` from
-  `proofbuilder_test.go`. For leaf indices that exercise both tile 0 (full) and tile 1 (partial) —
-  e.g. `{0, 5, 200, 255, 256, 260, 299}` — assert `InclusionProofFromTiles(ctx, fetch, index, 300)`
-  byte-equals `tree.InclusionProof(index, 300)` (independent prover = ground truth, not a tautology)
-  AND verifies via `proof.VerifyInclusion(rfc6962.DefaultHasher, index, 300, tree.LeafHash(index),
-  got, tree.HashAt(300))`. Add a missing-tile case (fetcher returns a wrapped `os.ErrNotExist`) that
-  asserts `errors.Is(err, os.ErrNotExist)` survives, mirroring `TestConsistencyProofFromTilesMissingTile`.
-  The prover (`testonly.Tree.InclusionProof`), the verifier (`proof.VerifyInclusion`), and the builder
-  are three independent merkle paths, so the cross-check is non-circular.
-- Mutation hint for `advance`/`review`: forcing the builder to return the proof from a wrong index
-  (or a one-byte-corrupted node) must make the byte-equality AND `VerifyInclusion` fail for at least
-  one boundary index — confirm before declaring done so a green-but-wrong builder can't ship.
-- Edge case: `proof.Inclusion` requires `index < size`; pick all test indices `< 300`. An `index >=
-  size` test is optional (it is `proof.Inclusion`'s precondition, not this layer's contract); if added,
-  assert a wrapped non-nil error and no panic.
+- **Delegate to tessera, never reimplement the boundary math** (target Stack rule, and the
+  `internal/tiles` package is explicitly "a thin re-export … not a reimplementation"). Implement
+  `BundleCoords` by iterating `layout.Range(0, treeSize, treeSize)` and projecting each `RangeInfo` to a
+  `BundleCoord{Index: ri.Index, Partial: ri.Partial}`. Ignore `ri.First`/`ri.N` (those describe
+  sub-ranges; for a full-tree mirror every bundle is taken whole — `Range(0, treeSize, treeSize)`
+  already yields the complete cover, confirmed by running it in-module).
+- `BundleCoord` carries `Index uint64` and `Partial uint8` (the path-API "0 == full" qualifier — the
+  same `p` `EntriesPath` takes). Keep the existing two-convention discipline: `Partial` is the *path*
+  qualifier here; the store's `width` column is `widthForP(Partial)` later, NOT this step's concern.
+- `layout.Range` returns a Go 1.23 range-over-func iterator (`iter.Seq[layout.RangeInfo]`); consume it
+  with `for ri := range layout.Range(0, treeSize, treeSize) { … }`. The 1.24 toolchain supports this.
+- `treeSize == 0` must yield an **empty (len 0) slice** — `layout.Range` yields nothing, so a pre-sized
+  `make([]BundleCoord, 0, …)` accumulator returns empty cleanly. Return a non-nil empty slice for the
+  zero case; the test asserts `len == 0` (and reads fine for a nil slice too, but prefer non-nil).
+- Keep the package a pure leaf: import only `github.com/transparency-dev/tessera/api/layout` (already in
+  the closure via `layout.go`). Do **not** pull in `net`/`database/sql`. `go.mod`/`go.sum` must stay
+  byte-identical (no new dependency — `layout.Range` is already compiled in).
+- Correctness rule (learnings, "Partial-tile discipline" + the pinned `PartialTileSize(0,0,300)==0` /
+  `(0,1,300)==44`): the boundary is the bug surface. The first 256-leaf bundle of a 300-leaf tree is
+  **full** (`Partial==0`, index 0); the leftover 44 are a **partial** at **index 1** (`Partial==44`) —
+  never index 0.
+- Oracle/conformance gate is **N/A** for this slice: it is pure path/coordinate math delegating to
+  tessera (no signature / RFC-6962 / Merkle / did:web / fsck-rebuild path). It re-arms when the fetched
+  bundles feed `LeafHashes` + the inclusion cross-check. State this in the handoff rather than inventing
+  a crypto check.
+
+## Golden vectors (ground truth — pinned by running `layout.Range(0, size, size)` in-module)
+- `BundleCoords(0)` → `[]` (len 0)
+- `BundleCoords(1)` → `[{0, 1}]`
+- `BundleCoords(255)` → `[{0, 255}]`
+- `BundleCoords(256)` → `[{0, 0}]`
+- `BundleCoords(257)` → `[{0, 0}, {1, 1}]`
+- `BundleCoords(300)` → `[{0, 0}, {1, 44}]`   ← the boundary case
+- `BundleCoords(513)` → `[{0, 0}, {1, 0}, {2, 1}]`
 
 ## Verification
 - `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass).
-- `gofmt -l internal/logclient/` is empty.
-- `go test -run TestInclusionProofFromTiles ./internal/logclient` passes.
-- `go test -run 'TestConsistencyProofFromTiles|TestInclusionProofFromTiles' ./internal/logclient`
-  passes (the consistency goldens still pass — the change is additive).
-- `GOOS=js GOARCH=wasm go build ./internal/didweb` exits 0 (the WASM-share purity invariant unbroken).
+- `gofmt -l internal/tiles/` is empty.
+- `go test -run TestBundleCoords ./internal/tiles` passes, asserting every golden vector above
+  (length + each `{Index, Partial}` in order).
 - `git diff --quiet HEAD -- go.mod go.sum` exits 0 (no dependency change).
+- `GOOS=js GOARCH=wasm go build ./internal/tiles` exits 0 (the leaf-purity invariant holds).
+- Assertion: `BundleCoords(300)` returns exactly `[]BundleCoord{{0, 0}, {1, 44}}` — full bundle at
+  index 0, partial-44 at index 1, never partial at index 0.
 
 ## Done When
-`InclusionProofFromTiles` builds a tile-sourced inclusion proof that byte-equals
-`testonly.Tree.InclusionProof` and verifies via `proof.VerifyInclusion` for leaf indices spanning the
-256-leaf tile boundary, the missing-tile error preserves `os.ErrNotExist`, and every Verification
-check passes with no `go.mod`/`go.sum` change.
+`internal/tiles/coords.go` provides `BundleCoords` returning the exact golden entry-bundle coordinate
+lists above, and all Verification criteria pass with the tree clean and `go.mod`/`go.sum` byte-unchanged.
