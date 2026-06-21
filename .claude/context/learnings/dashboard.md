@@ -15,13 +15,19 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   re-confirmed with a standalone mux: a `/a/` subtree + `/` root resolves `/a`,`/a/`,`/a/x` to the
   subtree and only `/b` to root. The dashboard's own exact-path guard is what stops `/b`-style unknowns
   rendering the page. Keep BOTH the mount-at-`/` and the in-handler path guard — neither alone is enough.
-- **Status is the store-provable subset ONLY (`inactive`/`frozen`/`verified`), and `inactive` wins over
-  `frozen`.** `hubStatus(HubSummary)` switches `!Active → inactive`, `Frozen → frozen`, else `verified`
-  — it MIRRORS `proofserve.hubStatus` (which has no store table for `active`) and deliberately EXTENDS
-  it with the realm-registry `inactive` case. Do NOT add `unverified`/`unresolvable`/`rotated` here:
-  those live in the in-memory `metrics.Registry`, are not store-provable, and stay out so the page is
-  golden-testable on a fixture store. When a `metrics.Registry` thread-through lands, that is where the
-  richer statuses belong — not in `ListHubs`.
+- **`hubStatus(HubSummary)` is the store-provable subset ONLY (`inactive`>`frozen`>`verified`); the
+  richer live verdicts come from an OVERLAY at `buildRows`, never from `ListHubs`.** `hubStatus`
+  switches `!Active → inactive`, `Frozen → frozen`, else `verified` — it MIRRORS `proofserve.hubStatus`
+  and EXTENDS it with the realm-registry `inactive`. Do NOT add `unverified`/`unresolvable`/`rotated` to
+  `hubStatus`/`ListHubs`: those are not store-provable. settled: the thread-through landed —
+  `overlayStatus(s, statuses StatusSource)` consults a tiny `dashboard.StatusSource` interface
+  (`Status(hubID) (string,bool)`, satisfied structurally by `*metrics.Registry`) so the package never
+  imports `internal/metrics`. **Precedence is load-bearing and must not regress:** overlay applies ONLY
+  when `hubStatus(s) == "verified"`, adopts ONLY `unresolvable`/`unverified`, and is nil-tolerant
+  (a fresher poll verdict is honest, but durable `inactive`/`frozen` must win). `TestOverlayStatusPrecedence`
+  pins the table; `TestDashboardRendersInMemoryStatus` is the non-vacuous HTTP-seam render
+  (reviewer mutation-confirmed: `overlayStatus`→`hubStatus` renders `data-status="verified"`, test FAILS).
+  Reuse this exact `StatusSource`-interface + overlay shape for the per-hub log-browser cell / dossier.
 - **`inactive` is currently unreachable through the public store API (no `SetActive` writer; `UpsertHub`
   inserts the schema default `active=1`).** So the golden HTTP-seam test cannot drive a hub to
   `inactive`; the advance covered it with a white-box table test on the package-private `hubStatus`

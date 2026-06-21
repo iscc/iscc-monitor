@@ -28,6 +28,12 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `verified|unverified|unresolvable|rotated` (note `rotated` and `frozen` are different axes). The
   `/metrics` wiring slice MUST map the follower verdict → glossary status, else the gauge emits a
   non-glossary `status` value. `kind` is safe — it reuses the real `violations.kind` strings verbatim.
+- **`Status(hubID) (string, bool)` is a read accessor (RLock) the dashboard consumes; it depends on
+  `SetHubStatus`'s "exactly one status=1 per hub" invariant.** It returns the first sample reading 1
+  for the hub (`("", false)` on miss / all-zero). That is unambiguous ONLY because `SetHubStatus`
+  zeroes the others before setting; if a future change ever lets two statuses read 1 for one hub,
+  `Status` returns a map-iteration-order-dependent value — re-check that invariant before relaxing
+  `SetHubStatus`. `TestStatus` covers hit, transition (newest only), miss, and no cross-hub leak.
 - **`String()`'s `_ = WriteText(&b)` is a correct swallow, not a gate dodge** — `strings.Builder.Write`
   never returns an error, documented inline. `WriteText(io.Writer)` itself propagates every writer
   error. `escapeLabelValue` backslash-escapes `\`/`"`/`\n` so the renderer is total (verified an inline

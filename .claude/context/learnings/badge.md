@@ -44,9 +44,9 @@ mechanics are here.
   WASM-shareability with `GOOS=js GOARCH=wasm go build ./internal/badge` (green), not by grepping
   `os` out of `go list -deps`. Oracle gate N/A — pure static markup keyed on a status string; no
   signature/RFC-6962/Merkle/did:web/fsck/proof path; go.mod/go.sum/schema byte-identical.
-- **Only 3 of 5 statuses are store-provable today (`frozen`/`verified`/`inactive`); the partial
-  honestly renders all five but `unresolvable`/`unverified` live in the in-memory
-  `metrics.Registry` (and `follower.glossaryStatus` folds `rotated → unverified`).** Wiring the
-  badge into `/` does NOT make the richer taxonomy appear there — making the full taxonomy
-  store-provable is a separate M-UI sub-step (ADR-0010). Do not claim the dashboard shows five
-  statuses until that thread-through lands.
+- **Only 3 of 5 statuses are store-provable (`frozen`/`verified`/`inactive`); the other two
+  (`unresolvable`/`unverified`) come from the in-memory `metrics.Registry` (`follower.glossaryStatus`
+  folds `rotated → unverified`).** settled: `/` now renders all five — `dashboard.overlayStatus`
+  overlays the live verdict onto the store subset (see `learnings/dashboard.md` for the precedence
+  rule). A new page that wants the full taxonomy must reuse that `StatusSource` overlay; the store
+  alone still cannot prove `unresolvable`/`unverified`.
