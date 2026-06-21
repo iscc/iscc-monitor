@@ -373,6 +373,32 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   is justified inline. Verify `time.Now()` never appears in `loop.go` (the ticker delivers `t` via
   `ticker.C`) — the only wall-clock source is `time.NewTicker(l.Normal)`.
 
+## Structured logging (`log/slog`) at the loop + binary boundary
+
+- **`log/slog` lives ONLY in `loop.go` (composition) and `main.go` (binary) — never a leaf.** A nil-safe
+  `Loop.Logger *slog.Logger` + unexported `logger()` accessor (falls back to `slog.Default()`) keeps every
+  bare `&Loop{…}` (the two `loop_test.go` literals + the binary) compiling unchanged. The previously
+  `_ =`-discarded per-tick error in `Run` is now an `ErrorContext` emit that still does NOT propagate
+  (log-and-continue invariant intact — verified the `_ = l.Tick(ctx, t)` line is genuinely gone, replaced
+  by an `if err != nil { logger().ErrorContext }` branch that never `return`s). `go.mod`/`go.sum` +
+  all six leaf packages byte-identical; oracle gate correctly N/A (stdlib, no signature/merkle/didweb path).
+- **A faulting single-hub `Tick` emits EXACTLY one ERROR record — reviewer probed it.** Drove the fault
+  through the real outbound-fetch seam (an `errFetcher` whose `Fetch` always errors → `FetchCheckpoint`
+  fails → `PollHub` returns non-nil → `Tick` logs at `loop.go:119` `"poll hub failed"` with `hub_id` +
+  populated `err`, then folds into `firstErr`). A throwaway record-count probe confirmed `total records: 1`
+  with the `err` carrying the full wrapped chain (`follower.PollHub: hub 1: fetch checkpoint …`), so the
+  test's `len(errorRecs) != 1` assertion is non-vacuous and the "swallowed error is now observable" claim
+  is real, not asserted. The second log site (`"follow state read failed"` at `loop.go:109`) is reachable
+  only via a store fault; `Loop.Store` is a concrete `*store.Store` (not an interface), so it can't be
+  cleanly fault-injected without a wider seam — accepted limitation, documented in the handoff, NOT dead code.
+- **Alert severity is WARN, not ERROR — a deliberate, documented distinction.** `alertFunc(logger)` in
+  `main.go` returns a `follower.AlertFunc` closure emitting `logger.Warn("hub frozen", "hub_id", …, "kind",
+  …)`; a freeze is an operator-actionable, evidence-preserved hub condition (distinct from a monitor-process
+  fault, which is ERROR). The once-per-transition gating still lives in `PollHub`/`freeze` (untouched), the
+  `AlertFunc func(int64,string)` signature is unchanged, and the old `func alert(…) { fmt.Fprintf(os.Stderr …) }`
+  is fully removed. Logger is captured in the closure (injectable/testable), not read from a global —
+  though `run()` also calls `slog.SetDefault(logger)` so any future leaf-free call site inherits it.
+
 ## Equivocation trigger wiring (`internal/follower/checkConsistency`)
 
 - **The third trigger lands in `checkConsistency`'s `switch` default (the growing-pair case).** Order

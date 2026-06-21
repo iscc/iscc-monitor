@@ -1,3 +1,8 @@
 # Vendored read-only reference copies of sibling-repo files (see .claude/plans).
 # Mirrored locally so plan references resolve without a specific checkout layout.
 cauldron/
+
+# Compiled monitor binary — `go build ./cmd/iscc-monitor` emits it at the repo
+# root (and in the command dir); never commit the 15MB artifact.
+/iscc-monitor
+/cmd/iscc-monitor/iscc-monitor
