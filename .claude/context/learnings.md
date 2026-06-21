@@ -1024,3 +1024,26 @@ rules"** — the load-bearing gotchas — so the loop knows them from iteration 
   reading a constant/outer schema FAILS both that test and the schema-agnostic case. Oracle gate
   correctly N/A — pure JSON + content-SHA-256 fold, no signature/RFC-6962/Merkle/did:web/fsck path;
   `notecheck`/`derive_vkey.py` untouched, re-arm at the fsck/inclusion-cross-check wiring slice.
+
+## Inclusion cross-check over the real follower mirror (`internal/follower/inclusion_test.go`)
+
+- **M2's second Verify bar is closed test-only, and that is the honest scope — verified, not asserted.**
+  `VerifyInclusionEvidence` is the *consumer* of a hub-supplied proof; there is no inbound hub-evidence
+  transport on the follow path yet (no `FetchInclusionEvidence`; proof-serving is a later M2/M3 slice). A
+  `PollHub` step recomputing the monitor's OWN proof and checking it against itself would be circular and
+  is forbidden by `next.md`/target.md. The follower already mirrors tiles (`ingestTiles`) + indexes leaves
+  (`projectEntryBundle`), so `TestPollHubInclusion` drives a verified `PollHub` over `buildVerifiedMirror(300)`,
+  resolves `iscc_id→leafIndex` via the production `SeqsForISCCID` (sampled leaf 5 in bundle 0 + leaf 260
+  past the 256-leaf boundary → `[5]`/`[260]`), builds the hub's `IsccLogInclusionProof` from `m.tree`, and
+  asserts `VerifyInclusionEvidence(ctx, SQLiteFetcher.ReadTile, ev) == nil`. Zero production lines added,
+  scope-clean (1 test file + handoff), no `schema.sql`/`go.mod`/`go.sum` touch — exactly as `next.md` scoped.
+- **Oracle gate APPLIES (RFC-6962 inclusion crypto) and is reviewer-mutation-proven NON-VACUOUS over the
+  real verified-poll mirror.** Reviewer short-circuited `VerifyInclusionEvidence` to `return nil` before the
+  proof compare → BOTH negatives FAIL (`inclusion_test.go:125` wrong-leaf, `:145` corrupted-proof); reverted
+  → green, tree clean. The wrong-leaf negative is the sharp one: a *valid* leaf-5 proof re-labelled leaf 6
+  still fails because the monitor recomputes leaf 6's distinct proof from the mirror written by `ingestTiles`
+  — three independent paths (`m.tree.InclusionProof` prover, `InclusionProofFromTiles` recompute, base64
+  round-trip), not a tautology. `notecheck` accepts real sb0 / rejects corrupted (exit 0/1); `derive_vkey.py`
+  reproduces `40b74463`/`22b08f3e`; CI `notecheck` parity job present + unchanged. `SQLiteFetcher.ReadTile`'s
+  `(ctx, l, i uint64, p uint8)` is assignment-compatible with `logclient.TileFetcher` and passes straight in,
+  as the inclusioncheck learnings predicted.
