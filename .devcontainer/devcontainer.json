@@ -9,7 +9,7 @@
   },
   "initializeCommand": "bash .devcontainer/init-host.sh",
   "remoteUser": "dev",
-  "runArgs": ["-p", "41464:41464"],
+  "runArgs": ["-p", "41464:41464", "--memory=12g", "--memory-swap=14g"],
   "mounts": [
     "source=${localEnv:USERPROFILE}/.claude,target=/home/dev/.claude,type=bind",
     "source=${localEnv:USERPROFILE}/.claude.json,target=/home/dev/.claude.json,type=bind",
@@ -24,6 +24,7 @@
     "NODE_OPTIONS": "--max-old-space-size=4096",
     "GH_TOKEN": "${localEnv:GH_TOKEN}",
     "CGO_ENABLED": "0",
+    "GOFLAGS": "-p=2",
     "GIT_CONFIG_COUNT": "1",
     "GIT_CONFIG_KEY_0": "commit.gpgsign",
     "GIT_CONFIG_VALUE_0": "false"
