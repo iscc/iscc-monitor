@@ -1,123 +1,103 @@
 # Next Work Package
 
-## Step: HTML log browser at `GET /<domain>/log/` (mirrored checkpoint size + root)
+## Step: `HubStatusBadge` five-status template partial (icon + label + silhouette)
 
 ## Advances
-M3 — Trust API + dashboard, the **fourth and final** unmet M3 Verify criterion (target.md §M3):
+M-UI — Evidence Ledger frontend. Closes a self-contained slice of the M-UI Verify bar:
 
-> `GET /<domain>/log/` (log browser) returns `200 text/html` exposing the mirrored checkpoint
-> `(size, root)` with links into `entries`/proofs.
+> `HubStatusBadge` renders **all five** statuses each with a distinct text label **and** a distinct
+> inline-SVG silhouette (golden-tested per status) … status stays legible in grayscale + colorblind-safe
+> (icon+label+silhouette, not hue).
 
-Closing it takes M3 from 3/4 → 4/4 Verify. This is the same server-rendered HTML arc the `GET /`
-dashboard just landed (review PASS at `c940248`); the `review` handoff `**Next:**` names exactly this
-step and notes it must mount under the per-hub subtree (reached via `hubHandler`), NOT in
-`internal/dashboard`. No `critical`/`normal` issue is open (the one open issue is `low`, loop-skipped),
-so milestone work proceeds.
+This is the leaf-first foundation of M-UI step (b) in `state.md`'s convergence order. M-UI is the
+nearest unmet milestone (M1/M2/M3 all met; no open `critical`/`normal` issue, so feature work proceeds).
 
 ## Goal
-Serve a minimal server-rendered HTML page at each hub's `GET /<domain>/log/` root showing the
-monitor's accepted checkpoint `(size, root)` for that hub plus relative links into its `entries` and
-proof routes — so a human can browse the mirror and a client can discover the proof surface. This
-closes M3.
+Build a pure, reusable server-rendered template partial that renders the five-status `HubStatusBadge`
+(`verified` / `unresolvable` / `unverified` / `frozen` / `inactive`) as inline SVG + text label, ported
+from the handoff's React component. This is the grayscale-safe status primitive every M-UI surface
+(realm index, hub dossier, log browser, certificate) reuses; it lands first as a golden-tested leaf so
+later steps can embed it and wire real five-status resolution.
 
 ## Scope
-- **Create**: `internal/proofserve/browser.html` — the embedded log-browser template.
-- **Modify** (≤3 non-test/doc files):
-  1. `internal/proofserve/handler.go` — add `case "/": serveBrowser(...)` to the `Handler` path switch
-     (before `default`); add `serveBrowser` (reads `FollowState` + `CheckpointAt`, renders the embedded
-     template into a `bytes.Buffer`, then writes `200 text/html`); add the `bytes` + `_ "embed"` +
-     `html/template` imports and a parsed-once package-scope `var browserTmpl`.
-  2. `cmd/iscc-monitor/main.go` — in `hubHandler`, make the bare-`/` request reach `proofserve` instead
-     of falling through to `tilesserve`'s 404. See Implementation Notes for the exact mux mechanics
-     (an `http.ServeMux` cannot hold both an exact `/` and a subtree `/`).
-- **Modify (doc)**: `CLAUDE.md` — the "Running a local dev instance" endpoint list: add the
-  `GET /<domain>/log/` HTML log-browser line (currently undocumented).
-- **Create (test)**: `internal/proofserve/browser_test.go` — golden HTTP-seam test over the
-  `buildMirror` fixture store.
+- **Create**: `internal/badge/badge.go` — a pure leaf package exporting the parsed partial + a `Render`
+  helper (or an `html/template` `*template.Template` other packages associate via `template.Must(t.Parse(...))`).
+- **Create**: `internal/badge/badge.html` — the embedded template partial (`{{define "hubStatusBadge"}}…{{end}}`),
+  one `{{if}}` arm per status emitting that status's distinct inline `<svg>` silhouette + a `<span>` label.
+- **Create (test)**: `internal/badge/badge_test.go` — golden test (test file, does not count against the ≤3).
 - **Reference** (read before editing — exact paths):
-  - `/workspace/iscc-monitor/.claude/context/learnings/http-surface.md` — per-hub subtree mounting +
-    `StripPrefix` strip discipline (strip `"/"+Origin`, leave the leading slash); proofserve's
-    path-switch + 405/404 mapping; the most-specific-match rule for the inner hub mux.
-  - `/workspace/iscc-monitor/.claude/context/learnings/dashboard.md` — the render-into-buffer-then-copy
-    HTML idiom, `html/template` (NOT `text/template`) for auto-escaping, the post-200 write-drop
-    convention, and the coverage-honesty render rule.
+  - `/workspace/iscc-monitor/.claude/design/HubStatusBadge.dc.html` — the source component: the five SVG
+    silhouettes (exact `viewBox`/`path`/`circle`/`line` markup), the five labels, and the `META` table.
+  - `/workspace/iscc-monitor/.claude/adr/0010-evidence-ledger-frontend.md` — the partial spec (lines
+    47–52: inline SVG, five silhouettes check-circle · cloud-? · triangle · octagon-x · pause-circle;
+    icon+label+silhouette, never hue alone) and the status palette (line 104).
+  - `/workspace/iscc-monitor/.claude/context/learnings/dashboard.md` — the SSR-leaf render posture this
+    package mirrors (`html/template` NOT text; render-into-buffer; leaf with no `net/http`/`store` dep).
   - `/workspace/iscc-monitor/internal/dashboard/handler.go` + `/workspace/iscc-monitor/internal/dashboard/dashboard.html`
-    — the working `//go:embed` + `template.Must` + buffer-render + `text/html; charset=utf-8` pattern
-    to mirror.
-  - `/workspace/iscc-monitor/internal/proofserve/handler.go` — `serveVerify`/`hubStatus` already read
-    `FollowState` + `CheckpointAt(size)` and base64-Std encode the root; reuse that exact composition.
-  - `/workspace/iscc-monitor/internal/proofserve/handler_test.go` `buildMirror` — the 300-leaf fixture
-    that records + advances an accepted checkpoint; the browser test should drive `proofserve.Handler`
-    over it.
+    — the established `//go:embed` + `template.Must` pattern to copy (this step does NOT modify them).
 
 ## Not In Scope
-- The proof-bundle assembler (`{checkpoint, inclusion proof, record bytes, hub key, ots?}`) — the next
-  arc after M3 closes, a different (client-verifies) posture.
-- CSS / JS / WASM progressive enhancement — the WASM verifier is a separate milestone; this page is
-  plain server-rendered HTML like the dashboard.
-- ETag / `Cache-Control` / conditional-GET on the browser page — not a Verify criterion (the static
-  mirror has them; this HTML page does not need them for M3).
-- Threading the richer in-memory statuses (`unverified`/`unresolvable`/`rotated`) — keep the
-  store-provable subset (`frozen` else `verified`) exactly as `proofserve.hubStatus` already does.
-- Refreshing the stale `sb1.amlet.id` did.json fixture or adding a registry-deactivation writer — both
-  off the Verify bar.
+- **Do NOT wire the badge into `internal/dashboard` / `internal/proofserve` yet.** No change to
+  `dashboard.html`, `handler.go`, `store.ListHubs`, or `cmd/iscc-monitor`. Wiring + replacing the bare
+  `Status` text with the partial is the next step (and depends on this leaf existing).
+- **Do NOT make the full taxonomy store-provable.** `unresolvable`/`unverified` are still not resolvable
+  from the store (they live in the in-memory `metrics.Registry`). The partial accepts a status *string*
+  and renders any of the five honestly; threading real five-status resolution through is a separate,
+  later M-UI sub-step. Until then the dashboard still resolves only `frozen`/`verified`/`inactive`.
+- **Do NOT embed DS tokens / self-hosted fonts / external CSS** here. The partial carries only the inline
+  SVG + label markup (the handoff's inline `style=` colors may be ported as-is or dropped — accessibility
+  rides icon+label+silhouette, not hue). Font/token embedding is its own M-UI step.
+- **Do NOT build the frozen Exhibit panel.** The `frozen` *badge* (octagon-x silhouette + "Frozen"
+  label) is in scope; the categorically-distinct non-dismissable Exhibit page-element is a later screen.
 
 ## Implementation Notes
-- **Mux mechanics (the load-bearing detail).** A request to `GET /<domain>/log/` is stripped by
-  `mirrorHandler` (strip `"/"+Origin`, leaving the leading slash) so the inner `hubHandler` mux sees
-  path `/`. Today `hubHandler` mounts `tilesserve.Handler` at `/` (a subtree), and `tilesserve`
-  `TrimPrefix`es the leading slash → empty path → its `default` branch → **404**. So
-  `GET /<domain>/log/` currently 404s; the step is to make the *bare* `/` render the browser while
-  every other path (`/checkpoint`, `/tile/...`) still reaches tilesserve. In Go's `http.ServeMux` you
-  cannot register both an exact `/` and a subtree `/` (the subtree pattern `/` *is* the bare-`/`
-  match). Minimal fix: in `hubHandler`, replace the `mux.Handle("/", tilesserve…)` line so the `/`
-  slot is a tiny `http.HandlerFunc` that does `if r.URL.Path == "/" { proofs.ServeHTTP(w, r); return }`
-  then delegates to `tilesserve.Handler(...)`. `proofs` (the `proofserve.Handler`) then sees path `/`
-  and its new `case "/"` renders the browser. Keep the four exact proof mounts (`/inclusion`,
-  `/consistency`, `/entries`, `/verify`) unchanged — they still win by most-specific match. (The
-  405 method-gate at the top of `proofserve.Handler` then also covers a non-GET to the bare `/`.)
-- **Handler body.** Add `case "/": serveBrowser(w, r, st, hubID)` before `default`. `serveBrowser`
-  reads `fs, err := st.FollowState(ctx, hubID)`; a DB error → 500. If `fs.LastSize == 0`, render the
-  page in a "no accepted checkpoint yet" state (a **200**, not a 404 — the browser page exists for a
-  followed-but-unpolled hub, mirroring the dashboard's "no coverage yet" honesty). Otherwise
-  `root, _, found, err := st.CheckpointAt(ctx, hubID, fs.LastSize)`; base64-Std encode `root` exactly
-  as `serveVerify` does (`base64.StdEncoding.EncodeToString(root)`). A DB read error → 500; a `!found`
-  at the accepted size is the same real store inconsistency `serveVerify` treats as 500.
-- **Template.** Mirror `dashboard.html` / `dashboard/handler.go`: `//go:embed browser.html` →
-  `template.Must(template.New("browser").Parse(...))` at package scope; render the view-model into a
-  `bytes.Buffer`; on template error → 500 *before* any 200; then
-  `w.Header().Set("Content-Type", "text/html; charset=utf-8")`, `WriteHeader(200)`, `buf.WriteTo(w)`
-  (post-200 write-drop). Use `html/template`, NOT `text/template`, so the origin/root strings
-  auto-escape. The page must show the accepted `size` and the base64 `root`, the hub status (`frozen`
-  else `verified`), and include relative links into the proof surface — e.g. `entries?index=0`,
-  `inclusion?iscc_id=…`, `consistency?from=0`, `verify?iscc_id=…` (relative URLs resolve under the
-  hub's `/<domain>/log/` base because the page is served from the trailing-slash subtree root).
-- **No new store method needed.** `FollowState` (`internal/store/checkpoints.go:174`) and `CheckpointAt`
-  (`:157`) already return everything; do not add a `ListHubs`-style method. Keep store a leaf —
-  `proofserve` already depends on `store`, never the reverse.
-- **Correctness rule (learnings index): coverage honesty (ADR-0001).** Do not present pre-coverage
-  state as a guarantee; an unpolled hub renders an explicit "no accepted checkpoint yet", never a
-  fabricated `(0, "")`.
-- **Oracle/conformance gate is N/A here** — this is pure HTML rendering of persisted store rows (no
-  signature / RFC-6962 / Merkle / did:web / fsck / proof computation); the served `(size, root)` are
-  read back verbatim, never recomputed. State this in the review handoff. `go.mod`/`go.sum`/`schema.sql`
-  must stay byte-identical (the browser reads existing columns only).
+- **Port faithfully from `HubStatusBadge.dc.html`.** Map the five `sc-if` arms to five Go-template arms.
+  Use the component's exact SVG inner markup per status so the silhouettes match the design:
+  - `verified` → `<circle cx=12 cy=12 r=9>` + check `<path d="M8.4 12.3l2.5 2.5 4.7-5.2">` (check-circle)
+  - `unresolvable` → `<circle r=9>` + question `<path d="M9.2 9.3a3 3 0 0 1 5.6 1.2…">` + dot (question-circle)
+  - `unverified` → triangle `<path d="M12 3.4 21 19H3z">` + exclamation line + dot (triangle-warning)
+  - `frozen` → octagon `<path d="M8.2 3.3h7.6L20.7 8.2v7.6L15.8 20.7H8.2L3.3 15.8V8.2z">` + X lines (octagon-x)
+  - `inactive` → `<circle r=9>` + two vertical `<line>`s (pause-circle)
+  Labels (from `META`): `Verified` / `Unresolvable` / `Unverified` / `Frozen` / `Inactive`.
+- **Choose the selection mechanism deliberately.** A single `{{define "hubStatusBadge"}}` with an
+  `{{if eq .Status "verified"}}…{{else if eq .Status "unverified"}}…{{end}}` chain over a small
+  view-model (`{Status, Label}`) is the simplest. Expose BOTH (a) an exported
+  `Render(w io.Writer, status string) error` for direct use AND (b) the embedded source string (or a
+  `MustParseInto(parent *template.Template)` helper) so a parent page template can `{{template
+  "hubStatusBadge" .}}` it later — the standard `html/template` partial-include idiom (parent
+  `template.Must(parent.Parse(badgeSrc))`, then invoke by name). Decide the exact surface from how
+  `html/template` associated templates compose; keep it minimal.
+- **Map the label inside Go from a fixed table, never trust the caller's string verbatim for the label**,
+  so an unknown status fails closed (return an error, or render an explicit fallback) rather than emitting
+  an attacker-controlled label. The five SVG arms are static literal template text (not `template.HTML`
+  from input), so they auto-escape-safely; `html/template` (NOT `text/template`) is mandatory.
+- **Keep the package a pure leaf.** Closure must be `bytes`/`embed`/`html/template`/`io` + stdlib only —
+  NO `net/http`, NO `internal/store`. Verify with `go list -deps ./internal/badge`. Mirror the
+  `internal/dashboard` embed + `template.Must(...Parse)` pattern (learnings/dashboard.md): parse the
+  embedded source once at init so a malformed partial fails the build, not a request.
+- **Oracle/conformance gate is N/A** — pure static-markup rendering keyed on a status string; no
+  signature / RFC-6962 / Merkle / did:web / fsck / proof path. `go.mod`/`go.sum`/`schema.sql` must be
+  byte-identical (no new deps). State this in the review handoff.
+- **Correctness rule (learnings index):** status is conveyed by icon + label + silhouette, never hue
+  alone (ADR-0010 invariant 4). The golden test must assert the *silhouette* and *label* differ across
+  statuses — not merely a color attribute.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`; `gofmt -l .` empty).
-- `go test -count=1 ./internal/proofserve` passes (the new `browser_test.go` plus all existing
-  inclusion/consistency/entries/verify tests).
-- `go test -count=1 ./cmd/iscc-monitor` passes uncached (the `hubHandler` mux rewiring keeps existing
-  mirror routing intact).
-- HTTP-seam assertion (in `browser_test.go`, on the `buildMirror` fixture, size 300): `GET /` → `200`,
-  `Content-Type: text/html; charset=utf-8`, and the body contains the accepted size (`300`) and the
-  base64-Std encoding of `tree.Hash()` (the accepted root). `POST /` → `405`.
-- Mutation check (run by `advance`/`review`, reverted after): dropping the `{{.Root}}` (or size) cell
-  from `browser.html` FAILS the golden body assert — proving the page non-vacuous.
-- `go list -deps ./internal/store | grep -E 'net/http|internal/proofserve'` stays empty (store remains
-  a leaf; no new reverse dependency introduced).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
+- `go test -count=1 ./internal/badge` passes uncached.
+- The golden test asserts, for each of the five statuses, the rendered output contains that status's
+  distinct text label (`Verified`/`Unresolvable`/`Unverified`/`Frozen`/`Inactive`) AND its distinct
+  distinguishing SVG element — e.g. `verified` contains the check path `M8.4 12.3`, `unverified` the
+  triangle `M12 3.4 21 19H3z`, `frozen` the octagon `M8.2 3.3h7.6`, `inactive` two pause `<line>`s,
+  `unresolvable` the question `M9.2 9.3`.
+- The golden test asserts the five rendered outputs are **pairwise distinct** (collect the five into a
+  set and assert `len == 5`) — proving no two statuses collapse to the same silhouette.
+- An unknown/empty status fails closed: the test asserts `Render` returns an error OR renders an explicit
+  fallback, never an arbitrary attacker-controlled label.
+- `go list -deps ./internal/badge | grep -E 'net/http|internal/store'` is empty (badge stays a leaf).
+- `git diff --stat HEAD -- go.mod go.sum internal/store/schema.sql` is empty (no new deps / schema change).
 
 ## Done When
-`mise run check` is green and `GET /<domain>/log/` returns `200 text/html` exposing the mirrored
-checkpoint `(size, root)` with links into `entries`/proofs, golden-tested at the HTTP seam — closing
-M3's fourth and final Verify criterion (M3 → 4/4).
+`internal/badge` exists as a pure leaf rendering the five-status `HubStatusBadge` partial, its golden
+test proves all five statuses produce distinct labels + distinct inline-SVG silhouettes (pairwise
+unique) with an unknown status failing closed, and `mise run check` is green.
