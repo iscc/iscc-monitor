@@ -26,9 +26,12 @@
 package proofserve
 
 import (
+	"bytes"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"html/template"
 	"net/http"
 	"os"
 
@@ -42,6 +45,18 @@ import (
 
 // contentType is the media type for the JSON proof response body.
 const contentType = "application/json"
+
+// browserSource is the embedded HTML log-browser template, parsed once at package
+// init so a malformed template fails the build, not a request.
+//
+//go:embed browser.html
+var browserSource string
+
+// browserTmpl is the parsed log-browser template. template.Must panics at init if
+// the embedded source fails to parse, surfacing a template bug at startup. It is
+// html/template (NOT text/template) so the base64 root and status strings
+// auto-escape.
+var browserTmpl = template.Must(template.New("browser").Parse(browserSource))
 
 // octetStreamType is the media type for the raw record bytes /entries serves: the
 // JCS-canonical log-entry envelope is an opaque BLOB, not the JSON proof shape.
@@ -60,16 +75,21 @@ const octetStreamType = "application/octet-stream"
 // single accepted leaf from the hub's mirrored entry bundles and serving them
 // verbatim as application/octet-stream.
 //
-// Finally it handles GET /verify?iscc_id=<id> — the weaker verify-for-me path that
+// It handles GET /verify?iscc_id=<id> — the weaker verify-for-me path that
 // returns a single self-contained JSON verdict (the caller trusts the verdict
 // rather than verifying a proof bundle itself): the hub's persisted status, the
 // accepted checkpoint (size, root), and a real RFC-6962 inclusion result recomputed
 // from the mirror and Merkle-verified against the accepted root.
 //
+// Finally it handles GET / (the hub-log root) — a server-rendered HTML log browser
+// exposing the monitor's accepted checkpoint (size, root) for this hub plus
+// relative links into the entries and proof routes, so a human can browse the
+// mirror and a client can discover the proof surface.
+//
 // Status mapping: non-GET → 405; an unmatched path → 404. The per-route flow
-// owns the rest (serveInclusion / serveConsistency / serveEntries / serveVerify);
-// see each for its 400/404/500 mapping. CORS, caching, and conditional GET are
-// intentionally out of scope for this slice.
+// owns the rest (serveBrowser / serveInclusion / serveConsistency / serveEntries /
+// serveVerify); see each for its 400/404/500 mapping. CORS, caching, and
+// conditional GET are intentionally out of scope for this slice.
 func Handler(st *store.Store, hubID int64) http.Handler {
 	f := store.SQLiteFetcher{Store: st, HubID: hubID}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +100,8 @@ func Handler(st *store.Store, hubID int64) http.Handler {
 		// THIS handler is mounted at the hub-log root, so it sees the path suffix
 		// of the hub's /log origin; the proof routes are /inclusion and /consistency.
 		switch r.URL.Path {
+		case "/":
+			serveBrowser(w, r, st, hubID)
 		case "/inclusion":
 			serveInclusion(w, r, st, f, hubID)
 		case "/consistency":
@@ -470,6 +492,72 @@ func serveVerify(w http.ResponseWriter, r *http.Request, st *store.Store, f stor
 		verdict.Reason = "inclusion proof did not verify"
 	}
 	writeVerdict(w, verdict)
+}
+
+// browserData is the log-browser template view-model: the store-provable hub
+// status, whether an accepted checkpoint exists, and the accepted (size, root) the
+// monitor vouches for (root base64-Std encoded, matching the proof encodings). When
+// HasCheckpoint is false the page renders a "no accepted checkpoint yet" state
+// (Size 0, Root empty) — a followed-but-unpolled hub, never a fabricated guarantee
+// (ADR-0001 coverage honesty).
+type browserData struct {
+	Status        string
+	HasCheckpoint bool
+	Size          uint64
+	Root          string
+}
+
+// serveBrowser renders the HTML log browser for the hub-log root (GET /): the
+// monitor's accepted checkpoint (size, root) plus relative links into the proof
+// surface. It reads only persisted store rows (FollowState + CheckpointAt) — no
+// signature, RFC-6962, Merkle, or proof computation; the served (size, root) are
+// read back verbatim, never recomputed.
+//
+// Status mapping: a FollowState / CheckpointAt DB error → 500; a CheckpointAt
+// found==false at the accepted size is the same real store inconsistency serveVerify
+// treats as 500. A hub with no accepted checkpoint yet (LastSize == 0) renders a
+// 200 "no accepted checkpoint yet" page (not a 404 — the browser page exists for a
+// followed-but-unpolled hub, mirroring the dashboard's coverage honesty). The page
+// is rendered into a buffer first so a template/store error is a 500 BEFORE any 200.
+func serveBrowser(w http.ResponseWriter, r *http.Request, st *store.Store, hubID int64) {
+	ctx := r.Context()
+
+	fs, err := st.FollowState(ctx, hubID)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	data := browserData{Status: hubStatus(fs)}
+
+	size := fs.LastSize
+	if size > 0 {
+		root, _, found, err := st.CheckpointAt(ctx, hubID, size)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		// A missing checkpoint row at the accepted size is a real store
+		// inconsistency, the same fault serveVerify maps to 500.
+		if !found {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		data.HasCheckpoint = true
+		data.Size = size
+		data.Root = base64.StdEncoding.EncodeToString(root)
+	}
+
+	var buf bytes.Buffer
+	if err := browserTmpl.Execute(&buf, data); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	// Post-200 write-drop: the status is already committed, so a copy error can
+	// only signal a broken client connection, which a second status cannot fix
+	// (matching the dashboard and the package's other write helpers).
+	_, _ = buf.WriteTo(w)
 }
 
 // hubStatus maps the persisted follow state to the glossary hub-status subset the

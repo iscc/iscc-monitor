@@ -1,68 +1,64 @@
-## 2026-06-21 — Review of: Server-rendered dashboard at `GET /` listing every realm hub (status + coverage)
+## 2026-06-21 — HTML log browser at `GET /<domain>/log/` (mirrored checkpoint size + root)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added a server-rendered HTML log browser at each hub's `GET /<domain>/log/` root that exposes
+the monitor's accepted checkpoint `(size, root)` plus relative links into the hub's `entries`/proof
+routes. This closes M3's fourth and final Verify criterion (M3 → 4/4). The page reads only persisted
+store rows (`FollowState` + `CheckpointAt`) and renders them verbatim — no proof/signature/Merkle path.
 
-**Summary:** `advance` added a server-rendered HTML dashboard at the exact path `/` that lists every
-followed hub with its store-provable glossary status (inactive / frozen / verified) and coverage window
-(ADR-0001). The diff is scope-clean (`internal/store/hubs.go` `ListHubs` + a new `internal/dashboard`
-leaf + the `/` mount in `main.go` + template/test/doc), keeps `internal/store` a leaf, and is golden +
-mutation-proven at the HTTP seam. This closes the third of M3's four Verify criteria (M3 → 3/4); the
-HTML log browser is the last.
+**Files changed:**
+- `internal/proofserve/browser.html` (new): embedded `html/template` — accepted size + base64-Std root +
+  store-provable status, a "No accepted checkpoint yet" coverage-honesty state, and a proof-surface link
+  list (`entries`/`inclusion`/`consistency`/`verify`/`checkpoint`, relative URLs resolving under the
+  trailing-slash subtree base).
+- `internal/proofserve/handler.go`: added `bytes`/`_ "embed"`/`html/template` imports, a parsed-once
+  package-scope `browserTmpl`, a `browserData` view-model, `serveBrowser` (FollowState → CheckpointAt →
+  base64-Std root, render-into-buffer-then-200), and `case "/": serveBrowser(...)` before `default` in
+  the path switch; updated the `Handler` doc comment.
+- `cmd/iscc-monitor/main.go`: `hubHandler` now mounts a tiny dispatch `http.HandlerFunc` at `/` that
+  sends the bare path `/` to `proofserve.Handler` (renders the browser) and delegates every deeper path
+  to `tilesserve.Handler` — an `http.ServeMux` cannot hold both an exact `/` and a subtree `/`, so the
+  func is the minimal fix. The four exact proof mounts are unchanged. Updated the doc comment.
+- `internal/proofserve/browser_test.go` (new): golden HTTP-seam test over `buildMirror` (size 300) —
+  `GET /` → 200 `text/html; charset=utf-8`, body contains the accepted size + base64-Std root + the four
+  proof links; `POST /` → 405; followed-but-unpolled hub → 200 "No accepted checkpoint yet".
+- `CLAUDE.md`: added the `GET /<domain>/log/` HTML log-browser line to the dev-instance endpoint list.
 
-**Verification:**
-- [x] `mise run check` green — all 16 packages `ok` (build + vet + test).
-- [x] `gofmt -l .` empty (clean).
-- [x] `go test -count=1 ./internal/dashboard` PASS uncached (golden HTTP-seam + status-mapping table).
-- [x] `go test -count=1 ./internal/store ./cmd/iscc-monitor` PASS uncached (ListHubs + mux wiring intact).
-- [x] `go list -deps ./internal/store | grep -E 'net/http|internal/dashboard|internal/logclient'` empty
-  — store stays a leaf. Dashboard own imports: `bytes embed html/template net/http internal/store`.
-- [x] `git diff --stat HEAD~1..HEAD -- go.mod go.sum internal/store/schema.sql` empty — no schema/dep change.
-- [x] HTTP seam on the fixture store: `GET /` → 200, `text/html; charset=utf-8`; body names both hubs'
-  domain+origin, renders `verified` + `frozen` in the correct cells, shows `size 42 at <RFC3339>` for
-  the verified hub and `no coverage yet` for the frozen (advance-follow-state-only) hub — ADR-0001
-  coverage honesty observable. `POST /` → 405; `GET /unknown` → 404. (Confirmed by dumping the rendered
-  HTML via a throwaway test, then removing it.)
-- [x] `GOOS=js GOARCH=wasm go build ./internal/didweb` → OK (WASM verifier seam untouched).
-- [x] Gate-integrity scan over all unpushed commits (`@{upstream}..HEAD`) — no `//nolint` / `t.Skip` /
-  build-tag exclusion / swallowed-error / deleted-assertion. The lone `t.Skip`-pattern hit is the prior
-  review's checklist text inside `handoff.md`, not code.
-- [x] Mutation-proven non-vacuous (3 mutations, all reverted): (1) `hubStatus` frozen→verified →
-  `TestHubStatusMapping/frozen_when_active` FAILS; (2) drop the `{{.Status}}` template cell → golden
-  body assert FAILS; (3) drop `size {{.SinceSize}}` from the template → coverage-start assert FAILS.
-- [x] `/`-mount collision verified with a standalone mux: a `/a/` subtree + `/` root resolves
-  `/a`,`/a/`,`/a/x` to the subtree and only `/b` to root — so `/metrics`, `/healthz`, and each
-  `/<domain>/log/` subtree all still win over the dashboard's `/` (most-specific match).
-- [x] Oracle/conformance gate correctly N/A — pure HTML rendering of persisted store rows; no
-  signature / RFC-6962 / Merkle / did:web / fsck / proof path.
+**Verification:** `mise run check` → green (all 16 packages `ok`; build + vet + test). Per criterion:
+- [x] `gofmt -l .` empty.
+- [x] `go test -count=1 ./internal/proofserve` PASS uncached (3 new browser tests + all existing
+  inclusion/consistency/entries/verify tests).
+- [x] `go test -count=1 ./cmd/iscc-monitor` PASS uncached (`TestMirrorRouter` + `TestMirrorInclusionRoute`
+  + `TestMirrorEntriesRoute` — the `hubHandler` rewiring keeps existing mirror routing intact).
+- [x] HTTP-seam (fixture size 300): `GET /` → 200, `text/html; charset=utf-8`, body contains `300` and
+  `base64.StdEncoding(tree.Hash())`; `POST /` → 405; unpolled hub → 200 with the no-coverage state.
+- [x] Mutation-proven non-vacuous (both reverted): dropping `{{.Root}}` AND dropping `{{.Size}}` each
+  FAIL `TestBrowserExposesAcceptedCheckpoint`; reverted → green.
+- [x] `go list -deps ./internal/store | grep -E 'net/http|internal/proofserve'` empty — store stays a leaf.
+- [x] `git diff --stat HEAD -- go.mod go.sum internal/store/schema.sql` empty — byte-identical.
+- [x] End-to-end dispatch confirmed via a throwaway test through the full `buildMux` (then removed):
+  `GET /sb0.iscc.id/log/` → 200 text/html "Log Browser"; `GET /sb0.iscc.id/log/checkpoint` → 200
+  octet-stream (still reaches tilesserve).
 
-**Issues found:** (none) — no defect; no issues.md change. The one open `low` notecheck item is unrelated.
-
-**Codex second opinion:** Codex (gpt-5.5, xhigh) finished after ~3.5 min with one finding, triaged:
-- **[P3] handler.go:69-74 — method-gate (405) runs before the exact-path guard (404), so `POST
-  /unknown` returns 405 instead of 404 → DISMISSED (style nit, not a defect).** The handler follows the
-  established codebase convention: `proofserve.Handler` (handler.go:76-77) and `healthz.Handler`
-  (handler.go:45-46) BOTH method-gate first. Re-ordering only the dashboard would make it inconsistent
-  with its sibling leaves. `POST /unknown` is an unspecified cross-product edge (both 404 and 405 are
-  4xx client errors on a non-existent path); no `target.md` Verify criterion or ADR pins the ordering,
-  and the realistic cases the spec named (`GET /unknown`→404, `POST /`→405) are both correct. Per the
-  no-style-nits rule, logged here and not filed.
-
-**Next:** The HTML **log browser** `GET /<domain>/log/` — the fourth and final M3 Verify criterion (M3 →
-4/4). It mounts under the per-hub subtree (reached through `hubHandler` in `main.go`, a different mount
-than `/`), so it belongs in `proofserve` or a new per-hub HTML leaf — NOT in `internal/dashboard`. After
-M3 closes, the proof-bundle assembler (the authoritative client-verifies path) is the natural next arc.
+**Next:** M3 is now 4/4 Verify — the natural next arc is the **proof-bundle assembler**
+(`{hub-signed checkpoint, inclusion/consistency proof, record bytes, hub key, ots?}`), the authoritative
+client-verifies path that removes the monitor from the trust path. That is a different posture than the
+verify-for-me/browser surfaces (the client verifies the bundle itself) and lands the in-browser verifier
+/ CLI shared artifact. Update `state.md` to reflect M3 closed before defining it.
 
 **Notes:**
-- **`inactive` status is currently unreachable through the public store API** (no `SetActive` writer;
-  `UpsertHub` inserts the schema default `active=1`), so the golden HTTP-seam test cannot drive a hub to
-  `inactive`. The advance covered it via a white-box table test on the package-private `hubStatus`
-  (hence `package dashboard`, not `dashboard_test`). When a registry-deactivation writer lands, add an
-  end-to-end inactive-render assertion through the public surface. Documented limitation, not a defect.
-- **Status is the store-provable subset only** (inactive > frozen > verified), mirroring
-  `proofserve.hubStatus` and extending it with `inactive`. The richer in-memory metrics statuses
-  (`unverified`/`unresolvable`/`rotated`) are deliberately NOT threaded in — out of scope, keeps the
-  page golden-testable on a fixture store. Threading `metrics.Registry` into the dashboard is later work.
-- Learnings: new detail file `learnings/dashboard.md` (+ index pointer row) captures the
-  `/`-mount-vs-exact-path-guard rule, the store-provable status subset, the inactive-unreachable caveat,
-  and the coverage-honesty render. No promotion to the cross-cutting index (all package-local).
+- **Oracle/conformance gate is N/A here** (stated per next.md): this is pure HTML rendering of persisted
+  store rows — no signature / RFC-6962 / Merkle / did:web / fsck / proof computation. The served
+  `(size, root)` are read back verbatim (`FollowState.LastSize` + `CheckpointAt(size)`), never recomputed.
+  `go.mod`/`go.sum`/`schema.sql` are byte-identical.
+- **No new store method** — `serveBrowser` reuses `FollowState` + `CheckpointAt`, the same composition
+  `serveVerify` uses; store stays a leaf (no `ListHubs`-style addition).
+- **The page shows no hub domain/origin** — `proofserve.Handler` carries only `hubID`, not the origin,
+  and next.md fixed the signature as `serveBrowser(w, r, st, hubID)` with "No new store method needed".
+  The page is correctly addressed by its URL and the relative links resolve under it, so the identity is
+  the URL itself. If a future step wants the domain in the page heading, it would need the origin threaded
+  through `Handler` (a signature change) — out of scope here.
+- **Status is the store-provable subset only** (`frozen` else `verified`, via the existing
+  `proofserve.hubStatus`) exactly as next.md scoped — the richer in-memory statuses
+  (`unverified`/`unresolvable`/`rotated`) are not threaded in.
+- **`!found` at the accepted size → 500** mirrors `serveVerify`'s treatment of the same real store
+  inconsistency; an unpolled hub (`LastSize == 0`) is a 200 no-coverage page, not a 404.

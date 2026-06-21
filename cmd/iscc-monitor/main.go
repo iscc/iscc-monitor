@@ -183,15 +183,21 @@ func mirrorHandler(st *store.Store, routes []hubRoute) *http.ServeMux {
 	return mux
 }
 
-// hubHandler combines one hub's computed-proof and static-mirror surfaces behind a
-// single per-hub mux: GET /inclusion, GET /consistency, GET /entries, AND GET
-// /verify reach proofserve.Handler (the inclusion/consistency proofs, the
-// single-leaf record bytes, and the verify-for-me JSON verdict computed from the
-// local mirror), and every other path falls through to tilesserve.Handler (the
-// static BLOB mirror — /checkpoint, /tile/..., /tile/entries/...). All four proof
-// routes are mounted at their exact paths so http.ServeMux's most-specific match
-// wins over the "/" subtree; proofserve.Handler internally switches on the path, so
-// the same handler serves all four. It
+// hubHandler combines one hub's computed-proof, HTML-browser, and static-mirror
+// surfaces behind a single per-hub mux: GET /inclusion, GET /consistency, GET
+// /entries, GET /verify, AND the bare GET / (the HTML log browser) reach
+// proofserve.Handler (the inclusion/consistency proofs, the single-leaf record
+// bytes, the verify-for-me JSON verdict, and the log-browser page — all computed
+// from the local mirror), and every other path falls through to tilesserve.Handler
+// (the static BLOB mirror — /checkpoint, /tile/..., /tile/entries/...). The four
+// proof routes are mounted at their exact paths so http.ServeMux's most-specific
+// match wins over the "/" subtree; proofserve.Handler internally switches on the
+// path, so the same handler serves all of them.
+//
+// The "/" slot needs a tiny dispatch func rather than a plain mount because an
+// http.ServeMux cannot hold both an exact "/" and a subtree "/" (the subtree
+// pattern "/" IS the bare-"/" match): the func sends the bare path "/" to proofserve
+// (which renders the browser) and delegates every deeper path to tilesserve. It
 // receives leading-slash paths (mirrorHandler strips only down to the leading
 // slash), which both inner handlers and this inner ServeMux require. Both read that
 // hub's BLOBs through the store's single open connection, so the proof endpoints
@@ -204,7 +210,14 @@ func mirrorHandler(st *store.Store, routes []hubRoute) *http.ServeMux {
 func hubHandler(st *store.Store, hubID int64) http.Handler {
 	mux := http.NewServeMux()
 	proofs := proofserve.Handler(st, hubID)
-	mux.Handle("/", tilesserve.Handler(store.SQLiteFetcher{Store: st, HubID: hubID}))
+	tiles := tilesserve.Handler(store.SQLiteFetcher{Store: st, HubID: hubID})
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			proofs.ServeHTTP(w, r)
+			return
+		}
+		tiles.ServeHTTP(w, r)
+	}))
 	mux.Handle("/inclusion", proofs)
 	mux.Handle("/consistency", proofs)
 	mux.Handle("/entries", proofs)

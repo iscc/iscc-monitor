@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ISCC Monitor — Log Browser</title>
+</head>
+<body>
+  <h1>Log Browser</h1>
+  <p>The monitor's mirrored, accepted checkpoint for this hub and links into its verifiable proof surface.</p>
+  {{- if .HasCheckpoint}}
+  <table>
+    <tbody>
+      <tr>
+        <th>Status</th>
+        <td>{{.Status}}</td>
+      </tr>
+      <tr>
+        <th>Accepted size</th>
+        <td>{{.Size}}</td>
+      </tr>
+      <tr>
+        <th>Accepted root</th>
+        <td><code>{{.Root}}</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <h2>Proof surface</h2>
+  <ul>
+    <li><a href="entries?index=0">entries?index=0</a> — raw record bytes of a single accepted leaf by seq</li>
+    <li><a href="inclusion?iscc_id=ISCC:…">inclusion?iscc_id=…</a> — RFC-6962 inclusion proof for an ISCC-ID</li>
+    <li><a href="consistency?from=0">consistency?from=0</a> — RFC-6962 consistency proof from a prior size</li>
+    <li><a href="verify?iscc_id=ISCC:…">verify?iscc_id=…</a> — verify-for-me JSON verdict for an ISCC-ID</li>
+    <li><a href="checkpoint">checkpoint</a> — the mirrored signed checkpoint BLOB</li>
+  </ul>
+  {{- else}}
+  <p>Status: {{.Status}}</p>
+  <p>No accepted checkpoint yet — this hub is followed but has not yet yielded a verified checkpoint. Guarantees hold only from coverage start onward.</p>
+  {{- end}}
+</body>
+</html>

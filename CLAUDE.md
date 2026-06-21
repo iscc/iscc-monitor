@@ -52,6 +52,8 @@ After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSO
   (frozen / verified / inactive) and coverage window (`monitored_since` size + time, observed size).
 - `GET /healthz` — liveness + store readiness.
 - `GET /metrics` — Prometheus: hub status, last-observed, poll failures, violations.
+- `GET /<domain>/log/` — server-rendered HTML log browser: the mirrored accepted checkpoint
+  `(size, root)` for that hub plus links into its `entries`/proof routes (e.g. `/sb0.iscc.id/log/`).
 - `GET /<domain>/log/checkpoint` — mirrored signed checkpoint (e.g. `/sb0.iscc.id/log/checkpoint`).
 - `GET /<domain>/log/tile/...` — raw mirrored tlog-tiles BLOBs.
 - `GET /<domain>/log/entries?index=<seq>` — single-leaf record bytes from the local mirror.
