@@ -38,13 +38,33 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   fallback, not a CDN). All `var(--*)` tokens the page references resolve in `web/tokens.css`
   (reviewer-verified, 0 missing).
 
-- **HONESTY GAP (filed `normal`): the guided split-view mismatch alert renders UNCONDITIONALLY with
-  present-tense assertive copy** ("Your (size, root) does NOT match the monitor's mirrored tree …") even
-  though the skeleton runs no comparison (no `?monitor=` parse, no WASM). The verification-record block
-  is honest ("not yet run" / "until it runs, no verdict is claimed") but the alert below it asserts a
-  negative verdict that never ran — the two regions disagree. This is the INVERSE of the certificate's
-  no-JS honesty bug (over-claims a *negative* verdict). The Verify criterion is still met (the alert
-  exists, is golden-tested, is never a dead error), so it does NOT block. Fix at the live-wiring sub-step
-  (gate the alert on a real mismatch verdict) or interim (frame it illustratively, e.g. "On a mismatch
-  you would see:"). The always-loaded rule applies: gate a rendered verdict (✓ OR mismatch) on a
-  re-VERIFICATION, never render it statically as if it ran.
+- **settled (honesty gap CLOSED at live-wiring):** the guided mismatch alert is now ILLUSTRATIVE by
+  default (`data-live="0"`: dashed + muted, lede "Illustrative — what a real mismatch shows … On a
+  mismatch you would see:") and is lifted to a live verdict (`data-live="1"`, present-tense body) ONLY by
+  the loader on a genuine `failed` verdict. `TestVerifierNoTargetBaselineIsHonest` mutation-proves it
+  (reverting the body to the unconditional "Your (size, root) does not match" → test FAILs). The
+  always-loaded rule (gate a rendered ✓/mismatch on a re-VERIFICATION, never a static render) now holds
+  on BOTH the positive and negative path.
+
+## Live-wiring (the cross-origin tier-2 caller — DIFFERS from the certificate's same-origin one)
+
+- **The data-island carries only the TARGET `{monitor, id}`, not the proof** — Surface C is cross-origin,
+  so the browser FETCHES `<monitor>/inclusion/<id>.bundle` itself, then reads `record` / `inclusion.{inclusionProof,leafIndex,treeSize}` / `checkpoint` out of the returned bundle JSON. Field names
+  are the `proofBundle` + `logclient.InclusionEvidence` JSON tags verbatim (`inclusionProof`/`leafIndex`/
+  `treeSize`, not Go field names) — a rename there silently breaks this loader (no go-test gate: the JS
+  is only golden-tested as markup). The certificate, by contrast, bakes the bundle into the island
+  server-side (`{record,root,proof,index,size}`) — do not copy its island shape here.
+- **The root is re-derived in JS, not handed over.** The bundle carries the verbatim signed-note
+  `checkpoint`, so the loader takes `lines[2]` (third line) of the checkpoint body as the base64-Std
+  root (matches `logclient.parseCheckpointBody`: `<origin>\n<size>\n<base64(root)>\n…`; signature lines
+  follow and are ignored). If the bundle ever stops carrying the verbatim checkpoint, this breaks.
+- **Three render states stay strictly distinct (load-bearing):** `error` (fetch failed / bad checkpoint /
+  broken input / JS exception) stays in the `#verdict` region and NEVER reveals the mismatch alert; only
+  `failed` (proof did not rebuild the root) sets `data-live="1"`. A network/parse fault is `error`, not a
+  mismatch — never let a transport fault masquerade as a split-view signal.
+- **`parseTarget` is a usability guard, NOT a trust boundary** (stdlib `net/url`: require non-empty id +
+  http/https scheme + non-empty host + no fragment; fail closed to the baseline). The browser re-fetches
+  and re-validates the bundle, so the monitor URL is reflected ONLY inside the JSON data-island (never the
+  static body) — that is what keeps the user `https://` target from tripping the no-CDN body ban (the
+  ban-test runs the no-target baseline). It does NOT reject `u.ForceQuery` (a trailing `?`); harmless
+  here (worst case an honest `error` render), unlike the registry resolver where ForceQuery is a filed gap.

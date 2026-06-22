@@ -81,3 +81,14 @@ marshaling adapter). Durable cross-cutting rules live in the index
   vs `failed` (negative VERDICT — proof did not rebuild the root, the alert's key) vs `verified`. The
   data island + loader render ONLY under `HasBundle`, so an uncertifiable id wires no verifier (the
   negative test asserts none of the markers appear). Do not collapse `error`/`failed`.
+
+- **SCOPE GAP (filed `normal`): `isccVerifyInclusion` proves ONLY inclusion math, NOT the chain of
+  trust.** It checks `record`+`proof`+`size`→`root` (RFC-6962), but does NOT verify the checkpoint note
+  signature against the hub's did:web key, and does NOT bind `record` to a requested id. So a
+  self-consistent forged bundle (unsigned checkpoint with any root + matching proof, or a different
+  declaration's record) renders `verified`. Harmless on the same-origin certificate (the monitor already
+  baked the bundle), but on the cross-origin Surface-C verifier — whose whole promise is "the monitor is
+  not in the trust path" — a `verified` here still trusts the monitor for the signature + id-binding. A
+  full re-verification (the always-loaded rule) is signature + did:web-key + id-binding + inclusion, not
+  inclusion alone. When the verifier scope is next expanded, gate `verified` on all of them (or narrow
+  the success/step copy so it never claims a signature/key check it skips).

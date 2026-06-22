@@ -357,35 +357,6 @@ filed it and does **not** affect priority.
   CLAUDE.md "Write evergreen comments/copy that describe the current state"; `learnings/certificate.md`
   two-tier-honesty copy rules.
 
-## Surface-C verifier renders the split-view mismatch alert unconditionally with a present-tense (un-run) verdict
-- **Priority:** normal
-- **Source:** [review] (visual pass vs the Independent Verification mockup + rendered-body inspection)
-- **What / where / how to verify:** `internal/verifier/verifier.html` renders the guided split-view
-  mismatch alert (`.mismatch` block, the `<p class="mismatch-body">`) UNCONDITIONALLY and in the present
-  tense — "Your (size, root) does **not** match the monitor's mirrored tree. The hub may have shown you a
-  different history." — even though the skeleton runs NO comparison (no `?monitor=` parse, no WASM, no
-  form submission processed). A skeptical visitor who has submitted nothing still sees a red alert
-  asserting their checkpoint mismatched and that the hub presented a split view — a negative verdict the
-  page never computed. The page is internally inconsistent: the verification-record block IS honest (it
-  carries a "not yet run" run-label and the copy says "until it runs, no verdict is claimed"), but the
-  alert below it asserts a verdict that has not run. This is the INVERSE of the open certificate no-JS
-  honesty issue (that over-claims a *positive* re-verification; this over-claims a *negative* mismatch),
-  and falls under the always-loaded rule "gate a rendered ✓/Merkle/mismatch on a re-VERIFICATION, not a
-  static render." Does NOT block progress: the step's Verify criteria are met (the guided alert exists,
-  is golden-tested, is never a dead error) and the live `?monitor=` wiring that makes the alert
-  conditional is explicitly the next Surface-C sub-step. Reviewer-confirmed by serving the page with no
-  query (`curl /` → the present-tense alert renders verbatim, with no example/illustrative framing).
-  Fix when Surface C is next touched (the live-wiring sub-step is the natural fix point): gate the alert
-  to render only on a real mismatch verdict (the WASM/`?monitor=` comparison), keeping the no-JS baseline
-  showing only the steps + the run affordance; OR, as an interim, frame the static alert illustratively
-  ("On a mismatch you would see:") so it never asserts an un-run verdict. Verify fixed: the served page
-  with no comparison input does not assert in the present tense that a mismatch occurred, and a test
-  asserts the static (no-verdict) baseline is consistent with the honest verification-record block.
-- **Spec:** learnings.md always-loaded "gate a rendered verdict on a re-VERIFICATION, not a status flag /
-  static render"; target.md WASM milestone Surface-C "a `(size, root)` mismatch renders the guided
-  split-view alert, not a dead error" (the alert must reflect a real comparison, not a static assertion);
-  CLAUDE.md "Write evergreen copy that describes the current state"; `learnings/verifier.md` honesty gap.
-
 ## `/` realm-index sub-region deltas vs the mockup (logo, instance-identity copy, Checkpoint/Anchor columns)
 - **Priority:** normal
 - **Source:** [review] (visual pass vs the Realm-Index mockup, after the named-region parity landed)
@@ -413,4 +384,59 @@ filed it and does **not** affect priority.
   verified in its own extracted critical issue); the visual pass files no remaining sub-region delta.
 - **Spec:** target.md M-UI design-parity "named-region" bar (the `/` realm-index region) + "Document chrome
   + instance identity"; ADR-0010 Evidence-Ledger handoff; ADR-0012 visual-pass.
+
+## Surface-C live wiring is gated on SERVER-side `.HasTarget`, but the documented deployment is a STATIC GitHub-Pages artifact
+- **Priority:** normal
+- **Source:** [review] (Codex P1, reviewer-confirmed against the deployment posture)
+- **What / where / how to verify:** `internal/verifier/verifier.html` keys the live data-island + WASM
+  loader behind `{{if .HasTarget}}`, which `handler.go` `parseTarget` computes server-side from the
+  request's `?monitor=&id=` query. This works through the `Handler()` HTTP seam (what `go test` + the
+  review visual-pass harness exercise), but Surface C is documented to ship as a STATIC site on
+  `monitor.iscc.codes` via GitHub Pages (CLAUDE.md "Verifier app"; `next.md` Not-In-Scope "static site on
+  a DIFFERENT origin … deployed via GitHub Pages"; `learnings/verifier.md`). GitHub Pages serves a
+  pre-generated `index.html` byte-for-byte for every path — it never re-runs Go's `html/template` per
+  request — so `.HasTarget` is FROZEN at generation time. If the artifact is generated with no target,
+  `/?monitor=…&id=…` serves the pre-rendered NO-target body and the data-island/loader block is ABSENT:
+  the live verifier is unreachable in production from query params. The feature as built activates only
+  when the page is served dynamically, which contradicts the static-site posture. Does NOT block this
+  increment (its Verify criteria are met through `Handler()`; the deploy workflow is explicitly deferred),
+  but the gating mechanism must be reconciled with the static deployment before the verifier functions
+  live. Fix when the deploy/wiring step lands: read the target CLIENT-side (`location.search` /
+  `URLSearchParams` in the loader script, always emit the data-island skeleton + loader, let JS decide
+  HasTarget), OR commit to serving Surface C dynamically (and update the docs). Verify fixed: a statically
+  generated artifact (no server per request) loaded at `?monitor=…&id=…` runs the WASM verdict; loaded
+  with no query it shows the honest baseline.
+- **Spec:** CLAUDE.md "Verifier app" (static GitHub-Pages artifact, `?monitor=<url>`); `next.md` Surface-C
+  Not-In-Scope (static site / GitHub Pages); `learnings/verifier.md` cross-origin static posture;
+  target.md WASM milestone Surface-C ("a `(size, root)` mismatch renders the guided split-view alert").
+
+## The WASM verifier proves only inclusion math — it never checks the checkpoint signature or binds the record to the requested id (monitor stays in the trust path)
+- **Priority:** normal
+- **Source:** [review] (Codex P1, reviewer-confirmed against the verify core; affects BOTH tier-2 callers)
+- **What / where / how to verify:** `isccVerifyInclusion` (`cmd/wasm/verifyadapter/verify_adapter.go`
+  `VerifyJSON` → `internal/proof/verify.VerifyInclusion`) verifies ONLY that `record` hashes into a tree
+  of `size` leaves with `proof` → `root` (RFC-6962 inclusion). It does NOT (1) verify the checkpoint
+  note signature against the hub's did:web key, nor (2) bind the returned `record` to the requested
+  `target.id`. On Surface C this is acute: the verifier's whole mission is that "the instance you point it
+  at is never in the trust path", yet a malicious/compromised monitor can return a bundle whose
+  record+proof+root are internally consistent (forged unsigned checkpoint, or a DIFFERENT declaration's
+  record) and the browser renders the green `verified` state — putting the monitor BACK in the trust path.
+  The copy overstates this: `verifier.html:449` lists "Check the signature against the hub's did:web key"
+  as a step the verifier WILL run, and `verifier.html:601` reports "✓ … re-verified this inclusion proof
+  against the **hub-signed** checkpoint root" — but neither the signature nor a did:web resolution runs.
+  This is the SAME verifier-core scope the certificate's same-origin tier-2 already ships
+  (`cert.html:565`), so it is NOT a regression introduced here and does NOT block this increment (its
+  Verify is met); but it is more serious cross-origin. NOT currently exploitable on the testnet (the
+  fixture monitor is honest), but it is a real trust-root honesty gap. Fix when the WASM verifier scope
+  is next expanded: extend the verifier (or a sibling export) to (a) verify the checkpoint note signature
+  against a did:web key fetched/resolved in the browser, and (b) assert the record decodes to the
+  requested `target.id`, gating `verified` on ALL THREE; until then, narrow the success copy + drop the
+  unrun did:web step from the record block so the page does not claim a signature/key check it skips.
+  Verify fixed: a bundle with a valid inclusion proof but a checkpoint signed by a non-did:web key, or a
+  record whose id != the requested id, renders `error`/`failed`, NOT `verified`; reverting the added
+  checks makes that test FAIL.
+- **Spec:** CLAUDE.md "Verifier app" / "Proof bundle" / "Verifiable cache" (the monitor is NOT in the
+  trust path; the client re-verifies signature + Merkle); ADR-0009 did:web is the only key source;
+  learnings.md always-loaded "gate a rendered ✓ on a re-VERIFICATION" (a full re-verification includes
+  the signature + id binding, not inclusion math alone); `learnings/cmd-wasm.md` `isccVerifyInclusion` scope.
 
