@@ -362,34 +362,3 @@ filed it and does **not** affect priority.
   + the cross-cutting "Document chrome + instance identity" and "Navigation closure" requirements;
   ADR-0010 Evidence-Ledger handoff.
 
-## `verify.wasm` is NOT reproducible — committed bytes embed a `+dirty` parent-revision VCS stamp; the published hash cannot be regenerated
-- **Priority:** critical
-- **Source:** [review] (Codex P1, reviewer-confirmed by measurement)
-- **What / where / how to verify:** The `mise run build:wasm` task (`mise.toml:42`) omits
-  `-buildvcs=false`, so `go build` stamps `debug.ReadBuildInfo` VCS metadata into the `verify.wasm`
-  `data` section. The committed artifact (`internal/web/verify.wasm`,
-  `WasmVerifyHash=17b0f4f8…`) was built from a DIRTY working tree at the PARENT revision — readable via
-  `strings internal/web/verify.wasm | grep vcs.`: `vcs.revision=b2667f86215c…` (parent of the advance
-  commit), `vcs.modified=true`, `mod …+dirty`. After the advance committed, HEAD moved, so the documented
-  task now embeds a DIFFERENT `vcs.revision` and a clean/dirty-dependent `vcs.modified`, yielding a
-  DIFFERENT hash on every regeneration. Reviewer-measured: 10× `mise run build:wasm` produced
-  `d99e9a4f…` ×9 (dirty) and `2f3dc3eb…` ×1 (clean) — and `17b0f4f8…` (the pinned const) **0 times**.
-  This breaks the step's core Verify ("re-running it after `go clean -cache` produces a byte-identical
-  file") and `Done When` ("`mise run build:wasm` deterministically builds … its SHA-256 is pinned in
-  `WasmVerifyHash`"): the published hash is unreproducible from a clean checkout, so any CI/human
-  rebuild-and-compare — and `TestWasmVerifyHashPinned` after the prescribed rebuild — fails. The SERVE
-  side (route, content-type, ETag/304/405, embed) is correct and `mise run check` is green (the pin test
-  only compares the const to the COMMITTED bytes, which it never rebuilds), so this is latent until
-  regeneration, but it defeats the entire reproducible-build / published-hash / SRI-pin purpose of the
-  step. Fix: add `-buildvcs=false` to the `build:wasm` task, rebuild, and re-pin `WasmVerifyHash` to the
-  emitted hash (reviewer-verified `-buildvcs=false` gives a STABLE single hash `f03b9b89…`,
-  byte-identical across clean / dirty / `go clean -cache`). Verify fixed: `strings verify.wasm | grep
-  vcs.modified` shows `false` and `vcs.revision` matches the committing revision; two `mise run
-  build:wasm` from different tree states are byte-identical; `git diff --stat internal/web/verify.wasm`
-  after a fresh `mise run build:wasm` is empty; `TestWasmVerifyHashPinned` passes against the rebuilt
-  artifact.
-- **Spec:** next.md Verification "re-running it after `go clean -cache` produces a byte-identical file —
-  reproducibility holds"; next.md `Done When` (deterministic `mise run build:wasm`); target.md WASM
-  milestone "reproducible build + published hash + SRI pin (ADR-0003, ADR-0010)"; `learnings/web.md`
-  reproducible-wasm `-buildvcs=false` rule.
-

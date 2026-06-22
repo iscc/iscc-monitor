@@ -51,7 +51,10 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   Never hand-edit it; re-`cp` it on a toolchain bump.**
 - **`verify.wasm` is served at `WasmVerifyPath` (`/_ds/verify.wasm`, `application/wasm`) via the same
   `case`+`writeAsset` leaf, and its SHA-256 is pinned in `WasmVerifyHash` (TestWasmVerifyHashPinned,
-  mutation-proven). The SERVE side is sound; the REPRODUCIBLE-BUILD side is the trap.**
+  mutation-proven). settled: the reproducible-build trap is CLOSED — `build:wasm` now carries
+  `-buildvcs=false`, the committed blob has zero `vcs.` strings, and `mise run build:wasm` is
+  byte-identical (`f03b9b89…`) across clean / untracked-dirty / tracked-dirty / `go clean -cache`
+  (reviewer + Codex both re-measured; pin == committed == rebuild).**
 - **A `GOOS=js GOARCH=wasm` `go build` is NOT reproducible without `-buildvcs=false` — `-trimpath
   -ldflags=-buildid=` is INSUFFICIENT.** Go stamps `debug.ReadBuildInfo` VCS metadata (`vcs.revision`,
   `vcs.modified`, the `mod` `+dirty` suffix) into the wasm `data` section by default, so the hash changes
