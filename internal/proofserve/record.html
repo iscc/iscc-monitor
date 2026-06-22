@@ -34,6 +34,21 @@
       background: var(--surface-card);
       border-bottom: var(--border-width) solid var(--border-default);
     }
+    .chrome-brand {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+    }
+    .chrome-logo {
+      height: 19px;
+      width: auto;
+      display: block;
+    }
+    .chrome-divider {
+      width: 1px;
+      height: 24px;
+      background: var(--border-default);
+    }
     .chrome-mark {
       font-family: var(--font-mono);
       font-size: var(--text-xs);
@@ -225,9 +240,13 @@
 </head>
 <body>
   <header class="chrome">
-    <div>
-      <div class="chrome-mark">Trust &amp; Transparency Monitor</div>
-      <div class="chrome-sub">Evidence of record · ISCC-Hub network</div>
+    <div class="chrome-brand">
+      <img class="chrome-logo" src="/_ds/iscc-logo-black.png" alt="ISCC">
+      <span class="chrome-divider"></span>
+      <div>
+        <div class="chrome-mark">Trust &amp; Transparency Monitor</div>
+        <div class="chrome-sub">Evidence of record · ISCC-Hub network</div>
+      </div>
     </div>
   </header>
 

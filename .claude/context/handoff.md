@@ -1,69 +1,27 @@
-## 2026-06-22 — Review of: Serve the self-hosted ISCC logo at `/_ds/iscc-logo-black.png` and render it in the `/` + dossier mastheads
+## 2026-06-22 — Render the self-hosted ISCC logo in the remaining FOUR SSR mastheads
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added the identical one-line `<img class="chrome-logo" src="/_ds/iscc-logo-black.png" alt="ISCC">` + `.chrome-divider` (inside a `.chrome-brand` flex wrapper) plus the three `.chrome-brand`/`.chrome-logo`/`.chrome-divider` CSS rules — copied verbatim from `dashboard.html` — to the four SSR mastheads that still rendered a text-only mark. The ISCC logo now renders on EVERY server-rendered surface, closing the front-of-queue human `critical`. No `.go` source changed; the `web.LogoPath` serve route already exists.
 
-**Summary:** Advance `7e3fe44` embeds a committed, pre-downscaled grayscale ISCC logo
-(`internal/web/iscc-logo-black.png`, 199×76 gray+alpha, 2976 bytes) and serves it at `LogoPath`
-`/_ds/iscc-logo-black.png` through the existing `writeAsset` no-cache+strong-ETag+304 leaf, then renders
-it (with a 1px divider) beside the text mark on the two surfaces the front-of-queue human `critical`'s
-verify bar measures — `/` (dashboard) and the hub dossier. The work is tight and exactly on-scope (3
-source files + the PNG + tests, go.mod/go.sum untouched), all gates pass, the new tests are mutation-proven
-non-vacuous, and the ADR-0012 visual pass confirms the logo renders correctly on both surfaces. The
-`critical` is narrowed (not closed): the serve route + 2 surfaces landed; the remaining four mastheads are
-the immediate follow-up.
+**Files changed:**
+- `internal/certificate/cert.html`: wrapped the masthead `<div>` in `.chrome-brand`, prepended the `<img>` + `<span class="chrome-divider">`, added the 3 CSS rules after the `.chrome` block (left `.chrome-actions` + sub-copy verbatim).
+- `internal/proofserve/browser.html`: same masthead + CSS edit.
+- `internal/proofserve/record.html`: same masthead + CSS edit.
+- `internal/proofserve/records.html`: same masthead + CSS edit.
+- `internal/certificate/handler_test.go`: extended `TestCertificateKnownID`'s string-contains loop with the MANDATORY `src="/_ds/iscc-logo-black.png"` assertion (byte-equal to `web.LogoPath`).
+- `internal/proofserve/browser_test.go`: added the same one-line assertion to `TestBrowserLinksTokensNoCDN`'s DS-shell-marker loop (symmetry).
 
-**Verification:**
-- [x] `mise run check` — green (build + vet + test, all 25 packages `ok`).
-- [x] `gofmt -l` (excl. `cauldron/`) — clean (zero files listed).
-- [x] `go test -run 'TestLogo|TestNoExternalCDN|TestWasmVerifyServed' ./internal/web` — PASS; `TestLogoServed` runs and asserts 200 / `image/png` / no-cache / strong ETag / byte-equal body / PNG magic / `If-None-Match`→304.
-- [x] `go test -run TestDashboard ./internal/dashboard` — PASS; mutation-proven (drop the `<img>` → FAIL, restore → PASS).
-- [x] `go test -run TestDossier ./internal/dossier` — PASS; mutation-proven (drop the `<img>` → FAIL, restore → PASS).
-- [x] Content-Type mutation (`image/png`→`text/plain`) → `TestLogoServed` FAIL, restore → PASS (the type assertion is non-vacuous).
-- [x] Committed PNG is small grayscale: `ls -l` = 2976 bytes, `file` = `PNG image data, 199 x 76, 8-bit gray+alpha`.
-- [x] `GOOS=js GOARCH=wasm CGO_ENABLED=0 go build ./internal/web` — exits 0 (leaf stays WASM-shareable; no `image/*` import, `image/png` is a string literal only).
-- [x] Live instance (testnet realm, `127.0.0.1:41464`): `/healthz`=200, `GET /_ds/iscc-logo-black.png`=`200 image/png`, `/` body contains `src="/_ds/iscc-logo-black.png"`.
-- [x] Oracle/conformance gate — N/A (pure static-asset transport; no signature/RFC-6962/Merkle/proof path touched).
-- [x] Gate-circumvention scan over unpushed range (`@{upstream}..HEAD`) — no `//nolint`/`t.Skip`/swallowed-error/build-tag/deleted-assertion patterns; only context + the 3 intended source files + tests + PNG.
-- [x] Scope discipline — exactly 3 non-test/doc source files (`web.go`, `dashboard.html`, `dossier.html`), matching `next.md`; nothing from `## Not In Scope` done.
+**Verification:** `mise run check` → green (`go build ./...`, `go vet ./...`, `go test ./...`; all 25 packages `ok`). Per-criterion:
+- [x] `gofmt -l .` (excl. `cauldron/`) — clean.
+- [x] `go test -run TestCertificate ./internal/certificate` — PASS; the extended test asserts the served cert HTML contains `src="/_ds/iscc-logo-black.png"`.
+- [x] `go test ./internal/proofserve` — PASS; the existing no-CDN body bans (`jsdelivr`/`http://`/`https://`/`cdn.`) stay green with the new same-origin `/_ds/` img src.
+- [x] `grep -L 'iscc-logo-black.png'` over all four templates — prints nothing (all four reference the logo).
+- [x] Mutation check — removing the `<img>` line from `cert.html` makes `TestCertificateKnownID` FAIL (`body missing "src=\"/_ds/iscc-logo-black.png\""`); restoring it PASSes. Assertion is non-vacuous.
 
-**Issues found:** (none new from this diff.) The human `critical` is narrowed, not deleted: the serve route
-+ `/` + dossier landed and pass their verify bar, but the target.md:148 "every surface" requirement is not
-yet met — four mastheads (`internal/certificate/cert.html`, `internal/proofserve/{browser,record,records}.html`)
-still render the text-only mark (reviewer grep-confirmed NO LOGO). Issue rewritten to scope only the
-remaining four (pure one-line-per-template edits now the route exists). DONE stays correctly unreachable.
-
-**Codex second opinion:** Clean — "The new embedded logo asset is served through the existing static asset
-path and referenced from the updated mastheads without breaking the existing handler behavior. Tests and
-the full check suite pass, and no actionable correctness issues were found in the changed code." No findings
-to triage; matches my own review. (Initial `/tmp/codex-review.txt` was empty while Codex was still running;
-verdict landed after ~3 min of polling.)
-
-**Visual check:** Performed (ADR-0012). `agent-browser` 0.29.0 is present and launches its own bundled
-browser (no system Chrome, but the bundled one works). Screenshotted the live `/` index, the `sb0.iscc.id`
-dossier, and the `Realm Index.dc.html` mockup. Both touched mastheads now render the ISCC mark + wordmark +
-1px divider + "TRUST & TRANSPARENCY MONITOR" text — matching the mockup masthead exactly; the prior
-text-only delta is gone. No NEW visual delta filed: the other index sub-region deltas still visible
-(instance-identity copy, `· ISCC MAINNET` realm subtitle, Checkpoint/Anchor columns, "Recent declarers
-checked" footer) are already tracked in the existing `normal` "/ realm-index sub-region deltas" issue
-(items 2–4) and explicitly out of scope for this critical.
-
-**Next:** The immediate follow-up named in `next.md`'s Not-In-Scope and now the open scope of the narrowed
-`critical`: add the identical one-line `<img src="/_ds/iscc-logo-black.png">` + divider (inside a
-`.chrome-brand` flex wrapper, copying the `dashboard.html` block + CSS) to the remaining FOUR mastheads —
-`internal/certificate/cert.html` and `internal/proofserve/{browser,record,records}.html` — extending each
-surface's handler test to assert the `<img>` src. Pure template edits; the serve route already exists.
-After that the `critical` fully closes and the WASM milestone (tier-2 verifier caller into the dossier,
-then the standalone `monitor.iscc.codes` Independent Verification app) resumes.
+**Next:** The `critical` is now fully closed — every SSR surface carries the shared chrome (logo + text mark + divider), satisfying target.md:148-151. The WASM milestone resumes: the tier-2 verifier caller into the dossier, then the standalone `monitor.iscc.codes` Independent Verification app. Optional KISS follow-up (still deferred, not required): the now six near-identical mastheads could be factored into a shared `html/template` chrome partial — a separate `advance`-call.
 
 **Notes:**
-- The masthead carries BOTH the logo and the text mark (target.md:148 wants both), with the 1px divider
-  matching the mockup. Six near-identical mastheads now exist; the optional shared-partial KISS factoring
-  is still a deferred `advance`-call, not required.
-- `contentTypePNG` is a string literal only — never import an `image/*` package, or `internal/web` stops
-  being the pure-stdlib WASM-green leaf. Recorded in `learnings/web.md`.
-- The downscale ran ONCE at commit time (not in a `mise`/build step) — preserves the cross-platform,
-  pure-Go, no-image-toolchain build posture (ADR-0003). The committed PNG is the build-pinned artifact,
-  like the woff2 binaries and `verify.wasm`.
-- Open lower-priority issues remain (OTS stamp-path guard, certificate §4/§5/§6 deltas, registry
-  ForceQuery, the `/` sub-region deltas, several `low` localities) — none block this increment or the loop.
+- The `<img src>` literal is byte-equal to `web.LogoPath` in all four templates (templates can't read the Go const; the two test assertions are the regression guards). No Go-side template field introduced — the static literal is intentional, matching dashboard/dossier (learnings/web.md logo contract).
+- Each file's existing `.chrome-sub` copy was left verbatim ("Evidence of record · ISCC-Hub network" in all four — same as dashboard); cert's `.chrome-actions` block untouched.
+- Oracle/conformance gate is N/A: pure static-asset rendering, no signature/RFC-6962/Merkle/proof path touched.
+- Scope discipline: 4 template edits (no `.go` source change) + 2 test-loop extensions. Nothing from `## Not In Scope` done — `web.go`/serve route, the instance-identity block / back-link parity / Checkpoint-Anchor columns, and the unrelated open `normal` issues (cert §5 digest binding, OTS `safeStamp`, registry ForceQuery, §4/§6, `safeIndex` test gap) were all left untouched.
+- A visual (ADR-0012) pass over the four newly-touched surfaces was NOT run by `advance` (no live render performed here); `review` should screenshot a certificate, the log browser, a record, and a record list to confirm the masthead matches the `.dc.html` mockups.

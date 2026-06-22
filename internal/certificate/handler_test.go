@@ -174,6 +174,7 @@ func TestCertificateKnownID(t *testing.T) {
 		"monitor.iscc.codes", // the tier-2 verify link
 		"Tier 1",             // the two-tier honesty panel
 		"Tier 2",
+		`src="/_ds/iscc-logo-black.png"`, // the shared-chrome ISCC logo (byte-equal to web.LogoPath)
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q\n%s", want, body)

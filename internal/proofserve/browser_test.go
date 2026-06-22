@@ -79,6 +79,7 @@ func TestBrowserLinksTokensNoCDN(t *testing.T) {
 	for _, want := range []string{
 		`href="/_ds/tokens.css"`,
 		`href="/_ds/fonts.css"`,
+		`src="/_ds/iscc-logo-black.png"`, // the shared-chrome ISCC logo (byte-equal to web.LogoPath)
 		"var(--font-sans)",
 		"var(--font-mono)",
 	} {
