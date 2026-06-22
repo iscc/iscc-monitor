@@ -1,119 +1,119 @@
 # Next Work Package
 
-## Step: Stamp pending OTS roots against the calendar in the off-path OTSTick loop
+## Step: Serve the mirrored OTS proof at `GET /<domain>/log/checkpoint.ots`
 
 ## Advances
 The **OTS / Bitcoin anchoring** milestone Verify criterion (target.md §"OTS / Bitcoin anchoring"):
 
-> "a stamped root upgrades to Bitcoin-confirmed and the served `.ots` verifies with the standard `ots`
-> client."
+> stamp each distinct observed root daily … + background upgrade loop (pending → Bitcoin-confirmed) +
+> **serve `.ots`**; never blocks the follower. **Verify:** a stamped root upgrades to Bitcoin-confirmed
+> and the served `.ots` verifies with the standard `ots` client.
 
-This is the single open OTS Verify-closer's first unblocking half: it makes pending rows carry a **real
-serialized OpenTimestamps proof** (`OTSBytes`) so `OTSTick`'s existing upgrade step stops being a
-structural no-op and a root can actually transit `pending → Bitcoin-confirmed`. Per `state.md` "Next
-Milestone" §1 and the `review` handoff `**Next:**`, this is *the* increment that finally advances the
-end-to-end transit — `state.md`'s DRIFT WATCH names "an increment that does not make a root transit
-pending → Bitcoin-confirmed end-to-end" as drift, so this closes the bar rather than de-risking it.
+This step closes the **observable HTTP-surface half** of that criterion — the first served, parseable
+`.ots` file keyed on the monitor's accepted `(size, root)`. The stamp→upgrade transit is already wired in
+code (state.md); the criterion is still 1/1 open *only* because no `.ots` route exists, so the served
+bytes cannot be handed to the standard `ots` client. state.md is explicit: "The single best next step is
+now the `.ots` route" and "A step that adds another internal OTS seam instead of an observable HTTP
+surface is drift." This is the observable surface, not another seam.
 
 ## Goal
-Close the gap where pending OTS rows have EMPTY `OTSBytes`, so `OTSTick`'s upgrade closure fails to parse
-the (empty) proof and the row backs off forever. After this step a pending row gets a real
-calendar-submitted proof and `OTSTick` can upgrade it toward Bitcoin confirmation — without ever blocking
-the follower poll path.
+Add a `GET /checkpoint.ots` route to `proofserve.Handler` that resolves the hub's accepted `(size, root)`,
+reads the mirrored OTS proof via `store.OTSForRoot`, and writes `OTSBytes` verbatim so a client can fetch
+it and run the standard `ots` toolchain against it. This is the canonical anchoring artifact every later
+OTS surface (certificate §5, the dossier §4 Bitcoin-anchor panel) links to.
 
 ## Scope
-- **Create**: (none)
+- **Create**: `/workspace/iscc-monitor/internal/proofserve/ots_test.go` (test, not counted) — HTTP-seam
+  golden tests for the new route.
 - **Modify** (≤3 non-test/doc source files):
-  - `/workspace/iscc-monitor/internal/follower/otsloop.go` — add a `Stamper` func seam and stamp
-    not-yet-stamped pending rows in `OTSTick` (off the poll path) before the upgrade step.
-  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` — construct the real `Stamper` (a closure over
-    `otsclient.Stamp` + `otsclient.DefaultCalendarURL`) and pass it through `runOTSLoop` → `OTSTick`.
-- **Tests** (NOT counted toward the ≤3 budget):
-  `/workspace/iscc-monitor/internal/follower/otsloop_test.go` — add a `TestOTSStamp…` exercising the new
-  stamp-then-upgrade path with an injected fake `Stamper` + fake `Upgrader` (fully offline). The existing
-  `TestOTSTick*` tests gain a fake `Stamper` argument.
+  - `/workspace/iscc-monitor/internal/proofserve/handler.go` — add a `serveOTS` func + a
+    `case "/checkpoint.ots":` to the `Handler` dispatch switch. (1 of ≤3)
+  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` — add `mux.Handle("/checkpoint.ots", proofs)` to
+    `hubHandler` so the exact mount beats the `/` subtree (mirroring the existing `/record`, `/inclusion`,
+    … mounts). (2 of ≤3)
+  - `/workspace/iscc-monitor/CLAUDE.md` — document the new `GET /<domain>/log/checkpoint.ots` endpoint in
+    the "Running a local dev instance" route list (doc, not counted).
 - **Reference** (read before writing):
-  - `/workspace/iscc-monitor/.claude/context/learnings/otsclient.md` — the `Stamp`/`Upgrader` contract;
-    "OTS never blocks"; `OTSBytes` = serialized initial pending sequence(s); fixtures = `examples/*.ots`
-    ground truth (never a live calendar in `go test`).
-  - `/workspace/iscc-monitor/.claude/context/learnings/follower.md` §"OTS upgrade-loop control core" —
-    `OTSTick` error discipline (log-and-continue, never abort, never freeze); `Upgrader` is a func seam
-    (YAGNI, matches `AlertFunc`) — match that shape for `Stamper`.
-  - `/workspace/iscc-monitor/internal/otsclient/client.go` — `Stamp(ctx, calendarURL, digest [32]byte)
-    ([]byte, error)`, `DefaultCalendarURL`, and `buildUpgrader`'s `recoverRead(r.OTSBytes)` (empty bytes
-    → parse error today, which is why the upgrade is a no-op).
-  - `/workspace/iscc-monitor/internal/store/ots.go` — `OTSRecord` fields (`OTSBytes`, `CalendarURLs`),
-    `PendingOTS`, `MarkOTSAttempted`, `RecordOTS`. **Confirm whether a store mutator exists to persist
-    `OTSBytes`/`CalendarURLs` onto an existing pending row** (an update-by-`(hub,tree_size,root)` key); if
-    none, the stamped bytes can ride `RecordOTS`'s idempotent upsert or a minimal new store-leaf mutator —
-    decide which before coding, preferring an existing seam.
-  - `/workspace/iscc-monitor/internal/follower/otsloop.go` (current `OTSTick`) — the per-row loop to extend.
-  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go:151,208` — `runOTSLoop` construction + signature.
+  - `/workspace/iscc-monitor/.claude/context/learnings/otsclient.md` — read before touching ANY OTS code:
+    `internal/ots`/`internal/otsclient` are NOT WASM-pure and pull `net/http`/`opentimestamps`; keep them
+    out of any closure that must stay a leaf.
+  - `/workspace/iscc-monitor/.claude/context/learnings/http-surface.md` — the proofserve dispatch, the
+    `CheckpointAt found==false` → 500 contract, the `serveVerify` inverted-status posture, the
+    buffer-then-200 discipline, and the Mux-mount trap (exact route vs the `/` subtree).
+  - `/workspace/iscc-monitor/internal/store/ots.go` — `OTSForRoot(ctx, hubID, treeSize, root) (OTSRecord,
+    found bool, err error)`; an un-anchored root is a plain miss `(OTSRecord{}, false, nil)`, NOT an error.
+  - `/workspace/iscc-monitor/internal/proofserve/handler.go` `serveVerify` (≈ lines 485-510) — the exact
+    `FollowState` → `size := fs.LastSize` → `CheckpointAt(ctx, hubID, size)` → `root` resolution to copy.
+  - `/workspace/iscc-monitor/internal/tilesserve/handler.go` `writeBlob` (lines 169-191) — the
+    `application/octet-stream` + strong content-ETag + `If-None-Match` → 304 pattern to mirror.
 
 ## Not In Scope
-- **Do NOT call `otsclient.Stamp` inside `PollHub`/`stampRoot`** (the literal handoff wording said "wire
-  `otsclient.Stamp` into `follower.stampRoot`"). `stampRoot` runs ON the poll path; a synchronous calendar
-  HTTP round-trip there VIOLATES the always-loaded Correctness rule **"OTS never blocks the follower"**
-  (learnings.md + ADR-0004). Stamping belongs in the already-off-path `OTSTick`/`runOTSLoop` goroutine.
-  `stampRoot` stays a pure local insert (empty `OTSBytes` = "not yet stamped" sentinel) — leave
-  `internal/follower/follower.go` byte-unchanged. **This is a deliberate, rule-driven deviation from the
-  handoff `**Next:**`; record it in the advance handoff.**
-- The `.ots` HTTP route (reads `OTSForRoot`) — a later sub-step, after confirmed rows can exist.
-- Certificate **§5 BITCOIN ANCHOR** (`HasClause5`) — a later sub-step, after confirmed rows exist.
-- A schema migration / new `ots` column — reuse the existing `OTSRecord`/`ots` table.
-- The deferred `host:port` DID-encoding fix, §6 timestamp, and `hubDomain` ForceQuery issues — none of
-  those surfaces are touched here.
+- **Certificate §5 BITCOIN ANCHOR** (`HasClause5` in `internal/certificate/handler.go`) — a separate later
+  sub-step that reads `OTSForRoot` + classifies via `ots.Confirmed`; do NOT touch the certificate handler.
+- **The dossier / certificate Bitcoin-anchor vs comparison-anchor panels** — a later M-UI sub-step.
+- **The `safeStamp` guard / nil-Stamper fix** (the open `normal`+`low` OTS issues) — this route is a pure
+  store-read serve and does NOT touch the stamp path (`internal/otsclient`/`internal/follower`); fold
+  `safeStamp` in when that path is next edited, not here.
+- **Importing `internal/ots` or `internal/otsclient` into production proofserve** — serve `OTSBytes` as
+  opaque bytes; do NOT parse/classify them in the route (keeps proofserve off the anchoring + non-WASM
+  closure).
+- A real Bitcoin-confirmed `.ots` (depends on a live calendar + chain confirmation; offline-unprovable —
+  the criterion's "upgrades to Bitcoin-confirmed" half stays open after this step).
 
 ## Implementation Notes
-- **Seam shape (match `Upgrader`/`AlertFunc` — a func, not an interface):**
-  `type Stamper func(ctx context.Context, root [32]byte) (otsBytes []byte, calendars string, err error)`.
-  Production wires it in `main.go` as a closure: `func(ctx, root) { b, err := otsclient.Stamp(ctx,
-  otsclient.DefaultCalendarURL, root); return b, otsclient.DefaultCalendarURL, err }`. Keep
-  `internal/follower` import-free of `internal/otsclient`/`internal/ots`/`opentimestamps` (the anchoring
-  import-isolation invariant) — `Stamper` IS the boundary, exactly like `Upgrader`.
-- **Where to stamp:** in `OTSTick`'s per-row loop, BEFORE calling the `Upgrader`, branch on
-  `len(r.OTSBytes) == 0` (the not-yet-stamped pending row `stampRoot` wrote):
-  - build the root key (`var root [32]byte; copy(root[:], r.Root)`), call the `Stamper`,
-  - on success persist `OTSBytes`/`CalendarURLs` onto the row via the chosen store mutator, then EITHER
-    update `r` in-memory and fall through to the upgrade step, OR `continue` and let the next tick upgrade
-    it — pick the simpler (likely `continue`, mirroring the back-off flow), and document the choice in the
-    `OTSTick` docstring,
-  - on a Stamp transport fault: `MarkOTSAttempted(attempts+1, now.Add(backoff(attempts)))` + log-and-
-    continue, EXACTLY like the existing upgrade-fault branch. A stamp fault NEVER aborts the pass and
-    NEVER freezes a hub (ADR-0004 / ADR-0006).
-- **Thread the seam:** `OTSTick(ctx, st, stamper, up, now, logger)` — add `Stamper` next to `Upgrader`.
-  Update `runOTSLoop`'s signature + its single `OTSTick` call; `runOTSLoop` gains a `stamper
-  follower.Stamper` arg passed from `run()` (built next to `otsclient.NewUpgrader()` at main.go:151).
-- **Nil-`Stamper` handling:** decide and document — either tolerate a nil `Stamper` (skip stamping, leave
-  the row empty — keeps a bare call path well-defined and old behavior intact) or require it. Prefer
-  nil-tolerant, mirroring the Loop's nil-`Logger`/`Metrics` discipline; state it in the docstring.
-- **Governing Correctness rule (learnings.md, always-loaded):** "**OTS never blocks** the follower loop;
-  calendars are best-effort with backoff + redundancy." All calendar I/O stays in the off-poll-path
-  `OTSTick`/`runOTSLoop` goroutine; a stamp failure is a back-off, never a freeze, never an abort. Also:
-  `internal/otsclient`/`internal/ots` are NOT WASM-pure — keep them out of `internal/follower`'s import
-  closure (the `Stamper` seam preserves this).
-- **Oracle gate:** N/A for the seam wiring (opaque pending→confirmed over an already-fsck-verified root;
-  no signature/RFC-6962/Merkle/did:web/proof code touched). The `ots verify` oracle applies to the
-  `internal/ots` classifier + bundled `examples/*.ots`, unchanged here. Tests MUST run fully offline —
-  inject fake `Stamper`/`Upgrader`, never hit a live calendar in `go test`.
-- **Test through the public store seam:** seed a pending row with empty `OTSBytes` (via `RecordOTS`); run
-  `OTSTick` with a fake `Stamper` returning fixture bytes and a fake `Upgrader` that confirms; assert the
-  row reaches `OTSStatusConfirmed` (and/or carries `OTSBytes` after the stamp pass) via
-  `OTSForRoot`/`PendingOTS` read-back — never `OTSTick` internals.
+- **Resolution order (copy `serveVerify`):** `fs, err := st.FollowState(ctx, hubID)` → on err 500;
+  `size := fs.LastSize`; if `size == 0` → **404** "no accepted checkpoint" (coverage honesty — there is no
+  root to anchor yet); `root, _, found, err := st.CheckpointAt(ctx, hubID, size)` → on err 500, on `!found`
+  → 500 (a genuine store inconsistency at the accepted size, exactly as `serveVerify` treats it).
+- **OTS lookup:** `rec, found, err := st.OTSForRoot(ctx, hubID, size, root)` → on err 500; on `!found` →
+  **404** "root not yet anchored" (the honest pending state, NOT a 5xx — `OTSForRoot` already returns
+  `(…, false, nil)` for a miss). Also treat `found && len(rec.OTSBytes) == 0` as 404: a row with the
+  empty-OTSBytes sentinel (stamped-but-not-yet-calendar-submitted) has no servable proof yet — serving
+  zero bytes would hand the client an unparseable `.ots`. **This empty-sentinel guard is the load-bearing
+  edge case.**
+- **Serve verbatim:** write `rec.OTSBytes` as `Content-Type: application/octet-stream`. Mirror
+  `tilesserve.writeBlob`'s strong content-ETag (`fmt.Sprintf("\"%x\"", sha256.Sum256(data))`) +
+  `If-None-Match` (`*` or exact) → 304 pattern; `Cache-Control: no-cache` (the served proof is overwritten
+  in place on the pending→confirmed upgrade, so it is revalidating, never `immutable`). Do NOT export a
+  helper from tilesserve — proofserve is a separate package; inline a tiny proofserve-local block to stay
+  in budget. Method-not-GET → 405 is already handled by the `Handler` wrapper.
+- **Stay opaque (learnings/otsclient.md):** do NOT import `internal/ots` or `internal/otsclient` into
+  production proofserve — they pull `net/http`/`opentimestamps` and are NOT WASM-pure. `OTSBytes` is an
+  opaque `[]byte` from the store leaf; serve it without parsing.
+- **Mux mount (learnings/http-surface.md):** `/checkpoint.ots` MUST be an exact `mux.Handle` in
+  `hubHandler` (like `/record`, `/inclusion`), else the `/` subtree dispatch sends it to `tilesserve`,
+  which would 404 the unknown path. Note `tilesserve` serves the raw `/checkpoint` BLOB (the signed note);
+  `.ots` is a DIFFERENT artifact (the timestamp proof) served by proofserve from the `ots` table — not a
+  tilesserve mirror BLOB.
+- **Correctness rule (learnings.md, always-loaded):** "OTS never blocks/crashes the follower" — this route
+  is a pure read off the HTTP path, so it cannot block the follower; just keep it fail-closed
+  (200-or-honest-status, never panic), like the sibling proof routes.
+- **Oracle gate:** N/A — opaque-byte serve of an already-stored proof; no signature/RFC-6962/Merkle/
+  did:web/proof code touched. The `ots verify` oracle still applies to the unchanged `internal/ots`
+  classifier + its `testdata/*.ots` fixtures.
 
 ## Verification
 - `mise run check` is green (build + vet + test, all packages; `gofmt -l .` excl. `cauldron/` empty).
-- `go test -count=1 -run TestOTS ./internal/follower` passes (includes the new stamp-path test plus the
-  existing `TestOTSTick*` / `TestOTSBackoff`).
-- `go list -deps ./internal/follower` contains NO `internal/otsclient`, `internal/ots`, or
-  `github.com/nbd-wtf/opentimestamps` (import-isolation invariant held — `Stamper` is the boundary):
-  `go list -deps ./internal/follower | grep -c -e 'internal/otsclient' -e 'internal/ots' -e 'nbd-wtf/opentimestamps'` == 0.
-- `go list -deps ./internal/store` is still a leaf: `go list -deps ./internal/store | grep -c -e 'internal/follower' -e 'internal/otsclient' -e '^net/http$'` == 0.
-- Mutation (reverted): removing the new `len(r.OTSBytes) == 0` stamp branch from `OTSTick` makes the new
-  `TestOTSStamp…` test FAIL (the pending row never gets `OTSBytes`, so it can never confirm); restoring
-  → green.
+- `go test -count=1 -run TestOTS ./internal/proofserve` passes (name the new tests `TestOTS…` so this
+  filter catches them all — avoid the prior `-run TestOTS` under-selection issue).
+- The test seeds a hub with an accepted checkpoint (`RecordCheckpoint` + `AdvanceAccepted`, or the
+  fixture-store helper the other proofserve tests use) AND an `ots` row whose `OTSBytes` is a real fixture
+  (read `internal/ots/testdata/hello-world.txt.ots` — note the `.txt.ots` suffix — and store those bytes
+  via `RecordOTS`), then asserts `GET /checkpoint.ots` returns `200`, `Content-Type:
+  application/octet-stream`, and a body **byte-equal** to the stored `OTSBytes`.
+- Parse-validity assertion (the "verifies with the standard `ots` client" half, offline form): a test
+  parses the served body with `opentimestamps.ReadFromFile(body)` and asserts no error + a non-nil
+  `*opentimestamps.File`, proving the served bytes are a real `.ots`, not opaque garbage. Keep the
+  `opentimestamps` import to a `_test.go` only (do NOT pull it into production proofserve); if a test-only
+  import still trips the dep-closure check, put the parse assertion in an `internal/ots` test instead and
+  keep proofserve's test asserting byte-equality.
+- `GET /checkpoint.ots` for a hub with `LastSize == 0` → 404; for an accepted root with no `ots` row → 404;
+  for a row with the empty-OTSBytes sentinel → 404 "not yet anchored" (never 5xx). All asserted in the test.
+- `go list -deps ./internal/proofserve | grep -E 'iscc-monitor/internal/ots($|/)|iscc-monitor/internal/otsclient'`
+  is empty (production proofserve stays off the anchoring/non-WASM closure).
 
 ## Done When
-`OTSTick` stamps not-yet-stamped pending rows against the calendar via an injected `Stamper` (off the poll
-path), `main.go` wires the real `otsclient.Stamp` closure, all Verification checks pass, and the
-follower's import closure still excludes every anchoring package.
+`mise run check` is green, `GET /<domain>/log/checkpoint.ots` returns the stored OTS proof bytes verbatim
+(byte-equal, parseable as a valid `.ots`) for an anchored accepted root and an honest 404 for an
+un-anchored / unpolled one, and production proofserve's dep closure still excludes `internal/ots` +
+`internal/otsclient`.
