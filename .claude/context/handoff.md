@@ -1,47 +1,61 @@
-## 2026-06-22 — Pin the Compose volume name so the OPERATING.md volume-prep `chown` matches what Compose mounts
+## 2026-06-22 — Review of: Pin the Compose volume name so the OPERATING.md volume-prep `chown` matches what Compose mounts
 
-**Done:** Pinned the illustrative Compose volume in `deploy/OPERATING.md` to the literal engine-volume
-name `monitor-data` (`name: monitor-data` under the `volumes:` block) so the documented `chown` prep
-(`docker run --rm -v monitor-data:/data alpine chown -R 65532:65532 /data`) chowns the SAME volume
-`docker compose up` mounts — closing the persistence `critical`'s last doc caveat. Added a one-clause
-prose note explaining the explicit `name:` is what makes the literal-name prep line up (without it Compose
-mounts a project-prefixed `<project>_monitor-data` the `chown` never touched).
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `deploy/OPERATING.md`: (1) Compose `volumes:` block now declares `monitor-data:` with a child
-  `name: monitor-data` + inline why-comment; (2) the "Volume ownership (do this first)" prose note now
-  states that the explicit `name:` is what aligns the literal-name `chown` with the Compose mount.
+**Summary:** Doc-only, one-file fix: `deploy/OPERATING.md`'s Compose `volumes:` block now pins
+`name: monitor-data` so the documented `chown` prep (`docker run --rm -v monitor-data:/data alpine
+chown -R 65532:65532 /data`) operates on the SAME engine volume `docker compose up` mounts, plus a
+one-clause prose note explaining the `name:` pin is what aligns the literal-name prep with the mount.
+The change is scope-clean (zero Go, no new Compose file, no other section touched), internally
+consistent (Compose path and bare `docker run` path now both use the literal `monitor-data`), and
+all gates are green. This was the last doc caveat on the persistence-contract `critical`, which I
+verified is now answered end-to-end and closed.
 
-**Verification:** `mise run check` → green (28 packages `ok`, all cached — no `.go` file touched).
-Per-criterion:
+**Verification:**
 - [x] `grep -nA2 '^volumes:'` shows `monitor-data:` with child `name: monitor-data` (lines 204-206) — PASS.
-- [x] Literal volume name matches: `chown` prep target (`-v monitor-data:/data`) == pinned Compose `name:`
-  (both the string `monitor-data`); `grep -c monitor-data` = 10 — PASS.
-- [x] `mise run check` green — PASS.
-- [x] `gofmt -l /workspace/iscc-monitor` empty (exit 0) — PASS.
+- [x] Literal volume name matches: `chown` prep target (`-v monitor-data:/data`) == pinned Compose `name:` (both `monitor-data`); `grep -c monitor-data` = 10 — PASS.
+- [x] `mise run check` green — 28 packages `ok` (all cached; no `.go` file touched) — PASS.
+- [x] `gofmt -l .` empty — PASS.
 - [x] No tracked Compose file added: `test ! -f docker-compose.yml && test ! -f compose.yaml` exits 0 — PASS.
-- [x] Other persistence claims intact: `recreate the volume on a schema change`, `65532`,
-  `/etc/iscc-monitor/realm.txt` all still match — PASS.
+- [x] Other persistence claims intact: `recreate the volume on a schema change`, `65532`, `/etc/iscc-monitor/realm.txt` all still match — PASS.
+- [x] Persistence `critical` Verify bar met end-to-end: DB path + volume + "back up this one file" (§State, volume & backup, lines 40-59), non-root uid 65532, migration issue linked with "recreate volume on schema change" interim policy (§Migration policy, lines 71-84) — PASS, critical closed.
+- [x] Gate-circumvention scan over unpushed commits (`@{upstream}..HEAD`): doc-only, no `nolint`/`t.Skip`/build-tag/deleted-assertion — N/A (clean).
+- [x] Trust-root oracle gate (notecheck / golden vectors / hub receipt): N/A — no signature/Merkle/proof code touched.
 
-**Next:** This was the last residual doc caveat on the persistence-contract `critical`. `review` should
-confirm `deploy/OPERATING.md` now answers that `critical` end-to-end (State/volume/backup contract +
-non-root uid + migration policy + a Compose quick-start that is now runnable verbatim) and confirm/prune
-it. After that, DONE turns on the two remaining iscc-infra `critical`s (public-route/`/metrics`-exposure
-decision — already substantially in OPERATING.md §"Route exposure & the `/metrics` decision"; egress +
-resource-footprint sizing — already in §Egress + §Footprint), so `define-next` should target whichever of
-those still has a doc gap; the open `normal`s (publish.yml/pages.yml `workflow_dispatch` ref-guard, Node-20
-action bumps, proofserve masthead slice, shared `Resolve` leaf) are each their own later step.
+**Issues found:** (none) — the fix is correct and complete. Closed the `normal` "Compose volume-prep
+`chown` targets the wrong volume" (now fixed + verified) and the `critical` "Persistence contract for
+the SQLite DB volume + acknowledge the in-place migration hazard" (Verify bar met end-to-end). The
+migration-hazard half remains tracked separately by the standing `normal` "No on-disk DB migration
+story" (which the doc now explicitly links).
+
+**Codex second opinion:** Clean. Verdict: "The change only updates deployment documentation to pin the
+Compose volume name and align the documented chown command with the mounted volume. The Compose syntax
+and surrounding instructions are consistent with the stated deployment flow, and no blocking
+correctness issues are introduced." No findings to triage; matches my independent assessment.
+
+**Visual check:** n/a — no SSR surface changed (doc-only `deploy/OPERATING.md` edit).
+
+**Next:** Confirm/prune the remaining two iscc-infra `critical`s, both answered in substance by
+`deploy/OPERATING.md` and reviewer-spot-checked this iteration: (1) **route exposure / `/metrics`** —
+§"Route exposure & the `/metrics` decision" (lines 98-130) carries an explicit allow/deny
+recommendation (deny `/metrics` at Caddy, scrape internal); (2) **egress + footprint** — §Egress
+(lines 132-147: hub `/log` + `did.json` + OTS calendar host) + §Footprint (lines 149-166: RAM/CPU
+estimates + the disk-growth-of-mirror-BLOBs variable + a DO disk-usage-alert recommendation). Both have
+doc-closeable Verify bars that look met; `define-next` should confirm each verbatim and prune, or — if
+either is judged to need genuine human/infra acceptance rather than a doc — surface it as a STOP edge
+rather than spinning on cosmetic chrome (per the standing "loop stalls on human-blocked DONE" memory).
 
 **Notes:**
-- Scope-clean: one doc edit, zero Go source, no `Dockerfile`/`mise.toml`/`CLAUDE.md`/`README.md` touch, no
-  new `docker-compose.yml`/`compose.yaml`, unaffected sections (State/backup, migration, egress, footprint,
-  `/metrics`, graceful shutdown) left untouched — all per Not-In-Scope.
-- The bare `docker run` snippet already used `-v monitor-data:/data` literally, so it stays correct
-  unchanged — the `name:` pin makes BOTH the Compose path and the bare-run path consistent against the one
-  prep `chown`.
-- Config claims (`ISCC_MONITOR_REALM` baked via `ENV` so the snippets correctly omit it; `ISCC_MONITOR_DB`
-  un-defaulted; container publishes no host port) were not weakened — only the volume-name + prep wording
-  changed.
-- No `learnings/` detail file applies — this is a one-time doc-correctness fix with no recurring
-  forward-looking pitfall (the closest detail file, `config.md`, was read to confirm the `ENV`/no-default
-  claims stay accurate, and they do).
+- After this commit: **2 critical, 5 normal** open (was 3 critical, 6 normal). DONE requires 0 critical
+  AND 0 normal, so the loop stays CONTINUE.
+- The `name:` pin is standard Compose syntax (a `name:` key nested under the volume-name key); I
+  visually confirmed the indentation (2 spaces `monitor-data:`, 4 spaces `name:`). PyYAML was not
+  available in the env to machine-validate, but the fragment is trivially well-formed.
+- No `learnings/` detail file applies — a one-time doc-correctness fix with no recurring
+  forward-looking pitfall (advance read `config.md` to confirm the `ENV`/no-default claims stay
+  accurate; they do). Nothing promoted to the `learnings.md` index.
+- The remaining `normal`s (DB-migration hazard, `/` "recent declarers" footer, WASM signature-half gap,
+  per-hub-Anchor design-honesty question, `publish.yml` ref-guard) are each their own later step; none
+  was touched here. Fold-in candidate when a workflow file is next touched: the
+  `publish.yml`/`pages.yml` `workflow_dispatch` ref-guard + the `pages.yml` Node-20 action bumps.

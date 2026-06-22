@@ -424,31 +424,6 @@ filed it and does **not** affect priority.
 - **Spec:** ADR-0013 server packaging (GHCR publish); the GHCR issue's "`develop` (floating) AND
   `sha-<short>` (immutable)" tag contract — the floating tag must track develop only.
 
-## `deploy/OPERATING.md` Compose volume-prep `chown` targets the wrong volume (project-prefix mismatch)
-- **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed against Compose volume-naming default)
-- **What / where / how to verify:** The volume-prep note added to fix the uid-65532 write failure
-  (`deploy/OPERATING.md:208-220`) gives `docker run --rm -v monitor-data:/data alpine chown -R 65532:65532 /data`
-  (`:214`) as the prep for the PRIMARY Compose deployment path (the Compose fragment is the first/headline
-  snippet, `:188-206`). But the Compose volume is declared `monitor-data:` with NO explicit `name:` and NO
-  `external: true` (reviewer grep-confirmed: zero `name:`/`external:` in the file), so `docker compose up`
-  creates a PROJECT-PREFIXED engine volume (e.g. `<project>_monitor-data`, project defaulting to the dir
-  name / `COMPOSE_PROJECT_NAME`). The `docker run -v monitor-data:/data …` chown therefore creates+chowns a
-  DIFFERENT, literally-named `monitor-data` volume; `docker compose up` then still mounts the fresh
-  root-owned project-prefixed volume and the nonroot container fails permission-denied at `store.Open`
-  creating `/data/monitor.db` — the exact failure the note was added to prevent, for the Compose path. The
-  BARE `docker run` snippet (`:226-231`) DOES use `-v monitor-data:/data` literally, so for THAT path the
-  chown command is correct — the bug is specific to the Compose path. NOT a code defect and the realm-bake
-  critical it accompanied IS correctly closed (CI-proven realm-less boot); this is a doc-correctness gap in
-  the new note. Fix when the doc is next touched: either pin the Compose volume name (`volumes: monitor-data: { name: monitor-data }`)
-  so the literal-name chown matches, OR give a Compose-native prep (`docker compose run --rm --user root iscc-monitor … chown`,
-  or document the project-prefixed name). Verify fixed: following the Compose quick-start verbatim
-  (prep + `docker compose up`) boots to `/healthz` 200 without a permission-denied at `store.Open`; the
-  chowned volume is the SAME one Compose mounts.
-- **Spec:** ADR-0013 server packaging (non-root uid 65532); the persistence `critical` "(c) uid/permissions
-  on the volume dir" line; CLAUDE.md "smallest reasonable changes" (the quick-start must be runnable as
-  written).
-
 ---
 
 <!-- The entries below are pre-deployment asks from the iscc-infra ops side, raised
@@ -493,27 +468,6 @@ filed it and does **not** affect priority.
   image; the running git SHA is reported by the binary.
 - **Spec:** ADR-0003 `CGO_ENABLED=0` static build; CLAUDE.md "single binary configured
   entirely through environment variables".
-
-## Persistence contract for the SQLite DB volume + acknowledge the in-place migration hazard
-- **Priority:** critical
-- **Source:** [human] (iscc-infra ops, stateful deploy)
-- **What / where / how to verify:** `ISCC_MONITOR_DB` is the single SQLite file holding the
-  whole network's state, including what the glossary calls *irreplaceable evidence*
-  (observed checkpoints, split-view pairs, OTS proofs). For a persistent deploy infra needs,
-  documented: (a) the recommended in-container path to back a named Docker volume with (the
-  `.db` plus its `-wal`/`-shm` siblings if WAL is on); (b) confirmation that consistently
-  backing up that one file captures all durable state; (c) the uid/permissions the non-root
-  container user needs on the volume dir. Separately, this repo's own backlog already carries
-  **"No on-disk DB migration story"** (normal) — `store.Open` is `CREATE TABLE IF NOT EXISTS`
-  only, so a column added in a later image silently never reaches a pre-existing DB and the
-  new code path fails with `no such column`. For a *throwaway testnet* instance we can accept
-  "recreate the volume on schema change", but I want that acknowledged as the operating
-  assumption until the migration mechanism lands — otherwise the first `:develop` image bump
-  over a populated volume breaks the instance. Verify fixed: docs state the DB path + volume
-  + "back up this one file" contract and the non-root uid, and link the migration issue as
-  the known constraint with "recreate volume on schema change" as the interim policy.
-- **Spec:** ADR-0007 per-network DB + evidence retention; ADR-0005 single SQLite store;
-  existing issue "No on-disk DB migration story".
 
 ## Decide which routes are safe to publish at the public vhost (especially /metrics)
 - **Priority:** critical
