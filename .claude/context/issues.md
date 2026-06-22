@@ -357,6 +357,35 @@ filed it and does **not** affect priority.
   CLAUDE.md "Write evergreen comments/copy that describe the current state"; `learnings/certificate.md`
   two-tier-honesty copy rules.
 
+## Surface-C verifier renders the split-view mismatch alert unconditionally with a present-tense (un-run) verdict
+- **Priority:** normal
+- **Source:** [review] (visual pass vs the Independent Verification mockup + rendered-body inspection)
+- **What / where / how to verify:** `internal/verifier/verifier.html` renders the guided split-view
+  mismatch alert (`.mismatch` block, the `<p class="mismatch-body">`) UNCONDITIONALLY and in the present
+  tense — "Your (size, root) does **not** match the monitor's mirrored tree. The hub may have shown you a
+  different history." — even though the skeleton runs NO comparison (no `?monitor=` parse, no WASM, no
+  form submission processed). A skeptical visitor who has submitted nothing still sees a red alert
+  asserting their checkpoint mismatched and that the hub presented a split view — a negative verdict the
+  page never computed. The page is internally inconsistent: the verification-record block IS honest (it
+  carries a "not yet run" run-label and the copy says "until it runs, no verdict is claimed"), but the
+  alert below it asserts a verdict that has not run. This is the INVERSE of the open certificate no-JS
+  honesty issue (that over-claims a *positive* re-verification; this over-claims a *negative* mismatch),
+  and falls under the always-loaded rule "gate a rendered ✓/Merkle/mismatch on a re-VERIFICATION, not a
+  static render." Does NOT block progress: the step's Verify criteria are met (the guided alert exists,
+  is golden-tested, is never a dead error) and the live `?monitor=` wiring that makes the alert
+  conditional is explicitly the next Surface-C sub-step. Reviewer-confirmed by serving the page with no
+  query (`curl /` → the present-tense alert renders verbatim, with no example/illustrative framing).
+  Fix when Surface C is next touched (the live-wiring sub-step is the natural fix point): gate the alert
+  to render only on a real mismatch verdict (the WASM/`?monitor=` comparison), keeping the no-JS baseline
+  showing only the steps + the run affordance; OR, as an interim, frame the static alert illustratively
+  ("On a mismatch you would see:") so it never asserts an un-run verdict. Verify fixed: the served page
+  with no comparison input does not assert in the present tense that a mismatch occurred, and a test
+  asserts the static (no-verdict) baseline is consistent with the honest verification-record block.
+- **Spec:** learnings.md always-loaded "gate a rendered verdict on a re-VERIFICATION, not a status flag /
+  static render"; target.md WASM milestone Surface-C "a `(size, root)` mismatch renders the guided
+  split-view alert, not a dead error" (the alert must reflect a real comparison, not a static assertion);
+  CLAUDE.md "Write evergreen copy that describes the current state"; `learnings/verifier.md` honesty gap.
+
 ## `/` realm-index sub-region deltas vs the mockup (logo, instance-identity copy, Checkpoint/Anchor columns)
 - **Priority:** normal
 - **Source:** [review] (visual pass vs the Realm-Index mockup, after the named-region parity landed)
