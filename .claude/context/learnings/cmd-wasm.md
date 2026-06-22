@@ -111,3 +111,15 @@ marshaling adapter). Durable cross-cutting rules live in the index
   behavior MUST be followed by `mise run build:wasm` + re-pin `WasmVerifyHash` in the SAME increment —
   verify with `strings internal/web/verify.wasm | grep -c "<a new message you added>"` (must be 1), not
   just the source build exiting 0.
+- **TRAP — `mise run build:wasm` and a bare `go build` use DIFFERENT Go toolchains, so they emit
+  DIFFERENT artifact bytes (the wasm embeds the toolchain version string).** On this devcontainer the
+  bare-PATH `go` is `go1.26.1` (→ SHA `96b2a40d…`, the committed pin) but `mise` resolves
+  `mise.toml`'s `go = "1.26"` constraint to its installed `go1.26.4` (→ SHA `2c91e61f…`). The two
+  artifacts are behaviorally IDENTICAL (same 6-arg shim + `RecordCommitsID`); only the embedded version
+  stamp differs, so each is independently deterministic — the `2c91e61f…` the prior handoff called a
+  "transient cache artifact" was actually the mise-toolchain output, not nondeterminism. The published
+  pin MUST be reproducible from the DOCUMENTED canonical command (`mise run build:wasm`, per `web.go` +
+  `mise.toml`), so always rebuild + pin via `mise run build:wasm` (NOT a bare `go build`) and verify
+  with `mise run build:wasm && sha256sum internal/web/verify.wasm == WasmVerifyHash`. To make the pin
+  stable across machines, `mise.toml` should pin the EXACT patch (`go = "1.26.4"`), not the minor
+  `1.26` (which floats to whatever patch mise has installed).

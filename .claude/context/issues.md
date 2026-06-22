@@ -18,6 +18,43 @@ filed it and does **not** affect priority.
 
 ---
 
+## Pinned verify.wasm is NOT reproducible from the documented `mise run build:wasm` (bare-go 1.26.1 pin vs mise's 1.26.4) — fails TestWasmVerifyHashPinned on regeneration
+- **Priority:** critical
+- **Source:** [review] (Codex P2, reviewer-confirmed by running both toolchains + reading the embedded version stamp)
+- **What / where / how to verify:** The advance pinned `web.WasmVerifyHash =
+  96b2a40d459c51817dd87911063ab14abf481080e30ecb17ef311090755852d3` (`internal/web/web.go:93`), which is
+  the output of a BARE `go build` under the devcontainer's PATH `go` (`go1.26.1`). But the DOCUMENTED
+  canonical regeneration command — `mise run build:wasm` (named in `web.go`'s `WasmVerifyHash` doc, in
+  `next.md`, and in `mise.toml`) — runs under the `mise`-resolved toolchain, which resolves
+  `mise.toml`'s `go = "1.26"` constraint to its installed `go1.26.4` and deterministically emits a
+  DIFFERENT artifact, SHA `2c91e61f20560fa98e0fbd6813746c40687861d4b4b3be604d4216557df0f48e` (the wasm
+  data section embeds the toolchain version string — `strings … | grep go1.26` shows `go1.26.1` in the
+  committed artifact vs `go1.26.4` in the mise build). The two artifacts are BEHAVIORALLY IDENTICAL
+  (both carry the 6-arg shim + `RecordCommitsID`, both pass content `strings` checks), and CI is NOT
+  broken today (CI runs `mise run check`, which only runs `TestWasmVerifyHashPinned` against the
+  committed bytes — green — and `pages.yml` COPIES the byte-pinned wasm, never rebuilds it). The defect
+  is the broken REPRODUCIBILITY CONTRACT — the entire purpose of an audited-artifact pin: the next
+  contributor/CI step that runs the documented `mise run build:wasm` gets `2c91e61f…`, which FAILS
+  `TestWasmVerifyHashPinned` against the `96b2a40d…` pin (or forces blessing a surprise binary). next.md's
+  Verification criterion #1 ("`mise run build:wasm` … emits SHA-256 `96b2a40d…`") is therefore UNMET, and
+  next.md's Implementation Note explicitly said to STOP-and-investigate on this exact divergence rather
+  than pinning a surprise hash; the prior handoff mis-diagnosed the `2c91e61f…` as a "transient cache
+  artifact" when it is in fact the deterministic mise-toolchain output. Reviewer-confirmed: `mise run
+  build:wasm` twice → `2c91e61f…` both times (stable); `mise exec -- go version` → `go1.26.4`; bare `go
+  version` → `go1.26.1`. Fix (a deliberate toolchain decision, pick ONE): (a) pin `mise.toml` to the
+  EXACT patch `go = "1.26.4"` AND rebuild via `mise run build:wasm` AND re-pin `WasmVerifyHash` to
+  `2c91e61f…` (makes the documented command the source of truth and reproducible across machines that
+  honor the pin) — preferred, since `mise` is the project's gate runner; OR (b) keep `96b2a40d…` but make
+  the documented build path produce it (e.g. pin `mise.toml` to `go = "1.26.1"`), so the canonical
+  command reproduces the committed bytes. Either way the artifact, the pin, and the documented
+  regeneration command must all agree. Verify fixed: `mise run build:wasm && sha256sum
+  internal/web/verify.wasm` equals `web.WasmVerifyHash` (byte-identical to the committed artifact), and
+  `go test -run TestWasmVerifyHashPinned ./internal/web` passes after the documented rebuild.
+- **Spec:** `internal/web/web.go` `WasmVerifyHash` doc ("this value tracks `mise run build:wasm`");
+  next.md Verification #1 + the STOP-on-divergence Implementation Note; ADR-0003 "Pages-from-repo ties
+  the deployed WASM to a public commit" (reproducible-from-source contract); CLAUDE.md "a built artifact
+  is not the shipped artifact" + reproducible-build discipline.
+
 ## Certificate §5 BITCOIN ANCHOR does not bind the OTS proof's committed digest to §2's accepted root
 - **Priority:** normal
 - **Source:** [review] (Codex P2, reviewer-confirmed against the library + the OTS write path)
@@ -421,36 +458,6 @@ filed it and does **not** affect priority.
   trust path; the client re-verifies signature + Merkle); ADR-0009 did:web is the only key source;
   learnings.md always-loaded "gate a rendered ✓ on a re-VERIFICATION" (a full re-verification includes
   the signature + id binding, not inclusion math alone); `learnings/cmd-wasm.md` `isccVerifyInclusion` scope.
-
-## Source carries the WASM id-binding but the pinned `verify.wasm` artifact does NOT — the deployed verifier would render `error` for EVERY target until rebuilt + re-pinned
-- **Priority:** normal
-- **Source:** [review] (Codex P1, reviewer-confirmed by `strings` on the committed artifact + a clean rebuild)
-- **What / where / how to verify:** Advance `22f0420` committed `verifier.html:628` passing a 6th `id`
-  arg to `isccVerifyInclusion`, AND the source shim now accepts 5-or-6 args — but it did NOT rebuild
-  the pinned byte artifact `internal/web/verify.wasm`, which is the module the verifier actually loads at
-  `/_ds/verify.wasm`. Reviewer-confirmed the committed artifact is STALE:
-  `strings internal/web/verify.wasm | grep -c "expected 5 or 6 args"` → 0,
-  `... | grep -c "expected 5 args"` → 1, `... | grep -c "decode record envelope"` → 0 (no
-  `RecordCommitsID`). The committed wasm was last touched at `196c1e8` (`git log -- internal/web/verify.wasm`),
-  not this commit. Against the OLD shim a 6-arg JS call hits `len(args) != 5` → returns
-  `{verified:false, error:"...expected 5 args..."}`, and `verifier.html`'s loader maps any `out.error` to
-  the `error` render state — so on the deployed Surface-C page EVERY valid verification would render
-  `error` (a functional regression, strictly worse than the prior all-inclusion-only behavior). NOT live
-  TODAY: Surface C is NOT mounted in the instance binary (`cmd/iscc-monitor` never references
-  `verifier.`), it ships only via the `cmd/verifier-site` Pages build, and that deploy is itself blocked
-  on the human repo-Settings step (separate `normal`). The handoff HONESTLY flagged this skew. But the
-  committed source + artifact are internally inconsistent, so the step's user-visible goal (the browser
-  gates `verified` on id-binding) is NOT achieved by the committed tree — this is the NEEDS_WORK gate for
-  this increment. Fix (one command, reproducible): `mise run build:wasm` (rebuilds
-  `internal/web/verify.wasm` with `-trimpath -ldflags=-buildid= -buildvcs=false`) then re-pin
-  `web.WasmVerifyHash` to the emitted SHA-256 (`TestWasmVerifyHashPinned` gates it). Reviewer verified a
-  clean rebuild yields SHA `96b2a40d459c51817dd87911063ab14abf481080e30ecb17ef311090755852d3` (≠ the
-  committed `7d57ab1b…`) and DOES contain `expected 5 or 6 args` (1) + `decode record envelope` (1). Verify
-  fixed: `strings internal/web/verify.wasm | grep -c "expected 5 or 6 args"` → 1 AND
-  `go test ./internal/web -run TestWasmVerifyHashPinned` passes against the re-pinned hash.
-- **Spec:** ADR-0003 "Pages-from-repo ties the deployed WASM to a public commit"; `learnings/cmd-wasm.md`
-  "the committed verify.wasm is a pinned byte artifact, not auto-rebuilt"; `internal/web/web.go`
-  `WasmVerifyHash` + `TestWasmVerifyHashPinned`; CLAUDE.md "a built artifact is not the shipped artifact".
 
 ## Pages custom domain is not bound by the artifact CNAME under Actions-based deploy — needs a one-time repo-settings step (else `/_ds/` asset paths break on the project URL)
 - **Priority:** normal
