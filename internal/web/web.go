@@ -84,7 +84,7 @@ const WasmVerifyPath = "/_ds/verify.wasm"
 // metadata into the wasm data section and the hash is unreproducible. Re-running that
 // task without re-pinning this const fails TestWasmVerifyHashPinned. The bytes are
 // toolchain-dependent, so this value tracks `mise run build:wasm`, not a bare go build.
-const WasmVerifyHash = "f03b9b8973e308be12dd7d0c210e612d0aa388e6e8a7cdce4ea8515cd823047e"
+const WasmVerifyHash = "7d57ab1bbc0b11bd27bd0bc426121dc933158b1342a6656bc90bb5b012f22d2c"
 
 // cacheControl is the Cache-Control policy for every /_ds/ asset. Each is served at
 // a stable, overwrite-in-place URL (not content-addressed), so it must NOT carry the

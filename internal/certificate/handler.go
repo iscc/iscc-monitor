@@ -246,6 +246,17 @@ type certData struct {
 	// never populated unless the built proof re-verifies against the accepted root
 	// (the rebuild gate withholds §3 on any tile↔root divergence).
 	ProofHashes []string
+	// RecordB64 is the subject leaf's raw record bytes (the same arts.record §3
+	// computed and the bundle base64-encodes), base64-Std encoded for the tier-2
+	// in-browser verifier. The certificate's progressive-enhancement <script> feeds
+	// it — together with CheckpointRoot, ProofHashes, Position, and CheckpointSize —
+	// into the WASM globalThis.isccVerifyInclusion so the BROWSER re-verifies the same
+	// inclusion proof the server's §3 already re-verified (the two-tier honesty: the
+	// tier-2 ✓ is a genuine re-VERIFICATION, not a status flag). It is populated only
+	// on the §3 success path (inside the HasBundle branch), so it is empty on every
+	// honest decline; the template reads it only under {{if .HasBundle}}, exposed
+	// through a JSON data island (never string-interpolated into executable JS).
+	RecordB64 string
 
 	// SigningKeyDID is the hub's did:web identifier ("did:web:" + Domain), the §4
 	// SIGNING KEY clause subject (ADR-0009: domain ownership is identity). Meaningful
@@ -818,6 +829,13 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 					}
 					data.ProofHashes = hashes
 					data.HasClause3 = true
+					// Carry the base64-Std record for the tier-2 in-browser verifier: the
+					// certificate's <script> feeds it (with CheckpointRoot, ProofHashes,
+					// Position, CheckpointSize) into the WASM isccVerifyInclusion so the
+					// browser re-runs the SAME inclusion proof the server just re-verified.
+					// Set here, inside the §3 re-verification gate, so it is empty on every
+					// honest decline (the template reads it only under {{if .HasBundle}}).
+					data.RecordB64 = base64.StdEncoding.EncodeToString(record)
 					// The §3 re-verification succeeded, so a verified proof bundle exists.
 					// Offer it (HasBundle) and carry the in-hand artifacts (the verified
 					// proof + the record bytes) so serveBundle reuses this crypto path

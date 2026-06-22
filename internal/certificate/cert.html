@@ -321,6 +321,45 @@
       line-height: var(--leading-normal);
       margin: var(--space-5) 0 0;
     }
+
+    /* Tier-2 in-browser verification result. The no-JS default text reads honestly
+       ("re-verify the downloadable bundle yourself"); the progressive-enhancement
+       <script> REPLACES it with the verdict isccVerifyInclusion returns. The
+       data-state attribute the script sets recolors the panel: verified (lime),
+       failed (coral — a negative VERDICT, the split-view signal), or error (muted).
+       It is rendered only under HasBundle, so an uncertifiable id never carries it. */
+    .tier2 {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      background: var(--surface-page);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-sm);
+      padding: var(--space-4) var(--space-4);
+      margin: var(--space-4) 0 0;
+      font-size: var(--text-sm);
+      font-weight: var(--weight-light);
+      color: var(--text-body);
+    }
+    .tier2[data-state="verified"] {
+      border-color: var(--iscc-lime-green);
+    }
+    .tier2[data-state="failed"] {
+      border-color: var(--iscc-coral-red);
+    }
+    .tier2-dot {
+      flex: none;
+      width: var(--space-2);
+      height: var(--space-2);
+      border-radius: var(--radius-pill);
+      background: var(--text-faint);
+    }
+    .tier2[data-state="verified"] .tier2-dot {
+      background: var(--iscc-lime-green);
+    }
+    .tier2[data-state="failed"] .tier2-dot {
+      background: var(--iscc-coral-red);
+    }
   </style>
 </head>
 <body>
@@ -423,13 +462,31 @@
 
       <div class="honesty">
         <svg class="honesty-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"></path></svg>
-        <span class="honesty-text">This certificate is <span class="honesty-tier">the monitor's account</span> (Tier 1). It does not ask for your trust: the authoritative version is the proof bundle, which <span class="honesty-tier-2">you verify yourself</span> (Tier 2). {{if .HasBundle}}Download the bundle below and re-verify it offline; in-browser re-verification lands in a later release.{{else}}The downloadable bundle and in-browser re-verification land in a later release.{{end}}</span>
+        <span class="honesty-text">This certificate is <span class="honesty-tier">the monitor's account</span> (Tier 1). It does not ask for your trust: the authoritative version is the proof bundle, which <span class="honesty-tier-2">you verify yourself</span> (Tier 2). {{if .HasBundle}}This browser re-verifies the proof below for you, and you can download the bundle and re-verify it offline.{{else}}The downloadable bundle and in-browser re-verification land in a later release.{{end}}</span>
       </div>
 
       <div class="actions">
         {{if .HasBundle}}<a class="action-download action-download-enabled" href="{{.BundleHref}}" download>Download proof bundle</a>{{else}}<button type="button" class="action-download" disabled aria-disabled="true">Download proof bundle (coming soon)</button>{{end}}
         <a class="action-verify" href="https://monitor.iscc.codes/">Verify independently in your browser →</a>
       </div>
+
+      {{if .HasBundle}}
+      <!-- Tier-2 in-browser re-verification. The no-JS default text below is honest
+           on its own; the progressive-enhancement <script> at the end of <body>
+           loads the same-origin WASM verifier and replaces this region with the
+           verdict it computes over the embedded proof. The §1–§6 clauses above are
+           ALL server-rendered, so disabling JavaScript loses only this extra panel,
+           never any clause (the no-JS baseline). -->
+      <div id="tier2-result" class="tier2" data-state="default">
+        <span class="tier2-dot"></span>
+        <span id="tier2-text">Re-verify the downloadable bundle yourself — or, with JavaScript enabled, this browser re-checks the proof above against the accepted root for you.</span>
+      </div>
+      <!-- Proof data for the in-browser verifier, passed as a JSON data island
+           (NOT interpolated into executable JS): html/template JSON-context-escapes
+           it, so the base64 '+'/'/' and the ISCC:-prefixed id survive intact. The
+           script reads it with JSON.parse and calls isccVerifyInclusion. -->
+      <script id="tier2-data" type="application/json">{"record":{{.RecordB64}},"root":{{.CheckpointRoot}},"proof":[{{range $i, $h := .ProofHashes}}{{if $i}},{{end}}{{$h}}{{end}}],"index":{{.Position}},"size":{{.CheckpointSize}}}</script>
+      {{end}}
 
       <p class="cite">Verifiable cache — not a trusted oracle. This is the monitor's account of what the hub showed it; re-verify the proof bundle yourself.</p>
       {{else}}
@@ -448,5 +505,62 @@
       {{end}}
     </div>
   </main>
+
+  {{if .HasBundle}}
+  <!-- Tier-2 progressive enhancement: load the same-origin Go WASM runtime
+       (/_ds/wasm_exec.js) then the verifier module (/_ds/verify.wasm), and re-run
+       the inclusion proof embedded above IN THE BROWSER. This only ENHANCES the
+       page — every §1–§6 clause and the honesty/actions copy is already rendered
+       server-side, so a no-JS reader loses nothing but this extra re-verification.
+       Any load/parse failure leaves the no-JS default text (graceful degradation). -->
+  <script src="/_ds/wasm_exec.js"></script>
+  <script>
+    (async function () {
+      var region = document.getElementById("tier2-result");
+      var text = document.getElementById("tier2-text");
+      var island = document.getElementById("tier2-data");
+      if (!region || !text || !island) {
+        return;
+      }
+      try {
+        var data = JSON.parse(island.textContent);
+        var go = new Go();
+        var inst;
+        if (WebAssembly.instantiateStreaming) {
+          try {
+            var res = await WebAssembly.instantiateStreaming(fetch("/_ds/verify.wasm"), go.importObject);
+            inst = res.instance;
+          } catch (e) {
+            // Streaming can fail on a wrong MIME type or older runtime; fall back to
+            // fetching the bytes and instantiating from an ArrayBuffer.
+            var buf = await (await fetch("/_ds/verify.wasm")).arrayBuffer();
+            inst = (await WebAssembly.instantiate(buf, go.importObject)).instance;
+          }
+        } else {
+          var buf2 = await (await fetch("/_ds/verify.wasm")).arrayBuffer();
+          inst = (await WebAssembly.instantiate(buf2, go.importObject)).instance;
+        }
+        go.run(inst);
+        // isccVerifyInclusion(record, root, proofArray, index, size) — record and
+        // root are base64-Std strings, proof is an array of base64-Std strings.
+        var verdict = globalThis.isccVerifyInclusion(data.record, data.root, data.proof, data.index, data.size);
+        if (verdict.error) {
+          // An error means broken input, not a mismatch — keep that distinct from a
+          // negative verdict (the split-view signal the later alert keys on).
+          region.setAttribute("data-state", "error");
+          text.textContent = "In-browser verification could not run: " + verdict.error;
+        } else if (verdict.verified) {
+          region.setAttribute("data-state", "verified");
+          text.textContent = "✓ Your browser re-verified this inclusion proof against the accepted root.";
+        } else {
+          region.setAttribute("data-state", "failed");
+          text.textContent = "✗ In-browser verification did not match the accepted root.";
+        }
+      } catch (e) {
+        // Graceful degradation: leave the honest no-JS default text in place.
+      }
+    })();
+  </script>
+  {{end}}
 </body>
 </html>

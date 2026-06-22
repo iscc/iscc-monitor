@@ -64,7 +64,14 @@ After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSO
   ISCC-IDv1 (decode realm + 12-bit `hub_id`, resolve the issuing hub via the Hub-List): renders the §1
   Subject clause + subject banner (subject id, resolved hub domain, position) for a known id, or the
   honest "cannot certify" state (200, never 5xx) for a malformed / unresolvable / not-followed / not-in-log
-  id. Clauses §2-§6 and the downloadable proof bundle are later sub-steps. Same no-JS, no-CDN DS shell.
+  id. Clauses §1-§6 (Subject, Checkpoint, Inclusion Proof, Signing Key, Bitcoin Anchor, Record History)
+  plus the Comparison Anchor panel and the downloadable proof bundle (`GET /inclusion/<iscc_id>.bundle`)
+  render for a certifiable id. For a certifiable id the page also progressively enhances with a tier-2
+  in-browser re-verification result: a no-JS-baseline `<div>` whose default text the page's
+  `/_ds/wasm_exec.js` + `/_ds/verify.wasm` loader replaces with the verdict its WASM
+  `isccVerifyInclusion` computes over the embedded proof (the BROWSER re-checks the same inclusion proof
+  the server's §3 already re-verified). Disabling JavaScript loses only that extra panel — every clause
+  stays server-rendered. Same no-JS, no-CDN DS shell (the `/_ds/` script + wasm refs are same-origin).
 - `GET /_ds/tokens.css` — the shared ISCC Design System v2 token stylesheet (CDN-free, build-pinned);
   the one no-JS, no-CDN style shell every server-rendered surface links.
 - `GET /_ds/verify.wasm` — the verifier WebAssembly artifact (`application/wasm`), the reproducible

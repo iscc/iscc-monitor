@@ -711,6 +711,161 @@ func TestCertificateInclusionProof(t *testing.T) {
 	}
 }
 
+// TestCertificateRendersWasmVerifier is the tier-2 in-browser-verifier wiring test:
+// a CERTIFIABLE id (whose §3 inclusion proof re-verified, so HasBundle) renders the
+// progressive-enhancement loader — the same-origin /_ds/wasm_exec.js + /_ds/verify.wasm
+// scripts, the tier-2 result region, and a <script type="application/json"> data
+// island carrying the base64-Std record / accepted root / inclusion-proof hashes plus
+// the integer index/size — while an UNCERTIFIABLE / !HasBundle id (a tile gap where §3
+// declined) renders NONE of them (no fabricated verifier on an id the monitor cannot
+// re-verify). The data island feeds the WASM isccVerifyInclusion so the BROWSER re-runs
+// the same proof the server's §3 already re-verified (the two-tier honesty: the tier-2
+// ✓ is a genuine re-VERIFICATION, gated on the SAME HasClause3 the page ✓ is).
+//
+// Mutation (non-vacuity): removing the data.RecordB64 population (the §3 success path)
+// makes the data island carry "record":"" and fails the record-bytes assert; removing
+// the {{if .HasBundle}} script block makes the loader/region asserts fail. The negative
+// case fails the moment the scripts render unconditionally (an uncertifiable id would
+// then carry the loader). The base64 record/root/proof appear verbatim (no '+'->&#43;
+// entity escaping) because html/template JSON-context-escapes the <script> data island,
+// the load-bearing reason the proof data is passed as a JSON island, not interpolated.
+func TestCertificateRendersWasmVerifier(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+
+	t.Run("certifiable id wires the tier-2 verifier", func(t *testing.T) {
+		// Clean tiled fixture: §3 re-verifies, so HasBundle is set and the tier-2
+		// loader + data island render.
+		st, tree := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, []byte("raw"))
+		h := Handler(testnetHubList(), st, nil)
+
+		rec := get(t, h, goldenID)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		// The JSON data island is in a <script> context, where html/template does NOT
+		// entity-escape base64 '+'/'/', so the proof data appears verbatim in the RAW body.
+		body := rec.Body.String()
+
+		// The progressive-enhancement loader: the same-origin WASM runtime + verifier
+		// module scripts and the tier-2 result region.
+		for _, want := range []string{
+			`<script src="/_ds/wasm_exec.js">`, // the Go WASM runtime loader
+			"/_ds/verify.wasm",                 // the verifier module the inline script fetches
+			`id="tier2-result"`,                // the result region the script writes the verdict into
+			`type="application/json"`,          // the JSON data island (NOT interpolated JS)
+			"isccVerifyInclusion",              // the WASM global the loader calls
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("certifiable body missing tier-2 verifier marker %q\n%s", want, body)
+			}
+		}
+
+		// The data island must carry the REAL embedded proof data the WASM verifier
+		// re-checks: the base64-Std record (leaf-0), the accepted root, every
+		// inclusion-proof hash, and the integer index/size — verbatim, JSON-escaped.
+		recordB64 := base64.StdEncoding.EncodeToString([]byte("leaf-0"))
+		rootB64 := base64.StdEncoding.EncodeToString(tree.Hash())
+		for _, want := range []string{
+			`"record":"` + recordB64 + `"`, // the subject leaf's record bytes
+			`"root":"` + rootB64 + `"`,     // the accepted root the proof rebuilds
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("data island missing %q\n%s", want, body)
+			}
+		}
+		// Every inclusion-proof hash from the independent prover must appear verbatim in
+		// the data island's proof array (base64-Std, un-entity-escaped in script context).
+		want, err := tree.InclusionProof(seq, tree.Size())
+		if err != nil {
+			t.Fatalf("tree.InclusionProof: %v", err)
+		}
+		if len(want) < 2 {
+			t.Fatalf("proof has %d hashes; want a multi-hash (substantive) proof", len(want))
+		}
+		for i, hsh := range want {
+			enc := base64.StdEncoding.EncodeToString(hsh)
+			if !strings.Contains(body, `"`+enc+`"`) {
+				t.Errorf("data island proof array missing hash %d %q\n%s", i, enc, body)
+			}
+		}
+		// The index/size are the subject position and accepted tree size, as bare JSON
+		// numbers the WASM integer guard accepts.
+		for _, want := range []string{
+			fmt.Sprintf(`"index":%d`, seq),
+			fmt.Sprintf(`"size":%d`, leaves),
+		} {
+			// html/template renders a JS-context number with surrounding whitespace
+			// (e.g. `"index": 0 `), so match the key + the value tolerantly.
+			key := strings.SplitN(want, ":", 2)[0]
+			val := strings.SplitN(want, ":", 2)[1]
+			idx := strings.Index(body, key+":")
+			if idx < 0 || !strings.Contains(body[idx:idx+40], val) {
+				t.Errorf("data island missing %q near %q\n%s", want, key, body)
+			}
+		}
+
+		// No-JS baseline (target.md M-UI "complete with JavaScript disabled"): every
+		// §1–§6 clause marker AND the honesty/actions region must render in the document
+		// BODY (the <main> sheet), BEFORE the first executable <script src=...>/<script>
+		// loader — never inside or gated by a <script>. The first loader <script> appears
+		// after </main>, so a clause marker preceding it proves the clause is
+		// server-rendered, not script-gated. (The JSON data island is a
+		// type="application/json" <script>, which is data, not executable; the executable
+		// loader is the <script src="/_ds/wasm_exec.js">.)
+		loaderIdx := strings.Index(body, `<script src="/_ds/wasm_exec.js">`)
+		if loaderIdx < 0 {
+			t.Fatalf("no tier-2 loader script in certifiable body\n%s", body)
+		}
+		for _, marker := range []string{
+			"§1 SUBJECT", "§2 CHECKPOINT", "§3 INCLUSION PROOF",
+			"Tier 1", "Tier 2", // the two-tier honesty panel
+			"Download proof bundle", // the actions region
+		} {
+			mIdx := strings.Index(body, marker)
+			if mIdx < 0 {
+				t.Errorf("no-JS baseline: certifiable body missing %q\n%s", marker, body)
+				continue
+			}
+			if mIdx > loaderIdx {
+				t.Errorf("no-JS baseline: %q renders AFTER the loader <script> (script-gated)\n%s", marker, body)
+			}
+		}
+	})
+
+	t.Run("uncertifiable id wires no verifier", func(t *testing.T) {
+		// Tile-gap fixture: certifiable §1/§2 but no mirrored tiles, so §3 declines and
+		// HasBundle stays false — the page must NOT render the tier-2 loader.
+		st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815)
+		h := Handler(testnetHubList(), st, nil)
+
+		rec := get(t, h, goldenID)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		body := rec.Body.String()
+		// Sanity: this id IS certifiable (§1/§2 render) but §3 declined (HasBundle false).
+		if !strings.Contains(body, "§2 CHECKPOINT") {
+			t.Fatalf("the negative fixture is not even certifiable (no §2)\n%s", body)
+		}
+		if strings.Contains(body, "§3 INCLUSION PROOF") {
+			t.Fatalf("the negative fixture unexpectedly rendered §3 (HasBundle would be set)\n%s", body)
+		}
+		// No fabricated verifier on an id the monitor cannot re-verify: none of the
+		// tier-2 markers may appear.
+		for _, banned := range []string{
+			"/_ds/wasm_exec.js",
+			"/_ds/verify.wasm",
+			`id="tier2-result"`,
+			"isccVerifyInclusion",
+		} {
+			if strings.Contains(body, banned) {
+				t.Errorf("uncertifiable body fabricated a tier-2 verifier marker %q\n%s", banned, body)
+			}
+		}
+	})
+}
+
 // TestCertificateInclusionProofTileGap asserts the honest-gap path: a certifiable id
 // whose tiles are NOT mirrored (the synthetic §1/§2 fixture, no RecordTile) renders
 // §1 and §2 but NO §3 clause — the os.ErrNotExist tile miss leaves §3 unrendered
