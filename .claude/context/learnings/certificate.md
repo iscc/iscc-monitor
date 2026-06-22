@@ -20,21 +20,21 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   skeleton's tests are non-vacuous (reviewer reproduced: `Resolve(id.HubID+1)` →
   known-id FAILS; swallow the `Decode` error → malformed FAILS).
 
-- **§1 SUBJECT gates on the accepted-tree cap (`seqs[0] < hub.LastSize`); lookup key is the stored
-  `ISCC:`-prefixed form.** `LastSize` rides out of the one `ListHubs` scan via `followedHub`. Honest
-  declines: `LastSize==0` → "no accepted checkpoint yet"; `seqs[0] >= LastSize` → "not in accepted tree"
-  (a size-N tree has leaves 0..N-1, so `>=` is right; matches `serveInclusion`/`serveEntries`; a frozen
-  hub's `LastSize` is its last ACCEPTED size, ADR-0006, so the same cap caps it — no frozen branch). The
-  lookup is canonicalized to `lookupID := "ISCC:" + strings.TrimPrefix(rawID, "ISCC:")` (production stores
-  `iscc_id` VERBATIM+PREFIXED, `SeqsForISCCID` is exact-bytes) — any store seam keyed on `iscc_id` must use
-  the prefixed ground truth, never the bare decode input. Mutations (review): neuter the cap → fails
-  `TestCertificateUnacceptedLeaf`; bare `rawID` → `TestCertificateKnownID`/`…PrefixedLookup` FAIL.
+- **§1 SUBJECT — accepted-tree cap `seqs[0] < hub.LastSize`; lookup key is the stored `ISCC:`-prefixed
+  form.** A size-N tree has leaves 0..N-1 so `>=` is the right "not in accepted tree" boundary (matches
+  `serveInclusion`/`serveEntries`); a frozen hub's `LastSize` is its last ACCEPTED size (ADR-0006) so the
+  same cap caps it (no frozen branch). The store keys `iscc_id` VERBATIM+PREFIXED and `SeqsForISCCID` is
+  exact-bytes, so canonicalize to `"ISCC:" + strings.TrimPrefix(rawID, "ISCC:")` — any seam keyed on
+  `iscc_id` must use the prefixed ground truth, never the bare decode input.
+  - settled: the cap + prefixed-lookup mutations are pinned by `TestCertificateUnacceptedLeaf` /
+    `…KnownID` / `…PrefixedLookup` (git history).
 
-- **§2 CHECKPOINT reads the accepted root back via `CheckpointAt(hub.HubID, hub.LastSize)`**
-  (follow_state does NOT persist the root — store.md). Root is base64-**Std**, byte-identical to
-  the log browser + verify-for-me. A DB `err` → 500 (buffer-then-200); `!found` leaves
-  `HasClause2=false` (honest absence, NOT a 500 — deliberately divergent from verify-for-me which
-  500s once it has committed to serving a proof). Oracle gate N/A here (pure store read); RE-ENGAGES at §3.
+- **§2 CHECKPOINT reads the accepted root back via `CheckpointAt(hub.HubID, hub.LastSize)`** (follow_state
+  does NOT persist the root — store.md); root is base64-**Std**, byte-identical to the log browser +
+  verify-for-me. `!found` leaves `HasClause2=false` (honest absence, NOT a 500 — deliberately divergent
+  from verify-for-me which 500s once committed to serving a proof); only a DB `err` 500s (buffer-then-200).
+  **`HasClause2` is the gate the §5 OTS read AND the COMPARISON ANCHOR both sit inside** — both reuse §2's
+  already-loaded `(size, root)`, so neither adds a read or a fault path.
 
 - **Interim Hub-List wiring lives in `cmd/iscc-monitor` (`hubListFromEntries`), not
   in config/registry.** Production has no real Hub-List document path yet; the
@@ -56,18 +56,15 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   leaf hash; mutation `VerifyInclusion(...)==nil` → `...==nil || true` fails the contradictory test.
   - settled: §3 gate evolved unconditional → `!hub.Frozen` → re-verification (git history).
 
-- **§4 SIGNING KEY derives the key id from the accepted checkpoint's own raw bytes, not synthetically.**
-  `buildData` now captures the `raw` return of `CheckpointAt` (was `_`), recovers the key id via
-  `logclient.KeyIDFromCheckpoint(raw)` (pure stdlib+sumdb/note; reads only the BE-uint32 keyhash, does
-  NOT verify the sig), and reads the cached resolution back via `store.LookupHubKey(hubID, keyID)`.
-  `HasClause4` is set ONLY on a cache hit — a `KeyIDFromCheckpoint` error (the cheap `[]byte("raw")`
-  fixtures) or a `!found4` miss is an honest decline (no §4, no 500, no fabricated key); only a real
-  `LookupHubKey` DB fault is a 500 (buffer-then-200). The derived key id is grounded in the oracle: it
-  equals the `0x40b74463` pin in `logclient/checkpointkey_test.go` for the live sb0 checkpoint.
-  Mutation-proven (review reproduced): `if found4` → `if found4 || true` makes
-  `TestCertificateSigningKeyUncached` FAIL. `KeyIDFromCheckpoint` ignores the signature, so the live sb0
-  note seeds an sb1-indexed fixture fine — the test threads a real signed note `Raw` only on the §4
-  happy path; §3 callers keep `[]byte("raw")`.
+- **§4 SIGNING KEY derives the key id from the accepted checkpoint's OWN raw bytes, not synthetically.**
+  `buildData` captures `CheckpointAt`'s `raw`, recovers the key id via `logclient.KeyIDFromCheckpoint(raw)`
+  (pure stdlib+sumdb/note; reads only the BE-uint32 keyhash, does NOT verify the sig), and reads the cached
+  resolution via `store.LookupHubKey(hubID, keyID)`. `HasClause4` is set ONLY on a cache hit — a
+  `KeyIDFromCheckpoint` error or a `!found4` miss is an honest decline (no §4, no 500, no fabricated key);
+  only a real `LookupHubKey` DB fault 500s. Key id is oracle-grounded (equals the `0x40b74463` pin in
+  `logclient/checkpointkey_test.go`). Because `KeyIDFromCheckpoint` ignores the sig, the §4-happy-path test
+  threads a real signed note `Raw` while §3 callers keep `[]byte("raw")`.
+  - settled: `found4` cache-hit gate pinned by `TestCertificateSigningKeyUncached` (git history).
 - **`did:web:` + `data.Domain` is WRONG for a `host:port` hub (latent, Codex-confirmed).** §4 builds
   the DID as `"did:web:" + data.Domain`, but `internal/registry` explicitly supports `host:port`
   domains and `didweb.DocumentURL` requires the port colon `%3A`-encoded — so a `host:port` hub renders
@@ -80,23 +77,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   chips must `html.UnescapeString(body)` first (the §3/§5 tests do); the on-page entity escaping is
   correct/harmless rendering.
 
-- **§6 RECORD HISTORY is a pure store-read clause — renders unconditionally for a
-  certifiable id, no crypto/cache gate.** `buildData` reuses the `seqs` already in hand
-  from `SeqsForISCCID` (ascending), one `RecordAt(hubID, seq)` per row for its verbatim
-  `note.$schema`, mapped to a label by a LOCAL `recordKind` (the two FULL wire URIs +
-  catch-all `kindUnknown`; `proofserve`'s constants are unexported, so they are copied —
-  minor DRY debt, two pure 6-line switches). Two honesty disciplines: (1) cap rows to the
-  accepted tree (`if seq >= hub.LastSize { continue }`, same boundary as §1; §1 already
-  proved `seqs[0] < LastSize`, so the list is non-empty), so a deletion indexed ABOVE the
-  accepted checkpoint is dropped, never implied vouched-for; (2) a `RecordAt` MISS
-  (`found == false`, a projection gap) lists the seq with the empty→`kindUnknown` label,
-  NOT a 500 — only a real `RecordAt` DB fault 500s (buffer-then-200, like every clause).
-  `HasDeletion` ORs the per-row `isDeletion` for the conditional deletion note. Mutation-
-  proven non-vacuous (review reproduced both): `HasClause6 = false` kills the whole clause;
-  `if isDeletion` → `if false` suppresses the note + deletion-row label — each fails
-  `TestCertificateRecordHistory`. The existing `fixtureStore` seeds the BARE
-  `iscc-note-0.8.0.json` short form (not the wire URI), so the declaration-only test lands
-  the `kindUnknown` path for free; `fixtureStoreHistory` seeds the FULL wire URIs.
+- **§6 RECORD HISTORY is a pure store-read clause — renders unconditionally for a certifiable id.**
+  Reuses the `seqs` from `SeqsForISCCID` (ascending), one `RecordAt(hubID, seq)` per row for its verbatim
+  `note.$schema`, labelled by a LOCAL `recordKind` (the two FULL wire URIs + `kindUnknown`; `proofserve`'s
+  constants are unexported so they are copied — minor DRY debt). Two honesty rules: cap rows to the
+  accepted tree (`if seq >= hub.LastSize { continue }`, same boundary as §1) so a deletion above the
+  accepted checkpoint is dropped; a `RecordAt` MISS lists the seq with the `kindUnknown` label, not a 500
+  (only a DB fault 500s). `HasDeletion` ORs the per-row `isDeletion` for the deletion note.
+  - settled: `HasClause6`/`isDeletion` mutations pinned by `TestCertificateRecordHistory` (git history).
 - **Mockup §6 row carries a `· at` timestamp the projection has no column for.** The
   `.dc.html` §6 row is `label` + `seq N · at`; `RecordRow` (Seq/IsccID/NoteSchema) holds
   no per-record time, so the impl renders `label · seq N` only. Adding the timestamp needs
@@ -104,30 +92,35 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   affordance (kind + seq + deletion note) is complete; the missing time is cosmetic.
 
 - **§5 BITCOIN ANCHOR reads the mirrored OTS row of §2's root and classifies via `ots.Confirmed`.**
-  Inside the `HasClause2` guard, `st.OTSForRoot(ctx, hub.HubID, hub.LastSize, root)` keys on §2's RAW
-  `[]byte` root (not the base64 `CheckpointRoot`), the same `(hub,size,root)` key the `.ots` route +
-  stamp loop use. Three fail-closed states (ADR-0001/0004): a miss OR the empty-`OTSBytes` sentinel →
-  §5 OMITTED (un-anchored is not an error); a non-empty proof `ots.Confirmed` can't parse → SILENT
-  decline (never 500, same as §3's non-nil VerifyInclusion); a parseable proof → `HasClause5=true`,
-  confirmed shows `block <height>` (+ `UpgradedAt` RFC-3339 when non-zero, mirroring `SigningKeyRevoked`'s
-  zero-time guard), pending shows the honest "awaiting Bitcoin confirmation". Only a real `OTSForRoot` DB
-  fault is a 500 (buffer-then-200). Mutations (review reproduced all): force `HasClause5=true` → unanchored
-  + empty-sentinel tests FAIL; `BTCConfirmed=true` → pending test FAIL; `BTCHeight=height+1` → confirmed
-  test FAIL (height tied to the oracle literal 358391, not vacuous). Fixtures copied byte-identical from
-  `internal/ots/testdata` (hermetic) — `hello-world.txt.ots`=confirmed/358391, `merkle1.txt.ots`=pending
-  `(false,0,nil)`. `internal/ots` is NOT WASM-pure but certificate is server-side only (0 `ots` hits in the
-  three WASM-shared closures, verified).
-- **§5 does NOT bind the proof's committed digest to §2's root (Codex-confirmed `normal` gap).**
-  `ots.Confirmed` only classifies the proof's attestations; it never compares the parsed `File.Digest`
-  (the 32-byte SHA-256 the proof commits to, exposed by the library) against `root`. So a stored row whose
-  `ots_bytes` commit to a DIFFERENT digest than §2's root would render "block N" claiming §2's root is
-  anchored when it isn't — exactly the always-loaded "gate a rendered ✓ on a re-VERIFICATION, not a
-  classify-only flag" rule, applied to the anchor assertion. NOT exploitable today: the production write
-  path (`OTSTick`→Stamper→`MarkOTSStamped`, Upgrader→`MarkOTSUpgraded`) always submits/upgrades the row's
-  OWN `r.Root` digest, so a mismatched row is unreachable; only a buggy `RecordOTS` (or the tests, which
-  seed `hello-world.txt.ots` against an arbitrary tree root for fixture convenience) produces one. Fix when
-  §5 / `ots.Confirmed` next touched: surface `File.Digest` and require it `bytes.Equal(root)` before
-  `HasClause5=true`. Filed `normal`.
+  Inside `HasClause2`, `st.OTSForRoot(ctx, hub.HubID, hub.LastSize, root)` keys on §2's RAW `[]byte` root
+  (NOT the base64 `CheckpointRoot`), the same `(hub,size,root)` key the `.ots` route + stamp loop use.
+  Three fail-closed states (ADR-0001/0004): a miss OR the empty-`OTSBytes` sentinel → §5 OMITTED; an
+  unparseable proof → SILENT decline (never 500, like §3's non-nil VerifyInclusion); a parseable proof →
+  `HasClause5=true` (confirmed shows `block <height>` + `UpgradedAt` RFC-3339 when non-zero; pending shows
+  "awaiting Bitcoin confirmation"). `internal/ots` is NOT WASM-pure but certificate is server-side only.
+  - settled: the four state mutations are pinned (height tied to oracle literal 358391); fixtures copied
+    byte-identical from `internal/ots/testdata` (git history).
+- **§5 does NOT bind the proof's committed digest to §2's root** — `ots.Confirmed` classifies attestations
+  but never checks the parsed `File.Digest` `== root`, so a row committing a DIFFERENT digest would falsely
+  render "block N" (the "gate a ✓ on re-VERIFICATION, not a classify-only flag" rule, applied to the anchor).
+  Not exploitable today (the write path always stamps the row's own `r.Root`). Fix when §5/`ots.Confirmed`
+  next touched: `bytes.Equal(File.Digest, root)` before `HasClause5=true`. Filed `normal` (see issues.md).
+
+- **COMPARISON ANCHOR is §2's `(size, root)` reframed as the monitor's own observation — a SEPARATE,
+  distinctly-labelled element from §5, NOT Bitcoin.** Set `data.HasComparisonAnchor = true` inside the
+  `HasClause2` guard (reuses `data.CheckpointSize`/`CheckpointRoot`, no re-read/re-encode), plus the
+  coverage window from `followedHub`'s `hub.Coverage` (`HubSummary`, no second store round-trip). It does
+  NOT depend on the OTS row (the `IndependentOfOTS` test: §5 absent, panel present) — that decoupling is
+  the load-bearing "separate, distinctly-labelled elements" Verify criterion. Copy stays glossary-clean:
+  "Comparison anchor"/"detect a split view", NEVER "witness" (deferred M7) or any "anchoring"/Bitcoin
+  lexicon (a panel-slice test bans `Bitcoin`/`anchoring`/`OpenTimestamps`/`BITCOIN ANCHOR`/`ots verify`
+  inside the sliced panel). Coverage honesty (ADR-0001): `Coverage.Set`→state the window (`since size N`
+  `· <RFC-3339>` only when the time is non-zero, mirroring `SigningKeyRevoked`'s zero-guard); the
+  `{{else}}` "coverage just started" branch is effectively dead for a rendered panel — `AdvanceAccepted`
+  always sets `monitored_since_size` in the same tx that advances `last_size`, so any §2-rendering hub has
+  `Coverage.Set==true` (kept as defensive fail-safe, fine). Mockup omits this panel; target.md mandates it
+  (design-parity: constraint > mockup), flagged in the docstrings. Mutations (review): `HasComparisonAnchor
+  = false` AND `CoverageSize = 0` each fail the three new tests.
 
 ## Downloadable proof bundle (`GET /inclusion/{iscc_id}.bundle`)
 

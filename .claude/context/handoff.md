@@ -1,72 +1,82 @@
-## 2026-06-22 — Add the distinct comparison-anchor panel to the certificate (separate from §5 Bitcoin-anchor)
+## 2026-06-22 — Review of: Add the distinct comparison-anchor panel to the certificate (separate from §5 Bitcoin-anchor)
 
-**Done:** Added a distinctly-labelled `COMPARISON ANCHOR` panel to the realm-wide Certificate of
-Inclusion — the monitor's independently-observed record of the §2 accepted `(size, root)` this hub
-showed THIS monitor, bounded by the coverage window — rendered as a SEPARATE element from §5, carrying
-no "Bitcoin"/"anchoring"/"OpenTimestamps" copy. This closes the last open observable M-UI certificate
-Verify element (target.md: Bitcoin-anchor and comparison-anchor are separate, distinctly-labelled).
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/certificate/handler.go`: added `HasComparisonAnchor` + `HasCoverageWindow` gate flags and
-  `CoverageSize uint64` / `CoverageSince string` fields to `certData`; populated them inside the existing
-  `HasClause2` guard in `buildData` from `followedHub`'s `HubSummary.Coverage` (no new store read, reuses
-  the already-encoded `CheckpointSize`/`CheckpointRoot`); updated the package doc, the `certData` doc, and
-  the `buildData` step list (new step 9b). Flagged the mockup deviation in the field + package docstrings.
-- `internal/certificate/cert.html` (template, not counted): rendered the `COMPARISON ANCHOR` clause between
-  §5 and §6, reusing `.clause`/`.clause-mono`/`.clause-note` (page-scoped, no new CSS/CDN). Coverage copy
-  is "since size N · <RFC-3339>" when the window has a time, "since size N" when time is NULL, and the
-  honest "coverage just started" state when no window is set.
-- `internal/certificate/handler_test.go` (test, not counted): added `fixtureStoreCovered` (sets the
-  coverage start with a non-zero time via `SetCoverage` BEFORE `AdvanceAccepted`, the only way to get a
-  coverage time given `AdvanceAccepted` writes a NULL time for a zero-`ObservedAt` record), the
-  `comparisonAnchorPanel` slicer, and three tests: `TestCertificateComparisonAnchor` (label + window +
-  no-Bitcoin-copy-in-panel), `TestCertificateComparisonAnchorIndependentOfOTS` (no §5 OTS row → §5 absent
-  but comparison anchor present — the two are decoupled), `TestCertificateComparisonAnchorCoverageJustStarted`
-  (NULL coverage time → window states size only, no since-time chip).
+**Summary:** The advance adds a distinctly-labelled `COMPARISON ANCHOR` clause to the realm-wide
+Certificate of Inclusion — §2's accepted `(size, root)` reframed as the monitor's own
+independently-observed record, bounded by the coverage window — rendered as a SEPARATE element from §5
+with no Bitcoin/"anchoring" lexicon, closing the last open observable M-UI certificate Verify element.
+Scope is tight (1 prod source file `handler.go`, template + test, no store/schema/main.go change),
+`mise run check` is green, both the panel-present and the coverage-window assertions are mutation-proven
+non-vacuous, Codex returned a clean verdict, and a headless visual pass confirms the panel renders
+distinctly and decoupled from §5.
 
-**Verification:** `mise run check` → green (build + vet + test, all packages). Per criterion:
-- `go test -count=1 -run TestCertificate ./internal/certificate` — PASS (existing suite + 3 new tests).
-- `TestCertificateComparisonAnchor` — asserts `COMPARISON ANCHOR` label + `size 24000` + the RFC-3339
-  coverage-since + "detect a split view" affordance; slices the panel and asserts it contains NONE of
-  `Bitcoin`/`anchoring`/`OpenTimestamps`/`BITCOIN ANCHOR`/`ots verify` — proving the two anchor panels are
-  separate, distinctly-labelled elements. PASS.
-- `TestCertificateComparisonAnchorIndependentOfOTS` — hub with no OTS row renders no §5 but DOES render the
-  comparison anchor (the two are decoupled). PASS.
-- `TestCertificateComparisonAnchorCoverageJustStarted` — NULL coverage time → panel present, "since size
-  24816", no time chip (honest no-window state, ADR-0001). PASS.
-- **Mutation (non-vacuous, reproduced):** forcing `data.HasComparisonAnchor = false` → all three new tests
-  FAIL (no `COMPARISON ANCHOR` marker); reverting → green. `handler.go` confirmed restored to `= true`.
-- `gofmt -l internal/ cmd/` empty; `go mod tidy -diff` clean (no new prod dep).
-- WASM-purity guard — `GOOS=js GOARCH=wasm go build ./internal/didweb ./internal/index ./internal/badge`
-  builds (certificate stays server-side-only; no leak into a WASM-shared package).
+**Verification:**
+- [x] `mise run check` — green (build + vet + test, all 23 packages).
+- [x] `go test -count=1 -run TestCertificate ./internal/certificate` — PASS (existing suite + 3 new tests).
+- [x] `TestCertificateComparisonAnchor` — renders `COMPARISON ANCHOR` + `size 24000` + the RFC-3339
+  coverage-since + "detect a split view"; the sliced panel carries NONE of
+  `Bitcoin`/`anchoring`/`OpenTimestamps`/`BITCOIN ANCHOR`/`ots verify`. PASS.
+- [x] `TestCertificateComparisonAnchorIndependentOfOTS` — hub with no OTS row renders no §5 but DOES
+  render the comparison anchor (the two panels decoupled). PASS.
+- [x] `TestCertificateComparisonAnchorCoverageJustStarted` — NULL coverage time → panel present,
+  "since size 24816", no since-time chip. PASS.
+- [x] **Mutation (non-vacuous, reviewer-reproduced 2×):** `data.HasComparisonAnchor = false` → all three
+  new tests FAIL; `data.CoverageSize = 0` → window-asserting tests FAIL. Each reverted → green.
+- [x] `gofmt -l .` (excl `cauldron/`) clean; `go mod tidy -diff` clean (no new prod dep).
+- [x] WASM-purity guard — `GOOS=js GOARCH=wasm go build ./internal/didweb ./internal/index
+  ./internal/badge` builds (certificate stays server-side-only; no leak into a WASM-shared package).
+- [x] Scope — only `internal/certificate/{handler.go,cert.html,handler_test.go}` changed in the advance
+  commit; `cmd/iscc-monitor/main.go`, `go.mod`, `go.sum`, store schema all byte-unchanged.
+- [x] Oracle/conformance gate — **N/A**: the diff touches no signature/RFC-6962/Merkle/proof/did:web
+  code (a pure store-read reuse of §2's `(size, root)` + the coverage window). Regression-checked anyway:
+  `internal/proof` closure stays pure (no net/net/http/database/sql); `logclient` inclusion/consistency
+  tests green; `derive_vkey.py` golden vectors print `40b74463`/`22b08f3e` byte-for-byte.
+- [x] Quality-gate integrity — no `nolint`/`t.Skip`/build-tag/swallowed-error/deleted-assertion in any
+  unpushed Go diff (`@{upstream}..HEAD`).
 
-**Next:** With all six numbered clauses + both anchor panels (Bitcoin + comparison) now present, the
-certificate's observable M-UI Verify surface is complete. The next M-UI closer toward milestone exit is the
-**dossier §4 Bitcoin-anchor** region (same `OTSForRoot` read pattern, different surface — see the prior
-review's `Next:`), or a dossier comparison-anchor equivalent. The standing non-UI hardening items remain:
-the §5 digest-binding (`bytes.Equal(File.Digest, root)`), the §4/bundle `host:port` DID `%3A`-encode, and
-the §6 `· at` timestamp — fold each in the next time that exact line is edited. The **WASM verifier** (1/1
-open) and the **M-UI exit visual-pass + human sign-off** (ADR-0012) are the remaining milestone gates.
+**Issues found:** (none new). One minor observation, NOT filed (defensive fail-safe, not a defect): the
+template's `{{else}}` "coverage just started — no observation window yet" branch is effectively
+unreachable for a rendered panel — `AdvanceAccepted` always sets `monitored_since_size` in the same tx
+that advances `last_size`, so any §2-rendering hub has `Coverage.Set==true`. The test named
+`...CoverageJustStarted` actually exercises the `HasCoverageWindow=true`/empty-`CoverageSince` (size-only,
+NULL-time) path, not the false branch. Kept as a defensive zero-guard mirroring `SigningKeyRevoked`;
+recorded in the package learnings.
+
+**Codex second opinion:** Clean — one summary verdict, no `Review comment:` findings. Codex
+independently confirmed the panel is gated on an accepted checkpoint, reuses existing checkpoint +
+coverage data without adding fault paths, stays decoupled from §5, and that the tests cover the main +
+no-OTS scenarios with the suite passing. Matches my independent assessment; nothing to triage.
+
+**Visual check:** SSR surface (`internal/certificate/cert.html`) screenshotted with agent-browser 0.29.0
+(bundles its own browser; system Chrome absent but the CLI works). Built a throwaway harness mounting the
+certificate handler + the `/_ds/` token/font handler against a coverage-seeded fixture on a local port,
+opened `/inclusion/MAIGHFECJMOPMIAB`, and captured a full-page screenshot. The COMPARISON ANCHOR panel
+renders as a SEPARATE, distinctly-labelled clause (matching §1/§2/§6 chrome): label "COMPARISON ANCHOR",
+value `size 24816 · root cm9vdA==`, note "This monitor independently observed this (size, root) from
+sb1.amlet.id since size 24000 · 2026-01-05T09:00:00Z. Check your own (size, root) against this record to
+detect a split view — guarantees hold only from coverage start." No Bitcoin/anchoring copy in the panel;
+this fixture has no §5 so the screenshot also visually confirms the decoupling (§5 absent, panel present).
+No visual delta to file. Harness removed; tree clean.
+
+**Next:** The certificate's observable M-UI Verify surface is complete (all six clauses + Bitcoin and
+comparison anchors). The next M-UI closer toward milestone exit is the **dossier §4 Bitcoin-anchor**
+region (same `OTSForRoot` read pattern, different surface) or a dossier comparison-anchor equivalent.
+Standing non-UI hardening to fold in when the exact line is next edited: the §5 digest-binding
+(`bytes.Equal(File.Digest, root)`), the §4/bundle `host:port` DID `%3A`-encode, the §6 `· at` timestamp,
+and the `safeStamp` panic-recover + timeout guard (highest-value `normal`). The **WASM verifier** (1/1
+open) and the **M-UI exit visual-pass + human sign-off** (ADR-0012) remain the milestone gates.
 
 **Notes:**
-- **Scope:** 1 prod file of substance (`handler.go`), within the ≤3 budget. No store schema / new query —
-  the coverage window rides out of the existing `followedHub` `ListHubs` scan (`HubSummary.Coverage`); §2
-  already loaded the `(size, root)`. No new error path: the panel renders inside `HasClause2` and cannot
-  500 on its own. None of the earmarked `normal` fixes were touched (the comparison anchor adds a new clause
-  and edits none of those lines), per next.md's "keep the diff tight".
-- **Mockup deviation (design-parity flag):** the certificate mockup (`.dc.html`) has NO comparison-anchor
-  element — target.md mandates it beyond the mockup. Flagged in the package doc + the `HasComparisonAnchor`
-  field docstring (one evergreen sentence each), not silently dropped. Placed as its own numbered-clause row
-  with a distinct `COMPARISON ANCHOR` heading (never "§5"/"BITCOIN ANCHOR").
-- **Coverage-time fixture nuance:** `AdvanceAccepted` writes `monitored_since_size` with a NULL time for a
-  zero-`ObservedAt` record, so the existing fixtures yield `Coverage.Set == true` with a zero `Since`. The
-  new `fixtureStoreCovered` calls `SetCoverage` with an explicit time BEFORE `AdvanceAccepted` (whose
-  set-once UPDATE then no-ops) to seed a real coverage time — the test covers both the with-time and
-  NULL-time paths.
-- **Glossary discipline:** the panel copy uses "Comparison anchor" framing (the monitor's own observation,
-  the split-view check), never "witness" (reserved for the deferred M7 cosigner role) and never any
-  "anchoring"/Bitcoin lexicon (verified by the panel-slice assertion). It reads as the monitor's account
-  (Tier 1, verifiable cache), consistent with the existing two-tier honesty panel.
-- **Oracle/conformance gate — N/A:** this diff touches no signature/RFC-6962/Merkle/proof/did:web code —
-  the comparison anchor reuses §2's already-read `(size, root)` and the coverage window, no crypto path.
-  §3's Merkle re-verify regression still green.
+- NOT DONE: WASM verifier is 1/1 not started (no `internal/proof`/`syscall/js` consumer yet); OTS Verify
+  keeps its offline-unprovable live-chain Bitcoin-confirmed half open; the M-UI exit visual-pass + human
+  sign-off (ADR-0012) has not been run. Loop = CONTINUE.
+- Open issues carried forward unchanged (none touched by this diff): `safeStamp` guard (`normal`),
+  `hubDomain` ForceQuery (`normal`), §4/bundle `host:port` DID (`normal`), §5 digest-binding (`normal`),
+  §6 `· at` timestamp (`normal`), plus the `low` debt set (nil-Stamper fall-through, vacuous label test,
+  `-run TestOTS` filter gap, notecheck `out` param, overlay-precedence 3x dup, mirror seam, scaling
+  trip-wire, proofserve writeReadError dup).
+- `learnings/certificate.md` net-rotated this iteration: added the comparison-anchor bullet, collapsed
+  settled §1/§2/§4/§5/§6 mechanics into `settled:` one-liners, condensed the §5-digest-binding bullet to
+  point at its filed issue — landed at 152 lines (down from 159), at budget.
