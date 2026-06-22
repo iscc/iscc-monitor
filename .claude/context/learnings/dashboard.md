@@ -16,24 +16,18 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   subtree and only `/b` to root. The dashboard's own exact-path guard is what stops `/b`-style unknowns
   rendering the page. Keep BOTH the mount-at-`/` and the in-handler path guard — neither alone is enough.
 - **`hubStatus(HubSummary)` is the store-provable subset ONLY (`inactive`>`frozen`>`verified`); the
-  richer live verdicts come from an OVERLAY at `buildRows`, never from `ListHubs`.** `hubStatus`
-  switches `!Active → inactive`, `Frozen → frozen`, else `verified` — it MIRRORS `proofserve.hubStatus`
-  and EXTENDS it with the realm-registry `inactive`. Do NOT add `unverified`/`unresolvable`/`rotated` to
-  `hubStatus`/`ListHubs`: those are not store-provable. settled: the thread-through landed —
-  `overlayStatus(s, statuses StatusSource)` consults a tiny `dashboard.StatusSource` interface
-  (`Status(hubID) (string,bool)`, satisfied structurally by `*metrics.Registry`) so the package never
-  imports `internal/metrics`. **Precedence is load-bearing and must not regress:** overlay applies ONLY
-  when `hubStatus(s) == "verified"`, adopts ONLY `unresolvable`/`unverified`, and is nil-tolerant
-  (a fresher poll verdict is honest, but durable `inactive`/`frozen` must win). `TestOverlayStatusPrecedence`
-  pins the table; `TestDashboardRendersInMemoryStatus` is the non-vacuous HTTP-seam render
-  (reviewer mutation-confirmed: `overlayStatus`→`hubStatus` renders `data-status="verified"`, test FAILS).
-  settled: the per-hub log-browser cell (`proofserve.serveBrowser`) now reuses this exact
-  `StatusSource`-interface + `overlayStatus` shape (its own local copy, no `internal/dashboard` import —
-  see `learnings/http-surface.md`). Reuse the same shape for the upcoming hub dossier / record pages.
-- settled: `inactive` is unreachable through the public store API (no `SetActive` writer; `UpsertHub`
-  inserts schema default `active=1`), so it is covered only by a white-box table test on package-private
-  `hubStatus` (hence `package dashboard`, not `dashboard_test`). When a registry-deactivation writer lands,
-  add an end-to-end inactive-render assertion through the public surface.
+  richer live verdicts come from an OVERLAY at `buildRows`, never from `ListHubs`.** Do NOT add
+  `unverified`/`unresolvable`/`rotated` to `hubStatus`/`ListHubs`: those are not store-provable.
+  **Precedence is load-bearing and must not regress:** `overlayStatus(s, statuses StatusSource)` applies
+  ONLY when `hubStatus(s) == "verified"`, adopts ONLY `unresolvable`/`unverified`, and is nil-tolerant
+  (durable `inactive`/`frozen` must win). The `StatusSource` interface (`Status(hubID) (string,bool)`,
+  satisfied structurally by `*metrics.Registry`) keeps the package off `internal/metrics`.
+  `TestOverlayStatusPrecedence` + `TestDashboardRendersInMemoryStatus` pin it (mutation-confirmed).
+  settled: this overlay shape is now copied verbatim in proofserve's log-browser cell AND the dossier (3x —
+  the consolidation pressure is a filed `low`; see `learnings/http-surface.md`).
+- settled: `inactive` is unreachable through the public store API (no `SetActive` writer), so it is
+  white-box table-tested on package-private `hubStatus`; add an end-to-end inactive render when a
+  registry-deactivation writer lands.
 - **Coverage honesty (ADR-0001) is rendered, not just stored: `HasCoverage` false → literal "no coverage
   yet"; true → "size N at <RFC3339>".** `ListHubs` reads `monitored_since_{size,time}` via the
   `LEFT JOIN follow_state` so a never-polled hub still appears (its `last_size`/`frozen` are NULL → zero
@@ -63,10 +57,9 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   min-content width and the ellipsis never engages — a long domain pushes the coverage/status columns out of
   view. Fixed by `.hub-cell { min-width: 0 }` on the wrapping div (Codex P2, confirmed + fixed in review). Any
   future ledger cell that intends to ellipsize must carry `min-width: 0` on the grid item, not just the children.
-- settled: the frozen dossier (`internal/dossier`) adds a non-dismissable Exhibit `<section>` ON TOP OF the
-  badge, gated `{{if .Frozen}}` (markup-distinct per ADR-0010, no `<button>`/`<script>`/` hidden` attr). The
-  `ListViolations` read stays off the hot path (only a frozen hub queries it; safe because `overlayStatus`
-  never downgrades `frozen`; a frozen-with-zero-rows hub still renders the panel header via `{{else}}`).
+- settled: the frozen dossier adds a non-dismissable Exhibit `<section>` gated `{{if .Frozen}}`
+  (markup-distinct per ADR-0010, no `<button>`/`<script>`); `ListViolations` stays off the hot path (only a
+  frozen hub queries it; a frozen-with-zero-rows hub still renders the header via `{{else}}`).
 - **The `/` named-region parity landed: claim-lookup hero + per-row dossier `<a>` + masthead identity.**
   The hero is a no-JS `<form method="get" action="/inclusion/">` with `<input name="iscc_id">` — a
   `method=get` form can ONLY emit a query string, so the certificate handler gained the symmetric
@@ -89,38 +82,41 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   view-model — presentation only, no store value; the new `34px` grid column is fixed-width mono and does
   not ellipsize (the `min-width:0` trap applies only to `.hub-cell`).
 - **The Checkpoint + Anchor columns LANDED (six-column grid `34px 1.8fr 1.2fr 1fr 1.1fr 150px`).**
-  Checkpoint = `s.LastSize` (a relabel of the old "Observed size" cell, NOT a new read). Anchor is a NEW
-  `store.HubSummary.Anchor` projection: a correlated subselect `(SELECT o.status FROM ots o WHERE
-  o.hub_id=h.hub_id ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1)` → the hub's LATEST-STAMPED-root OTS
-  status, NULL→"". `anchorLabel` (handler.go) maps it via the `store.OTSStatus*` consts (not literals) to
-  label+dot keyword; an unknown/empty value renders the honest "not anchored"/no-dot. The dot is a
-  decorative inline `<span data-anchor>`-keyed DS-token color with a literal-hue fallback (no `<img>`,
-  no-CDN); the LABEL is the grayscale-safe load-bearing signal (ADR-0010 inv.4). Both halves
-  mutation-proven (reviewer reran: subselect→`''` FAILS the store anchor case; drop the data cell FAILS
-  the dashboard render). Visual pass vs the mockup: column ORDER + naming match exactly.
+  Checkpoint = `s.LastSize` (a relabel, NOT a new read). Anchor is a NEW `store.HubSummary.Anchor`
+  correlated subselect (`SELECT o.status … ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1`, NULL→""),
+  mapped by `anchorLabel` via `store.OTSStatus*` consts to label+decorative-dot (the LABEL is the
+  grayscale-safe load-bearing signal, ADR-0010 inv.4; unknown/empty → honest "not anchored"). Both halves
+  mutation-proven; visual pass: column order + naming match the mockup.
 - **The realm-index Anchor column is a per-HUB anchoring-activity indicator, NOT a per-checkpoint
-  attestation — by design and by mockup (`anchorState` is a free-standing hub property).** It is
-  DECOUPLED from the displayed Checkpoint (`f.last_size`): the newest-stamped OTS row may describe an
-  OLDER root than the accepted size, and because OTS is async/best-effort (ADR-0004, never blocks the
-  poll), that is the NORMAL steady state — the displayed checkpoint is almost always ahead of the latest
-  CONFIRMED anchor. So "confirmed" here means "this hub anchors its roots", never "size N is
-  Bitcoin-confirmed". The AUTHORITATIVE per-checkpoint claim lives in **certificate §5**, which binds
-  `OTSForRoot(hubID, treeSize, root)` to the §2 accepted root via `ots.ConfirmedFor`. Do NOT "fix" the
-  realm-index subselect to `o.tree_size = f.last_size` (Codex's P2 suggestion) without a design pass — it
-  would render "not anchored" for virtually every actively-polling hub and defeat the column's purpose.
-  Open `normal` records the design question.
-- **The dossier masthead chrome is a VERBATIM port of `certificate/cert.html` — keep the two byte-identical.**
-  `dossier.html` carries the same `.chrome-actions`/`.chrome-instance`/`.chrome-verify` CSS + `<div
-  class="chrome-actions">` (static `monitor instance` label + `verify ↗ monitor.iscc.codes` tier-2 link to
-  `https://monitor.iscc.codes/`) and the `.backlink-row`/`.backlink` `← Realm index` link (`href="/"`) the
-  certificate ships. The dossier's tier-2 affordance is correctly the cross-surface link to Surface C (the
-  `.codes` verifier app), NOT a baked-in WASM proof island — it has no single ISCC-ID subject to re-verify.
-  The dossier no-CDN ban is the same narrowed list (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`/`http://`, NOT a
-  blanket `https://`) so `monitor.iscc.codes` passes; `TestDossierChromeTierTwoAndBackLink` pins all three
-  affordances (mutation-proven: change the back-link copy → FAIL). Visual pass vs the dossier mockup: chrome,
-  back-link, tier-2 chip all match named regions; the only deltas are already-filed (static instance identity
-  vs config-driven; mockup Checkpoint/Anchor columns — those belong to the `/` realm-index issue). If you edit
-  either masthead, mirror the change in both `cert.html` and `dossier.html`.
+  attestation** (by design + mockup: `anchorState` is a free-standing hub property). It is DECOUPLED from
+  the displayed Checkpoint (`f.last_size`) — the newest-stamped OTS row may describe an OLDER root, and
+  since OTS is async/best-effort (ADR-0004) that is the NORMAL steady state. "confirmed" means "this hub
+  anchors its roots", never "size N is Bitcoin-confirmed"; the AUTHORITATIVE per-checkpoint claim lives in
+  **certificate §5** (`OTSForRoot` bound to the §2 accepted root). Do NOT "fix" the subselect to
+  `o.tree_size = f.last_size` without a design pass (it would render "not anchored" for every actively-polling
+  hub). Open `normal` records the design question.
+- **The dossier/dashboard/cert mastheads are byte-identical VERBATIM ports — edit all together.**
+  `dossier.html` and `dashboard.html` now share the same `.chrome-identity`/`.chrome-instance`/`.chrome-operator`
+  CSS rule bodies AND the same `<div class="chrome-actions">` block (the two-line `chrome-identity`
+  `{{.Instance}}`/`{{.Operator}}` div + `verify ↗ monitor.iscc.codes` tier-2 link to `https://monitor.iscc.codes/`);
+  `cert.html` is the still-pending lockstep twin (`cert.html:391` still carries the static `monitor instance`
+  placeholder — the NEXT slice). Only the explanatory CSS comment differs per file (the dashboard's still says
+  "static copy in this skeleton" — now stale, flagged `low`). The dossier's tier-2 affordance is correctly the
+  cross-surface link to Surface C (`.codes`), NOT a WASM proof island (no single ISCC-ID subject). Same narrowed
+  no-CDN ban (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`/`http://`, NOT a blanket `https://`) so `monitor.iscc.codes`
+  passes; `TestDossierChromeTierTwoAndBackLink` pins all three affordances. Visual pass vs the dossier mockup:
+  masthead instance-identity region matches the mockup exactly (`monitor.iscc.id` / `instance operated by ISCC
+  Foundation · ISCC mainnet`). If you edit any masthead, mirror it in all three HTML files.
+- **Config-driven masthead identity LANDED on the dossier too (`Handler(st, hubID, statuses, id dashboard.Identity)`).**
+  The dossier REUSES `dashboard.Identity` (imports `internal/dashboard`) rather than redefining it, but applies its
+  OWN private `resolveIdentity` fail-safe + dossier-local `instanceFallback`/`operatorFallback` consts (literal
+  copies, byte-identical to dashboard's, with a comment that they MUST match — neither package can import the
+  other's unexported consts). This dossier-side helper was chosen over exporting `dashboard.resolve` to keep the
+  edit at ≤3 prod files. The dossier masthead has NO Realm slot (its title is the realm-subtitle-free "Hub
+  dossier") — thread only `Instance`/`Operator`. `TestDossierRendersInstanceIdentity` pins both populated +
+  zero-value paths; reviewer mutation-confirmed non-vacuous on BOTH the template `{{.Instance}}` binding AND the
+  wiring (`resolveIdentity` dropping the supplied value → FAIL). The duplicated fallback consts are tracked `low`
+  for consolidation when the masthead arc finishes across all surfaces (a shared identity-resolve leaf).
 - **The status cell renders through the `hubStatusBadge` partial, not the bare word.** The partial is
   associated into the page set once at init (`template.Must(template.New("dashboard").Parse(pageTemplate))`
   then `template.Must(t.Parse(badge.Source))`, wrapped in an init closure since `template.Must` returns

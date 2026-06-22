@@ -376,3 +376,40 @@ filed it and does **not** affect priority.
 - **Spec:** `learnings/config.md` (env parsing belongs in the config leaf); CLAUDE.md "Running a local dev
   instance" env-var documentation; next.md Not-In-Scope (config move deferred to the follow-on sub-step).
 
+## Masthead identity fallback consts are duplicated across dashboard + dossier (and cert next) instead of one shared resolve leaf
+- **Priority:** low
+- **Source:** [review] (filed alongside the dossier masthead-identity slice `413efe8`)
+- **What / where / how to verify:** The dossier masthead-identity slice copied `instanceFallback` /
+  `operatorFallback` (`internal/dossier/handler.go:97-103` const block) as LITERALS byte-identical to
+  `internal/dashboard/handler.go:113-116`, plus a private `resolveIdentity` mirroring
+  `dashboard.Identity.resolve` — because neither package can import the other's unexported consts and
+  exporting `dashboard.resolve` would have pushed the slice to a 4th prod file (over the ≤3 budget). This
+  is a documented, commented duplication (each const block carries a "MUST stay byte-identical" comment),
+  not a defect — and the slice is mutation-proven that the fallback strings match. But it means the
+  fallback copy now lives in TWO places (THREE once `internal/certificate` is wired next), so a future
+  change to the static masthead copy is a multi-site edit that can silently diverge. Fix when the
+  masthead-identity arc finishes across all surfaces: lift `Identity` + the fallback consts + a single
+  exported `Resolve` into ONE owner (the `internal/dashboard` package already owns the type, or a tiny new
+  shared leaf) that dossier/cert/proofserve all import, so the fallback exists once. Verify fixed: the
+  `instanceFallback`/`operatorFallback` literals appear in exactly one package and every masthead resolves
+  through it; a test asserting dossier+dashboard render the SAME fallback line passes. Low — the consts are
+  currently byte-identical and the duplication is commented; this only removes the divergence risk once the
+  arc is complete.
+- **Spec:** CLAUDE.md DRY ("Reduce code duplication even if refactoring requires extra effort"); next.md
+  Implementation Note (dossier-local helper chosen to stay ≤3 prod files, consolidation deferred).
+
+## Stale `.chrome-identity` CSS comment in dashboard.html still says "static copy in this skeleton"
+- **Priority:** low
+- **Source:** [review] (observed during the dossier masthead-identity review)
+- **What / where / how to verify:** `internal/dashboard/dashboard.html:75-76` carries the comment "The
+  instance-identity block: this deployment's domain + operator/realm. It is static copy in this skeleton (a
+  config-driven identity is a separate concern)." — inaccurate since the dashboard masthead became
+  config-driven in `b30b84e` (the block now renders `{{.Instance}}`/`{{.Operator}}` from
+  `dashboard.Identity`). The dossier slice wrote an ACCURATE comment on its ported copy
+  (`internal/dossier/dossier.html`) but correctly left the dashboard untouched (it was out of scope and a
+  4th prod file). Violates CLAUDE.md "write evergreen comments that describe the current state". Fix when
+  `dashboard.html` is next touched: update the comment to match the dossier's accurate wording. Verify
+  fixed: the comment no longer says "static copy in this skeleton". Low — cosmetic; the rendered output is
+  already correct.
+- **Spec:** CLAUDE.md "Write evergreen comments that describe the current state, not historical changes".
+
