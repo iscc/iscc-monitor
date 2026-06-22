@@ -1,134 +1,112 @@
 # Next Work Package
 
-## Step: Gate Surface-C's live verification CLIENT-side so the static GitHub-Pages artifact actually works
+## Step: Static-site generator for the Surface-C verifier deploy (`cmd/verifier-site`)
 
 ## Advances
-WASM verifier milestone Verify (`target.md`): *"the standalone **Independent Verification** verifier
-app … at `monitor.iscc.codes` (monitor-agnostic via `?monitor=<url>`) … **Verify:** … a `(size, root)`
-mismatch renders the guided split-view alert, not a dead error."* Surface C's whole promise is reached
-through `?monitor=&id=`, but today that pair is read SERVER-side (`{{if .HasTarget}}` computed by
-`parseTarget`), which freezes in the documented static artifact — so the live verifier is unreachable
-in production. This step makes the artifact functional and directly closes the filed `normal` issue
-**"Surface-C live wiring is gated on SERVER-side `.HasTarget`, but the documented deployment is a STATIC
-GitHub-Pages artifact"** (`issues.md`). It is a genuine WASM-Verify-advancing step, re-pointing off the
-amber chrome-drift the last increment flagged, and is the prerequisite for the subsequent Pages-deploy
-sub-step.
+WASM verifier milestone — the still-open Verify front:
+> "the standalone **Independent Verification** verifier app … (Surface C) at `monitor.iscc.codes`
+> (monitor-agnostic via `?monitor=<url>`); reproducible build + published hash + SRI pin. **Verify:**
+> identical vectors yield identical verdicts (WASM vs server); the verifier artifact hash matches the
+> published value; a `(size, root)` mismatch renders the guided split-view alert, not a dead error."
+
+State (state.md lines 32-37) and the review handoff both name this as the front-of-queue sub-step: the
+client-side target gating just landed, so `internal/verifier` is now a single static artifact — but
+**"only `.github/workflows/ci.yml` exists — no Pages publish workflow"** and there is no way to
+materialize the deployable site (`index.html` + `/_ds/` assets) from the handlers. This step builds the
+load-bearing, golden-testable **generator** that the GitHub-Pages publish step (a later sub-step) will
+invoke. The review handoff `**Next:**` is exactly: "generate the static `index.html` (render
+`verifier.Handler` once to a file) + the `/_ds/` assets and publish to GitHub Pages via a
+`.github/workflows/*`." This step does the generate half (mechanically verifiable); the workflow YAML is
+the follow-up sub-step.
 
 ## Goal
-Move the `?monitor=&id=` target resolution from the Go handler into the browser so the always-emitted
-loader reads `URLSearchParams(location.search)` at runtime. A statically-generated `index.html` then
-runs the WASM verdict when loaded at `/?monitor=…&id=…` and shows the honest no-target baseline
-otherwise — the same observable behavior, but reachable from a CDN-served static file.
+Add a small `cmd/verifier-site` Go program that renders the complete Surface-C static site
+(`index.html` from `verifier.Handler()` + every `/_ds/` asset from `web.Handler()`) into an output
+directory, so the `monitor.iscc.codes` GitHub-Pages deploy has a single reproducible build command. The
+generator is the deployable-artifact core; without it the deploy cannot be assembled or tested.
 
 ## Scope
-- **Create**: (none)
-- **Modify**:
-  - `internal/verifier/handler.go` — drop `parseTarget`, `pageData`, and the `HasTarget`/`Monitor`/`ID`
-    fields; render the template unconditionally with `tmpl.Execute(&buf, nil)` (no per-request data).
-    Keep the GET-only 405 guard, the buffer-then-200 render, and the post-200 write-drop. Update the
-    package + `Handler` docstrings to state the target is read CLIENT-side from `location.search`, never
-    reflected by the handler. (`net/url` import is no longer needed.)
-  - `internal/verifier/verifier.html` — remove every `{{if .HasTarget}}` / `{{.Monitor}}` / `{{.ID}}`
-    branch; ALWAYS emit the end-of-body `/_ds/wasm_exec.js` loader. The loader reads
-    `new URLSearchParams(location.search)` for `monitor` + `id`, applies the SAME usability validation
-    `parseTarget` did (non-empty id; `monitor` parses via `new URL(...)` with an http/https scheme and a
-    non-empty host and no fragment), and on no/invalid target returns early leaving the honest no-verdict
-    baseline untouched (run-label "not yet run", the illustrative `data-live="0"` mismatch example). The
-    run-label / verdict-text "verifying…" present-tense copy moves into the JS (set only after a valid
-    target is found), so the static body never claims an un-run verdict. Delete the
-    `<script id="verify-target">` data-island (no longer server-emitted).
-  - `internal/verifier/handler_test.go` *(test — does not count toward the ≤3 non-test/doc budget)* —
-    rework the gating assertions for the new client-side contract (see Verification). The loader markers
-    now always render; the honesty assertions shift to "the static body asserts no un-run verdict / no
-    present-tense `does not match`, and carries no server-emitted data-island".
+- **Create**: `cmd/verifier-site/main.go` — the static-site generator.
+- **Create**: `cmd/verifier-site/main_test.go` — golden test (generates into a temp dir, asserts the
+  tree).
+- **Modify**: `CLAUDE.md` — add a short "Building the Surface-C verifier site" subsection under
+  "Development" documenting the generate command (one paragraph; the usage this step introduces).
 - **Reference**:
-  - `internal/certificate/cert.html:528-583` — the same-origin loader pattern (instantiateStreaming +
-    arrayBuffer fallback, `go.run`, three render states `error`/`failed`/`verified`); port its
-    structure, NOT its data-island (Surface C is cross-origin and fetches the bundle itself).
-  - `internal/verifier/verifier.html:504-612` — the CURRENT `{{if .HasTarget}}` loader to relocate: it
-    already fetches `<monitor>/inclusion/<id>.bundle`, derives root from the checkpoint's 3rd line, and
-    gates the three states; the only change is its SOURCE of `{monitor, id}`.
-  - `.claude/context/learnings/verifier.md` — the cross-origin loader contract (bundle field names
-    `inclusionProof`/`leafIndex`/`treeSize`; root from `checkpoint` line 3; three render states stay
-    distinct; `parseTarget` is a usability guard, NOT a trust boundary).
-  - `.claude/context/learnings/cmd-wasm.md` — `isccVerifyInclusion(record, root, proof[], index, size)`
-    JS call boundary + the progressive-enhancement loader notes.
-  - `issues.md` entry "Surface-C live wiring is gated on SERVER-side `.HasTarget` …" — the exact fix
-    ("read the target CLIENT-side `location.search`/`URLSearchParams`") and its Verify-fixed criterion.
+  - `.claude/context/learnings/verifier.md` (Surface-C handler shape, `/_ds/` literals, client-side
+    target, no-CDN ban — Read before writing).
+  - `.claude/context/learnings/web.md` (`web.Handler` `/_ds/` SUBTREE mount, the five exact asset
+    paths + `fonts/*.woff2`, `noExternalCDN` rules, the `verify.wasm` SRI pin — Read before writing).
+  - `.claude/context/learnings/cmd-monitor.md` (thin-main idiom: `cmd/iscc-monitor` owns the one
+    `os.Exit`; mirror that structure).
+  - `internal/verifier/handler.go` (`verifier.Handler()` — GET-only, no-arg, renders `index.html`).
+  - `internal/web/web.go` (`web.Handler()`, `web.Prefix`, `TokensPath`/`FontsCSSPath`/`WasmExecPath`/
+    `WasmVerifyPath`/`LogoPath`, exported `web.TokensCSS` + `web.WasmVerifyHash`; fonts are embedded but
+    NOT exported as a list — derive font paths from `fonts.css` `src:` URLs the way `web_test.go`
+    `TestFontsCSSReferencesEmbeddedSubsets` does).
+  - `internal/web/web_test.go` (the existing `src:`-URL-extraction + "exactly 8 woff2" pattern to
+    reuse for enumerating fonts).
 
 ## Not In Scope
-- The GitHub-Pages / `monitor.iscc.codes` deploy workflow itself (the next sub-step; this only unblocks
-  it). Do NOT add `.github/workflows/*` or mount `verifier.Handler` in `cmd/iscc-monitor`'s `buildMux` —
-  Surface C stays a different origin.
-- Expanding the WASM verifier core to check the checkpoint signature against the hub's did:web key or to
-  bind the record to the requested id (the separate open `normal` "verifier proves only inclusion math"
-  issue). Do not touch `cmd/wasm` / `internal/proof/verify` here; keep the verification-record step copy
-  unchanged (it still lists the did:web step the core does not yet run — that honesty fix is its own issue).
-- Moving `safeIndex` into `verifyadapter` (its own separate `normal` test-gap issue).
-- Any dossier WASM island — the dossier has no single ISCC-ID subject to re-verify; its tier-2
-  affordance is correctly the static cross-surface link (per `learnings/dashboard.md`). Do not add one.
-- The split-view GET form's live comparison wiring (the `<form method="get" action="/">` stays a no-JS
-  affordance as today).
+- **The GitHub-Pages publish workflow itself** (`.github/workflows/*` to deploy to
+  `monitor.iscc.codes`). That is the next sub-step and depends on this generator; do not add or edit a
+  workflow YAML here.
+- Mounting `verifier.Handler` in `cmd/iscc-monitor`'s `buildMux` — Surface C deliberately ships on a
+  different origin (verifier.md). Keep it unmounted.
+- The WASM-verifier-scope signature/id-binding gap, the `readTarget` `u.href` normalization, and the
+  `safeIndex`-to-`verifyadapter` move (all open `normal`s) — those wait for a WASM-core touch, not this
+  HTML-assembly step.
+- Rebuilding `verify.wasm` or re-pinning `WasmVerifyHash` — the generator COPIES the already-built,
+  byte-pinned embedded asset; it does not invoke `go build -GOOS=js`.
+- Any new store read / projection or `/` sub-region parity — unrelated to this step.
 
 ## Implementation Notes
-- **Why client-side:** GitHub Pages serves a pre-generated `index.html` byte-for-byte for every path; it
-  never re-runs `html/template` per request, so a server-computed `.HasTarget` is frozen at generation
-  time. Reading `location.search` in the loader is the only way the one static artifact serves both the
-  no-target baseline and a live `?monitor=…&id=…` run. This is the exact fix the filed issue prescribes.
-- **Keep the no-JS baseline honest (the load-bearing M-UI rule + the already-closed honesty issue).**
-  With JS disabled the page must still render every named region AND assert NO un-run verdict — so the
-  static body keeps run-label "not yet run", verdict-text "no verdict is claimed", and the
-  `data-live="0"` illustrative mismatch example. Move the "verifying in your browser…" / present-tense
-  copy into the JS so the served HTML never claims a verdict that may not run. This preserves
-  `TestVerifierNoTargetBaselineIsHonest`'s intent under the new contract.
-- **Port the validation verbatim, in JS.** Mirror `parseTarget`'s rules in the loader: skip (leave the
-  baseline) unless `id` is non-empty AND `new URL(monitor)` yields `protocol` of `http:`/`https:`, a
-  non-empty `host`, and no `hash`. A malformed/absent target is a silent no-op (graceful degradation),
-  never an `error` render — matching `parseTarget`'s fail-closed-to-baseline posture. Wrap the `new URL`
-  in try/catch (it throws on an unparseable URL).
-- **Three render states stay strictly distinct** (`learnings/verifier.md`): `error` (fetch failed / bad
-  checkpoint / broken input / JS exception) stays in `#verdict` and never reveals the mismatch alert;
-  only `failed` sets `data-live="1"`. Do not let a transport/parse fault masquerade as a split view.
-- **Reuse the existing loader body almost verbatim** — the current `{{if .HasTarget}}` script already
-  fetches `<monitor>/inclusion/<id>.bundle`, derives the root from the checkpoint's third line, and
-  gates the three states. The only change is its SOURCE of `{monitor, id}`: replace the
-  `JSON.parse(island.textContent)` read with `new URLSearchParams(location.search)`, add the early-return
-  validation, and delete the `<script id="verify-target">` data-island. Keep the `no element → return`
-  defensive guards on `#verdict`/`#verdict-text`.
-- **Purity / no-CDN unchanged.** The handler stays a pure stdlib leaf (now even simpler — no `net/url`).
-  The body still references only `/_ds/...` literals, so the no-CDN ban (`jsdelivr`/`http://`/`https://`/
-  `cdn.`) still holds — the user `monitor` URL never touches the static body now, so the ban stays clean
-  and `TestVerifierNoExternalCDN` is run on the (now sole) baseline render. Keep the `/_ds/...` paths as
-  literals synced-by-comment to `web.*` (per `learnings/verifier.md`).
-- **Correctness rule (learnings.md, always-loaded):** *"gate a rendered ✓/Merkle assertion on a
-  re-VERIFICATION, not a status flag."* The verdict/mismatch must still be driven only by the JS run
-  over a genuine `isccVerifyInclusion` result — never by static markup. This step relocates the gate,
-  it does not weaken it.
+- **Thin main, mirror `cmd/iscc-monitor`.** `main()` parses one flag `-out <dir>` (default e.g.
+  `dist/`), calls a pure `generate(outDir string) error`, prints what it wrote, and owns the single
+  `os.Exit(1)` on error. Keep `generate` package-private but testable (same package as the test) so the
+  test calls it directly into `t.TempDir()` — do not shell out.
+- **Render `index.html` via the real handler, not by re-embedding the template.** Drive
+  `verifier.Handler()` with an `httptest.NewRecorder()` + `httptest.NewRequest(http.MethodGet, "/",
+  nil)`, assert `rec.Code == 200`, and write `rec.Body` to `<out>/index.html`. This guarantees the
+  deployed page is byte-identical to what the golden tests already gate (the client-side loader, the
+  no-CDN body, the honest baseline) — no second source of truth.
+- **Materialize `/_ds/` assets via `web.Handler()` over httptest, one GET per path.** The five exact
+  paths are `web.TokensPath`, `web.FontsCSSPath`, `web.WasmExecPath`, `web.WasmVerifyPath`,
+  `web.LogoPath`; plus the woff2 binaries under `web.Prefix + "fonts/"`. For each, issue a GET, assert
+  200, and write the body to `<out>` at the URL path — `web.Prefix` (`/_ds/`) becomes a real
+  subdirectory (`<out>/_ds/tokens.css`, `<out>/_ds/verify.wasm`,
+  `<out>/_ds/fonts/readex-pro-400.woff2`, …). Create parent dirs with `os.MkdirAll`. Use the URL path
+  verbatim so the on-disk layout matches what the page fetches at runtime — GitHub Pages serves files at
+  their path.
+- **Enumerate fonts from `fonts.css`, do not hardcode the 8 names.** Fetch `web.FontsCSSPath` first,
+  extract each `url("/_ds/fonts/<name>.woff2")` `src:` path (same regex/scan as
+  `web_test.go`'s `TestFontsCSSReferencesEmbeddedSubsets`), and GET each — so a future font add/remove
+  flows through without editing the generator. This keeps `fonts.css` the single source of truth.
+- **No CDN literals leak.** The generator writes only bytes the handlers already produce (golden-tested
+  CDN-free), so the on-disk `index.html` inherits the no-CDN guarantee; the test re-asserts it on the
+  generated file for defense in depth.
+- **Correctness rule (learnings.md, always-loaded "`proof/verify` is pure" + verifier.md):** the
+  generator is a pure-stdlib + two-internal-import leaf (`internal/verifier`, `internal/web`,
+  `net/http/httptest`, `os`, `path/filepath`, `flag`, `regexp`/`strings`). Do not add a network fetch,
+  a `database/sql` import, or a third internal dep — it assembles from embedded bytes only.
+- **Edge case:** if `web.Handler()` returns non-200 for any expected path (a future asset rename),
+  `generate` must error, not write a partial site — fail closed so a broken deploy is caught in the test
+  and in CI, not in production.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `GOOS=js GOARCH=wasm go build ./cmd/wasm` still compiles (the WASM build gate; unchanged, confirm).
-- `go test -count=1 -run TestVerifier ./internal/verifier` passes, including reworked cases asserting:
-  - **the static body ALWAYS carries the loader** — `<script src="/_ds/wasm_exec.js">`,
-    `/_ds/verify.wasm`, `isccVerifyInclusion`, and `URLSearchParams` (or `location.search`) are present
-    on a plain no-query GET (the static-artifact contract).
-  - **the static body asserts no un-run verdict** — it does NOT contain the present-tense
-    `Your (size, root) does not match`, and it still contains `not yet run`, `no verdict is claimed`, and
-    `Illustrative — what a real mismatch shows` (honesty preserved; rework
-    `TestVerifierNoTargetBaselineIsHonest` so its former absent-loader assertions become present-loader
-    + no-un-run-verdict ones).
-  - **no server-emitted data-island remains** — `id="verify-target"` is ABSENT from the body, and the
-    handler reflects no `?monitor=`/`?id=` into the body (drop / repurpose
-    `TestVerifierConfiguredTargetWiresLiveVerification` and `TestVerifierRejectsMalformedTarget`, whose
-    server-side parse contract no longer exists — replace with the client-side always-loader assertions).
-  - the named regions, independence statement (`monitor.iscc.codes` + `monitor.iscc.id` +
-    `not in the trust path`), guided mismatch alert (`Mismatch — possible split view`,
-    `do not discard either`, `both signed histories are evidence`), and the no-CDN ban test still pass.
-  - `TestVerifierNonGET` still returns 405.
-- Mutation check (record in the advance): forcing the loader to treat a target as present without the
-  `URLSearchParams` validation (or reverting the honesty copy) makes a `TestVerifier…` test FAIL.
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`; `gofmt -l .` empty).
+- `go test -count=1 -run TestGenerate ./cmd/verifier-site` passes.
+- The golden test generates into `t.TempDir()` and asserts: `<out>/index.html` exists, is non-empty,
+  and contains the client-side loader markers (`/_ds/wasm_exec.js`, `/_ds/verify.wasm`,
+  `isccVerifyInclusion`, `URLSearchParams`); `<out>/_ds/tokens.css`, `<out>/_ds/fonts.css`,
+  `<out>/_ds/wasm_exec.js`, `<out>/_ds/verify.wasm`, `<out>/_ds/iscc-logo-black.png` all exist and are
+  non-empty; at least one `<out>/_ds/fonts/*.woff2` exists; and the generated `index.html` contains no
+  `jsdelivr` / `http://` / `https://` / `cdn.` substring (inherited no-CDN, re-asserted).
+- The generated `<out>/_ds/verify.wasm` SHA-256 equals `web.WasmVerifyHash` (the deployed WASM is the
+  byte-pinned artifact — proves the generator copies, not rebuilds).
+- `go run ./cmd/verifier-site -out <tmp>` exits 0 and the directory contains `index.html` + `_ds/`.
 
 ## Done When
-`mise run check` is green and `go test -run TestVerifier ./internal/verifier` passes with the verifier's
-live re-verification driven entirely client-side (loader + `URLSearchParams` always present in the static
-body, no server-side `.HasTarget`/data-island), the no-JS baseline still asserting no un-run verdict.
+`mise run check` is green and `go test -run TestGenerate ./cmd/verifier-site` passes, with the generator
+materializing `index.html` (byte-identical to `verifier.Handler`'s output) plus every `/_ds/` asset
+(including the SRI-pinned `verify.wasm`) into the output directory — the deployable Surface-C site the
+Pages workflow will publish next.
