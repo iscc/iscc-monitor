@@ -43,21 +43,54 @@ func noExternalCDN(t *testing.T, name string, body []byte) {
 
 // stripLineComments removes the // comment tail from each line so noExternalCDN scans
 // only loadable content. A comment is non-executable text, so a URL in it cannot be a
-// runtime resource reference. It treats // as a comment only when it is NOT the //
-// inside a scheme (a preceding ':' as in https://), so a real loadable https:// URL is
-// never truncated and the ban stays exactly as strict for executable content; CSS uses
-// /* */ block comments (no // tail) and is unaffected.
+// runtime resource reference. It treats // as a comment only in an actual comment
+// context: when the // is at line-start or preceded by whitespace (space/tab), the form
+// every genuine source comment takes. It is therefore NOT a comment when preceded by a
+// URL-authority delimiter (a colon as in https://, or a double-quote / single-quote /
+// open-paren as in a protocol-relative src="//cdn..." or url("//cdn...")), so a loadable
+// scheme-bearing or protocol-relative CDN URL is never truncated and still trips the ban.
+// CSS uses /* */ block comments (no // tail) and is unaffected.
 func stripLineComments(body []byte) []byte {
 	lines := bytes.Split(body, []byte("\n"))
 	for i, line := range lines {
 		for j := 0; j+1 < len(line); j++ {
-			if line[j] == '/' && line[j+1] == '/' && (j == 0 || line[j-1] != ':') {
+			if line[j] == '/' && line[j+1] == '/' && (j == 0 || line[j-1] == ' ' || line[j-1] == '\t') {
 				lines[i] = line[:j]
 				break
 			}
 		}
 	}
 	return bytes.Join(lines, []byte("\n"))
+}
+
+// TestNoExternalCDNProtocolRelative pins that stripLineComments only strips actual
+// comment contexts, so a protocol-relative loadable CDN URL survives the strip and
+// still trips noExternalCDN's ban, while a genuine comment URL stays suppressed. It
+// drives stripLineComments directly (no HTTP round-trip) since noExternalCDN reports
+// only via t.Errorf, making a direct survives-or-not assertion the cleanest probe.
+func TestNoExternalCDNProtocolRelative(t *testing.T) {
+	// A protocol-relative <script> src is loadable content: its host must survive the
+	// strip so the ban fires (regression for the over-strip that hid it after the ").
+	scriptSrc := stripLineComments([]byte(`<script src="//cdn.jsdelivr.net/npm/x.js"></script>`))
+	if !bytes.Contains(scriptSrc, []byte("cdn.")) {
+		t.Errorf("protocol-relative src: cdn. host was stripped, ban would miss it: %q", scriptSrc)
+	}
+	if !bytes.Contains(scriptSrc, []byte("jsdelivr")) {
+		t.Errorf("protocol-relative src: jsdelivr was stripped, ban would miss it: %q", scriptSrc)
+	}
+
+	// A protocol-relative CSS url() is loadable too: its host must survive the strip.
+	cssURL := stripLineComments([]byte(`@font-face { src: url("//cdn.example/x.woff2"); }`))
+	if !bytes.Contains(cssURL, []byte("cdn.")) {
+		t.Errorf("protocol-relative url(): cdn. host was stripped, ban would miss it: %q", cssURL)
+	}
+
+	// A genuine source comment is non-executable: its URL must stay stripped so the
+	// vendored wasm_exec.js's one Go-issue-tracker comment URL keeps passing the ban.
+	comment := stripLineComments([]byte("\t// (temporary workaround for https://github.com/golang/go/issues/28975)"))
+	if bytes.Contains(comment, []byte("https://")) {
+		t.Errorf("genuine comment URL survived the strip, would false-positive the ban: %q", comment)
+	}
 }
 
 func TestTokensServedAsCSS(t *testing.T) {
