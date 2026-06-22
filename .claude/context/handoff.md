@@ -1,60 +1,70 @@
-## 2026-06-22 — Write the deployment/operability doc (`deploy/OPERATING.md`)
+## 2026-06-22 — Review of: Write the deployment/operability doc (`deploy/OPERATING.md`)
 
-**Done:** Added the tracked operator-facing `deploy/OPERATING.md` — the deployment/operability
-contract for a server instance — sourcing every claim from ADR-0013 + confirmed code facts (uid
-65532, bind `:9464`, baked realm `/etc/iscc-monitor/realm.txt`, WAL `-wal`/`-shm` siblings, OTS
-calendar host). Doc-only: no Go, Dockerfile, or workflow touched. It answers all three remaining
-`critical` iscc-infra ops asks (persistence/volume/uid/migration, `/metrics` exposure, egress +
-footprint) so `review` can clear the `critical` count to 0.
+**Verdict:** NEEDS_WORK
+**Loop:** CONTINUE
 
-**Files changed:**
-- `deploy/OPERATING.md` (new): sections — What this is / scope (links CLAUDE.md "Running a local dev
-  instance" as the env-var source of truth, names `monitor-test.iscc.io` as first consumer); Image &
-  tags (`:develop` floating + `:sha-<short>` immutable, self-contained, uid 65532, `GET /version`
-  provenance); State/volume/backup (`/data/monitor.db` on a mounted volume, the `.db`+`-wal`+`-shm`
-  backup unit, single-writer, uid-65532-writable, baked realm); Migration policy (interim "recreate
-  the volume on a schema change", links the open issue); Reverse-proxy & port (binds `:9464`,
-  publishes no host port, own vhost); Route exposure & `/metrics` decision (public-by-design allow
-  list, no-secret/no-signing-key, recommend denying `/metrics` at Caddy); Egress (hub `/log` +
-  `/.well-known/did.json` + `alice.btc.calendar.opentimestamps.org`, per-realm DNS, labelled
-  footprint estimates + DO disk alert); Graceful shutdown (SIGTERM drain + `stop_grace_period`);
-  Quick start (Compose fragment + `docker run`, no host port).
+**Summary:** The advance added a single tracked operator doc (`deploy/OPERATING.md`, 219 lines,
+doc-only — no Go/test/Dockerfile/workflow touched), scope-clean and well-sourced: every code fact I
+spot-checked is correct (uid 65532, bind `:9464`/no host-publish, baked realm path, OTS calendar host,
+WAL `-wal`/`-shm` siblings, single-writer `SetMaxOpenConns(1)`, `GET /version` JSON shape, SIGTERM
+drain, `:develop`+`:sha-<short>` tags, the single-mux route list). But the doc's headline deliverable —
+the "copy-pasteable" quick-start — **does not boot**: it omits the REQUIRED `ISCC_MONITOR_REALM` (Codex
+P1, reviewer-confirmed) and mounts a fresh root-owned volume the non-root uid cannot write (Codex P2).
+Both are reviewer-confirmed against the code, so the doc cannot yet close the persistence `critical`.
 
-**Verification:** `mise run fmt` → clean; `mise run check` → green (all 28 packages `ok`; doc-only,
-no Go/test/Dockerfile/workflow touched). All 11 `next.md` Verification greps PASS (file exists;
-`monitor-test.iscc.io`; `65532`; `:9464`; `no host port|publishes no`; `-wal` + `backup`; `/metrics`;
-`alice.btc.calendar.opentimestamps.org` + `did.json`; `recreate the volume|schema change`). Manual
-content cross-check: every "Verify fixed" line of all three open `critical` issues (persistence,
-`/metrics` exposure, egress+footprint) is answered — see Notes. CLAUDE.md anchor
-`#running-a-local-dev-instance` matches the live `## Running a local dev instance` heading;
-`deploy/OPERATING.md` is git-tracked and NOT in `.dockerignore`.
+**Verification:**
+- [x] `mise run check` green — 28 packages `ok` (doc-only; gate stayed green)
+- [x] `gofmt -l .` clean (exit 0, no files listed)
+- [x] `test -f deploy/OPERATING.md` — PASS
+- [x] `grep monitor-test.iscc.io` — PASS (names the first-consumer instance)
+- [x] `grep 65532` — PASS (and verified === Dockerfile uid)
+- [x] `grep :9464` + `no host port|publishes no` — PASS (verified === `EXPOSE 9464`, no host-publish)
+- [x] `grep -- -wal` + `backup` — PASS (verified === `PRAGMA journal_mode=WAL`)
+- [x] `grep /metrics` — PASS (verified === single-mux `serveMetrics`; exposure decision recorded)
+- [x] `grep alice.btc.calendar.opentimestamps.org` + `did.json` — PASS (verified === `DefaultCalendarURL`)
+- [x] `grep 'recreate the volume|schema change'` — PASS (interim migration policy stated)
+- [x] CLAUDE.md anchor `#running-a-local-dev-instance` — matches live `## Running a local dev instance`
+- [x] Quality-gate integrity — scanned all unpushed commits (`@{upstream}..HEAD`, 3 commits); only
+  non-`.claude` file is `deploy/OPERATING.md`. No `nolint`/`t.Skip`/skipped-or-deleted tests/loosened
+  gates (the lone grep hits are handoff prose).
+- [ ] **Manual content check — quick-start examples do not boot.** The doc's "valid `ISCC_MONITOR_REALM`
+  out of the box" claim (l.65-68) and both quick-start snippets (l.192-193 Compose, l.209-215 `docker
+  run`) are factually wrong: `config.Load` requires `ISCC_MONITOR_REALM` (`config.go:123`) and the
+  Dockerfile sets NO `ENV` (only `COPY`s the file). So the persistence `critical` is not yet satisfied.
 
-**Next:** The root `README.md` (the last `target.md` "Done When" gate, a `normal` issue) — the human
-front door: what iscc-monitor is (verifiable cache, not trusted oracle), the Go 1.26 / `CGO_ENABLED=0`
-/ single-binary stack, a build+run snippet against the testnet realm, `mise run check`, and pointers
-to `.claude/prd` / `.claude/adr` / the CLAUDE.md glossary — link CLAUDE.md "Running a local dev
-instance" rather than duplicating the env table.
+**Issues found:**
+- **[critical]** `deploy/OPERATING.md` quick-start omits the required `ISCC_MONITOR_REALM` → snippets
+  exit at startup with `config: required key "ISCC_MONITOR_REALM" is missing`. Filed (Codex P1).
+- **[normal]** quick-start mounts a fresh `root:root` named volume that uid 65532 cannot write →
+  `store.Open` fails permission-denied; contradicts the doc's own uid-65532 requirement. Filed (Codex P2).
+- The 3 iscc-infra `critical`s (persistence, exposure, egress) stay OPEN — the doc answers the substance
+  but the non-booting boot instructions mean the persistence ask's contract is not yet correctly stated.
+
+**Codex second opinion:** Two findings, both reviewer-CONFIRMED → filed as issues (not dismissed):
+- **[P1] CONFIRMED → critical issue.** Quick-start omits `ISCC_MONITOR_REALM`. Verified: `config.Load`
+  calls `required(get, keyRealm)`; Dockerfile has ZERO `ENV` lines and no Go code defaults `RealmPath`,
+  so the baked realm FILE does not make the VAR set — the snippets do not boot.
+- **[P2] CONFIRMED → normal issue.** Fresh named volume is root-owned; image runs as uid 65532, so
+  `store.Open` cannot create `/data/monitor.db`. The doc states the uid-65532 requirement but the runnable
+  snippet doesn't satisfy it.
+- (Note: Codex took ~4 min and explored far beyond the doc — for a doc-only change it still surfaced two
+  real, actionable deployment blockers. The hard oracles are N/A here — no trust-root path touched.)
+
+**Visual check:** n/a — no SSR surface changed (a Markdown doc, no template/handler/`.dc.html` touched).
+
+**Next:** Fix the `deploy/OPERATING.md` quick-start (the active step's deliverable) — the smallest correct
+change is to set `ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt` explicitly in BOTH snippets and correct
+the "valid out of the box" sentence, AND add a one-line volume-prep note (pre-`chown 65532:65532` or a
+65532-writable bind mount) so the quick start boots; OR add `ENV ISCC_MONITOR_REALM=...` to the Dockerfile
+(makes the "out of the box" claim true, but that is a Dockerfile change — weigh against the doc-only fix).
+Then the 3 iscc-infra `critical`s can be cleared and the root `README.md` is the last DONE gate.
 
 **Notes:**
-- This doc is the single artifact that closes all THREE remaining open `critical` issues. Mapping
-  for `review` to delete them:
-  - "Persistence contract for the SQLite DB volume + acknowledge the in-place migration hazard" →
-    sections **State, volume & backup** (path + volume + `.db`/`-wal`/`-shm` backup unit +
-    confirmation that one file-set captures all durable state + uid 65532) and **Migration policy**
-    (interim "recreate the volume on a schema change", links the open `normal` migration issue).
-  - "Decide which routes are safe to publish at the public vhost (especially /metrics)" → section
-    **Route exposure & the `/metrics` decision** (explicit public allow-list, the no-secret /
-    no-signing-key confirmation, the ADR-0013 Decision-6 per-instance operator choice, and the
-    recommendation to deny `/metrics` at Caddy and scrape it internally).
-  - "Document egress + resource footprint for box sizing" → sections **Egress** (hub `/log` +
-    `/.well-known/did.json` + `alice.btc.calendar.opentimestamps.org`, per-realm DNS / no fixed IP
-    allow-list) and **Footprint** (labelled ballpark RAM / CPU / mirror-BLOB disk-growth for the
-    2-hub testnet realm + the DO disk-usage-alert flag).
-- Footprint numbers are deliberately HONEST ballpark ranges labelled "estimates ... not measured
-  benchmarks" per `next.md` Not-In-Scope — no invented precision. Refine against live testnet data.
-- Strictly doc-only and within scope: no Dockerfile / workflow / Go change, no `/metrics` auth flag,
-  no second listener, no `publish.yml` ref-guard fix (those stay their own open issues). The
-  `/metrics`-deny and the `publish.yml` `workflow_dispatch` ref-guard remain open backlog items
-  (`normal`), untouched here.
-- Oracle/conformance gate N/A — no proof/verify/didweb/merkle/signature path touched. No visual
-  surface changed (a doc, no template).
+- The doc's SUBSTANCE is strong and accurate — this is NOT a rewrite; it is two precise corrections to the
+  quick-start + one overstated sentence. The persistence/exposure/egress content all maps correctly to the
+  3 critical asks; only the runnable examples are wrong.
+- Durable trap recorded in `learnings/config.md`: the baked realm FILE is not a set realm-config VAR — the
+  Dockerfile `COPY`s the file but sets no `ENV`, so `ISCC_MONITOR_REALM` stays required in the image. Any
+  future deploy doc/snippet must set it (or the Dockerfile must add the `ENV`).
+- DONE blocked: 1 open `critical` (the new doc-boot fix) + the pre-existing 3 iscc-infra `critical`s, and
+  the root `README.md` `normal` is still the last `target.md` "Done When" gate.

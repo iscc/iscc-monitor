@@ -26,6 +26,13 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `required` does NOT trim whitespace, so a whitespace-only path (`" "`) passes config and would fail
   later at `os.ReadFile`/`store.Open` — acceptable (config validates presence, the binary owns I/O),
   but the binary should surface that fs error clearly.
+- **The baked realm FILE is not a set realm-config VAR — `ISCC_MONITOR_REALM` stays required in the
+  image.** The `Dockerfile` `COPY`s `deploy/realm-testnet.txt` to `/etc/iscc-monitor/realm.txt` but sets
+  **no `ENV`** (the image has zero `ENV` lines) and no Go code defaults `RealmPath`, so a fresh container
+  still exits at `config.Load` with `config: required key "ISCC_MONITOR_REALM" is missing` unless the var
+  is passed. Any deploy doc / Compose / `docker run` snippet MUST set `ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt`
+  explicitly — do not write "defaults to the baked path"; the file is baked, the var is not. (Fix-on-touch
+  alt: add `ENV ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt` to the Dockerfile so the claim becomes true.)
 - **Masthead-identity keys (`ISCC_MONITOR_{INSTANCE,OPERATOR,REALM_NAME}`) are free-form display
   strings read through `optional(get, key, "")`** — no validation, empty default; each masthead handler
   applies its own static fail-safe on an empty field, so config must NOT carry a fallback copy (that
