@@ -992,3 +992,172 @@ func TestCertificateRecordHistoryDeclarationOnly(t *testing.T) {
 		t.Errorf("a declaration-only id rendered the deletion note\n%s", body)
 	}
 }
+
+// otsFixture loads one bundled .ots vector from this package's testdata/ (copied
+// verbatim from internal/ots/testdata so the certificate test is hermetic and never
+// reads another package's testdata at runtime). hello-world.txt.ots is the external
+// `ots verify` oracle's Bitcoin-confirmed vector (block height 358391); merkle1.txt.ots
+// is a calendar-only (pending) vector that ots.Confirmed classifies as (false, 0, nil).
+func otsFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("read OTS fixture %q: %v", name, err)
+	}
+	return data
+}
+
+// seedOTS records an OpenTimestamps row for the accepted (hubID, LastSize, root) of the
+// certifiable hub the tiled fixture seeded, mirroring the (hub_id, tree_size, root) key
+// the §5 read (and the .ots route / stamp loop) use. The root is the tree's own
+// tree.Hash() (the clean fixture's accepted root) and the size its leaf count, matching
+// what AdvanceAccepted committed. upgradedAt is the confirmation instant the §5 clause
+// renders when the proof is Bitcoin-confirmed (zero → no time chip).
+func seedOTS(t *testing.T, st *store.Store, domain string, tree *testonly.Tree, otsBytes []byte, upgradedAt time.Time) {
+	t.Helper()
+	if _, _, err := st.RecordOTS(context.Background(), store.OTSRecord{
+		HubID:      hubIDForDomain(t, st, domain),
+		TreeSize:   tree.Size(),
+		Root:       tree.Hash(),
+		Status:     store.OTSStatusConfirmed,
+		OTSBytes:   otsBytes,
+		StampedAt:  time.Unix(1700000000, 0),
+		UpgradedAt: upgradedAt,
+	}); err != nil {
+		t.Fatalf("RecordOTS: %v", err)
+	}
+}
+
+// TestCertificateBitcoinAnchorConfirmed is the §5 confirmed path: a certifiable id whose
+// accepted root has a mirrored OTS row carrying a Bitcoin-confirmed proof renders the §5
+// BITCOIN ANCHOR clause with the confirming block height (358391, the external `ots
+// verify` oracle's ground-truth height for hello-world.txt.ots) and the confirmation
+// time, while §1-§4/§6 still render (regression). The height is the oracle literal, not
+// derived from the certificate code.
+func TestCertificateBitcoinAnchorConfirmed(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
+	st, tree := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, raw)
+	upgradedAt := time.Date(2026, 2, 14, 18, 40, 0, 0, time.UTC)
+	seedOTS(t, st, "sb1.amlet.id", tree, otsFixture(t, "hello-world.txt.ots"), upgradedAt)
+
+	h := Handler(testnetHubList(), st, nil)
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := html.UnescapeString(rec.Body.String())
+
+	for _, want := range []string{
+		"§1 SUBJECT",
+		"§2 CHECKPOINT",
+		"§3 INCLUSION PROOF",
+		"§5 BITCOIN ANCHOR",
+		"block 358391", // the external oracle's ground-truth confirmed height
+		"§6 RECORD HISTORY",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing §5 confirmed marker %q\n%s", want, body)
+		}
+	}
+	// The confirmation time chip is rendered from the row's upgraded_at (RFC-3339).
+	if want := upgradedAt.Format(time.RFC3339); !strings.Contains(body, want) {
+		t.Errorf("body missing §5 confirmation time %q\n%s", want, body)
+	}
+	// The honest "pending" copy must NOT appear for a confirmed anchor.
+	if strings.Contains(body, "awaiting Bitcoin confirmation") {
+		t.Errorf("a confirmed anchor rendered the pending state\n%s", body)
+	}
+}
+
+// TestCertificateBitcoinAnchorPending is the §5 honest pending path: a certifiable id
+// whose accepted root has a mirrored OTS row carrying a calendar-only (not yet
+// Bitcoin-confirmed) proof renders §5 BITCOIN ANCHOR in the "pending" state — never an
+// error and never a block height (target.md: a not-yet-anchored root renders the normal
+// "pending" state). merkle1.txt.ots is the bundled calendar-only vector ots.Confirmed
+// classifies (false, 0, nil).
+func TestCertificateBitcoinAnchorPending(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
+	st, tree := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, raw)
+	seedOTS(t, st, "sb1.amlet.id", tree, otsFixture(t, "merkle1.txt.ots"), time.Time{})
+
+	h := Handler(testnetHubList(), st, nil)
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := html.UnescapeString(rec.Body.String())
+
+	if !strings.Contains(body, "§5 BITCOIN ANCHOR") {
+		t.Errorf("a pending-anchor id rendered no §5 BITCOIN ANCHOR clause\n%s", body)
+	}
+	if !strings.Contains(body, "awaiting Bitcoin confirmation") {
+		t.Errorf("body missing the §5 honest pending state\n%s", body)
+	}
+	// A pending anchor must NOT render a confirmed block height (no "block " literal,
+	// which would imply a confirmation it does not have).
+	if strings.Contains(body, "block ") {
+		t.Errorf("a pending anchor rendered a confirmed block height\n%s", body)
+	}
+}
+
+// TestCertificateBitcoinAnchorUnanchored is the §5 un-anchored decline: a certifiable id
+// whose accepted root has NO OTS row renders the page WITHOUT the §5 BITCOIN ANCHOR
+// marker (HasClause5 == false), while §1-§4/§6 are unaffected. An un-anchored root
+// simply omits §5; it is NOT an error.
+//
+// Mutation (non-vacuity, review reproduces it): forcing HasClause5 = true
+// unconditionally in buildData renders §5 for this un-anchored fixture and makes this
+// test FAIL; reverting restores green.
+func TestCertificateBitcoinAnchorUnanchored(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
+	// No seedOTS: the accepted root has no mirrored OTS row.
+	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, raw)
+
+	h := Handler(testnetHubList(), st, nil)
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := html.UnescapeString(rec.Body.String())
+
+	// The rest of the certificate is unaffected (§1-§3 + §6 still render).
+	for _, want := range []string{"§1 SUBJECT", "§2 CHECKPOINT", "§3 INCLUSION PROOF", "§6 RECORD HISTORY"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("un-anchored certificate missing %q (the page must still render §1-§3+§6)\n%s", want, body)
+		}
+	}
+	// §5 must be ABSENT — an un-anchored root omits the clause, never fabricates one.
+	if strings.Contains(body, "§5 BITCOIN ANCHOR") {
+		t.Errorf("an un-anchored root rendered a §5 BITCOIN ANCHOR clause\n%s", body)
+	}
+}
+
+// TestCertificateBitcoinAnchorEmptySentinel asserts the empty-OTSBytes sentinel decline:
+// a row CAN exist for the accepted root yet carry zero ots_bytes (stamped at observation
+// but not yet calendar-submitted, the load-bearing edge case the .ots route guards). §5
+// must be OMITTED (HasClause5 == false), never rendered against a zero-byte proof.
+func TestCertificateBitcoinAnchorEmptySentinel(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
+	st, tree := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, raw)
+	// Seed a row with the empty-OTSBytes sentinel for the accepted root.
+	seedOTS(t, st, "sb1.amlet.id", tree, nil, time.Time{})
+
+	h := Handler(testnetHubList(), st, nil)
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := html.UnescapeString(rec.Body.String())
+
+	if strings.Contains(body, "§5 BITCOIN ANCHOR") {
+		t.Errorf("an empty-OTSBytes-sentinel row rendered a §5 BITCOIN ANCHOR clause\n%s", body)
+	}
+}

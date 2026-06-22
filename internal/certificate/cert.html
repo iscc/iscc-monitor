@@ -215,6 +215,24 @@
       color: var(--text-muted);
       margin-top: var(--space-1);
     }
+    /* §5 BITCOIN ANCHOR status row: a small status dot beside the block height /
+       pending text. The dot is confirmed-green when Bitcoin-confirmed, muted
+       otherwise (the honest "pending" state — calendar-asserted, not an error). */
+    .clause-status {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+    .clause-dot {
+      flex: none;
+      width: var(--space-2);
+      height: var(--space-2);
+      border-radius: var(--radius-pill);
+      background: var(--text-faint);
+    }
+    .clause-dot-confirmed {
+      background: var(--iscc-lime-green);
+    }
 
     /* Two-tier honesty panel: this certificate is the monitor's account (Tier 1),
        the authoritative version is the proof bundle the client verifies (Tier 2). */
@@ -375,7 +393,13 @@
       {{if .HasClause5}}
       <div class="clause">
         <div class="clause-marker">§5 BITCOIN ANCHOR</div>
-        <div class="clause-value"></div>
+        <div class="clause-value">
+          <div class="clause-status">
+            <span class="clause-dot{{if .BTCConfirmed}} clause-dot-confirmed{{end}}"></span>
+            <span class="clause-mono">{{if .BTCConfirmed}}block {{.BTCHeight}}{{if .BTCConfirmedAt}} · {{.BTCConfirmedAt}}{{end}}{{else}}pending — calendar-asserted, awaiting Bitcoin confirmation{{end}}</span>
+          </div>
+          <div class="clause-note">OpenTimestamps. Run <span class="subject-mono">ots verify</span> for the authoritative check.</div>
+        </div>
       </div>
       {{end}}
       {{if .HasClause6}}

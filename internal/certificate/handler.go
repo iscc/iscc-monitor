@@ -35,9 +35,13 @@
 // is the only key source). §6 RECORD HISTORY lists the full one-to-many set of
 // accepted-tree seqs the hub indexed under the subject id (the declaration and any
 // later deletion), each labelled by its verbatim note.$schema kind — a store read
-// with no crypto path, so it renders unconditionally for a certifiable id. §5 (the
-// Bitcoin anchor) is a gated placeholder that renders nothing yet (the OTS store seam
-// does not exist).
+// with no crypto path, so it renders unconditionally for a certifiable id. §5 BITCOIN
+// ANCHOR surfaces the OpenTimestamps anchor state of the §2 accepted root from the
+// mirrored OTS row (store.OTSForRoot classified via ots.Confirmed): a Bitcoin-confirmed
+// root shows the confirming block height, a still-pending (calendar-asserted) root
+// shows the honest "pending" state, and an un-anchored root (no OTS row, the empty-bytes
+// sentinel, or an unparseable proof) omits §5 — never an error (ADR-0001 / ADR-0004:
+// OTS never faults a surface).
 //
 // The downloadable proof bundle is served at GET /inclusion/{iscc_id}.bundle: a
 // self-contained JSON artifact {checkpoint (verbatim signed-note text), inclusion
@@ -85,6 +89,7 @@ import (
 
 	"github.com/iscc/iscc-monitor/internal/index"
 	"github.com/iscc/iscc-monitor/internal/logclient"
+	"github.com/iscc/iscc-monitor/internal/ots"
 	"github.com/iscc/iscc-monitor/internal/registry"
 	"github.com/iscc/iscc-monitor/internal/store"
 	"github.com/iscc/iscc-monitor/internal/tiles"
@@ -257,6 +262,21 @@ type certData struct {
 	// evaluate CID 1.0 validity windows. Meaningful only when HasClause4.
 	SigningKeyRevoked string
 
+	// BTCConfirmed reports whether the §5 BITCOIN ANCHOR is Bitcoin-confirmed (the
+	// mirrored OpenTimestamps proof carries a Bitcoin attestation) rather than still
+	// pending (calendar-asserted, awaiting confirmation). The template renders the
+	// confirmed block height when true and the honest "pending" state when false (a
+	// not-yet-anchored root is NOT an error). Meaningful only when HasClause5.
+	BTCConfirmed bool
+	// BTCHeight is the confirming Bitcoin block height of the §5 anchor (ots.Confirmed),
+	// rendered only when BTCConfirmed. Meaningful only when HasClause5.
+	BTCHeight int64
+	// BTCConfirmedAt is the §5 anchor's confirmation instant (RFC-3339), from the
+	// mirrored OTS row's upgraded_at; empty when the row carries no upgrade time (the
+	// template renders it conditionally, mirroring SigningKeyRevoked's zero-time guard).
+	// Meaningful only when HasClause5 && BTCConfirmed.
+	BTCConfirmedAt string
+
 	// RecordHistory is the §6 RECORD HISTORY rows: every accepted-tree seq the hub
 	// indexed under the subject id (seqs ascending, capped to seq < CheckpointSize),
 	// each labelled by its note.$schema kind (recordKind). iscc_id → seq is
@@ -276,10 +296,12 @@ type certData struct {
 	// (proof.VerifyInclusion succeeds, so the rendered ✓ is true by construction);
 	// HasClause4 when the key that signed the accepted checkpoint is found in the
 	// hub_keys cache (an honest cache-miss decline leaves it false, never a fabricated
-	// key); HasClause6 for every certifiable id (a store read of the accepted-tree
-	// record history, no crypto gate to fail closed on). HasClause5 stays false so the
-	// Bitcoin-anchor placeholder renders nothing (the OTS store seam does not exist
-	// yet); a later sub-step sets it.
+	// key); HasClause5 when the accepted root has a mirrored OpenTimestamps proof with
+	// non-empty bytes that ots.Confirmed could classify (confirmed → BTCHeight, pending
+	// → the honest "pending" state); an un-anchored root (no OTS row, the empty-bytes
+	// sentinel, or a proof ots.Confirmed cannot parse) leaves it false so §5 is omitted,
+	// never an error; HasClause6 for every certifiable id (a store read of the
+	// accepted-tree record history, no crypto gate to fail closed on).
 	HasClause2 bool
 	HasClause3 bool
 	HasClause4 bool
@@ -539,7 +561,14 @@ func serveBundle(w http.ResponseWriter, data certData, arts bundleArtifacts) {
 //     (malformed sig line) or a cache miss leaves §4 unrendered (an honest "key not
 //     yet resolved" decline, never a fabricated key — ADR-0009 did:web is the only key
 //     source); only a real LookupHubKey DB fault is a 500 (buffered before any 200).
-//  9. For a certifiable id, list the §6 RECORD HISTORY: the accepted-tree seqs (seq <
+//  9. For a certifiable id, surface the §5 BITCOIN ANCHOR of the §2 accepted root:
+//     read the mirrored OTS row (OTSForRoot keyed on the §2 root bytes) and classify a
+//     non-empty proof via ots.Confirmed. A confirmed proof renders the block height (+
+//     the upgrade instant), a calendar-only proof the honest "pending" state. No OTS
+//     row, the empty-bytes sentinel, or a proof ots.Confirmed cannot parse leaves §5
+//     unrendered (an un-anchored root is NOT an error); only a real OTSForRoot DB fault
+//     is a 500 (buffered before any 200).
+//  10. For a certifiable id, list the §6 RECORD HISTORY: the accepted-tree seqs (seq <
 //     LastSize) from the same SeqsForISCCID result, each read via RecordAt for its
 //     note.$schema and labelled by recordKind (declaration / deletion / unknown). It
 //     renders unconditionally (a store read, no crypto gate); a RecordAt miss is an
@@ -782,6 +811,45 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 				arts.keyID = keyID
 				arts.key = key
 				arts.hasKey = true
+			}
+		}
+	}
+
+	// §5 BITCOIN ANCHOR: surface the OpenTimestamps anchor state of the §2 accepted
+	// root from the mirrored OTS row (store.OTSForRoot, keyed on the same
+	// (hub_id, tree_size, root) the .ots route and the stamp loop use — root is §2's
+	// raw CheckpointAt bytes, NOT the base64 CheckpointRoot string). The clause is
+	// meaningful only alongside §2 (it anchors §2's root), so it renders inside the
+	// HasClause2 guard. Three honest, fail-closed states (ADR-0001 / ADR-0004: OTS
+	// never crashes a surface):
+	//   - No OTS row (found == false) OR the empty-OTSBytes sentinel (a root stamped
+	//     at observation but not yet calendar-submitted, the load-bearing edge case the
+	//     .ots route guards): the root is not yet anchored — leave HasClause5 false so
+	//     §5 is OMITTED. An un-anchored root is NOT an error.
+	//   - A non-empty proof ots.Confirmed cannot parse (a garbage/malformed blob): a
+	//     SILENT decline (HasClause5 stays false), NEVER a 500 — the same discipline as
+	//     §3's non-nil VerifyInclusion silent decline. OTS must never fault the surface.
+	//   - A parseable proof: render §5. A Bitcoin-attested proof shows the confirming
+	//     block height (+ the upgrade instant when the row carries one); a calendar-only
+	//     proof shows the honest "pending" state (calendar-asserted, awaiting Bitcoin
+	//     confirmation), never an error (target.md: a not-yet-anchored root renders the
+	//     normal "pending" state). Only a genuine OTSForRoot DB fault is a 500 (buffered
+	//     before any 200, like every other clause).
+	if data.HasClause2 {
+		rec, found, err := st.OTSForRoot(r.Context(), hub.HubID, hub.LastSize, root)
+		if err != nil {
+			return certData{}, arts, http.StatusInternalServerError
+		}
+		if found && len(rec.OTSBytes) > 0 {
+			if confirmed, height, cerr := ots.Confirmed(rec.OTSBytes); cerr == nil {
+				data.HasClause5 = true
+				data.BTCConfirmed = confirmed
+				if confirmed {
+					data.BTCHeight = height
+					if !rec.UpgradedAt.IsZero() {
+						data.BTCConfirmedAt = rec.UpgradedAt.Format(time.RFC3339)
+					}
+				}
 			}
 		}
 	}
