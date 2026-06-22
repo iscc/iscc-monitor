@@ -102,17 +102,12 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   with `go list -deps ./internal/store | grep '^net/http'` (empty) and that the package's own `.Imports`
   are exactly `context database/sql embed errors fmt time` + the sqlite driver. Do not flag the bare
   `net` lines as a leak.
-- **`RecordHubKey` is the did:web key cache write — a guarded `UPDATE … WHERE hub_id=? AND key_id=?`
-  then `INSERT` on zero `RowsAffected` (the `SetCoverage` idiom; `hub_keys` has no UNIQUE so no
-  `ON CONFLICT`).** The UPDATE rewrites *all* mutable columns, so a re-resolve genuinely tracks the
-  DID doc as source of truth — verified it clears `pubkey_z` back to NULL when the multibase drops out
-  (not just append). `nullStringOrNil` (empty→NULL) joins `unixOrNil` (zero-time→NULL) so "no
-  multibase"/"not revoked" stay distinct from `""`/epoch. FK is genuinely enforced (orphan insert →
-  SQLite `FOREIGN KEY constraint failed (787)`, independently reconfirmed). `key_id uint32→int64` cast
-  mirrors `RecordCheckpoint`'s `uint64→int64`. Store stays a leaf (zero internal deps, no `net/http`).
-  Oracle gate N/A — plain CRUD, no proof/verify/didweb/merkle path, go.mod/go.sum byte-identical. The
-  *reader* and follower→store wiring (map `ResolveVerifierKey`'s `DIDKey`→`HubKey`) are the next slice,
-  intentionally deferred.
+- **settled (landed): `RecordHubKey` is the did:web key cache write** — guarded `UPDATE … WHERE
+  hub_id=? AND key_id=?` then `INSERT` on zero `RowsAffected` (the `SetCoverage` idiom; `hub_keys` has
+  no UNIQUE). UPDATE rewrites *all* mutable columns so a re-resolve tracks the DID doc (clears
+  `pubkey_z`→NULL when the multibase drops, not append-only); `nullStringOrNil`+`unixOrNil` keep "no
+  multibase"/"not revoked" distinct from `""`/epoch; FK enforced (787 on orphan); `key_id uint32→int64`.
+  Leaf-pure, oracle N/A. (Detail in git history.)
 - **Coverage set-once is a guarded `UPDATE … WHERE monitored_since_size IS NULL` keyed on the SIZE
   column being NULL — and that guard is correct even for a size-0 start.** The first `SetCoverage`
   writes `int64(size)` (so the column is NOT NULL afterward, even when size==0), making every re-call a
@@ -140,3 +135,16 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   upsert → case (1) FAILS (`last_size` stays 0). Store stays a leaf, go.mod/go.sum/schema byte-unchanged.
   Oracle gate correctly N/A (plain transactional SQL; no signature/RFC-6962/Merkle/did:web/fsck path —
   the verified-advance path's fsck/inclusion conformance tests re-ran uncached and stayed green).
+- **OTS-table CRUD seam (`ots.go`) is the next CRUD leaf, idiom-identical to the checkpoint family.**
+  `RecordOTS` ports `RecordCheckpoint`'s `ON CONFLICT(hub_id,tree_size,root) DO NOTHING` + `RowsAffected`
+  first-sighting dance; `OTSForRoot` ports `CheckpointAt`'s `sql.ErrNoRows → (zero,false,nil)` (an
+  un-anchored root is a plain miss so cert §5 / `.ots` render the honest pending state, never a 5xx);
+  `PendingOTS` is a `ListViolations`-shaped leaf read `WHERE status=? ORDER BY stamped_at ASC, id ASC`;
+  `MarkOTSUpgraded` ignores `RowsAffected` like `SetCoverage` (idempotent/absent re-mark is no-op).
+  `OTSStatusPending`/`OTSStatusConfirmed` consts are the single source for the two literals (the
+  literal-drift trap). `Status`/`ots_bytes` carried opaque so store stays leaf-pure — no anchoring/OTS
+  import. Reviewer mutation-proved non-vacuous (sed, all reverted): `DO NOTHING`→plain insert FAILS
+  `TestRecordOTSDedupes`; `ASC`→`DESC` FAILS `TestPendingOTS` order; dropping `WHERE status=?` FAILS
+  `TestPendingOTS`+`TestMarkOTSUpgraded`. Oracle gate N/A (opaque-BLOB round-trip; no merkle/proof path).
+  Trap for the next slice: `Attempts`/`NextRetry` are persisted+round-tripped but no method increments
+  `Attempts` or sets a back-off `NextRetry` yet — that retry policy belongs to the upgrade loop.
