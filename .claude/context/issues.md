@@ -18,41 +18,35 @@ filed it and does **not** affect priority.
 
 ---
 
-## Add the ISCC logo to the nav-bar masthead chrome (self-hosted asset, replacing the text-only mark)
+## Add the ISCC logo to the remaining FOUR mastheads (serve route + `/` + dossier already landed)
 - **Priority:** critical
 - **Source:** [human]
-- **What / where / how to verify:** The logo asset **exists in-repo**:
-  `.claude/design/assets/iscc-logo-black.png` (5000×1906, 8-bit **gray+alpha** PNG, 113 KB) — grayscale,
-  so it satisfies the grayscale-safe constraint, and black-on-light matches the mockup masthead. The
-  mockup masthead on every `.dc.html` (e.g. `ISCC Monitor - Realm Index.dc.html:32`) renders
-  `<img src="assets/iscc-logo-black.png" alt="ISCC" style="height:19px;width:auto">`; the live chrome
-  renders a **text-only `.chrome-mark`** ("Trust &amp; Transparency Monitor") with no logo on every SSR
-  surface (`internal/dashboard/dashboard.html:315`). The masthead chrome is **duplicated across six
-  templates — there is no shared partial today**: `internal/dashboard/dashboard.html`,
-  `internal/dossier/dossier.html`, `internal/certificate/cert.html`, `internal/proofserve/browser.html`,
-  `internal/proofserve/record.html`, `internal/proofserve/records.html`. **How:** copy the asset into
-  `internal/web/` (e.g. `internal/web/assets/iscc-logo-black.png`), `go:embed` it, and serve it at a
-  stable `/_ds/iscc-logo-black.png` path with `image/png` — mirroring the existing self-hosted
-  `wasm_exec.js`/woff2 `go:embed`+serve idiom in `internal/web/web.go` (same no-CDN, build-pinned,
-  strong-ETag + no-cache + 304 policy the other `/_ds/` assets use). Reference it from each masthead as
-  `<img src="/_ds/iscc-logo-black.png" alt="ISCC" …>` **next to** the existing `.chrome-mark` text (keep
-  both — target.md:148 wants the logo **and** the "Trust &amp; Transparency Monitor" mark); the six-way
-  duplication may be factored into a shared chrome partial as part of the work (advance's KISS call, not
-  required). **Optimization (SHOULD, not a blocker):** 5000×1906 / 113 KB is wildly oversized for a
-  ~19px-tall nav render — downscale to a slim height-appropriate (≤2× retina) grayscale PNG at the embed
-  step so the served asset is a few KB, not 113 KB; never resize at request time. **Constraint notes:**
-  no-CDN (self-host ✓), grayscale-safe (asset is grayscale ✓), no-JS (plain `<img>` ✓); only the **black**
-  variant exists, fine for the light masthead — a white variant is out of scope unless a dark chrome
-  surface is later introduced. **Verify fixed:** `GET /_ds/iscc-logo-black.png` → 200 `image/png`
-  (byte-verbatim, sibling-`/_ds/` ETag/304 policy); every SSR surface's served HTML carries the logo
-  `<img src="/_ds/iscc-logo-black.png">` in its masthead (a handler test asserts the `<img>` on `/` and at
-  least one other surface); `mise run check` green; the ADR-0012 visual pass vs the Realm-Index mockup
-  files no remaining "no logo" delta.
+- **What / where / how to verify:** PARTIALLY DONE (advance `7e3fe44`, reviewer-confirmed): the
+  self-hosted grayscale logo is now embedded (`internal/web/iscc-logo-black.png`, 199×76 gray+alpha,
+  ~3 KB) and served at `LogoPath` `/_ds/iscc-logo-black.png` (`image/png`, sibling no-cache+strong-ETag+304
+  policy) via `internal/web/web.go`'s `case LogoPath: writeAsset(...)` — verified live (`200 image/png`,
+  byte-verbatim, `TestLogoServed`) AND rendered as `<img src="/_ds/iscc-logo-black.png">` + a 1px divider
+  beside the text `.chrome-mark` on the **two** surfaces the verify bar measured — `/` (dashboard) and the
+  hub dossier — both asserted by handler tests (`TestDashboardRendersHeroAndNavigation`,
+  `TestDossierRendersCoveredHub`, mutation-proven: drop the `<img>` → FAIL) and confirmed by the ADR-0012
+  visual pass (the logo renders, no remaining "no logo" delta on `/`). REMAINING (this issue's open scope):
+  the other FOUR SSR mastheads still render the text-only `.chrome-mark` with no logo —
+  `internal/certificate/cert.html`, `internal/proofserve/browser.html`, `internal/proofserve/record.html`,
+  `internal/proofserve/records.html` (reviewer grep-confirmed: NO LOGO in all four). **How:** the serve
+  route exists, so this is now a pure one-line-per-template edit — add the identical
+  `<img class="chrome-logo" src="/_ds/iscc-logo-black.png" alt="ISCC">` + `<span class="chrome-divider">`
+  inside a `.chrome-brand` flex wrapper beside each `.chrome-mark` (copy the `dashboard.html` masthead
+  block + its `.chrome-brand`/`.chrome-logo`/`.chrome-divider` CSS verbatim), and extend each surface's
+  existing handler test to assert `src="/_ds/iscc-logo-black.png"`. Optional KISS factoring of the now
+  six near-identical mastheads into a shared chrome partial is still a deferred `advance`-call (not
+  required). **Verify fixed:** all four remaining served mastheads carry `<img src="/_ds/iscc-logo-black.png">`
+  (a handler test asserts the `<img>` on at least the certificate surface), `mise run check` green, and the
+  ADR-0012 visual pass vs each `.dc.html` mockup files no remaining "no logo" delta on any SSR surface.
 - **Spec:** target.md:148 "Document chrome + instance identity" (the ISCC logo + "Trust &amp; Transparency
-  Monitor" mark on every surface); **extracts and supersedes sub-item (1) "No logo" of the "`/`
-  realm-index sub-region deltas" issue below** (when this lands, that issue's remaining scope is the
-  instance-identity, Checkpoint/Anchor, and recent-declarers sub-deltas only); ADR-0010 Evidence-Ledger
-  handoff; the no-CDN / grayscale-safe / self-hosted hard constraints.
+  Monitor" mark on **every** surface); the no-CDN / grayscale-safe / self-hosted hard constraints; ADR-0010
+  Evidence-Ledger handoff. (Sub-item (1) "No logo" of the "`/` realm-index sub-region deltas" issue below
+  is now CLOSED for `/` — that issue's remaining scope is the instance-identity, Checkpoint/Anchor, and
+  recent-declarers sub-deltas only.)
 
 ## Certificate §5 BITCOIN ANCHOR does not bind the OTS proof's committed digest to §2's accepted root
 - **Priority:** normal

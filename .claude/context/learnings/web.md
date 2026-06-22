@@ -73,6 +73,18 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   is preceded by `"` (not whitespace) so it survives and trips the ban (`TestNoExternalCDNProtocolRelative`
   pins it, mutation-proven against the old `:`-only guard). The ban list is third-party-origin only
   (`jsdelivr`/`http://`/`https://`/`cdn.`); same-origin `/_ds/` paths pass.
+- **`iscc-logo-black.png` is served at `LogoPath` (`/_ds/iscc-logo-black.png`, `image/png`) via the same
+  `case`+`writeAsset` no-cache/strong-ETag/304 leaf, embedded with `//go:embed iscc-logo-black.png`.** Two
+  forward rules: (1) the masthead `<img src>` literal lives in each template (`dashboard.html`,
+  `dossier.html`, …) and templates CANNOT read the Go const — the string must stay byte-equal to `LogoPath`,
+  asserted by `TestDashboard…`/`TestDossier…` (`src="/_ds/iscc-logo-black.png"`, mutation-proven). (2)
+  `contentTypePNG = "image/png"` is a string literal ONLY — never import an `image/*` package, or the leaf
+  stops being the pure-stdlib WASM-green closure (`GOOS=js GOARCH=wasm go build ./internal/web` must stay OK).
+  The PNG is a committed, pre-downscaled artifact (199×76 gray+alpha, ~3 KB) — the downscale ran ONCE at
+  commit time, never in a build/`mise` step (no image toolchain on the build path; ADR-0003 pure-Go). The
+  same-origin `/_ds/` src passes `noExternalCDN` + the dashboard body ban (no `http(s)://`/`cdn.`/`jsdelivr`).
+  Remaining FOUR mastheads (`certificate/cert.html`, `proofserve/{browser,record,records}.html`) reuse this
+  route with the identical one-line `<img>` edit — the serve infra is now in place.
 - **Residual whitespace-prefixed hole (open `low` issue, Codex P2):** the same predicate still treats a
   `//` preceded by whitespace as a comment, so the (rare, mostly-invalid) whitespace-before-URL forms
   `<script src = //cdn...>` and CSS `url( //cdn...)` are stripped and the ban misses them. This is NOT a
