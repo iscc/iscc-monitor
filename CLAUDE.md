@@ -22,6 +22,15 @@ target by `/goal` or a scheduled task. Specs are the source of truth (`.claude/p
 ADR-0010); the loop's moving state lives in `.claude/context/`. See
 `.claude/skills/build/SKILL.md` and `.claude/skills/build/AUTOMATION.md`.
 
+### Building the Surface-C verifier site
+
+The standalone Independent Verification app (Surface C, hosted at `monitor.iscc.codes`) is a static
+site. `cmd/verifier-site` is its reproducible build command: it renders `verifier.Handler`'s page to
+`index.html` and copies every `/_ds/` asset (the DS token/font stylesheets, the woff2 binaries, the Go
+WASM runtime loader, and the SRI-pinned `verify.wasm`) into an output directory, so the bytes are
+identical to what the handler golden tests gate. Run `go run ./cmd/verifier-site -out dist` (default
+`dist/`); the GitHub-Pages deploy publishes that tree.
+
 ## Running a local dev instance
 
 The monitor is a single binary (`cmd/iscc-monitor`) configured entirely through environment variables
