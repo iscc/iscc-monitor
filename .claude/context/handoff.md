@@ -1,61 +1,68 @@
-## 2026-06-22 — Review of: Pin the Compose volume name so the OPERATING.md volume-prep `chown` matches what Compose mounts
+## 2026-06-22 — Confirm the two iscc-infra ops `critical`s are answered verbatim by `deploy/OPERATING.md`, then prune them
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Confirmed clause-by-clause that the deployed `deploy/OPERATING.md` answers both open iscc-infra
+`critical` Verify bars (route-exposure/`/metrics` and egress/footprint), then deleted those two resolved
+`critical` entries from `issues.md`. This was a verification + prune step — no Go source, no doc change.
+There are now **0 open `critical` entries**.
 
-**Summary:** Doc-only, one-file fix: `deploy/OPERATING.md`'s Compose `volumes:` block now pins
-`name: monitor-data` so the documented `chown` prep (`docker run --rm -v monitor-data:/data alpine
-chown -R 65532:65532 /data`) operates on the SAME engine volume `docker compose up` mounts, plus a
-one-clause prose note explaining the `name:` pin is what aligns the literal-name prep with the mount.
-The change is scope-clean (zero Go, no new Compose file, no other section touched), internally
-consistent (Compose path and bare `docker run` path now both use the literal `monitor-data`), and
-all gates are green. This was the last doc caveat on the persistence-contract `critical`, which I
-verified is now answered end-to-end and closed.
+**Files changed:**
+- `.claude/context/issues.md`: deleted the two resolved `critical` entries ("Decide which routes are safe
+  to publish at the public vhost (especially /metrics)" and "Document egress + resource footprint for box
+  sizing"), title line through `**Spec:**` line each. The explanatory iscc-infra HTML comment block, the
+  `---` separators, and the container-image `low` tracking entry are untouched. No other entry renumbered
+  or reworded.
 
-**Verification:**
-- [x] `grep -nA2 '^volumes:'` shows `monitor-data:` with child `name: monitor-data` (lines 204-206) — PASS.
-- [x] Literal volume name matches: `chown` prep target (`-v monitor-data:/data`) == pinned Compose `name:` (both `monitor-data`); `grep -c monitor-data` = 10 — PASS.
-- [x] `mise run check` green — 28 packages `ok` (all cached; no `.go` file touched) — PASS.
-- [x] `gofmt -l .` empty — PASS.
-- [x] No tracked Compose file added: `test ! -f docker-compose.yml && test ! -f compose.yaml` exits 0 — PASS.
-- [x] Other persistence claims intact: `recreate the volume on a schema change`, `65532`, `/etc/iscc-monitor/realm.txt` all still match — PASS.
-- [x] Persistence `critical` Verify bar met end-to-end: DB path + volume + "back up this one file" (§State, volume & backup, lines 40-59), non-root uid 65532, migration issue linked with "recreate volume on schema change" interim policy (§Migration policy, lines 71-84) — PASS, critical closed.
-- [x] Gate-circumvention scan over unpushed commits (`@{upstream}..HEAD`): doc-only, no `nolint`/`t.Skip`/build-tag/deleted-assertion — N/A (clean).
-- [x] Trust-root oracle gate (notecheck / golden vectors / hub receipt): N/A — no signature/Merkle/proof code touched.
+**Verification:** `mise run check` → exit 0, all 28 packages `ok` (all cached; no `.go` file touched — a
+no-op confirmation the prune broke nothing). Per-criterion:
+- [x] Critical 1 entry absent: `! grep -q "Decide which routes are safe to publish at the public vhost"` → PASS.
+- [x] Critical 2 entry absent: `! grep -q "Document egress + resource footprint for box sizing"` → PASS.
+- [x] 0 open `critical` ENTRIES: `grep -cE "^- \*\*Priority:\*\* critical$"` → `0` (the anchored, exact
+  match; see Notes for why `next.md`'s un-anchored `grep -c "Priority:\*\* critical"` prints `1` not `0`).
+- [x] Container-image tracking entry survives: `grep -q "Publish a deployable container image to GHCR"` → PASS (prune was surgical).
+- [x] `deploy/OPERATING.md` unchanged: `git diff --stat deploy/OPERATING.md` empty → PASS.
+- [x] `gofmt -l .` empty → PASS.
 
-**Issues found:** (none) — the fix is correct and complete. Closed the `normal` "Compose volume-prep
-`chown` targets the wrong volume" (now fixed + verified) and the `critical` "Persistence contract for
-the SQLite DB volume + acknowledge the in-place migration hazard" (Verify bar met end-to-end). The
-migration-hazard half remains tracked separately by the standing `normal` "No on-disk DB migration
-story" (which the doc now explicitly links).
+**Clause-by-clause confirmation (the justification for the prune):**
+- **Critical 1 — routes / `/metrics`:** "documented allow/deny list of public paths" → §"Route exposure &
+  the `/metrics` decision", the **Public by design** bulleted list (OPERATING.md lines 107-113: `/`,
+  `/<domain>`, `/<domain>/log/…`, `/inclusion/…`, `/_ds/…`, `/healthz`, `/version`) PLUS the explicit
+  **deny-`/metrics`-at-Caddy** recommendation for the public vhost (lines 119-130). "Confirm no route needs
+  auth and none is unsafe to expose" → "**No route carries a secret** … the monitor holds **no signing key**
+  in v1 … no route needs authentication" (lines 115-117). Every clause maps.
+- **Critical 2 — egress + footprint:** "lists the egress endpoints" → §Egress (lines 134-147): each hub's
+  `/log` tiles, each hub's `/.well-known/did.json` (did:web, ADR-0009), the OTS calendar
+  `https://alice.btc.calendar.opentimestamps.org` (ADR-0004). "ballpark RAM / CPU / disk-growth for an
+  N-hub realm" → §Footprint (lines 149-166): resident memory (tens of MB), near-idle CPU with per-poll
+  bursts, disk-growth = mirror-BLOBs variable + the DO disk-usage-alert recommendation, scoped to the
+  2-hub testnet realm. Every clause maps.
 
-**Codex second opinion:** Clean. Verdict: "The change only updates deployment documentation to pin the
-Compose volume name and align the documented chown command with the mounted volume. The Compose syntax
-and surrounding instructions are consistent with the stated deployment flow, and no blocking
-correctness issues are introduced." No findings to triage; matches my independent assessment.
-
-**Visual check:** n/a — no SSR surface changed (doc-only `deploy/OPERATING.md` edit).
-
-**Next:** Confirm/prune the remaining two iscc-infra `critical`s, both answered in substance by
-`deploy/OPERATING.md` and reviewer-spot-checked this iteration: (1) **route exposure / `/metrics`** —
-§"Route exposure & the `/metrics` decision" (lines 98-130) carries an explicit allow/deny
-recommendation (deny `/metrics` at Caddy, scrape internal); (2) **egress + footprint** — §Egress
-(lines 132-147: hub `/log` + `did.json` + OTS calendar host) + §Footprint (lines 149-166: RAM/CPU
-estimates + the disk-growth-of-mirror-BLOBs variable + a DO disk-usage-alert recommendation). Both have
-doc-closeable Verify bars that look met; `define-next` should confirm each verbatim and prune, or — if
-either is judged to need genuine human/infra acceptance rather than a doc — surface it as a STOP edge
-rather than spinning on cosmetic chrome (per the standing "loop stalls on human-blocked DONE" memory).
+**Next:** With both iscc-infra `critical`s closed, the DONE-blocker scan is now **0 critical, 5 normal**.
+The standing memory ("loop stalls on human-blocked DONE") applies: `define-next` should now triage the
+five open `normal`s against the state→target gap. The doc-/code-closeable ones look like the DB-migration
+mechanism `normal` (ADR-0007, a real first-migration design decision — needs a grilling pass, not a quick
+edit) and the `publish.yml`/`pages.yml` `workflow_dispatch` ref-guard `normal` (a small, self-contained
+workflow edit — good fold-in when a workflow file is next touched, and it can carry the `pages.yml`
+Node-20 action bumps `low` along). The other three `normal`s are design-honesty/scope questions (the `/`
+"recent declarers" hero footer needs a recent-lookup history the store doesn't track; the WASM
+signature-half gap needs a browser did:web design pass; the per-hub-Anchor honesty question wants a design
+decision) — surface them as STOP/design edges rather than spinning on chrome if no code-closeable `normal`
+remains.
 
 **Notes:**
-- After this commit: **2 critical, 5 normal** open (was 3 critical, 6 normal). DONE requires 0 critical
-  AND 0 normal, so the loop stays CONTINUE.
-- The `name:` pin is standard Compose syntax (a `name:` key nested under the volume-name key); I
-  visually confirmed the indentation (2 spaces `monitor-data:`, 4 spaces `name:`). PyYAML was not
-  available in the env to machine-validate, but the fragment is trivially well-formed.
-- No `learnings/` detail file applies — a one-time doc-correctness fix with no recurring
-  forward-looking pitfall (advance read `config.md` to confirm the `ENV`/no-default claims stay
-  accurate; they do). Nothing promoted to the `learnings.md` index.
-- The remaining `normal`s (DB-migration hazard, `/` "recent declarers" footer, WASM signature-half gap,
-  per-hub-Anchor design-honesty question, `publish.yml` ref-guard) are each their own later step; none
-  was touched here. Fold-in candidate when a workflow file is next touched: the
-  `publish.yml`/`pages.yml` `workflow_dispatch` ref-guard + the `pages.yml` Node-20 action bumps.
+- **`next.md` Verification expected `grep -c "Priority:\*\* critical"` to print `0`; it prints `1`.** That
+  single residual match is the file's **format-legend line** (line 9: `- **Priority:** critical | normal |
+  low`), which is permanent entry-format scaffold and MUST NOT be removed — it is not an open issue. The
+  honest count of open `critical` ENTRIES is `0`, proven by the anchored grep
+  `grep -cE "^- \*\*Priority:\*\* critical$"` → `0` (the legend's `critical | normal | low` does not match
+  `critical$`). So the spirit of the gate (0 open criticals) is met; the literal un-anchored count is an
+  artifact of the legend line, not a stale entry. Flagging so `review` doesn't read the `1` as a missed prune.
+- Honesty check passed: the prune is justified **only because** every Verify clause maps to a concrete line
+  in the deployed doc (mapping above), not to make the count look smaller. No clause was found unanswered,
+  so no entry was left open.
+- Per ADR-0013 Consequences, the remaining iscc-infra residual (the Caddy deny-rule enforcement, box
+  sizing, the per-instance `/metrics` exposure choice) is explicitly **non-loop-gating** — it lives in
+  iscc-infra, not this repo, and does not gate DONE here. The doc-closeable half (which the loop owns) is
+  what these two entries tracked, and it is closed.
+- No `learnings/` detail file needed an append — a doc-presence prune touches no recurring forward-looking
+  pitfall (read `config.md` per the Reference list to confirm the env-key claims `OPERATING.md` references
+  via CLAUDE.md's table stay accurate; they do). Nothing promoted to the `learnings.md` index.
