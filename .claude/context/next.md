@@ -1,164 +1,78 @@
 # Next Work Package
 
-## Step: OTS upgrade-loop core — deterministic `OTSTick` over an injected `Upgrader` seam, with `Attempts`/`NextRetry` back-off
+## Step: OpenTimestamps adapter — `internal/ots` confirmed-check over `nbd-wtf/opentimestamps`, golden-tested offline against the library's bundled `.ots` vectors
 
 ## Advances
-The **OTS / Bitcoin anchoring** milestone (target.md): *"stamp each distinct observed root daily
-(`UNIQUE(hub, tree_size, root)`) + background upgrade loop (pending → Bitcoin-confirmed) + serve
-`.ots`; never blocks the follower. **Verify:** a stamped root upgrades to Bitcoin-confirmed and the
-served `.ots` verifies with the standard `ots` client."*
+Toward the **OTS / Bitcoin anchoring** milestone Verify criterion (`target.md` lines 199-203):
 
-This is the **background upgrade loop** half of that criterion, and the directive the latest
-`handoff.md` `**Next:**` names verbatim ("read `store.PendingOTS`, … flip rows to confirmed via
-`MarkOTSUpgraded` … where the `Attempts`/`NextRetry` retry-policy columns finally get exercised … runs
-in its own goroutine off the poll path"). The store learnings flag exactly this gap:
-"`Attempts`/`NextRetry` are persisted+round-tripped but no method increments `Attempts` or sets a
-back-off `NextRetry` yet — that retry policy belongs to the upgrade loop." No `critical`/`normal` issue
-preempts milestone work; the 3 open `normal` issues are all "fix-on-next-touch" items in surfaces this
-step does not touch.
+> stamp each distinct observed root daily … + background upgrade loop (pending → Bitcoin-confirmed) +
+> serve `.ots`; **never blocks the follower**. **Verify:** a stamped root upgrades to Bitcoin-confirmed
+> and the served `.ots` verifies with the standard `ots` client.
 
-**Skeleton-first (target.md rule):** the *full* upgrade loop (pull in `nbd-wtf/opentimestamps`,
-calendar HTTP, Bitcoin-header confirmation, the `.ots` route, certificate §5) is far larger than one
-≤3-file step and mixes an unverifiable live-network path with testable retry logic. This step lays the
-**verifiable skeleton**: the pure, deterministic retry-policy core driven by an injected `Upgrader`
-seam, golden-tested with no live network — closing the loop's *control* logic. The real
-`opentimestamps`-backed `Upgrader` (the first `go.mod`/`go.sum` change), the `.ots` route, and cert §5
-are the named sub-steps under `## Not In Scope`, so later iterations continue this arc.
+This is the **crypto-payload first sub-step** of that criterion, not more plumbing. The milestone as a
+whole — real `Upgrader` closure + live `Run` wiring in `main.go` + the `.ots` route + certificate §5 — is
+5+ files and cannot land as one ≤3-file step. The drift watch-line in `state.md` (lines 49-51) warns that
+"a *fifth* plumbing step that still does not call `OTSTick` from `main.go` with a real calendar client
+would read as drift." This step is deliberately **not** a fifth plumbing step: it is the
+`go.mod`/`go.sum` dependency add (the first for this milestone) plus the pure parse/serialize/confirmed
+seam every remaining sub-step reads through, and it is **where the `ots verify` crypto-oracle gate first
+applies** (`target.md` lines 51-54; `state.md` line 120). The `Upgrader` closure + `main.go` wiring is the
+named, immediate next sub-step (see `## Not In Scope`) and becomes a small closure *because* this seam
+exists — without it the `Upgrader` would have to inline raw library calls inside `internal/follower`,
+breaking the established "follower imports no anchoring package" decision (`follower.md` lines 118-124).
+
+No `critical`/`normal` issue preempts this milestone work; the 3 open `normal` issues are all
+"fix-on-next-touch" items in surfaces (`registry`, `certificate/handler.go`) this step does not touch.
 
 ## Goal
-Give the monitor a deterministic, testable background upgrade loop that reads pending stamped roots,
-asks an injected `Upgrader` whether each is Bitcoin-confirmed yet, and either marks it confirmed
-(`MarkOTSUpgraded`) or records a backed-off retry (`Attempts++`, `NextRetry` pushed out) — without ever
-touching the follower poll path or the network in tests. This is the control core every later OTS
-sub-step (real calendar client, `.ots` route, cert §5) plugs into.
+Add a pure `internal/ots` adapter wrapping `github.com/nbd-wtf/opentimestamps` that answers the one
+question the upgrade loop, the `.ots` route, and certificate §5 all need: **given serialized `.ots`
+bytes, is this root Bitcoin-confirmed yet, and at what block height?** Pin it to ground truth with a
+network-free golden test over the library's own bundled `.ots` example fixtures.
 
 ## Scope
-- **Create**: `/workspace/iscc-monitor/internal/follower/otsloop.go` — the `Upgrader` seam (a func
-  type), an `UpgradeResult` (confirmed vs still-pending), and a deterministic
-  `OTSTick(ctx, st, up Upgrader, now time.Time) error` that drives one pass over `store.PendingOTS`.
-  (Tests: `/workspace/iscc-monitor/internal/follower/otsloop_test.go`.)
-- **Modify**:
-  - `/workspace/iscc-monitor/internal/store/ots.go` — add ONE leaf method
-    `MarkOTSAttempted(ctx, hubID int64, treeSize uint64, root []byte, attempts int64, nextRetry
-    time.Time) error` (plain `UPDATE … SET attempts=?, next_retry=?`, `RowsAffected`-ignored like
-    `MarkOTSUpgraded`/`SetCoverage`); and narrow `PendingOTS` so the loop only sees rows whose back-off
-    has elapsed — add a `now time.Time` arg and `AND (next_retry IS NULL OR next_retry <= ?)` to its
-    `WHERE`.
-  - `/workspace/iscc-monitor/internal/store/ots_test.go` (test, not counted) — `MarkOTSAttempted` +
-    `PendingOTS` back-off-filter coverage.
-
-  **Two production files** (`otsloop.go`, `ots.go`). The third allowable production slot is intentionally
-  left unused — `cmd/iscc-monitor/main.go` wiring of a real `Run` goroutine is **Not In Scope** (the real
-  `Upgrader` does not exist yet; wiring a no-op loop would be dead code).
+- **Create**: `/workspace/iscc-monitor/internal/ots/ots.go` — the adapter: `Confirmed(otsBytes []byte) (confirmed bool, height int64, err error)`. Keep the surface minimal (YAGNI); add a thin serialize/parse helper ONLY if needed to make the test hermetic.
+- **Create**: `/workspace/iscc-monitor/internal/ots/ots_test.go` — golden table test over the bundled example vectors (test file, not counted).
+- **Create**: `/workspace/iscc-monitor/internal/ots/testdata/` — copy the **load-bearing fixtures** into the repo (see Implementation Notes) so the test is hermetic and never reads the module cache.
+- **Modify**: `/workspace/iscc-monitor/go.mod` + `/workspace/iscc-monitor/go.sum` — `go get github.com/nbd-wtf/opentimestamps@v0.4.0` (the first dependency add for this milestone; counts as one of the ≤3 non-test slots alongside `ots.go`).
 - **Reference**:
-  - `/workspace/iscc-monitor/.claude/context/learnings/store.md` — the OTS-CRUD idioms
-    (`MarkOTSUpgraded` ignores `RowsAffected`; `OTSStatusPending`/`OTSStatusConfirmed` are the single
-    source of the literals; the `Attempts`/`NextRetry` trap this step closes; `unixOrNil` zero-time→NULL).
-  - `/workspace/iscc-monitor/.claude/context/learnings/follower.md` — the `loop.go` cadence pattern: a
-    **pure, injected-`now`, deterministic** `Tick` with all wall-clock confined to `Run`'s ticker; tests
-    never sleep; a flaky item logs-and-continues, the pass returns the first error, never aborts (mirror
-    this for `OTSTick`); `AlertFunc` is a func seam, not an interface (YAGNI) — model `Upgrader` on it.
-  - `/workspace/iscc-monitor/internal/store/ots.go` — `OTSRecord`, `PendingOTS`, `MarkOTSUpgraded`
-    signatures to port the new method/arg against.
-  - `/workspace/iscc-monitor/internal/follower/loop.go` — `Tick`/`due()`/`Run` shape to mirror.
-  - `/workspace/iscc-monitor/.claude/plans/cosmic-baking-octopus.md` §"OpenTimestamps (ADR-0004)"
-    (lines ~48, 81-83): "background upgrade loop (pending → Bitcoin-confirmed)", calendar-attested
-    server-side, "OTS **never blocks** the follower".
+  - `/workspace/iscc-monitor/.claude/context/learnings/follower.md` (lines 108-130 — the `Upgrader` func-seam decision + the OTS-never-blocks invariant this adapter serves; `UpgradeResult{Confirmed, OTSBytes, BTCHeight}` shape).
+  - `/workspace/iscc-monitor/.claude/context/learnings/store.md` — the `OTSRecord` columns + `unixOrNil`/zero-as-NULL conventions the loop carries (`BTCHeight int64`).
+  - `/workspace/iscc-monitor/internal/follower/otsloop.go` — the `UpgradeResult{Confirmed bool; OTSBytes []byte; BTCHeight int64}` this adapter must feed.
+  - `/workspace/iscc-monitor/internal/store/ots.go` — `OTSRecord` (the `OTSBytes []byte`, `BTCHeight int64` columns).
+  - `/workspace/iscc-monitor/cauldron/iscc-hub/specs/iscc-log.md` §12.1 (line 356 — Bitcoin anchoring via OpenTimestamps).
 
 ## Not In Scope
-- **Do NOT add `github.com/nbd-wtf/opentimestamps`** (or any calendar/Bitcoin dependency) to
-  `go.mod`/`go.sum` this step. The `Upgrader` stays an injected seam; the *real* calendar-HTTP
-  `Upgrader` implementation + the dependency add is the **next** sub-step.
-- **Do NOT add the `.ots` HTTP route** or wire it into any serve handler — later sub-step (reads
-  `OTSForRoot`).
-- **Do NOT touch certificate §5 / `HasClause5`** (`internal/certificate/handler.go:286`) — it consumes
-  confirmed `ots` rows; it lands after the real `Upgrader` actually produces them.
-- **Do NOT wire a live `Run` goroutine into `cmd/iscc-monitor/main.go`** — there is no real `Upgrader`
-  to drive it yet; a no-op background loop would be dead code. Wire it when the real `Upgrader` lands.
-- **Do NOT change the follower poll path** (`PollHub`/`stampRoot`/`loop.go` `Tick`/`Run`) — the upgrade
-  loop is a *separate* driver; OTS must never block the follower (the stamp already runs on the verified
-  path; this loop only upgrades pending rows).
-- Do NOT touch the three open `normal` issues (ForceQuery, `host:port` DID, §6 timestamp) — none lie on
-  this path.
+- **The real `Upgrader` closure + live `Run` wiring in `main.go`** — the immediate NEXT sub-step. It will (a) make `stampRoot` actually submit to a calendar via `opentimestamps.Stamp` and persist the initial sequence bytes into `OTSRecord.OTSBytes`/`CalendarURLs` (today `stampRoot` writes a bare pending row with no bytes — `internal/follower/follower.go:410-421`), (b) implement the `follower.Upgrader` as a closure that calls `opentimestamps.UpgradeSequence` then this adapter's `Confirmed`, and (c) add the `Run`-style ticker wrapper that calls `OTSTick` and wire it into `cmd/iscc-monitor/main.go` off the poll path (`defer Stop()`, log-and-continue). That closes the "no production caller" drift line.
+- The `.ots` HTTP route (reads `OTSForRoot`) — a later sub-step.
+- Certificate **§5 BITCOIN ANCHOR** (`HasClause5` at `internal/certificate/handler.go:286`) — a later sub-step.
+- **Live calendar / Bitcoin RPC I/O in this step.** No `opentimestamps.Stamp`, no `UpgradeSequence`, no `Verify(bitcoin, …)`, no `NewEsploraClient`. This adapter only *parses* already-serialized `.ots` bytes and classifies them; network submission/upgrade belongs to the `Upgrader` sub-step.
+- The deferred `host:port` DID-encoding `normal` issues — not on this path; `handler.go` is untouched here.
 
 ## Implementation Notes
-- **Mirror `loop.go`'s shape, do not invent a new one.** `OTSTick(ctx, st, up, now)` is the pure
-  injected-`now` analogue of `Tick`: read `st.PendingOTS(ctx, now)` (now back-off-filtered), iterate
-  oldest-first, and for each row call `up(ctx, row)`; **all wall-clock stays out of `OTSTick`** (the
-  caller injects `now`), exactly like `Tick`/`due()`. A `Run`-style ticker wrapper is optional and, if
-  added, must mirror `loop.go`'s `Run` (own ticker, `defer Stop()`, log-and-continue, only ctx
-  cancellation ends it, untested-by-design per the follower learnings) — but prefer to leave `Run` for
-  the wiring sub-step and keep this step to the testable `OTSTick` + store method.
-- **`Upgrader` seam = a func type, not an interface (YAGNI, matches `AlertFunc`).** Suggested:
-  `type Upgrader func(ctx context.Context, r store.OTSRecord) (UpgradeResult, error)` returning
-  `UpgradeResult{Confirmed bool; OTSBytes []byte; BTCHeight int64}`. The real calendar client becomes a
-  closure of this type next step. Keeping it a func keeps `internal/follower` import-free of any
-  anchoring package and the store a leaf.
-- **Per-row outcomes:**
-  - `Upgrader` returns `Confirmed==true` → `st.MarkOTSUpgraded(ctx, r.HubID, r.TreeSize, r.Root,
-    res.OTSBytes, res.BTCHeight, now)` (the row drops out of future `PendingOTS`).
-  - `Upgrader` returns `Confirmed==false`, `err==nil` (calendar says "not yet Bitcoin-confirmed") →
-    record a back-off: `st.MarkOTSAttempted(ctx, …, r.Attempts+1, now.Add(backoff(r.Attempts+1)))`.
-  - `Upgrader` returns a non-nil `err` (transport fault) → ALSO a back-off (`Attempts+1`, pushed
-    `NextRetry`) and **log-and-continue** (this single hub/row fault must not abort the pass), then fold
-    into `firstErr` and `return firstErr` at the end — the exact `loop.go` `Tick` error discipline. OTS
-    faults NEVER freeze and NEVER surface to the follower (anchoring is best-effort, ADR-0004 +
-    learnings "OTS never blocks").
-- **`backoff(attempts)` is a tiny pure helper** (e.g. capped exponential: `base << min(attempts, cap)`
-  clamped to a `max` — pick simple, document the cap). Make it a pure function so it is directly
-  golden-testable; the OTS-never-blocks rule means exact cadence is not safety-critical, but the
-  function must be deterministic and monotonic up to the cap.
-- **`MarkOTSAttempted` ports `MarkOTSUpgraded` verbatim** minus the status/btc columns: plain
-  `UPDATE ots SET attempts=?, next_retry=? WHERE hub_id=? AND tree_size=? AND root=?`,
-  `RowsAffected`-ignored (idempotent/absent re-mark is a no-op, the `SetCoverage`/`MarkOTSUpgraded`
-  idiom), `unixOrNil(nextRetry)` for the zero-time→NULL convention. Do NOT touch `status` here — a
-  back-off keeps the row `pending` so `PendingOTS` re-surfaces it once `next_retry` elapses.
-- **`PendingOTS` gains a `now time.Time` arg + `AND (next_retry IS NULL OR next_retry <= ?)`.** Bind
-  `now.Unix()` directly (NOT `unixOrNil` — `now` is never the zero time here; a freshly-stamped row has
-  `next_retry == NULL` so it is immediately due via the `IS NULL` leg). `grep -rn "PendingOTS"
-  --include='*.go'` confirms `PendingOTS` has **no production caller yet** (only `ots_test.go`), so the
-  only call-site edits are the test + the new loop — re-verify with that grep before editing.
-- **Store stays a leaf** (learnings durable rule): `MarkOTSAttempted` adds no import; verify
-  `go list -deps ./internal/store | grep '^net/http'` stays empty and the package `.Imports` stay
-  `context database/sql embed errors fmt time` + the sqlite driver.
-- **Oracle/conformance gate is N/A** for this slice (learnings + handoff precedent): it moves an opaque
-  `pending`→`confirmed`/back-off over an already-fsck-verified accepted root; no
-  signature/RFC-6962/Merkle/did:web/proof code added or changed. The `Upgrader` is injected, so tests
-  use a fake confirming/declining/erroring upgrader — no `ots verify` crypto in this step (that lands
-  with the real `Upgrader`). State this N/A explicitly in the handoff.
-- **Tests (seam-based, observable store outputs only — never loop internals, per PRD Testing
-  Decisions):** seed `ots` rows via `RecordOTS`, then drive `OTSTick` with fake `Upgrader`s and assert
-  on `OTSForRoot`/`PendingOTS` read-back:
-  - confirming upgrader → row becomes `OTSStatusConfirmed` with the returned `OTSBytes`/`BTCHeight`,
-    drops out of `PendingOTS(ctx, later)`;
-  - declining upgrader (`Confirmed==false, err==nil`) → row stays `pending` with `Attempts==1` and a
-    `NextRetry` in the future; a second `OTSTick` at the same `now` does NOT re-process it
-    (`PendingOTS(ctx, now)` excludes it); at `now+backoff` it re-surfaces and `Attempts==2`;
-  - erroring upgrader → back-off recorded AND `OTSTick` returns the wrapped first error
-    (log-and-continue, pass not aborted — assert a second seeded row still got processed);
-  - `backoff()` golden table (monotonic up to the cap).
-- **Mutation-prove non-vacuous** (revert after): no-op the `MarkOTSUpgraded` call → the confirm test
-  FAILS (row stays pending); no-op `MarkOTSAttempted` → the back-off/`Attempts++` test FAILS; revert the
-  `next_retry` `WHERE` clause → the "not re-processed before back-off elapses" assertion FAILS.
+- **Library API (verified against v0.4.0 offline):** `opentimestamps.ReadFromFile(data []byte) (*File, error)` parses serialized `.ots` bytes; `File.GetBitcoinAttestedSequences() []Sequence` returns the sequences that terminate in a Bitcoin attestation; `Sequence.GetAttestation() Attestation` yields `Attestation{BitcoinBlockHeight uint64, CalendarServerURL string}`. So `Confirmed` is: parse → if `len(GetBitcoinAttestedSequences()) > 0` take `[0].GetAttestation().BitcoinBlockHeight` → `(true, int64(height), nil)`; else `(false, 0, nil)` (still-pending is NOT an error). A parse error from `ReadFromFile` is wrapped and returned (`fmt.Errorf("ots.Confirmed: parse: %w", err)`) — fail-closed, never a silent confirmed.
+- **`BitcoinBlockHeight` is `uint64`; the store/`UpgradeResult` carry `int64`.** Cast `int64(height)`; a real Bitcoin height never overflows int64. Match `UpgradeResult.BTCHeight int64` and `OTSRecord.BTCHeight int64` so the next sub-step plugs in with no conversion seam.
+- **Golden vectors = the library's own bundled `examples/*.ots` (true external oracle, NOT self-referential).** These `.ots` files were produced by the real OpenTimestamps ecosystem (real Bitcoin attestations), so asserting our adapter's verdict against them is the `ots verify` oracle this milestone's Verify demands — the LLM reviewer is explicitly NOT ground truth for this path (`target.md` lines 51-54). Probed offline (under `$(go env GOMODCACHE)/github.com/nbd-wtf/opentimestamps@v0.4.0/examples/`), the deterministic classification is:
+  - **Confirmed:** `hello-world.txt.ots` → height **358391**; `empty.ots` → height **129405**.
+  - **Pending (not confirmed):** `incomplete.txt.ots`, `merkle1.txt.ots`, `merkle2.txt.ots`, `two-calendars.txt.ots` → `(false, 0)`.
+  - **AVOID** `known-and-unknown-notary.txt.ots` / `unknown-notary.txt.ots` — they carry a deliberately-unsupported attestation type and `ReadFromFile` *errors* on them; useful only as a parse-error negative case, never as "pending".
+  - Copy at minimum `hello-world.txt.ots` (confirmed, height 358391) + `merkle1.txt.ots` (pending) into `internal/ots/testdata/` so the test is hermetic (do NOT read `$GOMODCACHE` at test time). Hardcode the expected `(confirmed, height)` as literals — ground truth, not derived from our code. Optionally add `empty.ots` as a second confirmed case.
+- **Purity:** keep `internal/ots` a pure parser leaf — its import closure must stay free of `net`/`net/http`/`database/sql` for the symbols it actually uses. The library's `bitcoind`/`esplora` clients pull `net/http`, so import **only** the parse/serialize symbols. Decide WASM-shareability by `go list -deps ./internal/ots | grep '^net/http$'` and record the verdict in `.claude/context/learnings/` (create `learnings/ots.md` + a pointer row): `internal/ots` need NOT be WASM-pure like `proof/verify` (OTS confirmation is server-side), but it must not drag `net/http` into anything that IS WASM-shared. If the package-level closure unavoidably drags `net/http`, document that and confirm no WASM-pure package imports `internal/ots`.
+- **Docstrings:** file-level docstring states the adapter wraps `nbd-wtf/opentimestamps` to classify serialized `.ots` proofs for the upgrade loop / `.ots` route / §5; per-function evergreen docstrings; no "new"/"improved" wording (CLAUDE.md).
+- **Correctness rule (learnings.md):** "OTS never blocks the follower; calendars are best-effort." This adapter does NO I/O, so it trivially honors that — but note in the learnings file that the *next* sub-step's `Upgrader` must keep the network calls off the poll path so the wiring step doesn't regress it.
+- **Oracle gate now APPLIES to this package** (it interprets a Bitcoin attestation). The bundled-fixture golden test IS that gate; it must be non-vacuous — a test where flipping `Confirmed`'s `len(...) > 0` to `>= 0` or dropping the height assertion still passes is a vacuous gate. Assert the pending fixture `confirmed == false` AND `height == 0`, and the confirmed fixture the exact literal height.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty,
-  excluding gitignored `cauldron/`).
-- `go test -count=1 -run TestOTS ./internal/store ./internal/follower` passes (name the new tests
-  `TestOTS…` / `TestMarkOTSAttempted` / `TestPendingOTSBackoff` so this filter catches them all — the
-  filter caveat the prior OTS review flagged).
-- A confirming `Upgrader` over a seeded `pending` row leaves it `OTSStatusConfirmed` with the returned
-  `OTSBytes`/`BTCHeight` (`OTSForRoot` read-back) and absent from `PendingOTS(ctx, now)`.
-- A declining `Upgrader` leaves the row `pending` with `Attempts==1` and a future `NextRetry`; it is
-  excluded from `PendingOTS(ctx, now)` and re-surfaces at `PendingOTS(ctx, now+backoff)` with `Attempts`
-  incrementing.
-- `go list -deps ./internal/store | grep '^net/http'` is empty; `go.mod`/`go.sum` are byte-unchanged
-  (`git diff --name-only -- go.mod go.sum` empty) — no `opentimestamps` dependency added this step.
-- Mutation check: no-op `MarkOTSUpgraded` FAILS the confirm test; reverting the `next_retry` `WHERE`
-  clause FAILS the back-off-exclusion test (proves non-vacuous), then reverted.
+- `go get github.com/nbd-wtf/opentimestamps@v0.4.0` succeeds and `go.mod`/`go.sum` carry the dependency (`git diff --name-only -- go.mod go.sum` is non-empty).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass; `gofmt -l .` excl. `cauldron/` empty).
+- `go test -count=1 -run TestOTSConfirmed ./internal/ots` passes (name the test `TestOTSConfirmed…` so the documented `-run TestOTS` shorthand catches it — the filter caveat the prior OTS reviews flagged).
+- Assertion: `ots.Confirmed(<hello-world.txt.ots bytes>) == (true, 358391, nil)`.
+- Assertion: `ots.Confirmed(<empty.ots bytes>) == (true, 129405, nil)` (if `empty.ots` is included).
+- Assertion: `ots.Confirmed(<merkle1.txt.ots bytes>) == (false, 0, nil)` (pending, not an error).
+- `go list -deps ./internal/ots | grep -c '^database/sql$'` is 0 (adapter is not a DB leaf; store stays uncoupled).
+- Mutation (non-vacuous, document in the advance handoff): reverting `Confirmed` to ignore the attested-sequence check (e.g. always return `(false, 0, nil)`) FAILS the confirmed-fixture assertions; dropping the exact-height literal would let a height regression pass, so the test pins the literal.
 
 ## Done When
-`OTSTick` deterministically upgrades a confirmed pending root via `MarkOTSUpgraded` and records a
-backed-off `Attempts`/`NextRetry` retry (via the new `MarkOTSAttempted` + `next_retry`-filtered
-`PendingOTS`) for a still-pending or erroring one — all golden-tested with an injected `Upgrader` and no
-new dependency — with `mise run check` green and the mutation checks proving the tests non-vacuous.
+`internal/ots.Confirmed` correctly classifies the bundled OpenTimestamps `.ots` golden vectors (the exact
+confirmed height for the attested fixtures, pending-not-error for a pending fixture) under a non-vacuous
+test, the `nbd-wtf/opentimestamps` dependency is added to `go.mod`/`go.sum`, and `mise run check` is green.
