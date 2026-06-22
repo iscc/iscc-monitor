@@ -42,18 +42,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `internal/config` stay untouched. The `Hub` literal needs `*uint16` HubIDs.
 
 - **Masthead identity is config-driven via `Handler(hubList, st, statuses, id dashboard.Identity)`** —
-  the SAME value `/` + dossier render (cert is the 3rd/final SSR-masthead port, byte-identical chrome; see
-  dashboard.md). Resolve ONCE at the top of `Handler` (cert-local `resolveIdentity` + `instanceFallback`/
-  `operatorFallback` literal consts, "MUST stay byte-identical" comment) and set `data.Instance/Operator`
-  on the value `buildData` RETURNS — NOT inside `buildData`, whose `certData{}` literal early-returns
-  bypass it — on BOTH the HTML AND `.bundle` branch (`serveBundle` ignores them; uniform so every honest
-  200 carries the masthead). NO Realm slot (thread only Instance/Operator). Fail-safe in the handler (not
-  main.go) → seam-testable regardless of env. **Test-collision trap:** a bare `Contains(body, "monitor
-  instance")` absence check is VACUOUS — the footer carries "issued by this monitor **instance**"
-  (cert.html:419). `TestCertificateRendersInstanceIdentity` pins the masthead element
-  `chrome-instance">monitor instance` on a malformed id (honest-200 masthead path), mutation-proven on the
-  `{{.Instance}}` binding AND `resolveIdentity` dropping the value; the operator fallback's literal `&`
-  renders `&amp;` (assert the escaped form). Oracle gate N/A (pure render; go.mod/go.sum byte-identical).
+  the SAME value `/` + dossier render (byte-identical chrome; dashboard.md). Resolve ONCE at the top of
+  `Handler` and set `data.Instance/Operator` on the value `buildData` RETURNS — NOT inside `buildData`,
+  whose `certData{}` literal early-returns bypass it — on BOTH the HTML AND `.bundle` branch. NO Realm
+  slot. Fail-safe in the handler (not main.go) → seam-testable. **Trap:** a bare `Contains(body, "monitor
+  instance")` is VACUOUS (the footer already carries "issued by this monitor **instance**").
+  - settled: cert-local `resolveIdentity`+`instanceFallback`/`operatorFallback` consts (the 3rd byte-
+    identical masthead copy — DRY debt filed `low`); pinned by `TestCertificateRendersInstanceIdentity`
+    on the `chrome-instance">monitor instance` element, mutation-proven (git history).
 
 - **§3 INCLUSION PROOF is gated on a fail-closed re-VERIFICATION, not a status flag.**
   `buildData` ports `serveVerify` over a `store.SQLiteFetcher`: `InclusionProofFromTiles` →
@@ -91,18 +87,30 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `logclient/checkpointkey_test.go`). Since `KeyIDFromCheckpoint` ignores the sig, the §4-happy test threads a
   real signed `Raw` while §3 callers keep `[]byte("raw")`.
   - settled: `found4` cache-hit gate pinned by `TestCertificateSigningKeyUncached` (git history).
-- **Any surface building a DID from a domain MUST `%3A`-encode the port** — a bare `host:port`
-  colon makes did:web read `8443` as a path segment, naming a different did.json than the key
-  resolved from. The §4 `SigningKeyDID` AND the proof-bundle `Hub.DID` both route through the local
-  `didWeb(domain)` helper (`handler.go:116`, `strings.Replace(domain, ":", "%3A", 1)`, the resolver's
-  idiom); a no-port domain round-trips byte-identical.
-  - settled: both DID sites CLOSED + pinned (`TestCertificateSigningKeyDIDPortEncoded`,
-    `…ProofBundleDIDPortEncoded`, `…DIDCleanDomain` regression), mutation-proven (git history).
+- **Any surface building a DID from a domain MUST `%3A`-encode the port** (else did:web reads `8443` as a
+  path segment, naming a different did.json). The §4 `SigningKeyDID` AND the proof-bundle `Hub.DID` route
+  through the local `didWeb(domain)` helper (`handler.go:116`, `strings.Replace(domain, ":", "%3A", 1)`).
+  - settled: both DID sites CLOSED + pinned (`…SigningKeyDIDPortEncoded`/`…ProofBundleDIDPortEncoded`/
+    `…DIDCleanDomain`), mutation-proven (git history).
 - **`html/template` entity-escapes base64 `+`/`/` in text nodes (`+`→`&#43;`)** — only the
   execution-path contextual escaper, not `html.EscapeString`. Any test asserting on rendered base64
   chips must `html.UnescapeString(body)` first (the §3/§5 tests do); the on-page entity escaping is
   correct/harmless rendering.
 
+- **Every rendered timestamp MUST be `.UTC().Format(time.RFC3339)`, never a bare `.Format`.** The store
+  reads coverage/anchor/key instants back via `time.Unix` (`store/hubs.go`, `ots.go`), which re-wraps
+  them in `time.Local` — so a bare `.Format(time.RFC3339)` emits the HOST's local offset (`…+01:00` on a
+  CET box) and the cert chips fail on every non-UTC host (CI is UTC, so it stays green there and only bites
+  a local dev box / non-UTC runner). All four cert chips are now `.UTC()`-normalized: §4 `SigningKeyRevoked`
+  + bundle key `Revoked` (`:962`/`:653`, untested — no revoked-key fixture yet), §5 `BTCConfirmedAt`
+  (`:1013`), Comparison-Anchor `CoverageSince` (`:1040`). Matches the rest of the federation
+  (dashboard/dossier/log-browser already render `Z`); this is the always-loaded Coverage-honesty rule's
+  byte-identical-output corollary AND the cross-platform quality bar. Test design (the non-vacuity trap):
+  the store round-trip strips a seeded `FixedZone` location, so the non-UTC offset can only be forced by
+  swapping `time.Local` for the test (scoped, `t.Cleanup`-restored; the cert suite has NO `t.Parallel`).
+  `TestCertificateRendersTimestampsInUTC` pins the §5 + coverage chips to `…Z` and bans `+01:00`,
+  mutation-proven on a UTC host (reverting either `.UTC()` re-introduces the offset and FAILS) — unlike the
+  two pre-existing TZ-sensitive tests, which only fail off-UTC. Future timestamp chips inherit this rule.
 - **§6 RECORD HISTORY is a pure store-read clause — renders unconditionally for a certifiable id.**
   Reuses the `seqs` from `SeqsForISCCID` (ascending), one `RecordAt(hubID, seq)` per row for its verbatim
   `note.$schema`, labelled by a LOCAL `recordKind` (the two FULL wire URIs + `kindUnknown`; `proofserve`'s
@@ -110,25 +118,21 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   accepted tree (`if seq >= hub.LastSize { continue }`, same boundary as §1) so a deletion above the
   accepted checkpoint is dropped; a `RecordAt` MISS lists the seq with the `kindUnknown` label, not a 500
   (only a DB fault 500s). `HasDeletion` ORs the per-row `isDeletion` for the deletion note.
-  - settled: `HasClause6`/`isDeletion` + the `· <ts>` timestamp (RFC-3339 VERBATIM, conditional
-    `{{if .At}}` so no trailing `· ` on timestamp-less rows; Z-suffixed UTC test data avoids `+`→`&#43;`)
-    pinned by `TestCertificateRecordHistory` (git history). REMAINING (visual polish, not filed): the
-    mockup humanizes to `2026-02-14 18:40 UTC` — a deliberate `time`-parse + format-policy step, not a
-    free follow-up.
+  - settled: `HasClause6`/`isDeletion` + the `· <ts>` timestamp pinned by `TestCertificateRecordHistory`
+    (git history). REMAINING (visual polish, not filed): the mockup humanizes to `2026-02-14 18:40 UTC` —
+    a deliberate `time`-parse + format-policy step, not a free follow-up.
 
 - **§5 BITCOIN ANCHOR reads the mirrored OTS row of §2's root and classifies via `ots.ConfirmedFor`
   (DIGEST-BOUND, not the digest-agnostic `ots.Confirmed`).** Inside `HasClause2`,
-  `st.OTSForRoot(ctx, hub.HubID, hub.LastSize, root)` keys on §2's RAW `[]byte` root (NOT the base64
-  `CheckpointRoot`), the same `(hub,size,root)` key the `.ots` route + stamp loop use; the classifier then
-  fail-closes unless the proof's committed `File.Digest` equals that root, so §5 vouches "block N" only for
-  a proof that provably commits to §2's accepted root (the re-VERIFICATION-not-a-flag index rule). Four
-  fail-closed states (ADR-0001/0004): a miss OR the empty-`OTSBytes` sentinel → §5 OMITTED; an unparseable
-  proof OR a digest mismatch → SILENT decline (the `cerr == nil` guard treats both identically, never 500);
-  a parseable, digest-bound proof → `HasClause5=true` (confirmed shows `block <height>` + `UpgradedAt`
-  RFC-3339; pending shows "awaiting Bitcoin confirmation"). `internal/ots` is NOT WASM-pure but certificate
-  is server-side only.
-  - settled: digest-binding gap CLOSED + five states pinned (`TestCertificateBitcoinAnchor*`, oracle
-    height 358391, `internal/ots/testdata` fixtures byte-identical — git history).
+  `st.OTSForRoot(ctx, hub.HubID, hub.LastSize, root)` keys on §2's RAW `[]byte` root (the same
+  `(hub,size,root)` key the `.ots` route + stamp loop use); the classifier fail-closes unless the proof's
+  committed `File.Digest` equals that root, so §5 vouches "block N" only for a proof provably committing to
+  §2's accepted root (the re-VERIFICATION-not-a-flag index rule). Four fail-closed states (ADR-0001/0004):
+  miss OR empty-`OTSBytes` sentinel → §5 OMITTED; unparseable OR digest-mismatch → SILENT decline (never
+  500); parseable+digest-bound → `HasClause5` (confirmed: `block <height>`+`UpgradedAt`; pending: "awaiting
+  Bitcoin confirmation"). `internal/ots` is NOT WASM-pure but certificate is server-side only.
+  - settled: digest-binding CLOSED + five states pinned (`TestCertificateBitcoinAnchor*`, oracle height
+    358391 — git history).
 
 - **COMPARISON ANCHOR is §2's `(size, root)` reframed as the monitor's own observation — a SEPARATE,
   distinctly-labelled element from §5, NOT Bitcoin.** Set `data.HasComparisonAnchor = true` inside the

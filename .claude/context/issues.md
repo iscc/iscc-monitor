@@ -277,48 +277,6 @@ filed it and does **not** affect priority.
   learnings.md always-loaded "gate a rendered ✓ on a re-VERIFICATION" (a full re-verification includes
   the signature + id binding, not inclusion math alone); `learnings/cmd-wasm.md` `isccVerifyInclusion` scope.
 
-## Pages custom domain is not bound by the artifact CNAME under Actions-based deploy — needs a one-time repo-settings step (else `/_ds/` asset paths break on the project URL)
-- **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed against the GitHub Pages Actions mechanism)
-- **RESOLVED (2026-06-22, end-to-end, live-verified):** The repo is now PUBLIC, Pages source = "GitHub
-  Actions", and the `monitor.iscc.codes` custom domain is bound in Settings → Pages (human). The one
-  remaining gap — the `github-pages` environment deployment-branch policy allowed only `main` while
-  `pages.yml` triggers on `develop` (the loop's develop-only working branch), which rejected the `deploy`
-  job in ~2s with zero steps — was fixed by adding `develop` to the environment's allowed deployment
-  branches (`POST …/environments/github-pages/deployment-branch-policies {"name":"develop"}`; allowed set
-  is now `{develop, main}`). Verified: dispatched run `27965858770` on `develop` went fully green (both
-  `render verifier-site` AND `deploy to monitor.iscc.codes`), and the live apex serves
-  `https://monitor.iscc.codes/` → 200 `text/html`, `/_ds/tokens.css` → 200 `text/css`,
-  `/_ds/verify.wasm` → 200 `application/wasm` (3,514,750 bytes) — root-absolute `/_ds/` paths resolve, so
-  the chrome-less/404 failure mode this issue feared is gone. This whole issue is now closed; prune it.
-  **Milestone implication for `update-state` to assess:** the WASM "published" half (target.md "the
-  verifier artifact hash matches the published value") is now no longer human-blocked — the byte-pinned
-  `verify.wasm` is publicly served from a public commit, which was the gating dependency.
-- **What / where / how to verify:** `.github/workflows/pages.yml:49-50` copies the tracked
-  `.github/pages/CNAME` to `dist/CNAME` to set the `monitor.iscc.codes` custom domain — but with the
-  modern Actions-based Pages deploy (`actions/deploy-pages@v4`), GitHub IGNORES a `CNAME` in the uploaded
-  artifact; the custom domain comes from the repository **Settings → Pages** (or the API), and the Pages
-  source must additionally be switched to "GitHub Actions". Both are one-time repo-config steps a workflow
-  file cannot assert. Consequence: on a fresh setup, until the custom domain is configured in Settings,
-  the deploy lands at the default project URL `iscc.github.io/iscc-monitor/`, where the verifier page's
-  root-absolute asset references (`href="/_ds/tokens.css"`, `src="/_ds/wasm_exec.js"`, etc.,
-  reviewer-confirmed in the generated `index.html`) resolve against the apex (`iscc.github.io/_ds/...`)
-  and 404 — the page renders chrome-less and the WASM never loads. On the apex custom domain
-  `monitor.iscc.codes` the same root-absolute paths resolve correctly, so the artifact is right; only the
-  domain binding is the gap. NOT a code defect and does NOT block this increment (the workflow correctly
-  builds + uploads the byte-pinned tree; the handoff already flags the human settings step; ADR-0003 +
-  next.md explicitly chose the tracked-CNAME approach, which is the correct mechanism for a branch-based
-  source and a harmless intent-documenting no-op under Actions). Codex's "broken absolute asset paths"
-  framing is REAL but contingent on the custom domain not being configured. Fix when `pages.yml` (or the
-  deploy docs) is next touched: either (a) add a short `## GitHub Pages setup` doc note (in CLAUDE.md or a
-  README) that the human must set the custom domain + "GitHub Actions" source once in repo Settings, OR
-  (b) keep the artifact CNAME AND document that it is a no-op under Actions, so the binding mechanism is
-  not silently assumed. Verify fixed: the deploy docs name the one-time Settings/API custom-domain step,
-  or the workflow/docs make the Actions-CNAME no-op explicit. (Operationally: a human confirms Pages
-  source = "GitHub Actions" and custom domain = `monitor.iscc.codes` + the DNS CNAME on first deploy.)
-- **Spec:** ADR-0003 "Pages-from-repo ties the deployed WASM to a public commit" + `.codes` custom domain;
-  target.md WASM "the verifier artifact … published value"; `learnings/ci.md` Pages-CNAME-no-op nuance.
-
 ## `pages.yml` actions target deprecated Node 20 — bump to current major versions
 - **Priority:** low
 - **Source:** [human] (deprecation warning surfaced on Pages run `27965858770`, 2026-06-22)
@@ -386,33 +344,6 @@ filed it and does **not** affect priority.
   the data does not support); ADR-0004 OTS async/best-effort; ADR-0010 Evidence-Ledger honesty;
   `.claude/design/ISCC Monitor - Realm Index.dc.html` per-hub anchorState model; `learnings/dashboard.md`
   per-hub-vs-per-checkpoint Anchor note; `internal/certificate/handler.go` §5 authoritative per-root surface.
-
-## Certificate renders coverage + §5-confirmation timestamps in LOCAL time, not UTC — TZ-dependent test failures (red on any non-UTC machine)
-- **Priority:** normal
-- **Source:** [review] (reviewer-found while running `mise run check`; root-caused this iteration)
-- **What / where / how to verify:** `mise run check` is RED on a non-UTC host:
-  `TestCertificateComparisonAnchor` (handler_test.go:1474) and `TestCertificateBitcoinAnchorConfirmed`
-  (handler_test.go:1684) fail because the rendered certificate formats a stored UTC timestamp in the
-  SERVER's LOCAL timezone instead of UTC. The tests expect the coverage-since chip `2026-01-05T09:00:00Z`
-  and the §5 confirmation chip `2026-02-14T18:40:00Z` (UTC, `Z`), but the body renders the SAME instants
-  as `2026-01-05T10:00:00+01:00` and `2026-02-14T19:40:00+01:00` (this box is CET = UTC+1). Reviewer
-  root-caused by extracting the rendered strings from both failure bodies — the offset, not the instant,
-  differs. NOT wall-clock-dependent (the prior advance handoff guessed "stale fixed timestamps vs today"
-  — that was wrong; the instants are correct, only the rendered zone is local). NOT introduced by the
-  config-leaf increment (`fb5ac18` touches zero cert code) — reviewer PROVED it pre-existing by running
-  the two tests on the parent commit `d7e1fdc` in a throwaway worktree (identical 2 failures). CI is
-  green because GitHub Actions runners run in UTC, where local == UTC; the prior cert review (`7a32458`,
-  "27 packages ok") similarly ran where local was UTC. Every other monitor surface renders RFC-3339 in
-  UTC `Z` (dashboard/dossier/log-browser), so this is the cert handler diverging, not the tests being
-  wrong. Fix when `internal/certificate/handler.go` is next touched: render every timestamp via
-  `.UTC().Format(time.RFC3339)` (the coverage-since chip + the §5 `BTCConfirmTime`/`upgraded_at` chip;
-  grep the handler for `.Format(time.RFC3339)` and ensure each value is `.UTC()`-normalized first) so the
-  output is locale-independent and matches the rest of the federation. Verify fixed: `go test -count=1
-  ./internal/certificate` passes regardless of `TZ` (e.g. `TZ=America/New_York go test ./internal/certificate`
-  is green); reverting the `.UTC()` normalization makes both tests FAIL again on a non-UTC host.
-- **Spec:** CLAUDE.md "Coverage" (RFC-3339 time honesty) + cross-platform requirement (tests must pass
-  regardless of host TZ); ADR-0010 Evidence-Ledger honesty; CLAUDE.md Testing ("ensure the test output
-  is clean and all tests pass").
 
 ## Masthead identity fallback consts are now duplicated across dashboard + dossier + certificate (3x) instead of one shared resolve leaf
 - **Priority:** low
@@ -483,7 +414,7 @@ filed it and does **not** affect priority.
      standing spec the loop verifies against — re-derive these if this list is pruned. -->
 
 ## Publish a deployable container image to GHCR (Dockerfile + push workflow)
-- **Priority:** normal
+- **Priority:** critical
 - **Source:** [human] (iscc-infra ops, pre-deploy blocker)
 - **What / where / how to verify:** There is no production Dockerfile (only
   `.devcontainer/Dockerfile`) and no image-publish workflow — `.github/workflows/ci.yml`
@@ -507,7 +438,7 @@ filed it and does **not** affect priority.
   entirely through environment variables".
 
 ## Trap SIGTERM so the container shuts down gracefully (run() handles SIGINT only)
-- **Priority:** normal
+- **Priority:** critical
 - **Source:** [human] (iscc-infra ops, container-lifecycle defect)
 - **What / where / how to verify:** `run()` binds shutdown to
   `signal.NotifyContext(context.Background(), os.Interrupt)` (`cmd/iscc-monitor/main.go:133`)
@@ -527,7 +458,7 @@ filed it and does **not** affect priority.
   and orchestrators terminate via SIGTERM).
 
 ## Provide a canonical, mountable testnet realm file (not testdata) + the instance identity env values
-- **Priority:** normal
+- **Priority:** critical
 - **Source:** [human] (iscc-infra ops, required config)
 - **What / where / how to verify:** `ISCC_MONITOR_REALM` is a REQUIRED path to the realm
   document, but the only realm file in the repo is `internal/registry/testdata/realm.txt`
@@ -548,7 +479,7 @@ filed it and does **not** affect priority.
   keys (`ISCC_MONITOR_INSTANCE`/`OPERATOR`/`REALM_NAME`); ADR-0009 domains-only realm.
 
 ## Persistence contract for the SQLite DB volume + acknowledge the in-place migration hazard
-- **Priority:** normal
+- **Priority:** critical
 - **Source:** [human] (iscc-infra ops, stateful deploy)
 - **What / where / how to verify:** `ISCC_MONITOR_DB` is the single SQLite file holding the
   whole network's state, including what the glossary calls *irreplaceable evidence*
@@ -569,7 +500,7 @@ filed it and does **not** affect priority.
   existing issue "No on-disk DB migration story".
 
 ## Decide which routes are safe to publish at the public vhost (especially /metrics)
-- **Priority:** normal
+- **Priority:** critical
 - **Source:** [human] (iscc-infra ops, exposure/security)
 - **What / where / how to verify:** Behind caddy-docker-proxy at `monitor-test.iscc.io`,
   every route on the single `:9464` mux is internet-facing: the dashboard / dossier / mirror
@@ -588,7 +519,7 @@ filed it and does **not** affect priority.
   reverse proxy may publish 80/443; bind debug ports to 127.0.0.1".
 
 ## Document egress + resource footprint for box sizing
-- **Priority:** low
+- **Priority:** critical
 - **Source:** [human] (iscc-infra ops, sizing)
 - **What / where / how to verify:** The candidate box (DO `iscc.ai`, 206.189.52.39) already
   runs search-test (cap 1.5 GB) + the status page, so this instance must be sized to fit.
