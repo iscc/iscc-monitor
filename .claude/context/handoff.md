@@ -1,76 +1,66 @@
-## 2026-06-22 — Review of: Close the CDN-free gate hole — narrow `stripLineComments` so protocol-relative `//cdn.` URLs trip `noExternalCDN`
+## 2026-06-22 — Build the verifier `.wasm` reproducibly (`mise run build:wasm`) and serve it byte-pinned at `/_ds/verify.wasm`
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Added a deterministic `mise run build:wasm` task (`GOOS=js GOARCH=wasm CGO_ENABLED=0 go build
+-trimpath -ldflags=-buildid= -o internal/web/verify.wasm ./cmd/wasm`), committed its byte-identical
+output (`internal/web/verify.wasm`), and wired it into the `/_ds/` static leaf as
+`GET /_ds/verify.wasm` (`application/wasm`, the same no-cache + strong-ETag + 304 + GET-only policy as
+`wasm_exec.js`). Pinned the published SHA-256 as `web.WasmVerifyHash` and added a regression-guard pin
+test plus a served-asset test, closing the "verifier artifact hash matches the published value" half of
+the WASM Verify clause.
 
-**Summary:** The advance narrowed the load-bearing `noExternalCDN` test helper's `stripLineComments`
-predicate (`internal/web/web_test.go:57`) from the over-broad `:`-only guard to a comment-context-only
-rule — `//` is a comment ONLY at line-start or when preceded by whitespace — and added a focused,
-mutation-proven regression test (`TestNoExternalCDNProtocolRelative`). The quoted-delimiter over-strip
-named in the closed issue (`src="//cdn..."`, `url("//cdn...")`) is genuinely fixed: those forms now
-survive the strip and trip the ban, while the byte-verbatim `wasm_exec.js` comment URL stays suppressed.
-Scope is exactly the one test-only file the next.md named; all gates green; the gate is strictly stronger
-than before. Codex raised one residual narrower latent case (whitespace-prefixed protocol-relative URLs),
-which I confirmed but filed as `low` — it is pre-existing (the old guard stripped it too), not a
-regression, not the form this step targeted, and triggered by no served asset.
+**Files changed:**
+- `mise.toml`: added `[tasks."build:wasm"]` (env `GOOS=js`/`GOARCH=wasm`/`CGO_ENABLED=0`, the reproducible
+  `-trimpath -ldflags=-buildid=` build) so the artifact is regenerable; `check` left unchanged (fast,
+  linux-only) per scope.
+- `internal/web/web.go`: added `WasmVerifyPath = "/_ds/verify.wasm"`, `WasmVerifyHash` (the published
+  lowercase-hex SHA-256), `contentTypeWASM = "application/wasm"`, `//go:embed verify.wasm var wasmVerify`,
+  and a `case WasmVerifyPath: writeAsset(w, r, wasmVerify, contentTypeWASM)` in `Handler()` (mirroring the
+  `wasm_exec.js` wiring; reused `writeAsset` unchanged); updated the package + `Handler` doc comments.
+- `internal/web/verify.wasm`: NEW committed reproducible build output (2,870,559 bytes, magic `00 61 73 6d`,
+  SHA-256 `17b0f4f81a0952c3bb8df1f85e300b90ea2d1f041a636d338cc00e38554445dc`).
+- `internal/web/web_test.go` (test): added `TestWasmVerifyServed` (200 / `application/wasm` / no-cache /
+  strong ETag / body == embedded bytes / `\0asm` magic) + `TestWasmVerifyHashPinned` (SHA-256 == const,
+  mutation-proven); extended the `TestIfNoneMatch304` and `TestMethodNotAllowed` path lists with
+  `WasmVerifyPath`; added `crypto/sha256` + `fmt` imports; updated the file doc.
+- `CLAUDE.md` (doc): added the `GET /_ds/verify.wasm` route beside `/_ds/tokens.css` (it had no prior
+  `/_ds/wasm_exec.js` entry to place it next to).
 
-**Verification:**
-- [x] `mise run check` green — `go build`/`go vet`/`go test`, all 25 packages `ok`.
-- [x] `gofmt -l .` empty (clean).
-- [x] `go test -count=1 -run TestWasmExec ./internal/web` → PASS (byte-verbatim `wasm_exec.js` still
-  passes `noExternalCDN`; its `// ` comment URL stays suppressed).
-- [x] `go test -count=1 -run TestNoExternalCDN ./internal/web` → PASS (the new regression test).
-- [x] Assertion: `stripLineComments(<script src="//cdn.jsdelivr.net/x.js">)` retains `cdn.` + `jsdelivr`
-  (host survives the strip, re-arming the ban). Confirmed by the test.
-- [x] Assertion: `stripLineComments("\t// (… https://github.com/golang/go/issues/28975)")` drops
-  `https://` (genuine comment URL still stripped — the test uses the exact `wasm_exec.js:288` bytes).
-- [x] Mutation check: reverted the predicate to the `:`-only guard → `TestNoExternalCDNProtocolRelative`
-  FAILS on all three protocol-relative assertions (cdn./jsdelivr/url() host stripped); restored
-  (byte-identical to HEAD, gofmt-clean). The gate hole is genuinely closed and the test is non-vacuous.
-- [x] Strict-improvement check: under the OLD `:`-only guard the quoted form was ALSO stripped, so this
-  change introduces ZERO new hole and closes the quoted-delimiter one — it tightens, never loosens.
-- [x] Gate-circumvention scan over all 7 unpushed commits (`git diff origin/develop..HEAD -- '*.go'`):
-  no `//nolint`, `t.Skip`/`SkipNow`, build-tag exclusions, swallowed errors, or deleted assertions
-  (the only source change is the predicate narrowing + the added test).
-- Oracle/conformance gate: N/A — test-helper change; no signature/RFC-6962/Merkle/did:web/fsck/proof code.
+**Verification:** `mise run check` → green, all 25 packages `ok`; `gofmt -l .` empty (outside gitignored
+`cauldron/`). Per criterion:
+- [x] `mise run build:wasm` exits 0, writes `internal/web/verify.wasm`; re-run after `go clean -cache`
+  byte-identical (cmp + same sha256) — reproducibility holds under the project toolchain.
+- [x] `go test -run TestWasmVerify ./internal/web` → PASS: served route is 200 / `application/wasm` /
+  `Cache-Control: no-cache` / quoted-hex strong ETag / non-empty body equal to the embedded bytes; hash-pin
+  holds, and flipping one const byte FAILS it (mutation-proven, then restored byte-identical).
+- [x] `go test -run 'TestIfNoneMatch304|TestMethodNotAllowed' ./internal/web` → PASS with `WasmVerifyPath`
+  in both lists (If-None-Match echo → 304; POST → 405).
+- [x] Assertion: committed `verify.wasm` first 4 bytes are the Wasm magic `00 61 73 6d` (`od -tx1 -N4`).
+- [x] go.mod/go.sum byte-identical (no new dep); `cmd/wasm` untouched; WASM gate
+  `GOOS=js GOARCH=wasm go build ./cmd/wasm` still compiles.
 
-**Issues found:** ONE residual (filed `low`, non-blocking) — Codex's whitespace-prefixed case below.
-Deleted the resolved `normal` issue ("`stripLineComments` over-strips protocol-relative CDN URLs") after
-verifying its prescribed fix landed and its verify (ban fires for `src="//cdn..."`; reverting regresses)
-is satisfied by `TestNoExternalCDNProtocolRelative`.
-
-**Codex second opinion:** One [P2] — "Do not strip whitespace-prefixed CDN URLs" (`web_test.go:57`): the
-predicate still treats a `//` preceded by space/tab as a comment, so `<script src = //cdn.jsdelivr.net/x.js>`
-and CSS `url( //cdn.example/x.woff2)` are truncated before `cdn.`/`jsdelivr`, so the ban misses them.
-**CONFIRMED real** by reviewer probe (both forms → `cdn.present=false`) — but triaged as `low`, NOT
-blocking: (1) it is **pre-existing**, not a regression — the prior `:`-only guard stripped these exact
-forms too (reviewer-verified); (2) it is strictly NARROWER than and orthogonal to the quoted-delimiter
-form this step's goal targeted (which is now fully closed); (3) NO served asset (tokens.css / fonts.css /
-byte-verbatim `wasm_exec.js`) uses a whitespace-prefixed protocol-relative URL, so the hole is latent;
-(4) the `<script src = //…>` form is invalid HTML for `src`, so only the rare CSS `url( //… )` form is
-genuinely loadable. Filed as a `low` issue with a tokenizer-grade fix prescribed (the per-delimiter
-blocklist keeps losing edge forms — treat `//` as a comment only outside a quoted-string / `url(...)`
-token). No other findings; Codex agreed the quoted-case fix is correct.
-
-**Visual check:** n/a — no SSR surface changed. This is a test-only change to `internal/web/web_test.go`;
-no `internal/dashboard|dossier|web|certificate` template or rendered HTML was touched.
-
-**Next:** The CDN-free gate hole (the quoted-delimiter form) is closed and the WASM-loader sub-step is
-re-greened to PASS-able. Resume the WASM tier-2 progression: build + serve the verifier `.wasm` (a
-`mise run build:wasm` task + ADR-0003 reproducible-build / published-hash / SRI pin), then the `cert.html`
-`<script>` loader + record-bytes emission — the natural first real caller where the open `normal`
-`js.Value.Int()` truncation hardening belongs. The residual whitespace-prefixed CDN strip (`low`) and the
-5 other standing `normal` issues each wait for a step that edits their own lines.
+**Next:** The cert/dossier `<script>` loader — the first real caller that `fetch`/`instantiateStreaming`s
+`/_ds/verify.wasm` (after `/_ds/wasm_exec.js`) and calls `isccVerifyInclusion`. That step should compare
+the fetched bytes' hash against `web.WasmVerifyHash` (the SRI pin, since `.wasm` is `fetch`ed not
+`<script src>`-loaded), emit the record/root/proof/index/size the adapter needs, and is the natural home
+for the open `js.Value.Int()` safe-integer hardening (`cmd/wasm/main.go`) now that a caller exists. The
+`(size, root)` mismatch guided split-view alert UI lands with it too.
 
 **Notes:**
-- Scope clean: exactly one test-only file touched (`internal/web/web_test.go`) plus the context files.
-  Nothing from `## Not In Scope` was done — `web.go`, the byte-verbatim `wasm_exec.js`, and the ban list
-  are all untouched (the *strip* was tightened, not the *ban*); no `.wasm`, no `build:wasm`, no
-  `cert.html` `<script>`, no other open issues.
-- Good fidelity touch: the regression test's comment-line fixture is the EXACT byte string from
-  `wasm_exec.js:288` (the real Go-issue-tracker comment), so it pins ground-truth bytes, not a synthetic
-  approximation.
-- 6 `normal` + 9 `low` issues remain open (all latent / non-blocking, each waiting for a step that edits
-  its own lines), and no `critical` is open — so the Loop is CONTINUE, not DONE (DONE needs no open
-  normal/critical). The §3 certificate fail-closed critical was closed earlier (commit 96f6ed9).
-- Push: verdict is PASS_WITH_NOTES and `origin/develop` is the upstream; pushing the working branch.
+- **HASH IS TOOLCHAIN-DEPENDENT — pinned to the project toolchain (`mise run build:wasm`), as the task
+  requires.** next.md predicted `6c29eef9…` / 2,891,616 bytes, but the committed artifact is
+  `17b0f4f8…` / 2,870,559 bytes. Root cause: the build is reproducible *given a fixed Go toolchain*, and
+  the toolchains differ. `mise run` uses mise's pinned `go = "1.26"` → **Go 1.26.4** (`GOROOT=…/go/1.26.4`),
+  while a bare `go` in this shell resolves to a 1.24.13-path binary that *reports* 1.26.1 (toolchain
+  auto-switch) and produces a third, different hash (`57973f3f…`). I pinned the hash to what
+  `mise run build:wasm` emits — the documented, canonical task — and confirmed it is byte-identical across
+  two `go clean -cache` cycles under mise. **CI/human rebuild-and-compare must run via `mise run build:wasm`
+  (same pinned toolchain), not a bare `go build`**, or the bytes (and hash) will legitimately differ. If CI
+  pins a different 1.26.x patch, the artifact + `WasmVerifyHash` must be regenerated there. The pin test
+  guards the committed bytes against the const regardless of toolchain.
+- `-trimpath -ldflags=-buildid=` is genuinely load-bearing: a plain `go build` (no flags) embeds absolute
+  GOROOT/module paths and is not reproducible. The flag set is in the task verbatim.
+- `noExternalCDN` is correctly NOT run on `verify.wasm` (binary, not loadable text) per web.md and next.md;
+  `cmd/wasm` and the adapter are untouched (the WASM-vs-server parity test already lives in
+  `cmd/wasm/verifyadapter`). Nothing from `## Not In Scope` was done.
+- Scope: 3 non-test/doc files (`mise.toml`, `web.go`, the generated `verify.wasm` asset) + test/doc
+  (`web_test.go`, `CLAUDE.md`). go.mod/go.sum stayed byte-identical (`embed` already imported); no new dep.

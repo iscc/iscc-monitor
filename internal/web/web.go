@@ -1,7 +1,8 @@
 // Package web serves the monitor's shared static front-end assets — the ISCC
 // Design System v2 token stylesheet, the self-hosted webfont @font-face shell, the
-// woff2 binaries themselves, and the Go WASM runtime loader (wasm_exec.js) — over
-// net/http as a tiny stdlib-only leaf. The stylesheets and fonts are the one no-JS,
+// woff2 binaries themselves, the Go WASM runtime loader (wasm_exec.js), and the
+// verifier WebAssembly artifact (verify.wasm) — over net/http as a tiny stdlib-only
+// leaf. The stylesheets and fonts are the one no-JS,
 // no-CDN style shell every server-rendered M-UI surface (the realm index at "/", the
 // hub dossier, the log browser, the certificate page) links via stable paths under
 // /_ds/, so the design tokens and fonts are defined once and shared. The wasm_exec.js
@@ -68,6 +69,21 @@ const FontsCSSPath = "/_ds/fonts.css"
 // must stay in sync with this value.
 const WasmExecPath = "/_ds/wasm_exec.js"
 
+// WasmVerifyPath is the stable exact path the verifier WebAssembly artifact is served
+// at. The later tier-2 progressive enhancement fetches and instantiates this
+// same-origin module (after loading WasmExecPath) to run the in-browser inclusion
+// verifier; like TokensPath a page's fetch URL literal must stay in sync with it.
+const WasmVerifyPath = "/_ds/verify.wasm"
+
+// WasmVerifyHash is the published lowercase-hex SHA-256 of the committed verify.wasm
+// bytes — the reproducible-build artifact hash a client compares against to confirm it
+// loaded the audited verifier (the SRI/verify-artifact pin). It is produced by the
+// deterministic `mise run build:wasm` task (GOOS=js GOARCH=wasm CGO_ENABLED=0 go build
+// -trimpath -ldflags=-buildid=) under the project-pinned Go toolchain; re-running that
+// task without re-pinning this const fails TestWasmVerifyHashPinned. The bytes are
+// toolchain-dependent, so this value tracks `mise run build:wasm`, not a bare go build.
+const WasmVerifyHash = "17b0f4f81a0952c3bb8df1f85e300b90ea2d1f041a636d338cc00e38554445dc"
+
 // cacheControl is the Cache-Control policy for every /_ds/ asset. Each is served at
 // a stable, overwrite-in-place URL (not content-addressed), so it must NOT carry the
 // immutable directive — that would let a client pin a soon-overwritten asset for a
@@ -87,6 +103,12 @@ const contentTypeWOFF2 = "font/woff2"
 // set explicitly so the browser executes it as a script regardless of content
 // sniffing.
 const contentTypeJS = "text/javascript; charset=utf-8"
+
+// contentTypeWASM is the media type served for the verifier .wasm artifact. It is the
+// IANA media type browsers require for WebAssembly.instantiateStreaming; it is set
+// explicitly so a content sniffer cannot downgrade it and refuse the streaming
+// instantiation.
+const contentTypeWASM = "application/wasm"
 
 // TokensCSS is the embedded ISCC Design System v2 token stylesheet — a single
 // concatenated, CDN-free file (colors, typography, spacing, base tokens), embedded
@@ -117,10 +139,20 @@ var fontsFS embed.FS
 //go:embed wasm_exec.js
 var wasmExecJS []byte
 
+// wasmVerify is the embedded verifier WebAssembly artifact — the deterministic output
+// of `mise run build:wasm` over cmd/wasm (the GOOS=js GOARCH=wasm verifier entrypoint),
+// committed so the served bytes are build-pinned. It is a generated asset, never
+// hand-edited: regenerate it with `mise run build:wasm` on a source or toolchain change
+// and re-pin WasmVerifyHash. Its SHA-256 must equal WasmVerifyHash (TestWasmVerifyHashPinned).
+//
+//go:embed verify.wasm
+var wasmVerify []byte
+
 // Handler returns an http.Handler for the /_ds/ static-asset subtree. It serves the
-// token stylesheet, the @font-face stylesheet, the woff2 binaries, and the
-// wasm_exec.js runtime loader; the content type is chosen per path (text/css for the
-// .css, text/javascript for wasm_exec.js, font/woff2 for .woff2). Only GET is served
+// token stylesheet, the @font-face stylesheet, the woff2 binaries, the wasm_exec.js
+// runtime loader, and the verifier verify.wasm artifact; the content type is chosen
+// per path (text/css for the .css, text/javascript for wasm_exec.js, application/wasm
+// for verify.wasm, font/woff2 for .woff2). Only GET is served
 // (any other method is 405); an unknown /_ds/ path is 404. Every 200 carries
 // Cache-Control: no-cache and a strong content ETag, with an If-None-Match match
 // short-circuiting to 304. It sets no CORS headers — the outer corsmw wrap at the mux
@@ -142,6 +174,8 @@ func Handler() http.Handler {
 			writeAsset(w, r, fontsCSS, contentTypeCSS)
 		case WasmExecPath:
 			writeAsset(w, r, wasmExecJS, contentTypeJS)
+		case WasmVerifyPath:
+			writeAsset(w, r, wasmVerify, contentTypeWASM)
 		default:
 			serveFont(w, r)
 		}

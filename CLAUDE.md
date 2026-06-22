@@ -67,6 +67,11 @@ After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSO
   id. Clauses §2-§6 and the downloadable proof bundle are later sub-steps. Same no-JS, no-CDN DS shell.
 - `GET /_ds/tokens.css` — the shared ISCC Design System v2 token stylesheet (CDN-free, build-pinned);
   the one no-JS, no-CDN style shell every server-rendered surface links.
+- `GET /_ds/verify.wasm` — the verifier WebAssembly artifact (`application/wasm`), the reproducible
+  `mise run build:wasm` output served byte-verbatim with the same no-cache + strong-ETag + 304 policy;
+  its SHA-256 is published as `web.WasmVerifyHash` (the SRI/verify-artifact pin). The tier-2
+  progressive-enhancement loader fetches and instantiates it (after `/_ds/wasm_exec.js`) to run the
+  in-browser inclusion verifier client-side.
 - `GET /healthz` — liveness + store readiness.
 - `GET /metrics` — Prometheus: hub status, last-observed, poll failures, violations.
 - `GET /<domain>/log/` — server-rendered HTML log browser: the mirrored accepted checkpoint

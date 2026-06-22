@@ -1,16 +1,20 @@
 // Tests for the static-asset handler at the HTTP seam: they drive Handler over an
 // httptest.ResponseRecorder and assert the observable response. The token and font
 // stylesheets return 200 text/css with a non-empty body carrying a known marker; the
-// wasm_exec.js loader returns 200 text/javascript with the Go runtime symbol; a woff2
-// binary returns 200 font/woff2 with the woff2 magic bytes; a non-GET is 405; an
-// If-None-Match match short-circuits to 304. They also pin the load-bearing CDN-free
-// invariant: no served body references an external CDN origin in loadable content (no
-// jsdelivr, no http(s) scheme, no cdn. host) — a same-origin url("/_ds/fonts/...") in
-// fonts.css and a vendored runtime's source-comment URL are legitimate and not banned.
+// wasm_exec.js loader returns 200 text/javascript with the Go runtime symbol; the
+// verify.wasm artifact returns 200 application/wasm with the \0asm magic and a body
+// whose SHA-256 equals the published WasmVerifyHash; a woff2 binary returns 200
+// font/woff2 with the woff2 magic bytes; a non-GET is 405; an If-None-Match match
+// short-circuits to 304. They also pin the load-bearing CDN-free invariant: no served
+// body references an external CDN origin in loadable content (no jsdelivr, no http(s)
+// scheme, no cdn. host) — a same-origin url("/_ds/fonts/...") in fonts.css and a
+// vendored runtime's source-comment URL are legitimate and not banned.
 package web
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -248,6 +252,52 @@ func TestWasmExecServed(t *testing.T) {
 	noExternalCDN(t, "served wasm_exec.js", body)
 }
 
+// TestWasmVerifyServed checks the verifier WebAssembly artifact is served at
+// WasmVerifyPath with the application/wasm content type (so the browser will accept it
+// for WebAssembly.instantiateStreaming), the revalidating no-cache + strong ETag
+// policy, a non-empty body equal to the embedded bytes, and the \0asm Wasm magic
+// header — the build-pinned module the tier-2 progressive enhancement instantiates.
+func TestWasmVerifyServed(t *testing.T) {
+	rec := get(t, WasmVerifyPath)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/wasm" {
+		t.Errorf("Content-Type = %q, want application/wasm", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	if etag := rec.Header().Get("ETag"); !strings.HasPrefix(etag, "\"") || strings.HasPrefix(etag, "W/") {
+		t.Errorf("ETag = %q, want a strong quoted-hex tag", etag)
+	}
+	body := rec.Body.Bytes()
+	if len(body) == 0 {
+		t.Fatal("body is empty")
+	}
+	if !bytes.Equal(body, wasmVerify) {
+		t.Errorf("served body (%d bytes) differs from the embedded wasmVerify (%d bytes)", len(body), len(wasmVerify))
+	}
+	// A valid Wasm module begins with the \0asm magic (00 61 73 6d).
+	if magic := []byte{0x00, 0x61, 0x73, 0x6d}; len(body) < 4 || !bytes.Equal(body[:4], magic) {
+		t.Errorf("body is not a Wasm module (magic = %x, want %x)", body[:min(4, len(body))], magic)
+	}
+}
+
+// TestWasmVerifyHashPinned is the published-hash regression guard: the SHA-256 of the
+// committed verify.wasm bytes must equal WasmVerifyHash, the value clients compare
+// against to confirm they loaded the audited verifier. Re-running `mise run build:wasm`
+// without re-pinning the const (or a toolchain/source change that shifts the bytes)
+// fails here, forcing the published hash to track the committed artifact.
+func TestWasmVerifyHashPinned(t *testing.T) {
+	got := fmt.Sprintf("%x", sha256.Sum256(wasmVerify))
+	if got != WasmVerifyHash {
+		t.Errorf("sha256(verify.wasm) = %s, but WasmVerifyHash = %s\n"+
+			"re-run `mise run build:wasm` and re-pin WasmVerifyHash to the emitted hash", got, WasmVerifyHash)
+	}
+}
+
 func TestFontMissingIs404(t *testing.T) {
 	if rec := get(t, "/_ds/fonts/does-not-exist.woff2"); rec.Code != http.StatusNotFound {
 		t.Errorf("missing font status = %d, want 404", rec.Code)
@@ -257,7 +307,7 @@ func TestFontMissingIs404(t *testing.T) {
 // TestIfNoneMatch304 checks the conditional-GET short-circuit: a request echoing the
 // served ETag yields 304 with an empty body and the same validating ETag.
 func TestIfNoneMatch304(t *testing.T) {
-	for _, path := range []string{TokensPath, FontsCSSPath, WasmExecPath, "/_ds/fonts/jetbrains-mono-700.woff2"} {
+	for _, path := range []string{TokensPath, FontsCSSPath, WasmExecPath, WasmVerifyPath, "/_ds/fonts/jetbrains-mono-700.woff2"} {
 		etag := get(t, path).Header().Get("ETag")
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -276,7 +326,7 @@ func TestIfNoneMatch304(t *testing.T) {
 }
 
 func TestMethodNotAllowed(t *testing.T) {
-	for _, path := range []string{TokensPath, FontsCSSPath, WasmExecPath, "/_ds/fonts/readex-pro-400.woff2"} {
+	for _, path := range []string{TokensPath, FontsCSSPath, WasmExecPath, WasmVerifyPath, "/_ds/fonts/readex-pro-400.woff2"} {
 		rec := httptest.NewRecorder()
 		Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
 		if rec.Code != http.StatusMethodNotAllowed {
