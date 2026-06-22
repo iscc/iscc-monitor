@@ -211,6 +211,22 @@ hubs:
 			errFrag: "not a bare host base url",
 		},
 		{
+			// Trailing "?": net/url records this as ForceQuery with an empty
+			// RawQuery, so the RawQuery check alone passes it and u.String()
+			// round-trips the "?" delimiter into the resolved domain. The non-vacuous
+			// guard is the u.ForceQuery check; reverting it makes this case parse and
+			// so FAIL the test.
+			name: "trailing question mark (ForceQuery)",
+			in: `version: 1
+network: testnet
+hubs:
+  - hub_id: 0
+    url: https://sb0.iscc.id?
+    active: true
+`,
+			errFrag: "not a bare host base url",
+		},
+		{
 			// Missing hub_id: a plain uint16 would decode the absent key to slot 0;
 			// the *uint16 presence check rejects it. Reverting that check makes this
 			// entry silently become slot 0 and so FAIL the test.

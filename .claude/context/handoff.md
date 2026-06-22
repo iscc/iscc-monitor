@@ -1,38 +1,49 @@
-## 2026-06-22 — Review of: Percent-encode the port when building a hub's `did:web:` DID on certificate §4 and the proof bundle
+## 2026-06-22 — Reject a trailing `?` (ForceQuery) in the Hub-List `hubDomain` bare-host guard
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added `|| u.ForceQuery` to the `hubDomain` bare-host guard in
+`internal/registry/registry.go` so a url whose only non-host component is a bare trailing `?` (e.g.
+`https://sb0.iscc.id?`) — which `net/url` records as `ForceQuery == true` with `RawQuery == ""` and
+round-trips through `u.String()` — fails closed with the existing "not a bare host base url" error,
+instead of slipping the query delimiter into the resolved hub domain. Reused the existing wrapped
+error message (no new message), updated the docstring + in-line guard comment to name `ForceQuery`,
+and added a mutation-proven table case.
 
-**Summary:** The advance added a two-line local pure helper `didWeb(domain)` to
-`internal/certificate/handler.go` that `%3A`-encodes the FIRST colon (the resolver's exact idiom,
-`strings.Replace(domain, ":", "%3A", 1)`) and routed BOTH DID-building sites — the §4 `SigningKeyDID`
-and the proof-bundle `Hub.DID` — through it, so a `host:port` hub now names the same host its key
-resolved from while a no-port domain round-trips byte-identical. Scope is exemplary: exactly one
-production file (`handler.go`) + two test files, no new imports, nothing from `## Not In Scope` touched.
-Both sites are mutation-proven; the §4 + bundle DID `host:port` `normal` is fully closed.
+**Files changed:**
+- `internal/registry/registry.go`: `hubDomain` guard now also rejects `u.ForceQuery`; docstring (the
+  `hubDomain` comment block) and a one-line in-line comment updated to name the trailing-`?`
+  (ForceQuery) reject so the evergreen comment matches the code. No new import (`ForceQuery` is a
+  field on the already-parsed `*url.URL`); imports stay `{bufio bytes fmt net/url strings yaml.v3}`.
+- `internal/registry/hublist_test.go`: added one `TestParseHubListErrors` case
+  `"trailing question mark (ForceQuery)"` (`url: https://sb0.iscc.id?`, `errFrag: "not a bare host
+  base url"`), placed beside the path-bearing-url cases.
 
-**Verification:**
-- [x] `mise run check` — green, all 27 packages build + vet + test.
-- [x] `gofmt -l .` — empty (clean).
-- [x] `mise exec -- go test -count=1 -run 'TestCertificateSigningKey|TestCertificateProofBundle' ./internal/certificate` — `ok`.
-- [x] §4 mutation: reverting `data.SigningKeyDID = didWeb(data.Domain)` → `"did:web:" + data.Domain` FAILS `TestCertificateSigningKeyDIDPortEncoded`; restored byte-identical (`git diff` empty).
-- [x] Bundle mutation: reverting `DID: didWeb(data.Domain)` → `"did:web:" + data.Domain` FAILS `TestCertificateProofBundleDIDPortEncoded` (`bundle hub.did = "did:web:localhost:8443", want "...%3A8443"`); restored byte-identical.
-- [x] Clean-domain regression: `did:web:sb1.amlet.id` still renders exactly on §4 (`…DIDCleanDomain`) and bundle (`TestCertificateProofBundle`) — no spurious encoding.
-- [x] Correctness vs the resolver: `didWeb` → `did:web:host%3Aport`, which `didweb.DocumentURL` `url.PathUnescape`s back to a single `host:port` host segment → `https://host:port/.well-known/did.json` — the same host the key resolved from. Round-trip verified against `internal/didweb/url.go`.
-- [x] No remaining unencoded `"did:web:" + domain` concat sites in production code (grep); the only other site, `logclient/didresolve.go:102`, already used the idiom.
-- [x] Gate-circumvention scan over all 3 unpushed commits (`@{upstream}..HEAD`) — no `//nolint`, `t.Skip`, build-tag exclusion, deleted assertion, or swallowed error in added lines. Diff is purely additive.
-- [x] Conformance/oracle gate — N/A: render-string fix only, touches no signature/Merkle/proof-verify/did:web-derivation/fork-shrink-equivocation code. `internal/certificate` is server-side only (no WASM-purity concern).
-- [x] Test-fixture review: `fixtureStoreTiled`'s new `switch` keeps sb0/sb1 callers byte-identical (explicit `case`s) and the `default` branch genuinely drives a `host:port` domain through the real `UpsertHub`→Resolve→followedHub chain (resolved from `hostPortHubList` slot 1, not hardcoded) — non-tautological.
+**Verification:** `mise run check` → green (build + vet + `go test ./...`, all 27 packages ok);
+`gofmt -l .` empty. Per-criterion:
+- [x] `go test -count=1 -v -run TestParseHubListErrors ./internal/registry` passes; `-v` lists the
+      new `trailing_question_mark_(ForceQuery)` subtest.
+- [x] Mutation: removing `|| u.ForceQuery` makes `.../trailing_question_mark_(ForceQuery)` FAIL — the
+      failure dump confirms `ParseHubList` returns a non-nil `*HubList` (`URL:"https://sb0.iscc.id?"`,
+      i.e. the `?` survived) alongside a nil error; restoring the clause returns green. `registry.go`
+      restored byte-identical (only the additive diff remains).
+- [x] Clean-domain regression: `TestParseHubListGolden` (the `https://sb0.iscc.id` / `sb1.amlet.id`
+      golden) still parses unchanged.
+- [x] `go.mod`/`go.sum` byte-identical (`git diff` empty). `GOOS=js GOARCH=wasm go build
+      ./internal/registry` still builds — leaf stays WASM-shareable / import-clean.
+- [x] Oracle/conformance gate N/A: no proof/verify/didweb/merkle/signature path touched.
 
-**Issues found:** (none new). Resolved + deleted the `normal` "Certificate §4 AND the proof bundle build `did:web:` + raw domain" issue after mutation-verifying both sites are encoded.
-
-**Codex second opinion:** Clean — "The change consistently routes both certificate DID render sites through the same host:port encoding behavior used by the resolver, and the added regression coverage exercises both the HTML and bundle paths. I found no introduced correctness issues." Independently corroborates the reviewer's verification; no findings to triage.
-
-**Visual check:** n/a — no visual-region/layout/chrome/affordance change. The diff alters only the rendered `did:web:` STRING VALUE, and only for a `host:port` hub, which no testnet/live fixture produces; the served certificate page is byte-identical for clean domains. (`agent-browser` present but Chrome not found in this environment — moot, as there is no delta to capture.)
-
-**Next:** Code-closable `normal`s on the certificate/registry surface remain, in handoff-named order: (1) the `hubDomain` ForceQuery fail-open in `internal/registry/registry.go` (add `|| u.ForceQuery` to the line-188 reject — separate file, same fail-quietly-on-clean-fixtures class); (2) the §5 OTS-digest-binding `bytes.Equal` gap; (3) the tier-2 honesty-copy overstatement (`cert.html:465`). The §6 `· at` timestamp needs a store schema column (larger). Otherwise the front-of-queue **WASM-verifier signature half** (state.md "Next Milestone") is design-first / STOP-candidate (browser did:web resolution) — do a design pass first; do NOT loosen `verifier.html`'s "hub-signed root" copy.
+**Next:** Continue closing code-closable `normal`s in handoff-named order. With the `hubDomain`
+ForceQuery fail-open now closed, the next items are (2) the §5 OTS-digest-binding `bytes.Equal` gap
+and (3) the certificate tier-2 honesty-copy overstatement (`cert.html:465`) — each its own step. The
+§6 `· at` timestamp needs a store schema column (larger). The front-of-queue WASM-verifier signature
+half remains design-first / a STOP-candidate (browser did:web resolution) — do a design pass before
+touching `verifier.html` copy.
 
 **Notes:**
-- KISS held perfectly: a two-line local helper, no shared export, no `didweb` refactor (exactly `## Not In Scope`). The choice of `strings.Replace(..., 1)` over `url.PathEscape` is correct — escaping the whole domain would over-encode `.` in hostnames; only the single port colon is load-bearing.
-- The remaining milestone Verify criteria are human-blocked (Pages repo-Settings custom-domain enablement, `normal`) or offline-unprovable (OTS Bitcoin-confirmed half needs a live calendar + real BTC confirmation), so the loop continues to close productive `normal`s.
-- 3 commits ahead of `origin/develop`; pushing on PASS. The known `Pages` workflow failure on develop is the human-blocked custom-domain step, not a code regression.
+- Scope held exactly to `next.md`: one production file + one test file, no new import, nothing from
+  `## Not In Scope` touched (did not also reject `u.Opaque`/`u.User`/`#`-only `Fragment`, did not wire
+  `ParseHubList`/`Resolve` into the realm-loading path, did not change the `Resolve`/`Hub`/`HubList`
+  public shape). The `learnings/registry.md` "enumerate `url.URL`'s shape-carrying fields" rule
+  established this is the one live load-bearing fail-open (`https://host#` is dropped by Go on
+  round-trip; `Opaque` is unreachable for an `https://`-scheme'd host).
+- The mutation dump is the clearest evidence the case is non-vacuous: it shows the exact fail-open it
+  guards — a parsed hub whose `URL` retains the trailing `?`.

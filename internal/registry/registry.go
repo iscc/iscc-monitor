@@ -168,12 +168,15 @@ func (hl *HubList) Resolve(hubID uint16) (domain string, ok bool) {
 // hubDomain extracts the host (domain, scheme stripped) from a hub url using
 // net/url, which is stdlib and WASM-safe (it does not pull in net/http). It fails
 // closed on a url that is empty, unparseable, carries no host (e.g. a bare path),
-// or carries a path/query/fragment, so neither a path nor a query is ever
-// silently dropped while coercing the url into a domain. A bare host base url
-// (e.g. "https://sb0.iscc.id") has an empty path; a scheme'd path-bearing url
-// (e.g. "https://sb0.iscc.id/log", which url.Parse would otherwise accept,
-// returning the host and dropping "/log") is rejected. A lone trailing slash
-// (path "/") is also rejected — a base url carries no path component.
+// or carries a path/query/fragment (including a bare trailing "?" delimiter), so
+// neither a path nor a query is ever silently dropped while coercing the url into
+// a domain. A bare host base url (e.g. "https://sb0.iscc.id") has an empty path; a
+// scheme'd path-bearing url (e.g. "https://sb0.iscc.id/log", which url.Parse would
+// otherwise accept, returning the host and dropping "/log") is rejected. A lone
+// trailing slash (path "/") is also rejected — a base url carries no path
+// component. A trailing "?" (which net/url records as ForceQuery with an empty
+// RawQuery, and round-trips through u.String) is rejected too: the empty-RawQuery
+// check alone would let that query delimiter survive into the resolved domain.
 func hubDomain(rawURL string) (string, error) {
 	if strings.TrimSpace(rawURL) == "" {
 		return "", fmt.Errorf("url is empty")
@@ -185,7 +188,8 @@ func hubDomain(rawURL string) (string, error) {
 	if u.Host == "" {
 		return "", fmt.Errorf("url %q has no host", rawURL)
 	}
-	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+	// ForceQuery catches a bare trailing "?" that leaves RawQuery empty.
+	if u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		return "", fmt.Errorf("url %q is not a bare host base url (path/query/fragment not allowed)", rawURL)
 	}
 	return u.Host, nil
