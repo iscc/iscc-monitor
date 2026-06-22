@@ -1,59 +1,62 @@
-<!-- assessed-at: 25c12af1d468a91e911de4fa7369df34359aa869 -->
+<!-- assessed-at: aaaea50a56a12c3afdd519a546ec81d16691b967 -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: M-UI `/` realm-index named-region parity LANDED (lone critical closed) — the WASM `<script>` verifier caller is now the front of the queue
+## Phase: WASM milestone underway — first SSR `<script>` verifier caller LANDED on the certificate (tier-2 "your browser verified"); a human-filed `critical` (ISCC logo masthead) is now the front of the queue
 
-The `/` realm index reached its mockup's three headline landmark regions — a no-JS claim-lookup hero
-(`<form method="get" action="/inclusion/">`), every hub row wrapped in an `<a href="/{{.Domain}}">`
-dossier link (navigation closure restored), and the masthead instance-identity block +
-`verify ↗ monitor.iscc.codes` tier-2 link — with a lockstep `?iscc_id=` query fallback on the
-certificate handler so the no-JS form resolves. The latest **`review` verdict is PASS** (loop
-CONTINUE), CI is **green at current HEAD `25c12af`**, and the branch is in sync with `origin/develop`.
-M1/M2/M3 stay met; **zero `critical`** issues remain, but the WASM and OTS milestone Verify criteria
-are still open and 7 `normal` issues are filed — so DONE is not reached.
+The certificate page (`GET /inclusion/<iscc_id>`) is the first real SSR caller of the in-browser WASM
+verifier: under `{{if .HasBundle}}` it embeds the proof in a `<script type="application/json">` data
+island and a progressive-enhancement loader pulls `/_ds/wasm_exec.js` + `/_ds/verify.wasm` to render an
+honest tier-2 verdict — review verified it live end-to-end (WASM ran headlessly, produced the correct
+`verified` verdict matching server §3). The latest **`review` verdict is PASS** (loop CONTINUE), CI is
+**green at current HEAD `aaaea50`**, and the branch is in sync with `origin/develop`. M1/M2/M3 stay met;
+the WASM and OTS milestone Verify criteria remain open, and a **human-filed `critical` ISCC-logo masthead
+issue** plus 8 `normal` issues are open — so DONE is not reached.
 
 ## Convergence
 - **Remaining Verify criteria:**
   - **M1: 0 open (met). M2: 0 open (met). M3: 0 open (met, 4/4).**
-  - **M-UI: behavioral Verify met; design-parity headline-region bar for `/` NOW MET (lone critical
-    closed).** Met: five-status `HubStatusBadge`; DS v2 shared shell (CDN-free, self-hosted fonts);
-    `/` realm-index grid + claim-lookup hero + per-row dossier links + instance-identity masthead;
-    `/<domain>/log/` browser; hub dossier; frozen Exhibit; paginated record list; single-record page;
-    ISCC-IDv1 decoder; Hub-List resolver; certificate **§1–§6** + proof-bundle endpoint + COMPARISON
-    ANCHOR panel. **Still open (NOT critical):** the named-region + `←` back-link parity pass has not
-    yet been carried to the remaining SSR surfaces (dossier / log browser / single record /
-    certificate lack the masthead instance-identity block + full back-link chain), `/` sub-region
-    deltas (logo asset, config-driven instance identity, Checkpoint/Anchor data columns) filed
-    `normal`, and the **mandatory M-UI exit visual-pass + human sign-off** (ADR-0012) is not executed.
-  - **WASM verifier: 1/1 open.** The `.wasm` artifact exists, is served byte-pinned at `/_ds/verify.wasm`,
-    AND builds reproducibly (closed last iteration). Still NO SSR `<script>` caller (grep of
-    dashboard/dossier/certificate/proofserve finds no `isccVerifyInclusion`/`verify.wasm`/`wasm_exec`
-    reference), no standalone `monitor.iscc.codes` Independent Verification app, no in-browser
-    identical-verdict parity, no split-view alert. Verify not met.
-  - **OTS anchoring: 1/1 open (carried forward, untouched this iteration).** Both observable HTTP
-    halves CLOSED (`.ots` serve route + certificate §5 anchor render). What remains: a root that
-    actually transits to **Bitcoin-confirmed** — offline-unprovable; exercised only against an
-    injected Upgrader.
-- **Last ~10 iterations: ~5 milestone-Verify-advancing / ~5 foundational·plumbing·hardening.** Arc:
-  COMPARISON ANCHOR panel → `internal/proof/verify` core → `cmd/wasm` entrypoint → `/_ds/wasm_exec.js`
-  loader → CDN-free gate re-green → build+serve `verify.wasm` → fix reproducible build → **`/`
-  realm-index named-region parity (hero + row links + masthead)**. **DRIFT WATCH (clear):** increments
-  are genuinely closing milestone Verify criteria, not polish — this iteration closed the lone open
-  M-UI critical. The loop is now repointed at the WASM `<script>` caller per the review/handoff steer.
+  - **M-UI: behavioral Verify met; `/` headline-region parity met; one open `critical` (logo) + the
+    M-UI exit visual-pass + human sign-off still pending.** Met: five-status `HubStatusBadge`; DS v2
+    shared shell (CDN-free, self-hosted fonts); `/` realm-index grid + claim-lookup hero + per-row
+    dossier links + instance-identity masthead; `/<domain>/log/` browser; hub dossier; frozen Exhibit;
+    paginated record list; single-record page; ISCC-IDv1 decoder; Hub-List resolver; certificate §1–§6
+    + proof-bundle endpoint + COMPARISON ANCHOR panel. **Still open:** the **ISCC logo masthead**
+    (human-filed `critical` — asset exists at `.claude/design/assets/iscc-logo-black.png`, NOT yet
+    embedded/served at `/_ds/iscc-logo-black.png`; every SSR masthead still renders a text-only mark);
+    the named-region + `←` back-link parity pass not yet carried to dossier / log browser / single
+    record / certificate; `/` sub-region deltas (config-driven instance identity, Checkpoint/Anchor
+    columns, recent-declarers footer) filed `normal`; the **mandatory M-UI exit visual-pass + human
+    sign-off** (ADR-0012) not executed.
+  - **WASM verifier: 1/1 open (now in active progress).** `.wasm` artifact built reproducibly, served
+    byte-pinned at `/_ds/verify.wasm` (`WasmVerifyHash = 7d57ab1b…`, `TestWasmVerifyHashPinned`). The
+    **first SSR `<script>` caller now exists** (certificate tier-2, live-verified). Still open: NO caller
+    on the **dossier** yet; **no standalone `monitor.iscc.codes` Independent Verification app** (the
+    `monitor.iscc.codes` reference in `cert.html` is only a tier-2 link, not Surface C); **no guided
+    split-view alert** on a `(size, root)` mismatch. Verify not met.
+  - **OTS anchoring: 1/1 open (untouched this iteration).** Both observable HTTP halves closed (`.ots`
+    serve route + certificate §5 anchor render). What remains: a root that actually transits to
+    **Bitcoin-confirmed** — offline-unprovable; exercised only against an injected Upgrader.
+- **Last ~10 iterations: ~6 milestone-Verify-advancing / ~4 foundational·plumbing·hardening.** Recent
+  arc: `internal/proof/verify` core → `cmd/wasm` entrypoint → `/_ds/wasm_exec.js` loader → build+serve
+  `verify.wasm` → reproducible-build fix → `/` realm-index named-region parity → **first SSR WASM
+  `<script>` caller on the certificate + `cmd/wasm` index/size `safeIndex` guard**. **DRIFT WATCH
+  (clear):** increments are genuinely closing milestone Verify criteria, not polish — this iteration
+  opened the WASM milestone with a real, live-verified in-browser caller. Loop is repointed at the
+  human-filed `critical` logo, then the dossier caller + standalone verifier app.
 
 ## M1 — Read-only Monitor
-**Status**: **met** — carried forward; no M1 source touched by the `95c2a39..HEAD` diff (confined to
-`internal/dashboard/{dashboard.html,handler.go,handler_test.go}`, `internal/certificate/{handler.go,
-handler_test.go}`, and context/learnings). All M1 Verify criteria remain satisfied: `origin`/`vkey`
-golden; fork/shrink/equivocation golden-tested end-to-end with freeze + alert-once + restart survival;
+**Status**: **met** — carried forward; no M1 source touched by the `25c12af..HEAD` diff (confined to
+`cmd/wasm/main.go`, `internal/certificate/{cert.html,handler.go,handler_test.go}`, `internal/web/{web.go,
+verify.wasm}`, and context/docs). All M1 Verify criteria remain satisfied: `origin`/`vkey` golden;
+fork/shrink/equivocation golden-tested end-to-end with freeze + alert-once + restart survival;
 structured logs; `/metrics`.
-- **Packages present**: `cmd/{iscc-monitor,notecheck,wasm}`; **22 internal packages** — `badge,
+- **Packages present**: `cmd/{iscc-monitor,notecheck,wasm}`; 22 internal packages — `badge,
   certificate, config, corsmw, dashboard, didweb, dossier, follower, healthz, index, logclient,
   metrics, metricshttp, ots, otsclient, proof, proofserve, registry, store, tiles, tilesserve, web`.
-  Module `github.com/iscc/iscc-monitor`, `go 1.26.1`. 68 `_test.go` files.
+  Module `github.com/iscc/iscc-monitor`, `go 1.26.1`.
 - **Reuse imports wired**: `golang.org/x/mod/sumdb/note`, `modernc.org/sqlite`,
   `transparency-dev/{merkle,tessera,formats}`, `gopkg.in/yaml.v3`, `github.com/iscc/iscc-lib/packages/go`,
   `github.com/nbd-wtf/opentimestamps`. `transparency-dev/merkle` backs `internal/proof/verify`, which
@@ -74,78 +77,83 @@ ETag/Cache-Control on size-dependent proof surfaces (the `/_ds/` static assets D
 `no-cache` + 304).
 
 ## M-UI — Evidence Ledger frontend
-**Status**: **behaviorally complete AND the `/` headline-region design-parity bar now MET — the lone
-open critical is CLOSED.** All six numbered certificate clauses (§1–§6) + both anchor panels + badge +
-DS shell + `/` index (now with hero + per-row dossier links + instance-identity masthead) + log
-browser + hub dossier + frozen Exhibit + record list + single-record page + ISCC-IDv1 decoder +
-Hub-List resolver + proof-bundle endpoint render and pass the behavioral HTTP-seam Verify.
-- **Landed this iteration (verified at HEAD):** `internal/dashboard/dashboard.html` now carries
-  `<a class="chrome-verify" href="https://monitor.iscc.codes/">`, a `<form class="hero-form"
-  method="get" action="/inclusion/">` claim-lookup hero, and `<a class="ledger-row"
-  href="/{{.Domain}}">` per-row dossier links — restoring no-JS navigation closure. The certificate
-  handler accepts the lockstep `?iscc_id=` query fallback (`handler.go:472`). New tests
-  `TestDashboardRendersHeroAndNavigation` and `TestCertificateQueryFallback` are present and
-  mutation-proven per the review.
-- **Still open (NOT critical, carried):** the same named-region + `←` back-link parity pass has not
-  been carried to the remaining SSR surfaces (dossier / log browser / single record / certificate
-  lack the masthead instance-identity block + full back-link chain); `/` sub-region deltas (no
-  self-hosted logo asset, static rather than config-driven instance identity/realm, absent
-  Checkpoint/Bitcoin-anchor data columns, omitted recent-declarers footer) filed `normal`; the
-  mandatory **M-UI exit visual-pass + human sign-off** (ADR-0012) is not executed (the per-surface
-  visual pass runs in review; the full exit pass has not).
-- **Residual notes (filed `normal`, NOT fixed):** §5 does not bind the OTS proof digest to §2's root;
-  `did:web:` + raw `data.Domain` rides §4 AND the bundle (mis-renders a `host:port` DID); `hubDomain`
-  fail-opens on a trailing `?` (`ForceQuery`); §6 rows omit the per-record `· at` timestamp.
+**Status**: **behaviorally complete; `/` headline-region parity met; ONE open `critical` (ISCC logo
+masthead) blocks the design-chrome bar, and the M-UI exit visual-pass + human sign-off is pending.** All
+six certificate clauses (§1–§6) + both anchor panels + badge + DS shell + `/` index (hero + per-row
+dossier links + instance-identity masthead) + log browser + hub dossier + frozen Exhibit + record list +
+single-record page + ISCC-IDv1 decoder + Hub-List resolver + proof-bundle endpoint render and pass the
+behavioral HTTP-seam Verify.
+- **Open `critical` (human-filed):** the masthead renders a **text-only `.chrome-mark`** on every SSR
+  surface; the grayscale logo asset exists in-repo (`.claude/design/assets/iscc-logo-black.png`) but is
+  NOT embedded/served. Fix: copy into `internal/web/`, `go:embed`, serve at `/_ds/iscc-logo-black.png`
+  (mirroring the `wasm_exec.js`/woff2 idiom), reference from all six masthead templates. Verified absent:
+  no `iscc-logo` reference in `internal/web/web.go` or the masthead templates.
+- **Still open (NOT critical, carried):** the named-region + `←` back-link parity pass has not been
+  carried to the remaining SSR surfaces (dossier / log browser / single record / certificate lack the
+  masthead instance-identity block + full back-link chain); `/` sub-region deltas (config-driven instance
+  identity/realm, Checkpoint/Bitcoin-anchor columns, recent-declarers footer) filed `normal`; the
+  mandatory **M-UI exit visual-pass + human sign-off** (ADR-0012) is not executed.
+- **Residual `normal` notes (NOT fixed):** certificate tier-2 honesty header overstates "this browser
+  re-verifies" on the no-JS baseline (`cert.html:465`); §5 does not bind the OTS proof digest to §2's
+  root; `did:web:` + raw `data.Domain` rides §4 AND the proof bundle (mis-renders a `host:port` DID);
+  `hubDomain` fail-opens on a trailing `?` (`ForceQuery`); §6 rows omit the per-record `· at` timestamp.
 
 ## WASM verifier · OTS anchoring
-**Status**: **WASM — `.wasm` artifact built reproducibly + served byte-pinned; no SSR caller / no
-`monitor.iscc.codes` app yet (this is now the next milestone). OTS — both observable HTTP halves
-landed; only a real Bitcoin confirmation remains (offline-unprovable).**
-- **WASM:** `cmd/wasm/main.go` (tagged `//go:build js && wasm`) registers `isccVerifyInclusion`; the
-  pure `cmd/wasm/verifyadapter.VerifyJSON` base64-Std-decodes the proof bundle into
-  `verify.VerifyInclusion`. `internal/web` serves the loader `/_ds/wasm_exec.js` AND the verifier
-  `/_ds/verify.wasm` (pinned `WasmVerifyHash`, mutation-proven; built with `-buildvcs=false`,
-  byte-identical rebuild confirmed in review). **Still 1/1 open on the milestone Verify:** no SSR
-  `<script>` caller (grep of dashboard/dossier/certificate/proofserve finds none), no standalone
-  `monitor.iscc.codes` Independent Verification app, no in-browser identical-verdict parity, no
-  split-view alert. **Carried `normal` defect (NOT fixed):** untagged `cmd/wasm/main.go:39-40` reads
-  `index`/`size` via `js.Value.Int()` (= `int(v.Float())`), truncating a non-integer JS Number — land
-  safe-integer validation when the caller is wired.
+**Status**: **WASM — milestone OPEN but advancing: first SSR `<script>` caller landed on the certificate
+(live-verified); no dossier caller / no standalone `monitor.iscc.codes` app / no split-view alert yet.
+OTS — both observable HTTP halves landed; only a real Bitcoin confirmation remains (offline-unprovable).**
+- **WASM:** `cmd/wasm/main.go` (tagged `//go:build js && wasm`) registers `isccVerifyInclusion`; the pure
+  `cmd/wasm/verifyadapter.VerifyJSON` base64-decodes the bundle into `verify.VerifyInclusion`. `cert.html`
+  now embeds a `<script id="tier2-data" type="application/json">` proof island, loads `/_ds/wasm_exec.js`
+  + `/_ds/verify.wasm`, and replaces `id="tier2-result"` with the WASM verdict — only when §3 passed (the
+  `if ok` block carries `RecordB64`, so the browser can never re-verify a proof the server declined).
+  `cmd/wasm/main.go:52-83`'s `safeIndex`/`maxSafeInteger` guard closes the `js.Value.Int()` truncation in
+  production. **Still 1/1 open on the milestone Verify:** no dossier caller, no Surface-C Independent
+  Verification app, no in-browser identical-verdict parity surface, no guided split-view alert. **Carried
+  `normal` defect (NOT fixed):** `safeIndex` is a pure `float64→(uint64,string)` fn trapped in the tagged
+  `main.go`, so its NaN/fractional/negative/range branches have NO executable test — move it into the
+  untagged `verifyadapter` and table-test it.
 - **OTS:** the `.ots` serve route (`internal/proofserve`), the §5 anchor clause, the store layer
   (`internal/store/ots.go`), the off-path stamp/upgrade loop (`OTSTick` in
-  `internal/follower/otsloop.go`), the offline classifier (`internal/ots.Confirmed`), and the real
-  calendar transport (`internal/otsclient`) are all wired via `main.go`'s `runOTSLoop`. The
-  Verify-closer not yet built: a root reaching **Bitcoin-confirmed** — needs a live calendar + real
-  BTC confirmation. Still 1/1 open. **Open `normal` defect (filed, NOT fixed):** the production `Stamp`
-  path (`internal/otsclient/client.go:121`) has NEITHER a panic-recover NOR a per-request timeout (the
+  `internal/follower/otsloop.go`), the offline classifier (`internal/ots.Confirmed`), and the calendar
+  transport (`internal/otsclient`) are all wired via `main.go`'s `runOTSLoop`. The Verify-closer not yet
+  built: a root reaching **Bitcoin-confirmed** — needs a live calendar + real BTC confirmation. Still
+  1/1 open. **Open `normal` defect (NOT fixed):** the production `Stamp` path
+  (`internal/otsclient/client.go:121`) has NEITHER a panic-recover NOR a per-request timeout (the
   symmetric guards the upgrade path got via `safeUpgrade`); the next stamp-path touch should add
   `safeStamp`.
 
 ## Quality gates
 **Status**: **GREEN — gate runnable, latest `review` verdict is PASS, and CI is green at current HEAD.**
 - `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.26.1`); `mise run check` runnable.
-  Review reported `mise run check` green at HEAD (all 25 packages `ok`; `gofmt -l .` clean).
-- **Latest `review` verdict: PASS (loop CONTINUE)** at HEAD `25c12af`. The `/` named-region parity
-  critical was independently verified (mutation-proven, visual-pass faithful, Codex clean) and closed.
+  Review reported `mise run check` green at HEAD (25 packages `ok`; `gofmt -l .` excl. `cauldron/` clean);
+  `mise run build:wasm` reproduces `verify.wasm` byte-identical to `WasmVerifyHash`.
+- **Latest `review` verdict: PASS (loop CONTINUE)** at HEAD `aaaea50`. The certificate tier-2 WASM caller
+  was independently verified live end-to-end (mutation-proven, Codex second opinion triaged: one minor
+  confirmed → filed `normal`, one refuted).
 - **CI**: `.github/workflows/ci.yml` runs the inlined `mise run check` + the `cmd/notecheck` oracle on
-  push/PR (`go-version: "1.26"`). Remote `origin` = `github.com/iscc/iscc-monitor.git`, branch
-  `develop`. **Branch is in sync with `origin/develop`; the latest CI run is `success` at current HEAD
-  `25c12af`** (run 27933128579).
-- **Open issues: 0 `critical`, 7 `normal`, 9 `low`.** DONE requires 0 critical AND 0 normal, so the
-  loop stays CONTINUE. The 7 normal issues span: certificate §5 digest binding, OTS `safeStamp` guard,
-  `hubDomain` ForceQuery gap, §4/bundle `host:port` DID encode, certificate §6 timestamp, WASM shim
-  `Int()` truncation, and the `/` sub-region parity deltas.
+  push/PR (`go-version: "1.26"`). Remote `origin` = `github.com/iscc/iscc-monitor.git`, branch `develop`,
+  in sync with `origin/develop`. **Latest CI run is `success` at current HEAD `aaaea50`** (run
+  27934463243).
+- **Open issues: 1 `critical`, 8 `normal`, 9 `low`.** DONE requires 0 critical AND 0 normal, so the loop
+  stays CONTINUE. The `critical` is the human-filed ISCC-logo masthead. The 8 normal span: certificate §5
+  digest binding, OTS `safeStamp` guard, `hubDomain` ForceQuery gap, §4/bundle `host:port` DID encode,
+  certificate §6 timestamp, the `safeIndex` test gap, the certificate tier-2 no-JS honesty-copy
+  overstatement, and the `/` sub-region parity deltas.
 
 ## Next Milestone
-**WASM verifier `<script>` caller — the front of the queue now the `/` critical is closed.** Wire the
-served `/_ds/verify.wasm` + `/_ds/wasm_exec.js` into a real SSR caller so the certificate/dossier
-tier-2 ("your browser verified…") result lights up against the proof bundle, and land the
-`cmd/wasm/main.go:39-40` `js.Value.Int()` safe-integer validation at that first caller (open `normal`).
-Then the standalone `monitor.iscc.codes` Independent Verification app (in-browser identical-verdict
-parity + the guided split-view alert).
+**Land the human-filed `critical` ISCC-logo masthead — it preempts everything.** Copy
+`.claude/design/assets/iscc-logo-black.png` into `internal/web/`, downscale it at the embed step,
+`go:embed` it, serve at `/_ds/iscc-logo-black.png` (`image/png`, sibling-`/_ds/` ETag/304 policy), and
+reference it from all six masthead templates next to the existing text mark; assert the `<img>` on `/`
+and one other surface; keep `mise run check` green and re-run the ADR-0012 visual pass vs the Realm-Index
+mockup.
 
-Subsequent: carry the named-region + `←` back-link parity pass across dossier / log browser / single
-record / certificate (the deferred SSR surfaces); the M-UI exit visual-pass + human sign-off
+After the logo lands, continue the WASM milestone: wire the same tier-2 caller into the **dossier**, then
+the standalone `monitor.iscc.codes` **Independent Verification app** (Surface C — in-browser
+identical-verdict parity + the guided split-view alert keyed on the `data-state="failed"` verdict);
+move `safeIndex` into `verifyadapter` and table-test it at that touch. Subsequent: carry the named-region
++ `←` back-link parity pass across the deferred SSR surfaces; the M-UI exit visual-pass + human sign-off
 (ADR-0012); the OTS "upgrades to Bitcoin-confirmed" half (offline-unprovable) plus folding in
-`safeStamp`, the §5 digest-binding, and the `host:port` DID `%3A`-encode when those exact lines are
-next edited.
+`safeStamp`, the §5 digest-binding, and the `host:port` DID `%3A`-encode when those exact lines are next
+edited.
