@@ -1,119 +1,131 @@
 # Next Work Package
 
-## Step: Log-browser record list — render the mockup's `Logged` column from `RecordRow.NoteTimestamp`
+## Step: Render the record-list `Type` column (per-row declaration/deletion/unknown badge)
 
 ## Advances
-M-UI Evidence-Ledger frontend, the **design-parity (named-region)** bar for the log-browser record list.
-target.md (per-surface landmark regions): *"**log browser / record list** — `ISCC Monitor - Log
-Browser.dc.html`: … the record table (`Seq · Type · ISCC-ID · Logged`) … and **every row a link to its
-single record**"*. The served record list today renders only a 2-column `seq · (id+schema)` grid; the
-mockup's table head is the 4-column `Seq · Type · ISCC-ID · Logged` (mockup lines 67-68,
-`grid-template-columns:90px 130px 1fr 150px`). This step closes the **`Logged`** column of that named
-region by wiring the already-landed `store.RecordRow.NoteTimestamp` into the rendered row.
+target.md **M-UI — Evidence Ledger frontend**, the design-parity (named-region) bar for the
+**log browser / record list** surface:
 
-No `critical`/`normal` issue preempts milestone work here. This is the cheapest remaining code-only M-UI
-slice (the store field already exists; no new store read) that the review handoff named:
-*"a reasonable code-only next pick: wire `RecordRow.NoteTimestamp` into the log-browser record-list
-`Logged` column (`internal/proofserve`) — a separate SSR surface reusing the landed store field, no new
-store read."*
+> **log browser / record list** — `ISCC Monitor - Log Browser.dc.html`: … the record table
+> (`Seq · Type · ISCC-ID · Logged`) with a per-row **type badge** (declaration/deletion/unknown)
+> and **every row a link to its single record**; …
+
+The `Logged` column landed last iteration; the record-list head still renders only
+`Seq · ISCC-ID · Logged`. This step adds the missing **`Type`** column and per-row type badge,
+completing the mockup's 4-column `Seq · Type · ISCC-ID · Logged` head — the cheapest remaining
+code-only M-UI named-region slice (state.md "Next Milestone" #1, handoff `**Next:**`). It is the
+last pure-code named-region slice before the backlog turns design-first or human-blocked.
 
 ## Goal
-Render each record-list row's logged time (the verbatim inner `note.timestamp`) as the mockup's `Logged`
-column, with an honest fallback when a record carries no timestamp — advancing the log-browser surface
-toward its mockup's named-region table layout.
+Render each `/records` row with a `Type` badge (Declaration / Deletion / Unknown record type),
+mapped from the verbatim `note.$schema` (ADR-0008: the only interpretation), and add the `Type`
+column header, so the served no-JS HTML carries the mockup's full 4-column record table.
 
 ## Scope
 - **Create**: (none)
 - **Modify**:
-  - `internal/proofserve/records.html` — the only non-test production file; add the `Logged` cell to the
-    record-row grid and a column-header row above the list.
-  - `internal/proofserve/records_test.go` — add the HTTP-seam golden test (test file, not counted toward
-    the ≤3 non-test budget).
+  - `internal/proofserve/handler.go` — give `recordsData.Records` a per-row view-model carrying the
+    precomputed `Kind` label (and a stable kind key for the badge `data-*`), because `store.RecordRow`
+    is a plain store value with **no `Kind` field**; precompute it in `serveRecords` via the existing
+    `recordKind(row.NoteSchema)`.
+  - `internal/proofserve/records.html` — add the `<span>Type</span>` header, a per-row Type badge
+    cell, the 3-column→4-column grid-template update (head + row grids stay aligned), and the badge CSS
+    (DS-token-only, grayscale-safe).
+  - `internal/proofserve/records_test.go` — new `TestRecordsRendersTypeColumn` (test file; does not
+    count against the ≤3 non-test/doc budget).
 - **Reference**:
-  - `.claude/design/ISCC Monitor - Log Browser.dc.html` (lines 67-72: the `Seq · Type · ISCC-ID ·
-    Logged` table head + row grid `90px 130px 1fr 150px`; lines 108-113: the mockup humanizes the time
-    as `YYYY-MM-DD HH:MM UTC` — a JS-side cosmetic, NOT a required named-region item).
-  - `.claude/context/learnings/http-surface.md` — the "HTML record list at `/records`" + "HTML
-    single-record page" sections: verbatim-render posture, the `[data-status=…]` UNQUOTED-selector trap,
-    buffer-then-200, store-leaf invariant, the no-CDN body ban.
-  - `.claude/context/learnings/web.md` reference via the index — the `noExternalCDN` third-party-origin
-    ban (same-origin `url(` OK).
-  - `internal/store/iscc_index.go` lines 81-94 (`RecordRow` — `NoteTimestamp` is the verbatim optional
-    `note.timestamp` RFC-3339 string, `""` for a NULL/empty column).
-  - `internal/proofserve/handler.go` lines 785-795 (`recordsData` already carries
-    `Records []store.RecordRow`, so each row's `.NoteTimestamp` is template-reachable with NO new struct
-    field or handler change).
+  - `.claude/context/learnings/http-surface.md` — the "HTML record list at `/records`" section
+    (Type col is the named-deferred slice; head must list only columns with a data cell) and the
+    "single-record page" section (the GROUND-TRUTH vacuity trap, and "match the FULL wire URI").
+  - `internal/proofserve/handler.go` lines 111-115 (`schemaDeclaration`/`schemaDeletion` +
+    `kindDeclaration`/`kindDeletion`/`kindUnknown` constants), 777-951 (`recordsData`, `serveRecords`,
+    `recordData`, `recordKind`) — the existing wiring to extend.
+  - `internal/proofserve/records.html` lines 136-198, 288-305 (the record-list grid CSS + the
+    `range .Records` row markup).
+  - `.claude/design/ISCC Monitor - Log Browser.dc.html` lines 67-77 (the authoritative 4-column head
+    `Seq · Type · ISCC-ID · Logged` and the per-row inline-block type badge with the three labels:
+    Declaration / Deletion / Unknown type).
+  - `internal/store/iscc_index.go` lines 34-93 (`ProjectionRecord` + `RecordRow` fields — note both
+    carry `NoteSchema`, the discriminator the badge keys on).
+  - `internal/proofserve/records_test.go` lines 180-229 (`TestRecordsRendersLoggedColumn`, the
+    direct-`store.Open` fixture pattern to copy) and `leafISCCID`.
 
 ## Not In Scope
-- **The `Type` column / per-row type badge** (`declaration`/`deletion`/`unknown`). The mockup's table has
-  four columns; this step lands `Logged` only. A per-row Type badge needs per-row `recordKind(NoteSchema)`
-  precomputation (the parent `recordsData` carries no per-row kind, and `RecordRow` is a plain store value
-  the store package owns), so it is its own follow-up step. Render the existing verbatim `note.$schema`
-  (`.record-schema`) where it is today; do not add a type badge now.
-- Touching `internal/store` — `RecordRow.NoteTimestamp` already lands and is read by `ListRecords`; do
-  NOT add a store column, read, or method (store stays a leaf; no schema change).
-- Touching the single-record page (`record.html` / `serveRecord` / `recordData`) — it has no `Logged`
-  field today; adding it there is a separate single-record-parity step.
-- Time-zone math or RFC-3339 parse/re-format in Go (ADR-0008 verbatim posture: do not interpret the
-  timestamp; see Implementation Notes for the humanization decision).
-- The `← <hub> dossier` back-link / chrome instance-identity parity on this surface (separate
-  named-region slice under the M-UI cross-cutting nav-closure requirement).
+- Do NOT add the styled pager buttons, the "Jump to sequence" input (it is a JS control — the no-JS
+  constraint wins), the `← <hub> dossier` back-link, or the masthead instance-identity copy — those
+  are separate named-region/issue items, not this slice.
+- Do NOT touch `store.RecordRow` / `ProjectionRecord` / `schema.sql` — `note.$schema` is already
+  stored verbatim; the kind label is a render-time projection of an existing field, computed in the
+  handler, never persisted. (Adding a column would re-trigger the open `normal` DB-migration issue.)
+- Do NOT change the badge's color-only semantics into the sole status signal — the **text label** is
+  load-bearing and grayscale-safe; the mockup's `tone`/`toneBg` hue is decorative only.
+- Do NOT alter `recordKind`'s mapping, the `Logged` column, pagination, the accepted-tree cap, or any
+  proof/crypto path — this is a template + view-model render slice only (oracle gate N/A).
 
 ## Implementation Notes
-- **No handler/struct change is required.** `recordsData.Records` is `[]store.RecordRow`, and
-  `RecordRow.NoteTimestamp` is exported, so the template can render `{{.NoteTimestamp}}` inside the
-  `{{range .Records}}` block directly. Keep the production change template-only. (If a humanization helper
-  feels cleaner, a tiny pure func in `handler.go` is acceptable and still ≤3 non-test files — but prefer
-  template-only.)
-- **Verbatim, not parsed (ADR-0008 + learnings render-values-verbatim posture).** The record list already
-  renders `IsccID` and `NoteSchema` verbatim. Render `NoteTimestamp` the same way — emit the stored
-  RFC-3339 string as-is. Do NOT `time.Parse`/re-format it; the mockup's `YYYY-MM-DD HH:MM UTC`
-  humanization is a JS-side cosmetic and (per state.md) intentional ADR-0008-deferred polish, NOT a
-  required named-region item. The named-region bar is satisfied by the `Logged` cell *existing and showing
-  the logged time*, not by a particular format.
-- **Honest empty fallback (coverage/honesty discipline).** `NoteTimestamp == ""` (NULL column) is the
-  common case — the `buildMirror` fixture seeds projections with NO timestamp (handler_test.go:144-147),
-  so most fixture rows are `""`. Render an explicit placeholder for the empty case, mirroring the existing
-  `{{if .IsccID}}…{{else}}(no iscc_id){{end}}` / `(no schema)` pattern — e.g.
-  `{{if .NoteTimestamp}}{{.NoteTimestamp}}{{else}}—{{end}}`. Never render a fabricated or zero time.
-- **Grid layout — render only the columns that have data cells.** The current `.record-row` is
-  `grid-template-columns: 120px 1fr` (seq + a stacked id/schema cell). Add a trailing `Logged` grid column
-  (e.g. `120px 1fr 160px`; mono, `--text-2xs`/`--text-xs`, `var(--text-muted)`). Add a column-header row
-  above the `<ul class="records">` listing exactly the columns you render (e.g. `Seq · ISCC-ID · Logged`)
-  so the head never promises a `Type` column that has no data cell — the full 4-column `Seq · Type ·
-  ISCC-ID · Logged` head waits for the deferred Type-badge step. Keep it a CSS grid (no `<table>`; the
-  existing `TestRecordsLinksTokensNoCDN` bans `<table>`).
-- **DS-token + no-CDN discipline (learnings/web.md, http-surface.md):** every new rule uses `var(--*)`
-  tokens; the body must carry NO `http://`/`https://`/`cdn.`/`jsdelivr` (TestRecordsLinksTokensNoCDN bans
-  all four). Use the UNQUOTED `[data-status=frozen]` attribute-selector form already in this file — do
-  NOT add a quoted `data-status="…"` literal into the `<style>` (it would trip
-  `TestRecordsRendersInMemoryStatus`'s negative `data-status="verified"` assert).
-- **The Logged-column test needs a fixture with a real `NoteTimestamp`.** `buildMirror` seeds none, so
-  build a small self-contained store the way `TestRecordsCeilingHidesUnacceptedLeaves` does: `store.Open`
-  on a `t.TempDir()`, `UpsertHub`, `RecordProjections` with at least one row carrying
-  `NoteTimestamp: "2026-06-21T12:34:56Z"` AND one row with `NoteTimestamp: ""`, then `AdvanceFollowState`
-  past both seqs so they are accepted. Assert the body contains the HARDCODED literal timestamp string
-  (not a code constant — so the gate is non-vacuous), the empty-fallback placeholder, and the `Logged`
-  column header.
+- **View-model, not a store change.** `recordsData.Records` is `[]store.RecordRow` and `RecordRow`
+  has no `Kind`. The template's `{{range .Records}}` can only read `RecordRow` fields, so introduce a
+  small handler-local row VM (e.g. `recordRowVM struct { store.RecordRow; Kind string; KindKey string }`
+  embedding the store row, or a flat struct copying `Seq`/`IsccID`/`NoteSchema`/`NoteTimestamp` plus
+  `Kind`/`KindKey`). In `serveRecords`, after `ListRecords`, map each row through `recordKind(row.NoteSchema)`
+  to fill `Kind` (the human label) and a stable lowercase `KindKey` (`declaration`/`deletion`/`unknown`)
+  for the badge `data-kind` selector. Keep `recordKind` as the single mapping site — `serveRecord`
+  already calls it, so reuse it; do not duplicate the switch.
+- **Labels reuse the existing constants.** `kindDeclaration="Declaration"`, `kindDeletion="Deletion"`,
+  `kindUnknown="Unknown record type"` (handler.go:113-115) already match the mockup's
+  Declaration/Deletion (the mockup's third label is "Unknown type"; our existing constant
+  "Unknown record type" is the in-repo wording — keep the existing constant, do not introduce a new
+  literal). The `KindKey` is a SEPARATE short token for CSS/`data-kind`, distinct from the display
+  label — derive it in the handler, do not parse it back out of the label.
+- **Grid alignment.** The head (`.records-head`) and each row (`.record-row`) are CSS grids. Adding
+  `Type` means changing the record-list grids from `120px 1fr 160px` to a 4-column template
+  (e.g. `120px 130px 1fr 160px`) on BOTH `.records-head` and `.record-row` so the header columns stay
+  aligned with the data cells (the `Logged` review explicitly checked this). The `.ledger-status` row
+  is independent (`160px 1fr`) and must NOT change.
+- **Badge CSS is DS-token-only, grayscale-safe.** Render the badge as an inline-block with a text
+  label; hue (if any) keys on `[data-kind=…]` like the existing `.hub-status-badge[data-status=…]`
+  block, and must use the UNQUOTED attribute-selector form (`[data-kind=declaration]`, valid CSS for
+  identifier values) — the quoted form would emit a `data-kind="…"` literal into the `<style>` and
+  could trip a future negative body assert (the cross-cutting CSS-literal trap from
+  http-surface.md/web.md). Every property must resolve to an existing `var(--*)` token in
+  `internal/web/tokens.css` (the `Logged` review verified all this page's tokens resolve — reuse
+  `--font-mono`/`--text-2xs`/`--text-xs`/spacing/radius tokens already used here).
+- **No-CDN / no-`<table>` invariants hold.** This page already has `TestRecordsLinksTokensNoCDN`
+  (bans `http://`/`https://`/`cdn.`/`jsdelivr`) and renders as a CSS grid `<ul>`, not a `<table>`.
+  The new markup must add no external URL and no `<table>`.
+- **Vacuity trap (learnings, the open `low` on `record_test.go`).** The single-record label test went
+  vacuous because it returned the `schemaDeclaration`/`schemaDeletion` *constants* and `recordKind`
+  switched on the SAME constants — reverting both constants left the suite green. Avoid that here:
+  seed the new test's `ProjectionRecord` rows with **HARDCODED literal** `note.$schema` URIs
+  (`"http://purl.org/iscc/schema/iscc-note-0.8.0.json"`,
+  `"http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json"`, and a garbage string like
+  `"iscc-note-future-9.9.9"` for the unknown case), NOT the package constants — so reverting a
+  constant makes the test FAIL.
+- **Test grounding.** Copy `TestRecordsRendersLoggedColumn`'s direct-`store.Open` + `RecordProjections`
+  + `AdvanceFollowState` fixture (buildMirror seeds uniform schemas, so build the fixture directly).
+  Seed three accepted leaves: one declaration URI, one deletion URI, one unknown schema; advance
+  `LastSize` past all three; assert the body contains all three rendered labels ("Declaration",
+  "Deletion", "Unknown record type") AND the `<span>Type</span>` header. ADR-0008: the verbatim
+  `note.$schema` still renders in the ISCC-ID cell's `.record-schema` line; the Type badge is
+  additive, not a replacement.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty
-  outside `cauldron/`).
-- `go test -count=1 -run TestRecords ./internal/proofserve` passes (all existing record-list tests + the
-  new `Logged`-column test).
-- The new test asserts the served `/records` body contains the literal seeded timestamp
-  `2026-06-21T12:34:56Z`, the empty-timestamp fallback placeholder for a row with no timestamp, and the
-  `Logged` column header.
-- Mutation (advance proves non-vacuous, then reverts): removing the `Logged` cell from `records.html`
-  makes the new test FAIL; restoring it passes. Tree `git diff`-clean after revert.
-- `go list -deps ./internal/store | grep -E 'net/http|internal/proofserve'` stays empty (store untouched,
-  still a leaf).
-- No oracle/conformance path touched: the name-only diff over `internal/proof/`, `logclient/verify`,
-  `didweb`, fork/shrink/equivocation/consistency, `derive_vkey` is empty (pure HTML render of a persisted
-  leaf read; go.mod/go.sum/schema.sql byte-unchanged).
+- `mise run check` is green (build + vet + `go test ./...` all pass; `gofmt -l .` empty outside
+  `cauldron/`).
+- `go test -count=1 -run TestRecords ./internal/proofserve` passes (existing record-list tests +
+  the new `TestRecordsRendersTypeColumn`).
+- The new test asserts the served `/records` body contains `<span>Type</span>` (header) and the three
+  literal labels `Declaration`, `Deletion`, `Unknown record type`, each driven from a HARDCODED
+  literal `note.$schema` URI (constant revert → test FAIL).
+- Mutation check (run + revert): deleting the per-row Type badge cell from `records.html` makes
+  `TestRecordsRendersTypeColumn` FAIL; restore byte-clean (`git diff` clean).
+- `go list -deps ./internal/store | grep -E 'net/http|proofserve'` is empty (store stays a leaf —
+  no store change).
+- The diff adds no `http://`/`https://`/`cdn.`/`jsdelivr` to the body and no `<table>`
+  (`TestRecordsLinksTokensNoCDN` + `TestRecordsRendersInMemoryStatus` still pass).
 
 ## Done When
-`mise run check` is green, `go test -run TestRecords ./internal/proofserve` passes including the new
-`Logged`-column golden test (verbatim seeded timestamp + honest empty fallback + `Logged` header
-rendered), the cell is mutation-proven non-vacuous, and the store stays a leaf with no schema or
-trust-path change.
+`mise run check` is green and `go test -count=1 -run TestRecords ./internal/proofserve` passes with a
+mutation-proven `TestRecordsRendersTypeColumn`, so the served `/records` no-JS HTML renders the
+mockup's full 4-column `Seq · Type · ISCC-ID · Logged` head with a per-row declaration/deletion/unknown
+type badge.
