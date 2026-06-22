@@ -68,6 +68,13 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 - **settled:** the no-JS, `seq DESC`, seq-cursor-paginated record list is landed + correct (DS shell, no
   `<table>`/CDN, unquoted `[data-status=…]` CSS, buffer-then-200, pure store-read). (Detail at-2026-06-21.)
+  The mockup head is the 4-col `Seq · Type · ISCC-ID · Logged`; the **`Logged`** col is landed (verbatim
+  `RecordRow.NoteTimestamp` RFC-3339, em-dash `&mdash;` fallback for the NULL-timestamp common case,
+  template-only, no handler/struct change). **`Type`** col is still deferred — keep the rendered head
+  listing ONLY columns that have a data cell (`Seq · ISCC-ID · Logged`), never promising a head a row
+  lacks. Test grounding: `buildMirror` seeds NO timestamps, so a Logged-col test must build a fresh
+  `store.Open` fixture with a HARDCODED literal `NoteTimestamp` (constant-vs-constant goes vacuous);
+  assert the `&mdash;` ENTITY string (html/template passes it through verbatim).
   **Durable lessons for any seq-cursor pagination here:** never overload `0` as both a cursor value and a
   sentinel (carry a `has-from` bool or a `+1` cursor); clamp page size while still `uint64` BEFORE the
   `int()` conversion (a huge `n` wraps `int(n)` negative and modernc SQLite reads a negative `LIMIT` as
