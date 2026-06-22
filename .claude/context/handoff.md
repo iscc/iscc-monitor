@@ -1,81 +1,59 @@
-## 2026-06-22 — Review of: Move the three instance-identity env keys into the `internal/config` leaf
+## 2026-06-22 — Render certificate timestamps in UTC (`.UTC().Format`) to green the gate on non-UTC hosts
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Normalized all four `.Format(time.RFC3339)` call sites in `internal/certificate/handler.go`
+to `.UTC().Format(time.RFC3339)` so every rendered cert timestamp is locale-independent `…Z`, matching
+the rest of the federation. Added one host-independent regression test pinning the two test-covered
+chips (§5 confirmation + COMPARISON ANCHOR coverage-since) to their UTC form. `mise run check` is now
+green under any host TZ — clearing the gate the queued M-Deploy critical steps verify against.
 
-**Summary:** The advance moved `ISCC_MONITOR_{INSTANCE,OPERATOR,REALM_NAME}` out of `main.go`'s inline
-`os.Getenv`-based `identity()` into typed `Config` fields read via the existing no-validation
-`optional(get, key, "")` helper, with `identity(cfg)` rebuilding `dashboard.Identity` from them and
-CLAUDE.md documenting all three keys (incl. the realm-name-vs-path distinction). The increment is exactly
-what `next.md` asked: scope-disciplined (2 prod files + 1 doc + 1 test), import-pure (`internal/config`
-stays `{fmt time}`-only, WASM-green), mutation-proven non-vacuous, and its own gates are clean. The ONE
-caveat (hence PASS_WITH_NOTES not PASS): `mise run check` is RED, but solely from two PRE-EXISTING,
-TZ-dependent `internal/certificate` test failures that touch zero code in this diff and that I proved
-fail identically on the parent commit — root-caused and filed as a new `normal` issue.
+**Files changed:**
+- `internal/certificate/handler.go`: 4 sites `.Format(time.RFC3339)` → `.UTC().Format(time.RFC3339)`
+  — `:653` bundle key `Revoked`, `:962` §4 `SigningKeyRevoked`, `:1013` §5 `BTCConfirmedAt`,
+  `:1040` Comparison-Anchor `CoverageSince`. Format unchanged (still RFC-3339); only the zone is fixed.
+- `internal/certificate/handler_test.go`: added `TestCertificateRendersTimestampsInUTC` (+ a small
+  `renderCertBody` helper). It forces `time.Local` to a fixed UTC+1 zone (restored via `t.Cleanup`) so
+  the store's `time.Unix` round-trip yields a `+01:00` offset on EVERY host, then asserts the §5 and
+  coverage chips render `…Z` and no `+01:00` leaks. The two pinnable chips live on different fixtures
+  (§5 needs the tiled-OTS fixture; coverage needs the set-once time seeded before `AdvanceAccepted`,
+  i.e. `fixtureStoreCovered`), so each renders from its own store under the one `time.Local` swap.
 
-**Verification:**
-- [x] `go test -count=1 -run TestLoad ./internal/config` — pass (golden round-trip incl. 3 identity
-  fields, absent→`""` default, both partial-set table cases).
-- [x] `go test -count=1 ./cmd/iscc-monitor` — pass (`identity(cfg)` signature compiles + wires at the
-  `serveMetrics` goroutine launch).
-- [x] Import-purity assertion — `go list -f '{{.Imports}}' .../internal/config` = exactly `[fmt time]`
-  (no `os`/`dashboard`/`net`); `GOOS=js GOARCH=wasm go build ./internal/config` builds.
-- [x] Mutation check (reviewer re-ran on HEAD, restored byte-clean) — forcing `instance := "MUTANT"`
-  in `Load` FAILS both `TestLoadGolden` AND `TestLoadDefaults`; `config.go` restored byte-identical.
-- [x] `gofmt -l .` empty outside `cauldron/`; `go vet ./internal/config ./cmd/iscc-monitor` clean.
-- [x] Scope discipline — diff = `config.go` + `main.go` (2 prod) + `CLAUDE.md` (doc) + `config_test.go`
-  (test); every `next.md` Not-In-Scope item correctly left undone (no proofserve threading, no fallback-
-  const consolidation, no `Identity.Realm` rename, no validation added, no `dashboard` import in config).
-- [x] Quality-gate integrity scan over all unpushed commits — no `//nolint`/`t.Skip`/build-tag/swallowed-
-  error/deleted-assertion. The lone grep hit is a prose line in the prior handoff describing this scan.
-- [x] Oracle gate N/A — pure startup-value parsing, no signature/Merkle/did:web/proof path touched;
-  `go.mod`/`go.sum`/`schema.sql` not in the diff (byte-identical).
-- [ ] `mise run check` overall — RED, but ONLY from two pre-existing, unrelated `internal/certificate`
-  failures (see Issues). The config increment's own packages (`internal/config`, `cmd/iscc-monitor`) and
-  all 23 other packages are `ok`.
+**Verification:** `mise run check` → GREEN both under host TZ (all 27 packages `ok`) AND under
+`TZ=America/New_York` (the gate that was RED on parent `HEAD`). Per-criterion:
+- [x] `mise run check` green on a non-UTC host (`TZ=America/New_York mise run check` passes; was 2
+  failures on parent).
+- [x] `TZ=America/New_York go test -count=1 ./internal/certificate` passes; `TZ=UTC` passes; also
+  `TZ=Asia/Kolkata` (half-hour offset) passes — no regression on UTC hosts.
+- [x] Mutation / host-independence: reverting `.UTC()` at `:1013` OR `:1040` makes the new test FAIL
+  under `TZ=UTC` (proving it is non-vacuous on UTC hosts, unlike the two pre-existing TZ-sensitive
+  tests). Restored byte-clean (all 4 `.UTC()` present).
+- [x] `gofmt -l internal/certificate/handler.go internal/certificate/handler_test.go` empty;
+  `go vet ./internal/certificate` clean.
+- [x] Oracle gate **N/A** — pure timestamp-rendering change; no signature / RFC-6962 / Merkle / did:web
+  / proof / `go.mod` / `go.sum` / `schema.sql` path touched (`git diff --stat` = the 2 cert files only).
 
-**Issues found:**
-- **Certificate timestamps rendered in LOCAL time, not UTC** (filed `normal`). `mise run check` fails on
-  any non-UTC host: `TestCertificateComparisonAnchor` and `TestCertificateBitcoinAnchorConfirmed` expect
-  `…Z` (UTC) chips but the handler renders the same instants in the server's local zone
-  (`2026-01-05T10:00:00+01:00` / `2026-02-14T19:40:00+01:00` on this CET box). PROVEN pre-existing
-  (identical 2 failures on parent `d7e1fdc` in a throwaway worktree) and PROVEN environmental (CI/UTC is
-  green, hence the prior `7a32458` "27 ok"). The advance's "stale-fixed-timestamps vs wall-clock" guess
-  was the wrong mechanism — the instants are correct, only the rendered zone is local. Fix:
-  `.UTC().Format(time.RFC3339)` on the coverage-since + §5 confirmation chips. Untouched by this diff.
-- Resolved + deleted: **"Instance-identity env keys read inline in main.go…"** — this increment closes
-  it (keys parsed through `internal/config`, realm-name key ratified, CLAUDE.md documents all three).
-
-**Codex second opinion:** unavailable — the `codex review` launch was denied by the Claude Code auto-mode
-classifier ("Create Unsafe Agents": it refused to spawn an agent with `sandbox_mode=danger-full-access`
-+ `approval_policy=never` under a generic iteration request). No second opinion this iteration; graceful
-degradation per protocol. The increment is low-risk (config-leaf value parsing, no trust-root path), so
-the missing second skeptic is a low concern here.
-
-**Visual check:** n/a — no SSR surface changed. The diff touches only `internal/config` value parsing and
-`main.go` wiring; no template, no SSR handler render path (`dashboard`/`dossier`/`web`/`certificate`)
-is modified.
-
-**Next:** The proofserve-trio masthead slice — thread `dashboard.Identity` into `browser.html`,
-`records.html`, `record.html` (the remaining 3 of 6 SSR mastheads), and fold the now-3x-duplicated
-`instanceFallback`/`operatorFallback` consts + a single exported `Resolve` into one shared leaf (closes
-the `low` duplication issue, its natural 4th-copy trigger). `internal/verifier` stays EXCLUDED (`.codes`
-chrome). ALTERNATIVELY, the certificate-UTC fix is a small, well-scoped, gate-greening candidate (it is
-the only thing keeping `mise run check` red locally) — a strong candidate for the very next slice since a
-green local check matters for the M-Deploy work now queued in target.md/ADR-0013.
+**Next:** The gate is now green on any host, so the queued M-Deploy `critical` work can be verified
+cleanly. Strongest candidate: **trap SIGTERM in `run()`** (`signal.NotifyContext(..., os.Interrupt,
+syscall.SIGTERM)` in `cmd/iscc-monitor/main.go:133`) — a 1-file change closing a `critical` ops issue,
+needed before the container/GHCR step so `docker stop` drains cleanly. The Dockerfile + GHCR publish
+workflow (with the `-ldflags` git-SHA build stamp on `/healthz`/`GET /version`) is the larger
+`critical` follow-on. The `deploy/realm-testnet.txt` canonical realm doc is a cheap independent slice.
 
 **Notes:**
-- The cert TZ failure means `mise run check` is RED *locally* but GREEN in CI (UTC). The config increment
-  is genuinely complete and correct; I withheld a clean PASS only because the protocol forbids PASS while
-  any check is red, and chose PASS_WITH_NOTES because the redness is provably pre-existing, unrelated, and
-  environment-specific. The next define-next should weigh fixing the cert TZ bug first so subsequent
-  reviews aren't masked by a persistent red.
-- Uncommitted `.claude/` files NOT mine (other roles): `target.md`, `issues.md` (the M-Deploy ops asks +
-  ADR-0013), and untracked `.claude/adr/0013-server-packaging-and-deployment.md`. I committed only my
-  review artifacts (handoff, learnings/config.md, issues.md edits).
-- Two stale prunable git worktrees exist (`/tmp/iscc-monitor-536e429`, `/workspace/iscc-monitor-qa`) from
-  prior runs — left alone (not this iteration's; force-removing others' could disrupt parallel work). My
-  own parent-commit worktree was cleanly removed.
-- `internal/config` purity nuance confirmed: direct imports are exactly `{fmt time}`; `os` appears only
-  transitively via `fmt` (stdlib, unavoidable) — the load-bearing rule (no `net`/`net/http`/`sql`/
-  `dashboard`; WASM-shareable) holds, verified by the `GOOS=js GOARCH=wasm` build.
+- Two of the four fixed sites (`:653` / `:962`, both `key.Revoked`) have NO fixture exercising the
+  §4/bundle revoked path today, so reverting their `.UTC()` fails no test (confirmed in the mutation
+  sweep). This is exactly what `next.md` directed: fix all four for uniform locale-independence even
+  though only two are test-covered. Not new debt — the revoked-key render path was already untested
+  before this slice; a future §4-revoked fixture would naturally pin them.
+- The store reads coverage/anchor instants back via `time.Unix` (`internal/store/hubs.go:84`,
+  `ots.go:146/206`), which always re-wraps in `time.Local`. That is why the seeded `FixedZone`
+  location does NOT survive a store round-trip — the `next.md` "seed a `FixedZone` time" sketch can't be
+  realized through the public store seam. The faithful host-independent realization is to control
+  `time.Local` for the duration of the test (a scoped, restored swap; the cert suite has zero
+  `t.Parallel`, and `time.Local` is per-process so cross-package `go test` parallelism is unaffected).
+  This is the minimal deviation from the literal Implementation-Note sketch, in service of its stated
+  goal ("fails before the fix on EVERY host"). No `t.Setenv("TZ")` / process-env mutation used.
+- `.claude/context/issues.md` is modified in the working tree by another role (the M-Deploy ops asks) —
+  left uncommitted, not mine to touch. Only the 2 source files + this handoff are committed.
+- Out of scope, untouched (per `next.md` Not-In-Scope): SIGTERM, Dockerfile/GHCR, version stamp,
+  `deploy/` realm doc, README, the cert §6 mockup-humanize format step, the other SSR surfaces'
+  timestamps (already UTC).

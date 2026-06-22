@@ -1573,6 +1573,74 @@ func TestCertificateComparisonAnchorCoverageJustStarted(t *testing.T) {
 	}
 }
 
+// TestCertificateRendersTimestampsInUTC pins the certificate's RFC-3339 chips to UTC `Z`
+// regardless of the host timezone — the honesty-bearing, cross-platform property of every
+// federation surface (CLAUDE.md "Coverage" + the target.md cross-platform quality bar).
+//
+// The store reads coverage/anchor instants back via time.Unix, which re-wraps them in
+// time.Local; so a chip rendered with a bare .Format(time.RFC3339) carries the host's local
+// offset (e.g. `…+01:00` on a CET box), which fails on every non-UTC host. The fix renders
+// each chip via .UTC().Format(time.RFC3339), pinning it to `…Z` on any host.
+//
+// This test forces time.Local to a fixed UTC+1 zone (restored after) so the round-tripped
+// instant carries a NON-UTC offset on EVERY host — not just non-UTC CI runners — then asserts
+// the §5 confirmation chip and the COMPARISON ANCHOR coverage chip render their UTC `…Z` form
+// and that no `+01:00` offset leaks. The two pinnable chips live on different fixtures (§5
+// needs the tiled OTS fixture; the coverage chip needs the set-once coverage time seeded
+// BEFORE AdvanceAccepted, which fixtureStoreCovered does), so each is rendered from its own
+// store under the one time.Local swap. Mutation (non-vacuity): reverting either `.UTC()`
+// re-introduces the `+01:00` offset and FAILS this test on every host (including UTC ones),
+// unlike the two TZ-sensitive tests it complements.
+func TestCertificateRendersTimestampsInUTC(t *testing.T) {
+	// Force a non-UTC local zone so the store's time.Unix round-trip yields a +01:00 offset
+	// on every host. Restore on cleanup; the cert suite runs serially (no t.Parallel).
+	saved := time.Local
+	time.Local = time.FixedZone("CET", 3600)
+	t.Cleanup(func() { time.Local = saved })
+
+	// §5 BITCOIN ANCHOR confirmation chip (BTCConfirmedAt, handler.go ~1013).
+	const seq = 0
+	const leaves = 5
+	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
+	digest := otsFixtureDigest(t, "hello-world.txt.ots")
+	stTiled, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, digest, false, raw)
+	upgradedAt := time.Date(2026, 2, 14, 18, 40, 0, 0, time.UTC)
+	seedOTSAtRoot(t, stTiled, "sb1.amlet.id", leaves, digest, otsFixture(t, "hello-world.txt.ots"), upgradedAt)
+	tiledBody := renderCertBody(t, stTiled, goldenID)
+	if want := "2026-02-14T18:40:00Z"; !strings.Contains(tiledBody, want) {
+		t.Errorf("§5 confirmation chip not UTC-normalized: want %q\n%s", want, tiledBody)
+	}
+
+	// COMPARISON ANCHOR coverage-since chip (CoverageSince, handler.go ~1040). fixtureStoreCovered
+	// seeds the coverage time BEFORE AdvanceAccepted so the explicit instant survives the set-once.
+	coverSince := time.Date(2026, 1, 5, 9, 0, 0, 0, time.UTC)
+	stCovered := fixtureStoreCovered(t, "sb1.amlet.id", goldenID, 24815, 24000, coverSince)
+	coveredBody := renderCertBody(t, stCovered, goldenID)
+	if want := "2026-01-05T09:00:00Z"; !strings.Contains(coveredBody, want) {
+		t.Errorf("coverage-since chip not UTC-normalized: want %q\n%s", want, coveredBody)
+	}
+
+	// Neither chip leaks the host-local offset — the property a reverted .UTC() would break.
+	for _, body := range []string{tiledBody, coveredBody} {
+		if strings.Contains(body, "+01:00") {
+			t.Errorf("certificate rendered a local +01:00 offset instead of UTC `Z`\n%s", body)
+		}
+	}
+}
+
+// renderCertBody drives certificate.Handler over a store for the golden id and returns the
+// HTML-unescaped body of the 200 response — the shared render+unescape step the UTC chip test
+// runs against two fixtures under one time.Local swap.
+func renderCertBody(t *testing.T, st *store.Store, id string) string {
+	t.Helper()
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
+	rec := get(t, h, id)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	return html.UnescapeString(rec.Body.String())
+}
+
 // otsFixture loads one bundled .ots vector from this package's testdata/ (copied
 // verbatim from internal/ots/testdata so the certificate test is hermetic and never
 // reads another package's testdata at runtime). hello-world.txt.ots is the external

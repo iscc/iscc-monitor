@@ -650,7 +650,7 @@ func serveBundle(w http.ResponseWriter, data certData, arts bundleArtifacts) {
 			Multibase: arts.key.PubkeyZ,
 		}
 		if !arts.key.Revoked.IsZero() {
-			key.Revoked = arts.key.Revoked.Format(time.RFC3339)
+			key.Revoked = arts.key.Revoked.UTC().Format(time.RFC3339)
 		}
 		bundle.Key = key
 	}
@@ -959,7 +959,7 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 				data.SigningKeyID = fmt.Sprintf("%08x", keyID)
 				data.SigningKeyMultibase = key.PubkeyZ
 				if !key.Revoked.IsZero() {
-					data.SigningKeyRevoked = key.Revoked.Format(time.RFC3339)
+					data.SigningKeyRevoked = key.Revoked.UTC().Format(time.RFC3339)
 				}
 				data.HasClause4 = true
 				// Carry the cached key for the proof bundle's key member (the same
@@ -1010,7 +1010,7 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 				if confirmed {
 					data.BTCHeight = height
 					if !rec.UpgradedAt.IsZero() {
-						data.BTCConfirmedAt = rec.UpgradedAt.Format(time.RFC3339)
+						data.BTCConfirmedAt = rec.UpgradedAt.UTC().Format(time.RFC3339)
 					}
 				}
 			}
@@ -1037,7 +1037,7 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 			data.HasCoverageWindow = true
 			data.CoverageSize = hub.Coverage.Size
 			if !hub.Coverage.Since.IsZero() {
-				data.CoverageSince = hub.Coverage.Since.Format(time.RFC3339)
+				data.CoverageSince = hub.Coverage.Since.UTC().Format(time.RFC3339)
 			}
 		}
 	}
