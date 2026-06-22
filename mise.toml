@@ -39,4 +39,4 @@ run = "go build ./... && go vet ./... && go test ./..."
 [tasks."build:wasm"]
 description = "Reproducibly build the verifier WASM artifact (byte-identical across a clean cache; pin its SHA-256 in web.WasmVerifyHash)"
 env = { GOOS = "js", GOARCH = "wasm", CGO_ENABLED = "0" }
-run = "go build -trimpath -ldflags=-buildid= -o internal/web/verify.wasm ./cmd/wasm"
+run = "go build -trimpath -ldflags=-buildid= -buildvcs=false -o internal/web/verify.wasm ./cmd/wasm"

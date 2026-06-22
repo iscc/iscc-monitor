@@ -79,10 +79,12 @@ const WasmVerifyPath = "/_ds/verify.wasm"
 // bytes — the reproducible-build artifact hash a client compares against to confirm it
 // loaded the audited verifier (the SRI/verify-artifact pin). It is produced by the
 // deterministic `mise run build:wasm` task (GOOS=js GOARCH=wasm CGO_ENABLED=0 go build
-// -trimpath -ldflags=-buildid=) under the project-pinned Go toolchain; re-running that
+// -trimpath -ldflags=-buildid= -buildvcs=false) under the project-pinned Go toolchain;
+// the -buildvcs=false is load-bearing — without it Go stamps VCS revision/dirty
+// metadata into the wasm data section and the hash is unreproducible. Re-running that
 // task without re-pinning this const fails TestWasmVerifyHashPinned. The bytes are
 // toolchain-dependent, so this value tracks `mise run build:wasm`, not a bare go build.
-const WasmVerifyHash = "17b0f4f81a0952c3bb8df1f85e300b90ea2d1f041a636d338cc00e38554445dc"
+const WasmVerifyHash = "f03b9b8973e308be12dd7d0c210e612d0aa388e6e8a7cdce4ea8515cd823047e"
 
 // cacheControl is the Cache-Control policy for every /_ds/ asset. Each is served at
 // a stable, overwrite-in-place URL (not content-addressed), so it must NOT carry the
