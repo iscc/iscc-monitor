@@ -30,6 +30,35 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   if a future CI guard ever pipes into a tool that may short-circuit before draining, prefer a temp-file
   + explicit `$?` check over `sed | tool` under `pipefail` to avoid the SIGPIPE masking.
 
+## Production Dockerfile + `docker` CI job (`Dockerfile`, `.dockerignore`, `ci.yml` job `docker`)
+
+- **The image build is a sibling `docker` job, NOT folded into `check`** (keeps the gate fast + the image
+  build parallel). It is the ONLY place the container is actually built/run — `docker` is absent on the dev
+  host, so every container-run Verify item (`docker build`/`docker run`/`docker image inspect`) is CI-only.
+  Verify the host-independent half locally instead: the exact image build command
+  `CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w -X …version.Version=<sha>" -o /iscc-monitor
+  ./cmd/iscc-monitor` produces a STATICALLY-linked, stripped ELF (`file` → "statically linked", `ldd` →
+  "not a dynamic executable"), so `distroless/static-debian12:nonroot` (no libc, uid 65532, CA roots) runs
+  it; ~19 MB binary + ~2 MB base ≈ under the 30 MB target. `/healthz` pings only the store (not the hubs),
+  so the smoke test returns 200 even with no CI egress to the realm hubs.
+- **The VERSION build-arg is REQUIRED and guarded inside the build RUN** with
+  `[ -n "$VERSION" ] || { echo …; exit 1; } && go build …` — `ARG VERSION` is deliberately NOT defaulted
+  (`=dev` would mask the empty-stamp trap). This is the image-side fix for the `-X` empty-stamp trap
+  (`learnings/version.md`): an empty `-X …Version=` clobbers the `dev` default, so the guard fails the
+  stage rather than shipping a blank `/version`. The CI job passes
+  `--build-arg VERSION="$(git rev-parse --short HEAD)"` computed on the HOST (the `.git` dir is excluded
+  from the build context, so the SHA must come via build-arg, never read inside the image). The HOST
+  `mise.toml build:monitor` task is a SEPARATE consumer of the same `-X` path and is still unguarded — its
+  `normal` issue stays open; this slice only hardened the image.
+- **`.dockerignore` keeps the context lean but must MIRROR the repo `.gitignore`'s never-commit set.** It
+  excludes `.git`/`cauldron/`/built binaries/`*.db`/`.claude/`/`.github/` etc. Two gaps to close when this
+  area is next touched (open `normal` issue): the gitignored SECRET patterns (`.env`, `.env.*`,
+  `**/auth.json`) and the WAL/SHM SIDECARS (`*.db-wal`/`*.db-shm` — `*.db`/`*.sqlite*` match NEITHER) are
+  not excluded, so `COPY . .` would bake a developer's local secret/state into the build-STAGE layer (never
+  the final image — it only `COPY --from=build`s the binary; never CI — a fresh checkout has none). General
+  rule: a `.dockerignore` for a `COPY . .` Dockerfile should be a superset of the repo's secret `.gitignore`
+  lines, not just the large/breaks-the-build ones.
+
 ## Pages publish workflow (`.github/workflows/pages.yml`)
 
 - **`pages.yml` is the modern Actions Pages build→deploy of the Surface-C verifier-site** (separate

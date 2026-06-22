@@ -431,6 +431,31 @@ filed it and does **not** affect priority.
   empty stamp is neither the SHA nor the `dev` default; the GHCR-image issue's "the running git SHA is
   reported by the binary"; CLAUDE.md "fail loudly" / "Never weaken a quality gate to pass".
 
+## `.dockerignore` does not mirror the gitignored secret patterns or the WAL/SHM DB sidecars
+- **Priority:** normal
+- **Source:** [review] (Codex P2, reviewer-confirmed against `.gitignore` + fnmatch)
+- **What / where / how to verify:** The new `.dockerignore` (`/workspace/iscc-monitor/.dockerignore:20-29`)
+  excludes `*.db`/`*.sqlite`/`*.sqlite3`/`*.sqlite*` and `.claude/`, but does NOT mirror two classes the
+  repo's own `.gitignore` already treats as never-commit: (1) the SECRET patterns `.env`, `.env.*`,
+  `**/auth.json` (`.gitignore` lines under "Local secrets / state"); (2) the WAL/SHM DB SIDECARS
+  `*.db-wal`/`*.db-shm` — reviewer-confirmed via fnmatch that `*.db` does NOT match `monitor.db-wal` and
+  `*.sqlite*` does NOT match a `.db-wal` either, and the monitor runs SQLite in WAL mode (CLAUDE.md), so
+  those sidecars are real on-disk artifacts. Because the Dockerfile does `COPY . .`, a developer who builds
+  the image with local gitignored secret/state files present sends them to the daemon and bakes them into
+  the BUILD-STAGE layer/cache. This does NOT reach the published image (the final stage does only
+  `COPY --from=build /iscc-monitor` — the binary, never the context) and does NOT affect CI (a fresh
+  checkout has none of these files — reviewer-confirmed `find` over the tree returns nothing, all gitignored),
+  so it is a defense-in-depth build-context hygiene gap, not a leak in the shipped artifact — does NOT block
+  progress and all gates are green. Fix WITH the GHCR-publish slice (the natural next toucher of
+  `.dockerignore`/Dockerfile): add `.env`, `.env.*`, `**/auth.json`, `*.db-wal`, `*.db-shm` (and
+  `.claude/settings.local.json` is already covered by the `.claude/` line) so the docker context mirrors the
+  gitignore's never-commit set. Verify fixed: `.dockerignore` lists the secret + sidecar patterns; a
+  throwaway `.env` / `monitor.db-wal` placed in the working tree is NOT present in the build context (e.g.
+  `docker build` with `--progress=plain` shows them excluded, or a test stage `RUN ls` cannot see them).
+- **Spec:** repo `.gitignore` "Local secrets / state — never commit (public-repo safety)"; CLAUDE.md
+  "single binary configured entirely through environment variables" (no secret belongs in the image);
+  ADR-0013 server packaging; `learnings/ci.md` (Dockerfile/context hygiene).
+
 ---
 
 <!-- The entries below are pre-deployment asks from the iscc-infra ops side, raised
