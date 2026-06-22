@@ -19,13 +19,11 @@ Bitcoin-confirmed yet and at what height? Does NO network I/O. Read this before 
   wrapped fail-closed error. Keep this guard when porting/extending — it is an FFI-boundary `recover()`
   with a comment, not a gate-dodge (no `nolint`/`t.Skip`; the recovered panic still surfaces as a returned
   `err`). `TestOTSConfirmedGarbage` exercises it; without the guard `mise run check` panics the test binary.
-- **`Attestation.BitcoinBlockHeight` is `uint64` and the library's `readVarUint` has NO cap** (utils.go:47
-  accumulates a full uint64 with `shift += 7`, no overflow guard; parsers.go:124 stores it raw). So a
-  syntactically valid but corrupt/malicious `.ots` blob can carry a height above `math.MaxInt64`, which the
-  raw `int64(att.BitcoinBlockHeight)` cast wraps to a NEGATIVE int64 while still returning `confirmed=true`.
-  A real Bitcoin height never overflows int64, but the adapter accepts untrusted blobs — so the height
-  MUST be bounds-checked (`> math.MaxInt64` → wrapped fail-closed error) before the cast. (Open `normal`
-  issue at review time; not yet exploitable because there is no production caller.)
+- **settled: the `>math.MaxInt64` height guard landed (`ots.go`, mutation-proven).** `readVarUint`
+  (utils.go:47) has no overflow cap, so a corrupt/malicious `.ots` blob can carry a height above
+  `math.MaxInt64`; `Confirmed` now fail-closes (`> math.MaxInt64` → wrapped error) BEFORE the
+  `int64(att.BitcoinBlockHeight)` cast. `TestOTSConfirmedHeightOverflow` pins it (reviewer reverted the
+  guard → FAIL with "want overflow error, got nil"; restored → green). Keep the guard before any cast.
 - **The bundled `examples/*.ots` are the external `ots verify` oracle, NOT self-referential.** They carry
   real Bitcoin attestations produced by the OTS ecosystem; the golden test pins `Confirmed`'s verdict to
   them. Heights are external ground-truth literals (`hello-world.txt.ots`→358391, `empty.ots`→129405),

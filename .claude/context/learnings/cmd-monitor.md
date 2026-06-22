@@ -58,6 +58,17 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   mirror SUBTREE mount `"/"+Origin+"/"` (e.g. `/metrics/log/`) stays for a reserved domain — a subtree
   disjoint from the exact `/metrics`, so only the exact dossier mount is conditional. Future exact
   bare-domain mounts reuse `reservedDomain`; add the new collision name to `reservedMountNames`.
+- **`runOTSLoop` is the first production caller of `follower.OTSTick`, wired as a sibling of
+  `serveMetrics` (`go runOTSLoop(ctx, st, otsclient.NewUpgrader(), logger)`).** It mirrors `serveMetrics`'s
+  `ctx`-cancel shutdown pattern verbatim: `time.NewTicker(otsUpgradeInterval)` + `defer ticker.Stop()` +
+  `select { <-ctx.Done(): return; t := <-ticker.C: if err := OTSTick(...); err != nil { logger.ErrorContext } }`.
+  Off the follower's poll path (its own goroutine, NEVER `loop.Run`), so OTS never blocks the follower
+  (ADR-0004); the per-tick error is logged-and-continued (documented, identical to `loop.go`'s `Run` — NOT
+  a swallowed-error gate dodge). `otsUpgradeInterval = 24h` is a `main.go` const (the milestone's "daily"),
+  deliberately NOT a config key — adding `ISCC_MONITOR_OTS_INTERVAL` would touch `config.go`; a knob is a
+  trivial later add. Smoke-verified: builds, starts with the goroutine, SIGINT exits 0. CAVEAT for the next
+  toucher: `runOTSLoop` has no `recover`, so a panic in the `otsclient` Upgrader (see `learnings/otsclient.md`
+  unimplemented-op trap) would crash the process — the fix belongs in the Upgrader closure, not here.
 - **`/healthz` is a `metricshttp`-style leaf that pings the store WITHOUT importing it.** `internal/
   healthz` declares its own 1-method `Pinger interface { Ping(context.Context) error }` (NOT a `store`
   import); `*store.Store` satisfies it structurally via a thin `Ping(ctx) error` → `db.PingContext`
