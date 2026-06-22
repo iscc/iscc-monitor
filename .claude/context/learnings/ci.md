@@ -62,6 +62,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   must use recursive `**/` forms (`**/.env`, `**/*.db-wal`); `**/auth.json` already does. Latent
   defense-in-depth only (build-STAGE layer, never the final image which only `COPY --from=build`s the
   binary, never CI which has none of these files) — tracked as a `low` issue.
+- **The realm var is BAKED via `ENV ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt` (`Dockerfile:51`) and
+  the `docker` smoke job PROVES it by NOT passing `-e ISCC_MONITOR_REALM`** (advance `2f6d50a`): a
+  missing/misspelled `ENV` makes `config.Load` exit non-zero, the container never serves, and the
+  `/healthz` loop times out → the job FAILs. `ISCC_MONITOR_DB`/`ISCC_MONITOR_ADDR` are still passed (no
+  safe image default). Note for `deploy/OPERATING.md`: a Docker **Compose** volume declared `monitor-data:`
+  with no `name:`/`external:` is project-PREFIXED at runtime (`<project>_monitor-data`), so a separate
+  `docker run -v monitor-data:/data … chown` prep targets a DIFFERENT volume than `docker compose up`
+  mounts — pin `name:` or use a Compose-native prep (open `normal`).
 
 ## GHCR publish workflow (`.github/workflows/publish.yml`)
 

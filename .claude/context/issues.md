@@ -446,48 +446,30 @@ filed it and does **not** affect priority.
 - **Spec:** ADR-0013 server packaging (GHCR publish); the GHCR issue's "`develop` (floating) AND
   `sha-<short>` (immutable)" tag contract — the floating tag must track develop only.
 
-## `deploy/OPERATING.md` quick-start snippets omit the required `ISCC_MONITOR_REALM` — they do not boot
-- **Priority:** critical
-- **Source:** [review] (Codex P1, reviewer-confirmed against `config.Load` + Dockerfile)
-- **What / where / how to verify:** The new operability doc's "State, volume & backup" section
-  (`deploy/OPERATING.md:65-68`) claims "a fresh container has a valid `ISCC_MONITOR_REALM` out of the
-  box", and the Compose quick-start (`deploy/OPERATING.md:192-193`) and `docker run` snippet
-  (`deploy/OPERATING.md:209-215`) both OMIT `ISCC_MONITOR_REALM` with a comment that it "defaults to the
-  baked `/etc/iscc-monitor/realm.txt`". This is FALSE: `internal/config.Load` calls `required(get,
-  keyRealm)` (`internal/config/config.go:123`), so `ISCC_MONITOR_REALM` is a REQUIRED env var, and the
-  Dockerfile only `COPY`s the realm FILE — it sets NO `ENV` (the image has zero `ENV` lines) and no Go
-  code defaults `RealmPath`. So both quick-start snippets exit at startup with `config: required key
-  "ISCC_MONITOR_REALM" is missing` — the doc's headline "copy-pasteable" deliverable does not boot. This
-  blocks closing the persistence `critical` (the doc is its evidence) and is the active step's own
-  deliverable. Fix: in BOTH snippets set `ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt` explicitly and
-  correct the "valid out of the box" sentence (the FILE is baked; the VAR is not) — OR add `ENV
-  ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt` to the Dockerfile so the "out of the box" claim becomes
-  true (then the snippets may legitimately omit it). Verify fixed: a reader copy-pasting either snippet
-  gets a config that supplies `ISCC_MONITOR_REALM` (or the Dockerfile sets the `ENV`), and the
-  "valid out of the box" sentence matches whichever path was chosen.
-- **Spec:** the active step's M-Deploy operability-doc Verify item (the doc must let an operator deploy
-  CORRECTLY); `learnings/config.md` "baked realm FILE is not a set realm-config VAR"; the persistence
-  `critical` below it is meant to close.
-
-## `deploy/OPERATING.md` quick-start uses a fresh named volume that uid 65532 cannot write
+## `deploy/OPERATING.md` Compose volume-prep `chown` targets the wrong volume (project-prefix mismatch)
 - **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed against Docker named-volume default ownership)
-- **What / where / how to verify:** The doc correctly STATES "The volume directory must be writable by
-  uid 65532" (`deploy/OPERATING.md:56-59`), but the quick-start snippets then mount a FRESH Docker named
-  volume (`monitor-data:/data`, `deploy/OPERATING.md:197` Compose + `:209-215` `docker run`) without any
-  init/chown step. A fresh named volume's mount root is `root:root` `0755` by default, while the image
-  runs as the non-root uid 65532 — so `store.Open` cannot create `/data/monitor.db` and fails with a
-  permission-denied error. The runnable snippet thus contradicts the requirement the same doc states two
-  sections earlier. NOT a code defect — the uid-65532 contract IS the correct design; the gap is that the
-  copy-pasteable example does not show how to satisfy it. Fix when the doc is next touched (fold with the
-  `ISCC_MONITOR_REALM` critical above): add a one-line note/step on preparing the volume so uid 65532 can
-  write it — a pre-`chown 65532:65532` init container / `docker run --user`-aware init, or a bind mount to
-  a host dir already owned by 65532 — so the quick start actually boots. Verify fixed: the quick-start
-  shows a volume-preparation step (or a 65532-writable bind mount) consistent with the stated uid-65532
-  requirement, so a copy-paste does not fail at `store.Open` with permission denied.
-- **Spec:** ADR-0013 server packaging (non-root uid 65532); the persistence `critical`'s "(c) the
-  uid/permissions the non-root container user needs on the volume dir" line; CLAUDE.md "smallest
-  reasonable changes" (the doc must be runnable as written).
+- **Source:** [review] (Codex P2, reviewer-confirmed against Compose volume-naming default)
+- **What / where / how to verify:** The volume-prep note added to fix the uid-65532 write failure
+  (`deploy/OPERATING.md:208-220`) gives `docker run --rm -v monitor-data:/data alpine chown -R 65532:65532 /data`
+  (`:214`) as the prep for the PRIMARY Compose deployment path (the Compose fragment is the first/headline
+  snippet, `:188-206`). But the Compose volume is declared `monitor-data:` with NO explicit `name:` and NO
+  `external: true` (reviewer grep-confirmed: zero `name:`/`external:` in the file), so `docker compose up`
+  creates a PROJECT-PREFIXED engine volume (e.g. `<project>_monitor-data`, project defaulting to the dir
+  name / `COMPOSE_PROJECT_NAME`). The `docker run -v monitor-data:/data …` chown therefore creates+chowns a
+  DIFFERENT, literally-named `monitor-data` volume; `docker compose up` then still mounts the fresh
+  root-owned project-prefixed volume and the nonroot container fails permission-denied at `store.Open`
+  creating `/data/monitor.db` — the exact failure the note was added to prevent, for the Compose path. The
+  BARE `docker run` snippet (`:226-231`) DOES use `-v monitor-data:/data` literally, so for THAT path the
+  chown command is correct — the bug is specific to the Compose path. NOT a code defect and the realm-bake
+  critical it accompanied IS correctly closed (CI-proven realm-less boot); this is a doc-correctness gap in
+  the new note. Fix when the doc is next touched: either pin the Compose volume name (`volumes: monitor-data: { name: monitor-data }`)
+  so the literal-name chown matches, OR give a Compose-native prep (`docker compose run --rm --user root iscc-monitor … chown`,
+  or document the project-prefixed name). Verify fixed: following the Compose quick-start verbatim
+  (prep + `docker compose up`) boots to `/healthz` 200 without a permission-denied at `store.Open`; the
+  chowned volume is the SAME one Compose mounts.
+- **Spec:** ADR-0013 server packaging (non-root uid 65532); the persistence `critical` "(c) uid/permissions
+  on the volume dir" line; CLAUDE.md "smallest reasonable changes" (the quick-start must be runnable as
+  written).
 
 ---
 
