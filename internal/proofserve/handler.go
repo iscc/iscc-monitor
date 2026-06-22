@@ -180,8 +180,10 @@ type StatusSource interface {
 // Status mapping: non-GET → 405; an unmatched path → 404. The per-route flow
 // owns the rest (serveBrowser / serveRecords / serveRecord / serveInclusion /
 // serveConsistency / serveEntries / serveOTS / serveVerify); see each for its
-// 400/404/500 mapping. CORS, caching, and conditional GET are intentionally out of
-// scope for this slice.
+// 400/404/500 mapping. CORS is wrapped once at the lone mux convergence point.
+// Caching and conditional GET are out of scope for the HTML and proof routes; the
+// /checkpoint.ots opaque-BLOB serve is the exception, carrying a strong ETag +
+// If-None-Match → 304 (see writeOTS), like tilesserve.writeBlob.
 //
 // statuses is the in-memory status overlay (the metrics registry) the log browser
 // uses to render the richer unresolvable / unverified verdicts the store cannot

@@ -66,10 +66,8 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## HTML record list at `/records` (`serveRecords` + `store.ListRecords`)
 
-- **settled:** the no-JS, newest-first (`seq DESC`), seq-cursor-paginated record list is landed + correct
-  (DS shell, no `<table>`, no CDN, unquoted `[data-status=…]` CSS, badge partial reuse, buffer-then-200;
-  pure store-read, oracle gate N/A; store stays a leaf; byte-identical go.mod/go.sum/schema). All three
-  record-list defects mutation-proven closed, reverted; Codex concurred. (Detail at-2026-06-21.)
+- **settled:** the no-JS, `seq DESC`, seq-cursor-paginated record list is landed + correct (DS shell, no
+  `<table>`/CDN, unquoted `[data-status=…]` CSS, buffer-then-200, pure store-read). (Detail at-2026-06-21.)
   **Durable lessons for any seq-cursor pagination here:** never overload `0` as both a cursor value and a
   sentinel (carry a `has-from` bool or a `+1` cursor); clamp page size while still `uint64` BEFORE the
   `int()` conversion (a huge `n` wraps `int(n)` negative and modernc SQLite reads a negative `LIMIT` as
@@ -78,13 +76,10 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## HTML single-record page at `/record?index=<seq>` (`serveRecord` + `store.RecordAt`)
 
-- **settled:** the `/record` page is landed + correct. `serveRecord` copies `serveEntries`'
-  accepted-tree-capped bundle read verbatim (`p := tiles.PartialTileSize(0, bundleIndex, size)`,
-  `RecordBytesFromBundle`, `>= LastSize` → 404, bundle-miss/`ErrLeafOutOfBundle` → 404, missing/
-  non-numeric index → 400, non-GET → 405), renders bytes as source of truth (missing `iscc_index`
-  projection → 200 "no projection indexed", not 404, ADR-0008), and the kind-label constants now hold
-  the FULL wire URIs (`http://purl.org/iscc/schema/iscc-note-0.8.0.json` + `…delete…`), byte-matching
-  `projection_test.go:19-20`, so real declarations/deletions label correctly. (Detail at-2026-06-21.)
+- **settled:** the `/record` page is landed + correct — `serveRecord` copies `serveEntries`'
+  accepted-tree-capped bundle read verbatim, renders bytes as source of truth (missing `iscc_index`
+  projection → 200 "no projection indexed", ADR-0008), and the kind-label constants hold the FULL wire
+  URIs byte-matching `projection_test.go`. (Detail at-2026-06-21.)
 - **Durable trap for any surface that interprets `note.$schema`:** match the FULL wire URI (see
   `projection_test.go`/`fsck_test.go`), never CLAUDE.md's prose short name. A no-CDN `http://` body ban
   must be scoped to the template/CDN region (head up to `</style>`), not the verbatim record fields, once
@@ -95,6 +90,26 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   (mutation-verified). The label test cannot catch a constant regression. Any future test guarding a
   `note.$schema`→label map must seed a HARDCODED literal URI (or compare the constant against the
   `projection_test.go` literal) so the gate is non-vacuous. (Open `low` issue.)
+
+## Mirrored OTS proof at `/checkpoint.ots` (`serveOTS` + `store.OTSForRoot`)
+
+- **settled:** `GET /checkpoint.ots` serves the mirrored OpenTimestamps proof for the accepted
+  `(size, root)` verbatim as `application/octet-stream` (oracle gate N/A — opaque-byte serve of an
+  already-stored proof; production proofserve stays OFF the non-WASM `internal/ots`/`internal/otsclient`
+  closure, `go list -deps` empty — the `opentimestamps` parse is test-only). Resolution copies
+  `serveVerify` (`FollowState.LastSize` → `CheckpointAt`); `writeOTS` mirrors `tilesserve.writeBlob`
+  (strong content-ETag + `If-None-Match`→304) but with `Cache-Control: no-cache`, NOT `immutable`: the
+  proof is overwritten in place on the pending→Bitcoin-confirmed upgrade, so it must revalidate. All
+  four cases mutation-proven (mount removed / sentinel guard dropped / truncated serve / 404→500),
+  reverted; Codex clean. `/checkpoint.ots` is an EXACT `mux.Handle` in `hubHandler` (Mux-mount trap) and
+  is a DIFFERENT artifact from the raw `/checkpoint` signed-note BLOB tilesserve serves under `/`.
+- **The empty-OTSBytes sentinel is the load-bearing edge case:** a row CAN exist for the accepted root
+  yet carry zero `OTSBytes` (stamped at observation but not yet calendar-submitted). `found == true` is
+  NOT sufficient — guard `!found || len(rec.OTSBytes) == 0` → 404 "root not yet anchored", else a client
+  gets an unparseable zero-byte `.ots`. `OTSForRoot` returns a plain miss `(…, false, nil)` for an
+  un-anchored root, so a not-yet-stamped root is an honest 404, never a 5xx. `LastSize == 0` → 404 (no
+  root to anchor); a `CheckpointAt found==false` at the accepted size is a real store inconsistency → 500
+  (same as `serveVerify`).
 
 ## verify-for-me JSON verdict (`/verify` + `serveVerify`)
 
@@ -138,18 +153,10 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## CORS middleware (`internal/corsmw`)
 
-- **`corsmw.Handler(next)` is the monitor's single CORS policy leaf, wrapped once at the lone mux
-  convergence point (`buildMux` returns `corsmw.Handler(mux)`).** `serveMetrics` feeds `buildMux(...)`
-  straight to `http.Server.Handler`, so one wrap covers the single listener + every mounted subtree
-  (metrics, healthz, per-hub mirror/proof). Sets `Access-Control-Allow-Origin: *` BEFORE delegating (so
-  it lands on 200/404/405/500 alike, since inner handlers `WriteHeader` via `http.Error` freezes the
-  header map); on `OPTIONS` also sets `Allow-Methods: "GET, OPTIONS"` + `Allow-Headers: "*"`, writes 204,
-  and returns WITHOUT calling `next` (inner GET-only handlers would 405 a preflight, blocking the real
-  GET). Wildcard `*` is correct + simplest: the monitor serves public, credential-free, read-only data,
-  so no per-origin allow-list and NO `Allow-Credentials` (browser rejects it paired with `*`).
-- **The OPTIONS-skip is double-guarded in the test** — the `tt.inner` for that case `t.Error`s if run AND
-  the outer asserts the `ran` sentinel is false; the generic `Allow-Origin == "*"` assert runs for all
-  three cases so it also covers the preflight + the non-200 `http.Error` path. Closure is `net/http`+
-  stdlib only (`go list -deps` has no `store`/`logclient`); go.mod/go.sum/schema byte-identical; oracle
-  gate correctly N/A (pure HTTP header wiring, no signature/RFC-6962/Merkle/did:web/fsck/proof path).
-  `corsmw` is NOT on the WASM-shared verifier path (that rides `internal/didweb`) but stays stdlib-only.
+- **settled:** `corsmw.Handler(next)` is the single CORS leaf wrapped ONCE at the lone mux convergence
+  point (`buildMux` returns `corsmw.Handler(mux)`), so one wrap covers every subtree. Sets
+  `Access-Control-Allow-Origin: *` BEFORE delegating (lands on 200/404/405/500 alike — `http.Error`
+  freezes the header map); on `OPTIONS` sets `Allow-Methods`/`Allow-Headers`, writes 204, and returns
+  WITHOUT calling `next` (else inner GET-only handlers 405 the preflight). Wildcard `*` is correct + NO
+  `Allow-Credentials` (public, credential-free, read-only data; browser rejects creds paired with `*`).
+  stdlib-only closure; oracle gate N/A. (Detail in git history at-2026-06-22.)
