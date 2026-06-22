@@ -42,37 +42,6 @@ filed it and does **not** affect priority.
 - **Spec:** learnings.md always-loaded "re-verify a rendered ✓, not a status flag"; target.md M-UI
   certificate Bitcoin-anchor Verify criterion; ADR-0001 fail-closed; CLAUDE.md "Verifiable cache".
 
-## The production OTS stamp path has neither a panic-recover nor a per-request timeout (the upgrade path has both)
-- **Priority:** normal
-- **Source:** [review] (Codex P1+P2, reviewer-confirmed against the library source)
-- **What / where / how to verify:** This advance newly wired `otsclient.Stamp` onto the live background
-  goroutine (`cmd/iscc-monitor/main.go` `stampFunc()` → `runOTSLoop` → `OTSTick`'s Stamper call), but
-  `Stamp` (`internal/otsclient/client.go:121`) has NONE of the two guards the sibling upgrade path got in
-  the prior hardening slice (`safeUpgrade`/`recoverRead`). TWO defects on the same call:
-  (1) **panic → process crash.** `Stamp` calls `opentimestamps.Stamp`, which parses the calendar
-  response via `parseCalendarServerResponse` → `parseTimestamp`/`readInstruction`
-  (`opentimestamps@v0.4.0/parsers.go`) — the IDENTICAL panic-prone parser family `recoverRead`
-  (`client.go:136`) was created to guard (the otsclient learning: "the library over-reads its buffer on
-  truncated / non-.ots bytes → a slice-bounds panic"). A malformed/truncated calendar stamp response
-  therefore panics, and because the Stamper runs inside `runOTSLoop`'s goroutine with no recover, the
-  panic crashes the WHOLE monitor (violates the always-loaded "OTS never crashes the follower", ADR-0004).
-  (2) **stall → goroutine hang.** `opentimestamps.Stamp` uses `http.DefaultClient.Do` with no deadline
-  (`stamp.go:21`) and `stampFunc` passes the process ctx (no timeout), so a calendar that accepts the POST
-  but never finishes the body hangs the OTS goroutine forever, starving all later pending rows + future
-  ticks. The upgrade path already solved exactly this with `safeUpgrade`'s
-  `context.WithTimeout(ctx, upgradeTimeout=30s)` (`client.go:158`). Not currently exploitable in tests
-  (the Stamper is injected/faked offline) and best-effort by design, but a live calendar can now trigger
-  both. Does NOT block this increment's stated goal (the stamp→upgrade transit works); it is a latent
-  production-correctness defect on a freshly-live path. Fix when the stamp path is next touched: add a
-  `safeStamp` wrapper mirroring `safeUpgrade` — derive `context.WithTimeout(ctx, stampTimeout)` AND a
-  `recover()`-to-error guard around `opentimestamps.Stamp`/the response parse, and route `Stamp` through it
-  (the same FFI-boundary pattern as `recoverRead`/`safeUpgrade`). Verify fixed: a unit test feeds `Stamp`
-  (or `safeStamp`) a malformed calendar response and asserts a wrapped error (no panic), and a stalled
-  request returns a deadline-exceeded error rather than hanging; reverting the guard makes that test panic/hang.
-- **Spec:** ADR-0004 "OTS never blocks / never crashes the follower"; learnings.md always-loaded OTS rule;
-  `learnings/otsclient.md` `safeUpgrade`/`recoverRead` precedent ("keep ALL upgrade calls routed through
-  safeUpgrade … do not strip it" — the stamp path needs the symmetric guard).
-
 ## Nil-Stamper + an empty-OTSBytes row falls through to the Upgrader instead of being left untouched
 - **Priority:** low
 - **Source:** [review] (Codex P3, reviewer-confirmed by probe)
