@@ -226,11 +226,13 @@ filed it and does **not** affect priority.
   generic static copy ("monitor instance" / "independent Trust & Transparency service" and a bare "Realm
   register") because the identity is not env-configurable. Needs the deferred config-driven instance
   identity (domain / operator / realm name) before it can be honest per-deployment.
-  (3) **Checkpoint-size + Bitcoin-anchor data columns absent** — the mockup's ledger has `Checkpoint` and
-  `Anchor` columns; the live grid renders `#`/Hub·domain/Coverage since/Observed size/Status only, because
-  `store.HubSummary` carries no per-hub checkpoint-size-vs-observed split or OTS anchor state for the index.
-  Surfacing them is a store-projection change (add the fields to `ListHubs`/`HubSummary` + render the
-  columns) — do NOT add a store read until that projection lands.
+  (3) **Checkpoint-size + Bitcoin-anchor data columns** — **CLOSED (reviewer-confirmed `b74931f`).** The
+  `/` ledger now renders the mockup's six columns `# | Hub · domain | Coverage since | Checkpoint | Anchor
+  | Status`; `store.HubSummary` gained a read-only `Anchor` projection (latest-stamped-root OTS status via
+  a correlated subselect) and the Checkpoint cell re-purposes the accepted `LastSize`. Visual pass vs the
+  mockup confirms column order + naming; mutation-proven non-vacuous; store stays a leaf. The per-hub
+  (vs per-checkpoint) honesty design question Codex raised is its own `normal` below — kept here only as a
+  resolved sub-item record.
   (4) **"Recent declarers checked" hero footer omitted** — needs a recent-lookup history the store does
   not track. None of these block progress (the headline-region parity Verify criteria are met); they are
   the named sub-steps to finish full `/` design-parity at the M-UI exit. Verify fixed: the served `/`
@@ -320,4 +322,33 @@ filed it and does **not** affect priority.
 - **Spec:** next.md "fail closed so a broken deploy is caught … not in production"; `main.go` docstring
   ("errors rather than writing a partial site"); learnings.md always-loaded fail-closed discipline;
   `learnings/verifier-site.md` non-atomic-output note.
+
+## Realm-index `/` Anchor column is per-hub (latest-stamped root), not tied to the displayed Checkpoint — a design-honesty question for the M-UI exit
+- **Priority:** normal
+- **Source:** [review] (Codex P2, reviewer-triaged — implementation is spec-faithful; the design question is real)
+- **What / where / how to verify:** The `/` ledger Anchor cell (`internal/store/hubs.go:50-51` +
+  `internal/dashboard/handler.go anchorLabel`) projects the hub's LATEST-STAMPED-root OTS status
+  (`SELECT o.status … ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1`), while the same row's Checkpoint
+  cell shows `f.last_size` (the accepted tree size). The two are DECOUPLED: nothing ties the chosen OTS
+  row's `tree_size`/`root` to the displayed checkpoint. Codex's framing (it could render "confirmed" for
+  an older root while the newer checkpoint is shown, "overstating current anchoring") is technically
+  accurate but is the EXPECTED steady state, not a defect: OTS is async/best-effort (ADR-0004, never
+  blocks the poll), so the displayed checkpoint is almost always AHEAD of the latest Bitcoin-confirmed
+  anchor. The column is — by design AND by the mockup (`anchorState` is a free-standing per-hub property,
+  `.dc.html:88-103`) — a per-HUB "this hub anchors its roots" indicator, NOT a per-checkpoint
+  attestation. The AUTHORITATIVE per-checkpoint claim already exists in **certificate §5**, which binds
+  `OTSForRoot(hubID, treeSize, root)` to the §2 accepted root via `ots.ConfirmedFor`. This increment is
+  spec-faithful (matches `next.md`'s "latest-stamped-root" projection + the mockup), all gates green,
+  mutation-proven — so it does NOT block progress. The open question for the M-UI exit / a design pass:
+  should the realm-index Anchor cell (a) stay a per-hub activity indicator (current, mockup-faithful),
+  (b) gain a distinct label that makes the "latest confirmed anchor, not this checkpoint" semantics
+  explicit, or (c) tie to `o.tree_size = f.last_size` — but (c) is REJECTED without a design pass because
+  it would render "not anchored" for virtually every actively-polling hub (the newest checkpoint is rarely
+  confirmed yet) and defeat the column. Verify resolved: the design pass records the chosen semantics and,
+  if (b), the realm-index Anchor label distinguishes hub-anchoring-activity from a per-checkpoint claim;
+  the certificate §5 per-root surface stays the authoritative per-checkpoint attestation.
+- **Spec:** CLAUDE.md "Bitcoin anchoring" (Bitcoin-only meaning) + "Coverage" (never imply a guarantee
+  the data does not support); ADR-0004 OTS async/best-effort; ADR-0010 Evidence-Ledger honesty;
+  `.claude/design/ISCC Monitor - Realm Index.dc.html` per-hub anchorState model; `learnings/dashboard.md`
+  per-hub-vs-per-checkpoint Anchor note; `internal/certificate/handler.go` §5 authoritative per-root surface.
 

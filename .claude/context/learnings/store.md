@@ -134,38 +134,29 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   always injects a real `observedAt`). Wiring lives ONLY on the verified, non-violation `PollHub` path
   (between `RecordCheckpoint` and `AdvanceFollowState`), kept out of `freeze`, so a contradictory
   observation never starts coverage (ADR-0001) — the fork/unverified tests assert `cov.Set == false`.
-- **`AdvanceAccepted(ctx, CheckpointRecord)` is the repo's first `*sql.Tx` and collapses the
-  verified-advance triad into one transaction (`checkpoints.go`).** Its three `tx.ExecContext`
-  statements are byte-for-byte the `RecordCheckpoint` insert (`ON CONFLICT … DO NOTHING`, dropping the
-  read-back-id branch the advance path doesn't need), the `SetCoverage` guarded UPDATE (`… IS NULL`,
-  set-once), and the `AdvanceFollowState` upsert (`frozen` omitted, no auto-unfreeze) — reviewer diffed
-  each against its source method, identical. The `defer func(){ _ = tx.Rollback() }()` is the standard
-  `database/sql` pattern, NOT a swallowed-error dodge: a post-`Commit` `Rollback` returns the benign
-  `sql.ErrTxDone`, and the real commit error is returned `%w`-wrapped. The three original methods stay
-  public (still seed helpers in `*_test.go` + `main_test.go` + the freeze-path `RecordCheckpoint` at
-  follower.go:434). Reviewer mutation-proved `TestAdvanceAccepted` non-vacuous two ways (both reverted):
-  drop the coverage `IS NULL` guard → case (3) FAILS (coverage moves 100→500); no-op the follow-cursor
-  upsert → case (1) FAILS (`last_size` stays 0). Store stays a leaf, go.mod/go.sum/schema byte-unchanged.
-  Oracle gate correctly N/A (plain transactional SQL; no signature/RFC-6962/Merkle/did:web/fsck path —
-  the verified-advance path's fsck/inclusion conformance tests re-ran uncached and stayed green).
-- **OTS-table CRUD seam (`ots.go`) is the next CRUD leaf, idiom-identical to the checkpoint family.**
-  `RecordOTS` ports `RecordCheckpoint`'s `ON CONFLICT(hub_id,tree_size,root) DO NOTHING` + `RowsAffected`
-  first-sighting dance; `OTSForRoot` ports `CheckpointAt`'s `sql.ErrNoRows → (zero,false,nil)` (an
-  un-anchored root is a plain miss so cert §5 / `.ots` render the honest pending state, never a 5xx);
-  `PendingOTS` is a `ListViolations`-shaped leaf read `WHERE status=? ORDER BY stamped_at ASC, id ASC`;
-  `MarkOTSUpgraded` ignores `RowsAffected` like `SetCoverage` (idempotent/absent re-mark is no-op).
-  `OTSStatusPending`/`OTSStatusConfirmed` consts are the single source for the two literals (the
-  literal-drift trap). `Status`/`ots_bytes` carried opaque so store stays leaf-pure — no anchoring/OTS
-  import. Reviewer mutation-proved non-vacuous (sed, all reverted): `DO NOTHING`→plain insert FAILS
-  `TestRecordOTSDedupes`; `ASC`→`DESC` FAILS `TestPendingOTS` order; dropping `WHERE status=?` FAILS
-  `TestPendingOTS`+`TestMarkOTSUpgraded`. Oracle gate N/A (opaque-BLOB round-trip; no merkle/proof path).
-- **`MarkOTSAttempted` + `PendingOTS(now)` back-off filter landed (closes the prior `Attempts`/
-  `NextRetry` trap).** `MarkOTSAttempted` ports `MarkOTSUpgraded` minus status/btc — plain
-  `UPDATE ots SET attempts=?, next_retry=?`, `unixOrNil(nextRetry)` (zero→NULL), `RowsAffected`-ignored
-  (absent = no-op), and **deliberately leaves `status` untouched** so a backed-off row stays `pending`
-  and `PendingOTS` re-serves it once `next_retry` elapses. `PendingOTS` gained a `now` arg +
-  `AND (next_retry IS NULL OR next_retry <= ?)`, bound `now.Unix()` DIRECTLY (not `unixOrNil` — `now` is
-  never zero; a freshly-stamped NULL-`next_retry` row is immediately due via the `IS NULL` leg).
-  Reviewer mutation-proved both load-bearing (reverted): dropping the `next_retry` WHERE leg → back-off-
-  exclusion FAILS in BOTH store `TestMarkOTSAttempted` and follower `TestOTSTickDeclinesBacksOff`;
-  no-op'ing the UPDATE → `Attempts`/`NextRetry` stay zero. Store stays leaf-pure, oracle N/A.
+- **settled (landed): `AdvanceAccepted(ctx, CheckpointRecord)` is the repo's first `*sql.Tx`** — it
+  collapses the verified-advance triad into one transaction whose three `tx.ExecContext` statements are
+  byte-for-byte the `RecordCheckpoint` insert (`DO NOTHING`), the `SetCoverage` guarded set-once UPDATE
+  (`… IS NULL`), and the `AdvanceFollowState` upsert (`frozen` omitted, no auto-unfreeze). The
+  `defer func(){ _ = tx.Rollback() }()` is the standard pattern (post-`Commit` rollback → benign
+  `sql.ErrTxDone`; real commit error returned `%w`-wrapped), NOT a swallowed-error dodge. The three
+  original methods stay public (still used as seed helpers + the freeze-path `RecordCheckpoint`).
+  Mutation-proven non-vacuous; store stays a leaf; oracle N/A. Detail in git history.
+- **settled (landed): OTS-table CRUD seam (`ots.go`) is a leaf, idiom-identical to the checkpoint
+  family.** `RecordOTS` ports `RecordCheckpoint`'s `ON CONFLICT(hub_id,tree_size,root) DO NOTHING` +
+  `RowsAffected` dance; `OTSForRoot` ports the `sql.ErrNoRows → (zero,false,nil)` absent-is-not-error
+  miss (un-anchored root → honest pending, never 5xx); `PendingOTS(now)` is a status-scoped leaf read
+  `WHERE status=? AND (next_retry IS NULL OR next_retry<=?) ORDER BY stamped_at ASC, id ASC` (the
+  `next_retry` back-off leg binds `now.Unix()` directly, not `unixOrNil`); `MarkOTSUpgraded` /
+  `MarkOTSAttempted` / `MarkOTSStamped` are plain UPDATEs that ignore `RowsAffected` (idempotent/absent
+  re-mark is a no-op) and leave `status` untouched except the explicit upgrade. `OTSStatusPending`/
+  `OTSStatusConfirmed` consts are the single source for the two literals (literal-drift trap); `Status`/
+  `ots_bytes` carried opaque so store stays leaf-pure (no anchoring/OTS import). All mutation-proven;
+  oracle N/A (opaque-BLOB round-trip, no merkle/proof path). Detail in git history at-2026-06-21.
+- **settled (landed): the realm-index `Anchor` projection is a read-only column on `ListHubs`.** A
+  correlated subselect `(SELECT o.status FROM ots o WHERE o.hub_id=h.hub_id ORDER BY o.stamped_at DESC,
+  o.id DESC LIMIT 1)` read through `sql.NullString` (NULL→"") gives the hub's latest-stamped-root OTS
+  status. It is per-HUB (newest by `stamped_at`), DECOUPLED from `f.last_size`, so it is NOT a
+  per-checkpoint attestation — see `dashboard.md` for the honesty rationale and the open design `normal`.
+  Store stays a leaf (no new import; `go list -deps … | grep '^net/http$'` empty); schema/go.mod/go.sum
+  byte-unchanged; mutation-proven (subselect→`''` FAILS `TestListHubsAnchorStatus`).

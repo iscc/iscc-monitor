@@ -93,11 +93,31 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   certificate's already-merged posture and `web.md`'s `noExternalCDN` rule (third-party origins only).
   The load-bearing rule (no third-party CDN origin) still holds; this is the precedent, not a weakening.
   Mockup deviations accepted as constraint-wins (all flagged): no logo `<img>` (no served asset + no-CDN),
-  static instance identity (`monitor instance` placeholder, env-config out of scope), Checkpoint/Anchor
-  data columns deferred (no `HubSummary` column — do NOT add a store read for them), "recent declarers"
+  static instance identity (`monitor instance` placeholder, env-config out of scope), "recent declarers"
   hero footer omitted (no store history). The `#` row number is `RowNo = fmt.Sprintf("%02d", i+1)` on the
   view-model — presentation only, no store value; the new `34px` grid column is fixed-width mono and does
   not ellipsize (the `min-width:0` trap applies only to `.hub-cell`).
+- **The Checkpoint + Anchor columns LANDED (six-column grid `34px 1.8fr 1.2fr 1fr 1.1fr 150px`).**
+  Checkpoint = `s.LastSize` (a relabel of the old "Observed size" cell, NOT a new read). Anchor is a NEW
+  `store.HubSummary.Anchor` projection: a correlated subselect `(SELECT o.status FROM ots o WHERE
+  o.hub_id=h.hub_id ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1)` → the hub's LATEST-STAMPED-root OTS
+  status, NULL→"". `anchorLabel` (handler.go) maps it via the `store.OTSStatus*` consts (not literals) to
+  label+dot keyword; an unknown/empty value renders the honest "not anchored"/no-dot. The dot is a
+  decorative inline `<span data-anchor>`-keyed DS-token color with a literal-hue fallback (no `<img>`,
+  no-CDN); the LABEL is the grayscale-safe load-bearing signal (ADR-0010 inv.4). Both halves
+  mutation-proven (reviewer reran: subselect→`''` FAILS the store anchor case; drop the data cell FAILS
+  the dashboard render). Visual pass vs the mockup: column ORDER + naming match exactly.
+- **The realm-index Anchor column is a per-HUB anchoring-activity indicator, NOT a per-checkpoint
+  attestation — by design and by mockup (`anchorState` is a free-standing hub property).** It is
+  DECOUPLED from the displayed Checkpoint (`f.last_size`): the newest-stamped OTS row may describe an
+  OLDER root than the accepted size, and because OTS is async/best-effort (ADR-0004, never blocks the
+  poll), that is the NORMAL steady state — the displayed checkpoint is almost always ahead of the latest
+  CONFIRMED anchor. So "confirmed" here means "this hub anchors its roots", never "size N is
+  Bitcoin-confirmed". The AUTHORITATIVE per-checkpoint claim lives in **certificate §5**, which binds
+  `OTSForRoot(hubID, treeSize, root)` to the §2 accepted root via `ots.ConfirmedFor`. Do NOT "fix" the
+  realm-index subselect to `o.tree_size = f.last_size` (Codex's P2 suggestion) without a design pass — it
+  would render "not anchored" for virtually every actively-polling hub and defeat the column's purpose.
+  Open `normal` records the design question.
 - **The dossier masthead chrome is a VERBATIM port of `certificate/cert.html` — keep the two byte-identical.**
   `dossier.html` carries the same `.chrome-actions`/`.chrome-instance`/`.chrome-verify` CSS + `<div
   class="chrome-actions">` (static `monitor instance` label + `verify ↗ monitor.iscc.codes` tier-2 link to
