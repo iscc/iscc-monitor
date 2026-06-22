@@ -1,82 +1,72 @@
-## 2026-06-22 — Review of: Add the distinct comparison-anchor panel to the certificate (separate from §5 Bitcoin-anchor)
+## 2026-06-22 — Extract the pure `internal/proof/verify` inclusion-verifier core (WASM-shareable skeleton)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Created the pure, WASM-shareable `internal/proof/verify` package wrapping the RFC-6962
+inclusion-verify primitive (`HashLeaf(record)` → `proof.VerifyInclusion`) behind a minimal-arg
+`VerifyInclusion(record, index, size, proof, root) (bool, error)`, and routed the two production call
+sites (proofserve `serveVerify` and certificate §3 `buildData`) through it. This establishes the single
+verifier core the WASM milestone needs and removes the verbatim-duplicated leaf-hash-and-verify
+primitive (with its identical arg-order gotcha comment) that lived in both handlers.
 
-**Summary:** The advance adds a distinctly-labelled `COMPARISON ANCHOR` clause to the realm-wide
-Certificate of Inclusion — §2's accepted `(size, root)` reframed as the monitor's own
-independently-observed record, bounded by the coverage window — rendered as a SEPARATE element from §5
-with no Bitcoin/"anchoring" lexicon, closing the last open observable M-UI certificate Verify element.
-Scope is tight (1 prod source file `handler.go`, template + test, no store/schema/main.go change),
-`mise run check` is green, both the panel-present and the coverage-window assertions are mutation-proven
-non-vacuous, Codex returned a clean verdict, and a headless visual pass confirms the panel renders
-distinctly and decoupled from §5.
+**Files changed:**
+- `internal/proof/verify/verify.go` (new): the pure core. Imports ONLY `fmt` +
+  `transparency-dev/merkle/proof` (aliased `merkleproof` to avoid the package-name collision) +
+  `.../rfc6962`. Three-way contract: `(true,nil)` rebuilds root, `(false,nil)` well-formed-but-negative
+  verdict, `(false,err)` only on the `index >= size` precondition (pre-checked up front).
+- `internal/proof/verify/verify_test.go` (new, not counted): golden 4-leaf vector built in-test from
+  the hasher AND cross-checked against the next.md base64-Std literals (`root ==
+  vdHF/1WxnLaw58dhv5psyqJ/u/wHt08fq7bpEaC9KrM=`); positive + the three negative/error cases.
+- `internal/proofserve/handler.go`: replaced the inline `leafHash := …; included := proof.VerifyInclusion(…) == nil`
+  pair in `serveVerify` with `included, _ := verify.VerifyInclusion(record, leafIndex, size, builtProof, root)`;
+  dropped the now-unused `merkle/proof` + `rfc6962` imports, added `internal/proof/verify`.
+- `internal/certificate/handler.go`: replaced the inline pair in `buildData` §3 with
+  `if ok, _ := verify.VerifyInclusion(record, data.Position, hub.LastSize, builtProof, root); ok {`;
+  same import swap. The `record` var is still used (`arts.record = record` inside the `ok` block).
 
-**Verification:**
-- [x] `mise run check` — green (build + vet + test, all 23 packages).
-- [x] `go test -count=1 -run TestCertificate ./internal/certificate` — PASS (existing suite + 3 new tests).
-- [x] `TestCertificateComparisonAnchor` — renders `COMPARISON ANCHOR` + `size 24000` + the RFC-3339
-  coverage-since + "detect a split view"; the sliced panel carries NONE of
-  `Bitcoin`/`anchoring`/`OpenTimestamps`/`BITCOIN ANCHOR`/`ots verify`. PASS.
-- [x] `TestCertificateComparisonAnchorIndependentOfOTS` — hub with no OTS row renders no §5 but DOES
-  render the comparison anchor (the two panels decoupled). PASS.
-- [x] `TestCertificateComparisonAnchorCoverageJustStarted` — NULL coverage time → panel present,
-  "since size 24816", no since-time chip. PASS.
-- [x] **Mutation (non-vacuous, reviewer-reproduced 2×):** `data.HasComparisonAnchor = false` → all three
-  new tests FAIL; `data.CoverageSize = 0` → window-asserting tests FAIL. Each reverted → green.
-- [x] `gofmt -l .` (excl `cauldron/`) clean; `go mod tidy -diff` clean (no new prod dep).
-- [x] WASM-purity guard — `GOOS=js GOARCH=wasm go build ./internal/didweb ./internal/index
-  ./internal/badge` builds (certificate stays server-side-only; no leak into a WASM-shared package).
-- [x] Scope — only `internal/certificate/{handler.go,cert.html,handler_test.go}` changed in the advance
-  commit; `cmd/iscc-monitor/main.go`, `go.mod`, `go.sum`, store schema all byte-unchanged.
-- [x] Oracle/conformance gate — **N/A**: the diff touches no signature/RFC-6962/Merkle/proof/did:web
-  code (a pure store-read reuse of §2's `(size, root)` + the coverage window). Regression-checked anyway:
-  `internal/proof` closure stays pure (no net/net/http/database/sql); `logclient` inclusion/consistency
-  tests green; `derive_vkey.py` golden vectors print `40b74463`/`22b08f3e` byte-for-byte.
-- [x] Quality-gate integrity — no `nolint`/`t.Skip`/build-tag/swallowed-error/deleted-assertion in any
-  unpushed Go diff (`@{upstream}..HEAD`).
+**Verification:** `mise run check` → green (build + vet + test, all 24 packages incl. the new one).
+Per-criterion:
+- [x] `GOOS=js GOARCH=wasm go build ./internal/proof/verify` succeeds (the load-bearing WASM-shareability gate).
+- [x] `go test -count=1 -run TestVerifyInclusion ./internal/proof/verify` passes.
+- [x] Golden assertion `VerifyInclusion([]byte("leaf-1"),1,4,proof,root)` → `(true,nil)` (both the
+  library-rebuilt tree AND the next.md base64 literals; they cross-check equal).
+- [x] Negatives: wrong record + tampered root each `(false,nil)`; `index>=size` returns a non-nil error.
+- [x] Behavior-preserving: `-run TestVerify ./internal/proofserve` and `-run TestCertificate
+  ./internal/certificate` pass unchanged (verify-for-me verdict shape + §3 gate byte-identical).
+- [x] DRY: the inline `rfc6962.DefaultHasher.HashLeaf` + `proof.VerifyInclusion(rfc6962…)` pair no
+  longer appears in either handler (grep confirms; both now call `verify.VerifyInclusion`).
+- [x] `gofmt -l .` (excl `cauldron/`) clean; `go mod tidy -diff` clean (no new prod dep — reuses
+  the existing `transparency-dev/merkle`).
+- [x] Conformance/oracle gate (touched proof code): `TestVerifyInclusionIsNonVacuous` +
+  `TestInclusionServedProofVerifies` (proofserve), `TestCertificateInclusionProofContradictory` +
+  `…ProofBundleContradictory` (certificate §3 fork-tile fail-closed) all PASS; `derive_vkey.py` prints
+  both golden vectors byte-for-byte (`40b74463`/`22b08f3e`, `.scratch` cleaned).
+- [x] Purity closure: `go list -deps ./internal/proof/verify` has NO `net`/`net/http`/`database/sql`/
+  `html/template`; `os` appears only transitively via `fmt` (the documented always-loaded nuance — the
+  WASM build is the load-bearing proof, not the grep).
+- [x] Mutation (non-vacuous, reproduced + reverted): forcing the wrapper verdict to `… == nil || true`
+  fails `TestVerifyInclusion/{wrong_record,tampered_root}`; reverted → green.
 
-**Issues found:** (none new). One minor observation, NOT filed (defensive fail-safe, not a defect): the
-template's `{{else}}` "coverage just started — no observation window yet" branch is effectively
-unreachable for a rendered panel — `AdvanceAccepted` always sets `monitored_since_size` in the same tx
-that advances `last_size`, so any §2-rendering hub has `Coverage.Set==true`. The test named
-`...CoverageJustStarted` actually exercises the `HasCoverageWindow=true`/empty-`CoverageSince` (size-only,
-NULL-time) path, not the false branch. Kept as a defensive zero-guard mirroring `SigningKeyRevoked`;
-recorded in the package learnings.
-
-**Codex second opinion:** Clean — one summary verdict, no `Review comment:` findings. Codex
-independently confirmed the panel is gated on an accepted checkpoint, reuses existing checkpoint +
-coverage data without adding fault paths, stays decoupled from §5, and that the tests cover the main +
-no-OTS scenarios with the suite passing. Matches my independent assessment; nothing to triage.
-
-**Visual check:** SSR surface (`internal/certificate/cert.html`) screenshotted with agent-browser 0.29.0
-(bundles its own browser; system Chrome absent but the CLI works). Built a throwaway harness mounting the
-certificate handler + the `/_ds/` token/font handler against a coverage-seeded fixture on a local port,
-opened `/inclusion/MAIGHFECJMOPMIAB`, and captured a full-page screenshot. The COMPARISON ANCHOR panel
-renders as a SEPARATE, distinctly-labelled clause (matching §1/§2/§6 chrome): label "COMPARISON ANCHOR",
-value `size 24816 · root cm9vdA==`, note "This monitor independently observed this (size, root) from
-sb1.amlet.id since size 24000 · 2026-01-05T09:00:00Z. Check your own (size, root) against this record to
-detect a split view — guarantees hold only from coverage start." No Bitcoin/anchoring copy in the panel;
-this fixture has no §5 so the screenshot also visually confirms the decoupling (§5 absent, panel present).
-No visual delta to file. Harness removed; tree clean.
-
-**Next:** The certificate's observable M-UI Verify surface is complete (all six clauses + Bitcoin and
-comparison anchors). The next M-UI closer toward milestone exit is the **dossier §4 Bitcoin-anchor**
-region (same `OTSForRoot` read pattern, different surface) or a dossier comparison-anchor equivalent.
-Standing non-UI hardening to fold in when the exact line is next edited: the §5 digest-binding
-(`bytes.Equal(File.Digest, root)`), the §4/bundle `host:port` DID `%3A`-encode, the §6 `· at` timestamp,
-and the `safeStamp` panic-recover + timeout guard (highest-value `normal`). The **WASM verifier** (1/1
-open) and the **M-UI exit visual-pass + human sign-off** (ADR-0012) remain the milestone gates.
+**Next:** The single shared verifier core now exists and compiles under `GOOS=js GOARCH=wasm`. The
+natural next WASM sub-step is the `GOOS=js`/`syscall/js` entrypoint (`cmd/wasm` or similar) that exports
+`verify.VerifyInclusion` to JS, then the lazy tier-2 enhancement on the certificate/dossier and the
+standalone `monitor.iscc.codes` Independent Verification app (the rest of the milestone arc). A
+`VerifyConsistency` sibling in this same package can follow when a caller needs it (the consistency
+primitive in proofserve has a DIFFERENT arg order — `proof` precedes the two roots — so it warrants its
+own wrapper to hide that, just as this one hides the inclusion order).
 
 **Notes:**
-- NOT DONE: WASM verifier is 1/1 not started (no `internal/proof`/`syscall/js` consumer yet); OTS Verify
-  keeps its offline-unprovable live-chain Bitcoin-confirmed half open; the M-UI exit visual-pass + human
-  sign-off (ADR-0012) has not been run. Loop = CONTINUE.
-- Open issues carried forward unchanged (none touched by this diff): `safeStamp` guard (`normal`),
-  `hubDomain` ForceQuery (`normal`), §4/bundle `host:port` DID (`normal`), §5 digest-binding (`normal`),
-  §6 `· at` timestamp (`normal`), plus the `low` debt set (nil-Stamper fall-through, vacuous label test,
-  `-run TestOTS` filter gap, notecheck `out` param, overlay-precedence 3x dup, mirror seam, scaling
-  trip-wire, proofserve writeReadError dup).
-- `learnings/certificate.md` net-rotated this iteration: added the comparison-anchor bullet, collapsed
-  settled §1/§2/§4/§5/§6 mechanics into `settled:` one-liners, condensed the §5-digest-binding bullet to
-  point at its filed issue — landed at 152 lines (down from 159), at budget.
+- Behavior-preserving extraction, byte-identical observable outputs. The certificate's package doc and
+  in-body comments still say "proof.VerifyInclusion against the §2 root" — left intact because they
+  describe the gate conceptually and remain accurate (`verify.VerifyInclusion` IS that check); not in
+  scope to reword and would have been noise.
+- Both call sites discard the error (`, _`) deliberately: per next.md, a non-nil error (only reachable on
+  `index >= size`, which both sites pre-gate via the accepted-tree cap) is folded into the fail-closed
+  negative verdict exactly as the old `== nil` boolean did — proofserve reports "inclusion proof did not
+  verify", certificate silently declines §3. No new 5xx branch introduced. The discard is documented in
+  the call-site comments and is NOT a swallowed-error gate-dodge: the boolean carries the verdict and the
+  precondition is structurally unreachable on the happy path.
+- No change to any standing open issue (none sat on the edited lines). The certificate's `did:web:`
+  `host:port` `%3A`-encode gap, §5 digest-binding, §6 timestamp, `safeStamp`/`hubDomain` defects are all
+  untouched and remain filed.
+- New package learnings file recommended for `review` to seed: `learnings/proof-verify.md` (pointer row
+  in the index) — the WASM-purity seam, the three-way verdict contract, and the inclusion-vs-consistency
+  arg-order divergence are the durable facts a future WASM-entrypoint step will need.

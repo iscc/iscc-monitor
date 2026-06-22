@@ -91,12 +91,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/transparency-dev/merkle/proof"
-	"github.com/transparency-dev/merkle/rfc6962"
-
 	"github.com/iscc/iscc-monitor/internal/index"
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/ots"
+	"github.com/iscc/iscc-monitor/internal/proof/verify"
 	"github.com/iscc/iscc-monitor/internal/registry"
 	"github.com/iscc/iscc-monitor/internal/store"
 	"github.com/iscc/iscc-monitor/internal/tiles"
@@ -797,13 +795,12 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 			case err != nil:
 				return certData{}, arts, http.StatusInternalServerError
 			default:
-				// Arg-order gotcha (learnings): VerifyInclusion(hasher, index, size,
-				// leafHash, proof, root) — leafHash precedes proof, unlike
-				// VerifyConsistency. A non-nil result is a silent decline of §3 (the proof
-				// did not rebuild the accepted root), never a 500 — the certificate can
-				// decline a clause.
-				leafHash := rfc6962.DefaultHasher.HashLeaf(record)
-				if proof.VerifyInclusion(rfc6962.DefaultHasher, data.Position, hub.LastSize, leafHash, builtProof, root) == nil {
+				// re-verify via proof/verify (the shared pure core). data.Position <
+				// hub.LastSize is already guaranteed by the §1 accepted-tree cap, so the
+				// precondition branch is unreachable; a non-nil error or a false verdict is
+				// a SILENT decline of §3 (the proof did not rebuild the accepted root),
+				// never a 500 — the certificate can decline a clause.
+				if ok, _ := verify.VerifyInclusion(record, data.Position, hub.LastSize, builtProof, root); ok {
 					hashes := make([]string, len(builtProof))
 					for i, h := range builtProof {
 						hashes[i] = base64.StdEncoding.EncodeToString(h)

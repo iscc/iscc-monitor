@@ -38,11 +38,9 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/transparency-dev/merkle/proof"
-	"github.com/transparency-dev/merkle/rfc6962"
-
 	"github.com/iscc/iscc-monitor/internal/badge"
 	"github.com/iscc/iscc-monitor/internal/logclient"
+	"github.com/iscc/iscc-monitor/internal/proof/verify"
 	"github.com/iscc/iscc-monitor/internal/store"
 	"github.com/iscc/iscc-monitor/internal/tiles"
 )
@@ -675,10 +673,10 @@ func serveVerify(w http.ResponseWriter, r *http.Request, st *store.Store, f stor
 		return
 	}
 
-	// Arg-order gotcha (learnings): VerifyInclusion(hasher, index, size, leafHash,
-	// proof, root) — leafHash precedes proof, unlike VerifyConsistency.
-	leafHash := rfc6962.DefaultHasher.HashLeaf(record)
-	included := proof.VerifyInclusion(rfc6962.DefaultHasher, leafIndex, size, leafHash, builtProof, root) == nil
+	// re-verify via proof/verify (the shared pure core). leafIndex < size is already
+	// guaranteed by the accepted-tree cap above, so the precondition branch is
+	// unreachable; a non-nil error is treated as a non-verified verdict (fail-closed).
+	included, _ := verify.VerifyInclusion(record, leafIndex, size, builtProof, root)
 
 	verdict := VerifyVerdict{
 		IsccID:    isccID,
