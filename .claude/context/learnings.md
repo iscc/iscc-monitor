@@ -65,6 +65,13 @@ touch it. Everything package-local stays in the detail file. See `README.md` for
   parser, because `fmt` transitively imports `os`. That is stdlib and unavoidable; the load-bearing
   rule (no `net`/`net/http`/`database/sql`, WASM-shareable) holds — verify with
   `GOOS=js GOARCH=wasm go build ./internal/didweb`, not by grepping `os` out of the dep list.
+- **`-ldflags -X` with an empty value OVERRIDES the default — it is never a no-op.** A build stamp like
+  `-X …Version=$(git rev-parse --short HEAD)` empty-expands (git exits non-zero, `$( )` yields `""`, the
+  outer `go build` STILL succeeds) wherever `git` is absent (a Docker build context without `.git`, a
+  source export), clobbering the in-code default to `""` and silently defeating the provenance. Any
+  `-X`-stamped build path must GUARD the substituted value and fail fast (`sha=$(…) && [ -n "$sha" ] &&
+  go build …`); never trust `$( )` failure to abort the build. Keep the gate's plain `go build ./...`
+  git-free so it builds the non-empty default. (Detail: `learnings/version.md`.)
 
 > Package-specific did:web / logclient transport seam notes moved out of this section into
 > `learnings/didweb.md` and `learnings/logclient.md` — Read those when touching that code.
@@ -89,6 +96,7 @@ touch it. Everything package-local stays in the detail file. See `README.md` for
 | `internal/web` + dashboard `<link>` | `learnings/web.md` | embedded DS token + self-hosted woff2 `go:embed` leaf; `/_ds/` SUBTREE mount (one handler, path switch); `no-cache`+strong-ETag+304 (no `immutable` on stable paths); `serveFont` traversal guard; `noExternalCDN` bans third-party origins only (same-origin `url(` OK); dashboard ban relies on scheme-less `h.origin` |
 | `internal/registry` | `learnings/registry.md` | domains-only ADR-0009 parser; fails closed on URL-shaped lines; preserves order, no dedupe |
 | `internal/config` | `learnings/config.md` | pure env-value leaf; DB/REALM required; Frozen>=Normal cross-check ties to the back-off |
+| `internal/version` + `build:monitor` | `learnings/version.md` | build-provenance HTTP leaf (`GET /version`, `Version="dev"` `-X` target); healthz-style leaf + reserved exact mount; `-X` empty-stamp OVERRIDES default (git-failure → empty `/version`); NOT a config key; oracle N/A |
 | `internal/index` | `learnings/index.md` | pure WASM-shareable ISCC-IDv1 decoder; 80-bit layout (realm=SubType nibble, hub_id=body&0xFFF, ts=body>>12); all 4 header nibbles fail-closed incl. Length=0; golden vector grounded in hub schema.py example |
 | `internal/certificate` | `learnings/certificate.md` | realm-wide `GET /inclusion/{iscc_id}` cert; first caller of decode→resolve→ListHubs→SeqsForISCCID chain; fail-closed 200 verdicts + buffer-then-200; §1 gated on accepted-tree cap `seqs[0] < LastSize` + canonicalized `ISCC:`-prefixed lookup key; §2 renders accepted `(size, root)` via `CheckpointAt`, base64-Std cross-surface |
 | `internal/ots` | `learnings/ots.md` | OpenTimestamps confirmed-check adapter; pure parse/classify (no I/O); NOT WASM-pure (keep out of WASM-shared closures); `ReadFromFile` panics→`recoverParse` fail-closed; `>MaxInt64` height guard landed before int64 cast; bundled `examples/*.ots` are the external `ots verify` oracle |

@@ -403,6 +403,34 @@ filed it and does **not** affect priority.
 - **Spec:** target.md "Done When" (now requires a root README); CLAUDE.md project overview + "Running a
   local dev instance"; memory `docs-layout-convention` (`.claude/` = agentic docs, public docs elsewhere).
 
+## `build:monitor`'s git-SHA command substitution empty-expands on git failure, silently stamping an empty `/version`
+- **Priority:** normal
+- **Source:** [review] (Codex P2, reviewer-confirmed by probe)
+- **What / where / how to verify:** `mise.toml`'s new `tasks."build:monitor"` runs
+  `go build -ldflags "-X …version.Version=$(git rev-parse --short HEAD)" …`. When the task runs where
+  `git rev-parse` FAILS — a Docker build context that does not COPY `.git`, a source-tarball export, or
+  a box without `git` on PATH — the command exits 128 but the `$(…)` substitution empty-expands to ``,
+  and the outer `go build` STILL SUCCEEDS with `-X …Version=` (empty). An empty `-X` value overrides the
+  `dev` default (it is not a no-op), so the resulting binary serves `{"version":""}` — silently defeating
+  the build-provenance guarantee the task exists to provide. Reviewer-confirmed by two probes: (1) in a
+  non-git dir `git rev-parse --short HEAD` exits 128 and `$(…)` captures the empty string; (2) a minimal
+  build with `-ldflags "-X …Version="` builds clean and prints `[]` for the version (empty overrides
+  `dev`). This does NOT affect this increment's gates: `mise run check` / `build` are git-free and build
+  the `dev` default (still non-empty), the HTTP-seam test asserts non-empty, and the mechanical injection
+  check stamped the real SHA — so all gates are green and the increment's Verify bar is met. It is a
+  LATENT trap the very NEXT M-Deploy slice will hit: the production Dockerfile (`critical`, ADR-0013)
+  CONSUMES this exact `-ldflags -X` path, and a multi-stage build that does not `COPY .git` (the common,
+  smaller-context choice) would produce an empty-version image while every gate stays green. Fix WITH or
+  BEFORE the Dockerfile slice: split the lookup so it fails fast, e.g.
+  `sha=$(git rev-parse --short HEAD) && [ -n "$sha" ] && go build -ldflags "-X …Version=$sha" …`
+  (or compute the SHA in the Dockerfile build-arg and fail the stage on empty). Verify fixed: running
+  `build:monitor` in a directory where `git rev-parse` fails returns a NON-zero exit (no binary, or a
+  binary whose `/version` is the non-empty `dev`/explicit default), never an empty-version binary; a check
+  that strips `.git` and runs the task asserts the failure.
+- **Spec:** target.md M-Deploy "version-stamped (git SHA via `-ldflags`, default `dev` when unset)" — an
+  empty stamp is neither the SHA nor the `dev` default; the GHCR-image issue's "the running git SHA is
+  reported by the binary"; CLAUDE.md "fail loudly" / "Never weaken a quality gate to pass".
+
 ---
 
 <!-- The entries below are pre-deployment asks from the iscc-infra ops side, raised
