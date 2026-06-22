@@ -36,6 +36,7 @@ import (
 	"github.com/transparency-dev/merkle/testonly"
 	"github.com/transparency-dev/tessera/api"
 
+	"github.com/iscc/iscc-monitor/internal/dashboard"
 	"github.com/iscc/iscc-monitor/internal/registry"
 	"github.com/iscc/iscc-monitor/internal/store"
 	"github.com/iscc/iscc-monitor/internal/tiles"
@@ -167,7 +168,7 @@ func get(t *testing.T, h http.Handler, id string) *httptest.ResponseRecorder {
 // links.
 func TestCertificateKnownID(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815)
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
@@ -235,7 +236,7 @@ func TestCertificateResolvedDomainTracksHubList(t *testing.T) {
 			{HubID: hubID(1), URL: "https://sb0.iscc.id", Active: true},
 		},
 	}
-	h := Handler(remapped, st, nil)
+	h := Handler(remapped, st, nil, dashboard.Identity{})
 
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
@@ -257,7 +258,7 @@ func TestCertificateResolvedDomainTracksHubList(t *testing.T) {
 // never a 4xx/5xx.
 func TestCertificateNotInLog(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", "", 0) // no leaf indexed
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
@@ -283,7 +284,7 @@ func TestCertificateNotInLog(t *testing.T) {
 // the lookup to the bare rawID makes the first request report "not found in log".
 func TestCertificatePrefixedLookup(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815)
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	for _, id := range []string{goldenID, "ISCC:" + goldenID} {
 		rec := get(t, h, id)
@@ -310,7 +311,7 @@ func TestCertificateUnacceptedLeaf(t *testing.T) {
 		// Leaf at seq 24815, accepted checkpoint only at size 24815, so
 		// seqs[0] (24815) >= LastSize (24815): indexed but not yet accepted.
 		st := fixtureStoreUnaccepted(t, "sb1.amlet.id", goldenID, 24815, 24815)
-		h := Handler(testnetHubList(), st, nil)
+		h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 		rec := get(t, h, goldenID)
 		if rec.Code != http.StatusOK {
@@ -332,7 +333,7 @@ func TestCertificateUnacceptedLeaf(t *testing.T) {
 	t.Run("no accepted checkpoint yet", func(t *testing.T) {
 		// Leaf indexed, but no accepted checkpoint (LastSize == 0).
 		st := fixtureStoreUnaccepted(t, "sb1.amlet.id", goldenID, 24815, 0)
-		h := Handler(testnetHubList(), st, nil)
+		h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 		rec := get(t, h, goldenID)
 		if rec.Code != http.StatusOK {
@@ -356,7 +357,7 @@ func TestCertificateUnacceptedLeaf(t *testing.T) {
 // invalid-id 200 state, never a 4xx/5xx — a decode error is a verdict, not a fault.
 func TestCertificateMalformedID(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", goldenID, 1)
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	rec := get(t, h, "NOTANISCCID")
 	if rec.Code != http.StatusOK {
@@ -370,11 +371,72 @@ func TestCertificateMalformedID(t *testing.T) {
 	}
 }
 
+// TestCertificateRendersInstanceIdentity asserts the certificate masthead renders
+// this deployment's configured dashboard.Identity (the SAME value the / and dossier
+// mastheads render) instead of the static "monitor instance" placeholder, falling
+// back to today's static copy when the Identity is zero-value. It exercises the
+// masthead on a cannot-certify id (a malformed id) so the chrome is tested on the
+// honest-200 path that renders the masthead regardless of certifiability. Realm is
+// set but has no certificate slot (like the dossier, the cert carries no realm
+// subtitle), so only Instance/Operator render.
+func TestCertificateRendersInstanceIdentity(t *testing.T) {
+	st := fixtureStore(t, "sb1.amlet.id", goldenID, 1)
+
+	// Populated identity: the masthead must render these exact operator-supplied
+	// strings (not the static defaults), driven through the live render so reverting
+	// the template binding fails the test.
+	idv := dashboard.Identity{
+		Instance: "monitor.example.test",
+		Operator: "operated by Example Org · example net",
+		Realm:    "example net",
+	}
+	rec := get(t, Handler(testnetHubList(), st, nil, idv), "NOTANISCCID")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"monitor.example.test",
+		"operated by Example Org · example net",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing identity literal %q\n%s", want, body)
+		}
+	}
+	// The static placeholder copy must NOT appear in the masthead chrome-instance
+	// element when an operator configures the instance — otherwise the test would pass
+	// even if the template ignored the supplied value and kept the hard-coded default.
+	// Match the masthead element specifically: the bare "monitor instance" substring
+	// also occurs in the certificate footer ("issued by this monitor instance"), which
+	// is an unrelated, pre-existing phrase.
+	if strings.Contains(body, `chrome-instance">monitor instance`) {
+		t.Errorf("masthead still shows the static placeholder despite a configured Instance\n%s", body)
+	}
+
+	// Zero-value identity: the fallback masthead renders the neutral placeholder and
+	// today's generic operator line, so an unconfigured deployment is honest rather
+	// than asserting a false instance. The fallback strings MUST match the dashboard's
+	// and dossier's so all three mastheads stay byte-identical.
+	recDefault := get(t, Handler(testnetHubList(), st, nil, dashboard.Identity{}), "NOTANISCCID")
+	if recDefault.Code != http.StatusOK {
+		t.Fatalf("default status = %d, want 200", recDefault.Code)
+	}
+	defaultBody := recDefault.Body.String()
+	for _, want := range []string{
+		`chrome-instance">monitor instance`, // the masthead fallback (not the footer phrase)
+		"independent Trust &amp; Transparency service",
+	} {
+		if !strings.Contains(defaultBody, want) {
+			t.Errorf("default body missing fallback %q\n%s", want, defaultBody)
+		}
+	}
+}
+
 // TestCertificateUnresolvableSlot asserts an id whose hub_id slot is not in the
 // Hub-List renders the documented "not in this realm" 200 state.
 func TestCertificateUnresolvableSlot(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", goldenID, 1)
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	// slot2ID decodes to hub_id 2, which is not in the two-hub list.
 	rec := get(t, h, slot2ID)
@@ -397,7 +459,7 @@ func TestCertificateResolvedButNotFollowed(t *testing.T) {
 			{HubID: hubID(1), URL: "https://elsewhere.example", Active: true},
 		},
 	}
-	h := Handler(unfollowed, st, nil)
+	h := Handler(unfollowed, st, nil, dashboard.Identity{})
 
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
@@ -412,7 +474,7 @@ func TestCertificateResolvedButNotFollowed(t *testing.T) {
 // "no id supplied" 200 state, never a 5xx.
 func TestCertificateEmptyID(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", goldenID, 1)
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	rec := get(t, h, "")
 	if rec.Code != http.StatusOK {
@@ -433,7 +495,7 @@ func TestCertificateEmptyID(t *testing.T) {
 // render "no ISCC-ID supplied" instead of the subject banner.
 func TestCertificateQueryFallback(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815)
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	// The path form: the certifying reference body to match against.
 	pathRec := get(t, h, goldenID)
@@ -475,7 +537,7 @@ func TestCertificateQueryFallback(t *testing.T) {
 // in this realm" (fail-closed), never a panic or 5xx.
 func TestCertificateNilHubList(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", goldenID, 1)
-	h := Handler(nil, st, nil)
+	h := Handler(nil, st, nil, dashboard.Identity{})
 
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
@@ -489,7 +551,7 @@ func TestCertificateNilHubList(t *testing.T) {
 // TestCertificateNonGET asserts a non-GET method is a 405 (the shared method gate).
 func TestCertificateNonGET(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", goldenID, 1)
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, PathPrefix+goldenID, nil))
@@ -690,7 +752,7 @@ func TestCertificateInclusionProof(t *testing.T) {
 	// Clean, non-frozen hub: the mirror and the accepted root are the SAME tree, so
 	// §3 renders the proof that rebuilds the accepted root.
 	st, tree := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, []byte("raw"))
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
@@ -763,7 +825,7 @@ func TestCertificateRendersWasmVerifier(t *testing.T) {
 		// Clean tiled fixture: §3 re-verifies, so HasBundle is set and the tier-2
 		// loader + data island render.
 		st, tree := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, []byte("raw"))
-		h := Handler(testnetHubList(), st, nil)
+		h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 		rec := get(t, h, goldenID)
 		if rec.Code != http.StatusOK {
@@ -880,7 +942,7 @@ func TestCertificateRendersWasmVerifier(t *testing.T) {
 		// Tile-gap fixture: certifiable §1/§2 but no mirrored tiles, so §3 declines and
 		// HasBundle stays false — the page must NOT render the tier-2 loader.
 		st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815)
-		h := Handler(testnetHubList(), st, nil)
+		h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 		rec := get(t, h, goldenID)
 		if rec.Code != http.StatusOK {
@@ -915,7 +977,7 @@ func TestCertificateRendersWasmVerifier(t *testing.T) {
 // rather than 500ing or fabricating a proof.
 func TestCertificateInclusionProofTileGap(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815) // no tiles mirrored
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
@@ -972,7 +1034,7 @@ func TestCertificateInclusionProofContradictory(t *testing.T) {
 	if string(treeA.Hash()) == string(treeB.Hash()) {
 		t.Fatalf("treeA and treeB share a root; the fixture is not contradictory")
 	}
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
@@ -1059,7 +1121,7 @@ func TestCertificateSigningKey(t *testing.T) {
 		t.Fatalf("RecordHubKey: %v", err)
 	}
 
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -1098,7 +1160,7 @@ func TestCertificateSigningKeyUncached(t *testing.T) {
 	// No RecordHubKey: the key the checkpoint was signed with is not cached.
 	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, raw)
 
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -1144,7 +1206,7 @@ func TestCertificateSigningKeyDIDPortEncoded(t *testing.T) {
 		t.Fatalf("RecordHubKey: %v", err)
 	}
 
-	h := Handler(hostPortHubList(), st, nil)
+	h := Handler(hostPortHubList(), st, nil, dashboard.Identity{})
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -1182,7 +1244,7 @@ func TestCertificateSigningKeyDIDCleanDomain(t *testing.T) {
 		t.Fatalf("RecordHubKey: %v", err)
 	}
 
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -1271,7 +1333,7 @@ func TestCertificateRecordHistory(t *testing.T) {
 	const declSeq = uint64(24815)
 	const delSeq = uint64(31002)
 	st := fixtureStoreHistory(t, "sb1.amlet.id", goldenID, declSeq, delSeq)
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
@@ -1308,7 +1370,7 @@ func TestCertificateRecordHistory(t *testing.T) {
 // unconditionally.
 func TestCertificateRecordHistoryDeclarationOnly(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815)
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
@@ -1397,7 +1459,7 @@ func TestCertificateComparisonAnchor(t *testing.T) {
 	const seq = uint64(24815)
 	coverSince := time.Date(2026, 1, 5, 9, 0, 0, 0, time.UTC)
 	st := fixtureStoreCovered(t, "sb1.amlet.id", goldenID, seq, 24000, coverSince)
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
@@ -1469,7 +1531,7 @@ func TestCertificateComparisonAnchorIndependentOfOTS(t *testing.T) {
 	// No seedOTS: the accepted root has no mirrored OTS row, so §5 is omitted.
 	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, raw)
 
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -1493,7 +1555,7 @@ func TestCertificateComparisonAnchorIndependentOfOTS(t *testing.T) {
 // is zero while Coverage.Size is set.
 func TestCertificateComparisonAnchorCoverageJustStarted(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815)
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
@@ -1600,7 +1662,7 @@ func TestCertificateBitcoinAnchorConfirmed(t *testing.T) {
 	upgradedAt := time.Date(2026, 2, 14, 18, 40, 0, 0, time.UTC)
 	seedOTSAtRoot(t, st, "sb1.amlet.id", leaves, digest, otsFixture(t, "hello-world.txt.ots"), upgradedAt)
 
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -1644,7 +1706,7 @@ func TestCertificateBitcoinAnchorPending(t *testing.T) {
 	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, digest, false, raw)
 	seedOTSAtRoot(t, st, "sb1.amlet.id", leaves, digest, otsFixture(t, "merkle1.txt.ots"), time.Time{})
 
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -1684,7 +1746,7 @@ func TestCertificateBitcoinAnchorDigestMismatch(t *testing.T) {
 	// exactly the (root, proof) digest mismatch the binding must decline.
 	seedOTS(t, st, "sb1.amlet.id", tree, otsFixture(t, "hello-world.txt.ots"), time.Date(2026, 2, 14, 18, 40, 0, 0, time.UTC))
 
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -1722,7 +1784,7 @@ func TestCertificateBitcoinAnchorUnanchored(t *testing.T) {
 	// No seedOTS: the accepted root has no mirrored OTS row.
 	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, raw)
 
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -1753,7 +1815,7 @@ func TestCertificateBitcoinAnchorEmptySentinel(t *testing.T) {
 	// Seed a row with the empty-OTSBytes sentinel for the accepted root.
 	seedOTS(t, st, "sb1.amlet.id", tree, nil, time.Time{})
 
-	h := Handler(testnetHubList(), st, nil)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
 	rec := get(t, h, goldenID)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)

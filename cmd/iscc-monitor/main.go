@@ -273,7 +273,7 @@ func buildMux(st *store.Store, routes []hubRoute, hubList *registry.HubList, m *
 	mux.Handle("/", dashboard.Handler(st, m, id))
 	mux.Handle("/metrics", metricshttp.Handler(m))
 	mux.Handle("/healthz", healthz.Handler(st))
-	mux.Handle(certificate.PathPrefix, certificate.Handler(hubList, st, m))
+	mux.Handle(certificate.PathPrefix, certificate.Handler(hubList, st, m, id))
 	mux.Handle(web.Prefix, web.Handler())
 	return corsmw.Handler(mux)
 }
