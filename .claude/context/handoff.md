@@ -1,51 +1,47 @@
-## 2026-06-22 — Review of: Add a public-facing root `README.md`
+## 2026-06-22 — Pin the Compose volume name so the OPERATING.md volume-prep `chown` matches what Compose mounts
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Pinned the illustrative Compose volume in `deploy/OPERATING.md` to the literal engine-volume
+name `monitor-data` (`name: monitor-data` under the `volumes:` block) so the documented `chown` prep
+(`docker run --rm -v monitor-data:/data alpine chown -R 65532:65532 /data`) chowns the SAME volume
+`docker compose up` mounts — closing the persistence `critical`'s last doc caveat. Added a one-clause
+prose note explaining the explicit `name:` is what makes the literal-name prep line up (without it Compose
+mounts a project-prefixed `<project>_monitor-data` the `chown` never touched).
 
-**Summary:** The advance creates a single tracked root `README.md` — the human-facing front door — with
-an honest verifiable-cache overview, the Go 1.26 / `CGO_ENABLED=0` stack, a copy-pasteable testnet
-build/run snippet, the `mise run check` gate, a GHCR/deploy pointer, and spec links. It is scope-clean
-(one created doc, zero Go source, no edits to `CLAUDE.md`/`OPERATING.md`/`mise.toml`), every factual
-claim verifies against the repo, and the full env-var table is LINKED (not duplicated) to `CLAUDE.md`.
-This closes the last code/doc-closable `target.md` "Done When" gate and its `normal` issue.
+**Files changed:**
+- `deploy/OPERATING.md`: (1) Compose `volumes:` block now declares `monitor-data:` with a child
+  `name: monitor-data` + inline why-comment; (2) the "Volume ownership (do this first)" prose note now
+  states that the explicit `name:` is what aligns the literal-name `chown` with the Compose mount.
 
-**Verification:**
-- [x] `test -f README.md` — PASS (created at repo root, new file mode 100644).
-- [x] `mise run check` — PASS (28 packages `ok`, cached; no `.go` file changed, gate re-confirmed green).
-- [x] `gofmt -l .` — PASS (empty; no Go file touched).
-- [x] `grep -q 'mise run check'` — PASS (names the gate; the quoted task body `go build ./... && go vet ./... && go test ./...` is byte-exact vs `mise.toml [tasks.check]`).
-- [x] `grep -q 'cmd/iscc-monitor'` — PASS (build/run path shown).
-- [x] `grep -qi 'verifiable cache'` — PASS (honest framing present, distinguishes self-consistency violation from split view).
-- [x] No dead relative links — PASS: `CLAUDE.md`, `deploy/OPERATING.md`, `.claude/prd`, `.claude/adr`, `.claude/context/README.md`, `internal/registry/testdata/realm.txt`, and the two referenced ADRs (0011, 0003) all `test -e` 0. The `CLAUDE.md#running-a-local-dev-instance` anchor matches the live `## Running a local dev instance` heading slug.
-- [x] Factual-claim audit (reviewer-added) — PASS: `modernc.org/sqlite v1.46.1` and `iscc-lib/packages/go v0.5.0` in `go.mod`; ADR range 0001–0013 present; `mise run fmt` = `gofmt -w .`; the verify-for-me (`/verify`) + inclusion/certificate routes the README cites exist.
-- [x] Env-var table NOT duplicated — PASS: only the snippet vars + the "required" prose note appear; no `INSTANCE`/`OPERATOR`/`REALM_NAME` enumeration (linked to CLAUDE.md, per Not-In-Scope).
-- [x] Gate-circumvention scan over unpushed commits — PASS: no `//nolint`/`t.Skip`/swallowed-error/build-tag in the diff (doc + context-pack only).
+**Verification:** `mise run check` → green (28 packages `ok`, all cached — no `.go` file touched).
+Per-criterion:
+- [x] `grep -nA2 '^volumes:'` shows `monitor-data:` with child `name: monitor-data` (lines 204-206) — PASS.
+- [x] Literal volume name matches: `chown` prep target (`-v monitor-data:/data`) == pinned Compose `name:`
+  (both the string `monitor-data`); `grep -c monitor-data` = 10 — PASS.
+- [x] `mise run check` green — PASS.
+- [x] `gofmt -l /workspace/iscc-monitor` empty (exit 0) — PASS.
+- [x] No tracked Compose file added: `test ! -f docker-compose.yml && test ! -f compose.yaml` exits 0 — PASS.
+- [x] Other persistence claims intact: `recreate the volume on a schema change`, `65532`,
+  `/etc/iscc-monitor/realm.txt` all still match — PASS.
 
-**Issues found:** (none). Deleted the resolved `normal` issue "No public-facing root `README.md`".
-
-**Codex second opinion:** Clean verdict — "adds a root README and updates the handoff context without
-changing runtime code; the README content is consistent with the existing configuration, endpoints,
-deployment docs, and requested scope; no blocking or actionable correctness issues introduced." No
-findings to triage; agrees with my independent review.
-
-**Visual check:** n/a — no SSR surface changed (doc-only; no `internal/dashboard`/`dossier`/`web`/
-`certificate` template touched).
-
-**Next:** The last code/doc-closable "Done When" gate is now closed, so DONE turns on the remaining open
-issues. DONE is NOT yet reachable: three `critical` iscc-infra issues remain (persistence-contract docs,
-public-route/`/metrics`-exposure decision, egress + resource-footprint sizing) plus open `normal`s
-(realm-index `/` sub-region deltas, WASM signature-half trust gap, per-hub Anchor design question,
-`publish.yml`/`OPERATING.md` Compose-volume fixes). The three criticals are framed as documentation this
-repo owns (mostly `deploy/OPERATING.md` additions), so `define-next` should target one of them next — the
-persistence-contract doc is the most self-contained and directly unblocks the testnet deploy.
+**Next:** This was the last residual doc caveat on the persistence-contract `critical`. `review` should
+confirm `deploy/OPERATING.md` now answers that `critical` end-to-end (State/volume/backup contract +
+non-root uid + migration policy + a Compose quick-start that is now runnable verbatim) and confirm/prune
+it. After that, DONE turns on the two remaining iscc-infra `critical`s (public-route/`/metrics`-exposure
+decision — already substantially in OPERATING.md §"Route exposure & the `/metrics` decision"; egress +
+resource-footprint sizing — already in §Egress + §Footprint), so `define-next` should target whichever of
+those still has a doc gap; the open `normal`s (publish.yml/pages.yml `workflow_dispatch` ref-guard, Node-20
+action bumps, proofserve masthead slice, shared `Resolve` leaf) are each their own later step.
 
 **Notes:**
-- Scope discipline is exemplary: one created doc, zero behavior change, every Not-In-Scope item honored
-  (no env-table copy, no `CLAUDE.md`/`OPERATING.md`/`mise.toml` edit, no badges, no CI/lint tooling).
-- Did not add a `learnings/` detail file: a one-time static README carries no recurring forward-looking
-  pitfall, and the docs-layout convention already lives in user memory — a thin detail file would be
-  verification ceremony, which the rotation rule excludes from cross-iteration memory.
-- The three open `critical`s are the gating work for DONE; if `define-next` judges any of them truly
-  external to this repo (no doc/code closeable here), surface that as a STOP/IDLE edge rather than
-  spinning on cosmetic chrome — but on their current text they are repo-doc-closable, so CONTINUE.
+- Scope-clean: one doc edit, zero Go source, no `Dockerfile`/`mise.toml`/`CLAUDE.md`/`README.md` touch, no
+  new `docker-compose.yml`/`compose.yaml`, unaffected sections (State/backup, migration, egress, footprint,
+  `/metrics`, graceful shutdown) left untouched — all per Not-In-Scope.
+- The bare `docker run` snippet already used `-v monitor-data:/data` literally, so it stays correct
+  unchanged — the `name:` pin makes BOTH the Compose path and the bare-run path consistent against the one
+  prep `chown`.
+- Config claims (`ISCC_MONITOR_REALM` baked via `ENV` so the snippets correctly omit it; `ISCC_MONITOR_DB`
+  un-defaulted; container publishes no host port) were not weakened — only the volume-name + prep wording
+  changed.
+- No `learnings/` detail file applies — this is a one-time doc-correctness fix with no recurring
+  forward-looking pitfall (the closest detail file, `config.md`, was read to confirm the `ENV`/no-default
+  claims stay accurate, and they do).

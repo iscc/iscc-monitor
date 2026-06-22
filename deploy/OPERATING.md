@@ -203,12 +203,16 @@ services:
 
 volumes:
   monitor-data:
+    name: monitor-data                          # pin the literal engine-volume name (no project prefix), so the chown prep below targets the SAME volume Compose mounts
 ```
 
 **Volume ownership (do this first).** A fresh named Docker volume is created
 `root:root`, but the image runs as uid 65532, so a bare `-v monitor-data:/data`
-makes `store.Open` fail permission-denied on the first write. Either pre-`chown` the
-volume once before the first run, e.g.
+makes `store.Open` fail permission-denied on the first write. The explicit
+`name: monitor-data` in the Compose `volumes:` block above is what makes this
+literal-name prep line up with the volume `docker compose up` mounts — without it
+Compose would mount a project-prefixed `<project>_monitor-data` the `chown` never
+touched. Either pre-`chown` the volume once before the first run, e.g.
 
 ```sh
 docker run --rm -v monitor-data:/data alpine chown -R 65532:65532 /data
