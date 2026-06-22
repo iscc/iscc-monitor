@@ -293,6 +293,25 @@ func TestVerifierNoExternalCDN(t *testing.T) {
 	}
 }
 
+// TestVerifierReadTargetReturnsNormalizedURL asserts readTarget returns the WHATWG-
+// normalized monitor URL (the parsed u.href), not the raw ?monitor= query string, so
+// an opaque-scheme form (https:example.com) flows downstream as https://example.com/
+// — the guard's own parsed-and-validated URL is the single source of truth, closing
+// the Surface-C readTarget normal where the JS port was more permissive than the Go
+// parseTarget. The assertion is mutation-provable: reverting the return to the raw
+// string ({ monitor: monitor, id: id }) makes this test FAIL on both the positive and
+// the negative check.
+func TestVerifierReadTargetReturnsNormalizedURL(t *testing.T) {
+	body := serve(t).Body.String()
+
+	if !strings.Contains(body, "return { monitor: u.href, id: id };") {
+		t.Errorf("readTarget must return the normalized parsed URL (monitor: u.href)\n%s", body)
+	}
+	if strings.Contains(body, "return { monitor: monitor, id: id };") {
+		t.Errorf("readTarget must NOT return the raw monitor query string (monitor: monitor)\n%s", body)
+	}
+}
+
 // TestVerifierNonGET asserts a non-GET method is a 405 (the shared method gate at the
 // top of Handler covers it).
 func TestVerifierNonGET(t *testing.T) {

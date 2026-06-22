@@ -533,7 +533,10 @@
       // via new URL() with an http/https scheme, a non-empty host, and no fragment.
       // On no/invalid target it returns null so the loader leaves the honest baseline
       // untouched (graceful degradation, never an `error` render). new URL throws on an
-      // unparseable URL, so it is wrapped in try/catch.
+      // unparseable URL, so it is wrapped in try/catch. It returns the WHATWG-normalized
+      // monitor URL (u.href, not the raw query string), so an opaque-scheme form like
+      // https:example.com propagates downstream as https://example.com/ — the parsed URL
+      // the guard already validated is the single source of truth, never the raw input.
       function readTarget() {
         var params = new URLSearchParams(location.search);
         var monitor = params.get("monitor");
@@ -550,7 +553,7 @@
         if ((u.protocol !== "http:" && u.protocol !== "https:") || !u.host || u.hash) {
           return null;
         }
-        return { monitor: monitor, id: id };
+        return { monitor: u.href, id: id };
       }
       // setVerdict centralizes the three-way render so error/failed/verified never
       // blur: only `failed` reveals the guided mismatch alert as a live verdict.
