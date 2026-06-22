@@ -280,6 +280,34 @@ filed it and does **not** affect priority.
   Cosmetic locality only.
 - **Spec:** `internal/tilesserve` `writeReadError` pattern; no spec contract.
 
+## `noExternalCDN`'s `stripLineComments` over-strips protocol-relative CDN URLs, holing the CDN-free gate
+- **Priority:** normal
+- **Source:** [review] (Codex P2, reviewer-confirmed by probe)
+- **What / where / how to verify:** The advance refined the load-bearing `noExternalCDN` helper
+  (`internal/web/web_test.go`) to strip each line's `//` comment tail before scanning, so the vendored
+  `wasm_exec.js`'s one Go-issue-tracker comment URL stops false-positiving. The strip treats `//` as a
+  comment whenever the preceding byte is not `:`. But a **protocol-relative loadable CDN URL** —
+  `src="//cdn.jsdelivr.net/x.js"` (HTML) or `url("//cdn.example/x.woff2")` (CSS) — has its `//`
+  preceded by `"` (not `:`), so `stripLineComments` treats it as a comment-start and truncates the line
+  to `<script src="`, deleting `cdn.`/`jsdelivr` BEFORE the ban can see it. Reviewer-confirmed by probe:
+  `stripLineComments(<script src="//cdn.jsdelivr.net/npm/x.js">)` → `<script src="` and the ban does NOT
+  fire (`fires=false`) for all three protocol-relative forms (jsdelivr, bare `cdn.`, generic). Protocol-
+  relative `//host/...` is a standard CDN URL form, so this weakens the M-UI CDN-free invariant the
+  helper exists to enforce. NOT currently exploitable: the only served asset passed through the helper
+  with a comment is the byte-verbatim `wasm_exec.js` (no protocol-relative URL); tokens.css/fonts.css use
+  `/* */` blocks, not `//`. So the hole is **latent** — a FUTURE asset (e.g. a hand-authored `<script>`
+  or a CSS `@import`) carrying a protocol-relative CDN reference would silently pass the gate. Does NOT
+  block this increment's stated goal (`wasm_exec.js` serves byte-verbatim + CDN-free; all named checks
+  pass), but it is a genuine quality-gate weakening on the M-UI no-CDN constraint. Fix when the helper is
+  next touched: restrict the strip to ACTUAL comment contexts — only treat `//` as a comment when it is
+  NOT a URL authority delimiter (e.g. require the byte before `//` to be whitespace or line-start, OR
+  exclude when preceded by `:`/`"`/`'`/`(`), so a protocol-relative `//cdn.` URL still trips the ban
+  while the pure-comment URL is still suppressed. Verify fixed: a test feeds `noExternalCDN` a body with
+  `src="//cdn.jsdelivr.net/x.js"` and asserts the ban FIRES, while the `wasm_exec.js` comment URL still
+  does NOT; reverting the narrowed strip makes the protocol-relative case pass (regress).
+- **Spec:** target.md M-UI hard CDN-free constraint; `learnings/web.md` `noExternalCDN` bans third-party
+  origins; CLAUDE.md "Never weaken a quality gate to pass" (the fix is the root cause, not the gate).
+
 ## WASM shim `js.Value.Int()` truncates a non-integer JS `index`/`size`, risking a false verified verdict
 - **Priority:** normal
 - **Source:** [review] (Codex P2, reviewer-confirmed against `syscall/js` semantics)

@@ -45,3 +45,16 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   ./internal/web` contains no `internal/store|metrics|logclient` (only `internal/web` itself), and
   `GOOS=js GOARCH=wasm go build ./internal/web` is OK. Mirror the `internal/badge` `go:embed` idiom for
   any future static asset; go.mod/go.sum/schema stay byte-identical. Oracle gate N/A (static transport).
+- **`wasm_exec.js` is served at `WasmExecPath` (`/_ds/wasm_exec.js`), byte-verbatim from
+  `$(go env GOROOT)/lib/wasm/wasm_exec.js` (Go 1.26.1, `cmp`-identical), via the same in-handler `case`
+  + `writeAsset` + no-cache/strong-ETag/304 leaf (`contentTypeJS = text/javascript; charset=utf-8`).
+  Never hand-edit it; re-`cp` it on a toolchain bump.**
+- **The `noExternalCDN` helper now strips each line's `//` comment tail before scanning (so the vendored
+  `wasm_exec.js`'s one Go-issue-tracker comment URL stops false-positiving), BUT the current strip
+  over-strips: it treats `//` as a comment whenever the previous byte is not `:`, which ALSO truncates a
+  protocol-relative loadable CDN URL (`src="//cdn.jsdelivr.net/..."`, `url("//cdn...")`) — preceded by
+  `"`, not `:` — so the ban silently misses it (open `normal` issue).** The hole is latent (no current
+  asset has a protocol-relative URL; tokens/fonts use `/* */` blocks). When you next touch the helper,
+  narrow the strip to actual comment contexts so a protocol-relative `//cdn.` still trips the ban. The
+  ban list is third-party-origin only (`jsdelivr`/`http://`/`https://`/`cdn.`); same-origin `/_ds/`
+  paths pass.
