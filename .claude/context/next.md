@@ -1,131 +1,149 @@
 # Next Work Package
 
-## Step: Render the record-list `Type` column (per-row declaration/deletion/unknown badge)
+## Step: Render config-driven instance identity on the `/` realm-index masthead (skeleton)
 
 ## Advances
-target.md **M-UI — Evidence Ledger frontend**, the design-parity (named-region) bar for the
-**log browser / record list** surface:
+target.md **M-UI — Evidence Ledger frontend**, the design-parity "Document chrome + instance identity"
+cross-cutting requirement and the `/` realm-index named-region:
 
-> **log browser / record list** — `ISCC Monitor - Log Browser.dc.html`: … the record table
-> (`Seq · Type · ISCC-ID · Logged`) with a per-row **type badge** (declaration/deletion/unknown)
-> and **every row a link to its single record**; …
+> **Document chrome + instance identity.** Every surface carries the shared handoff header: the ISCC logo
+> + "Trust & Transparency Monitor" mark, the **instance-identity** block (this instance's domain +
+> operator + realm), and the **`verify ↗ monitor.iscc.codes`** tier-2 link — legible instance identity
+> (handoff invariant 9) …
 
-The `Logged` column landed last iteration; the record-list head still renders only
-`Seq · ISCC-ID · Logged`. This step adds the missing **`Type`** column and per-row type badge,
-completing the mockup's 4-column `Seq · Type · ISCC-ID · Logged` head — the cheapest remaining
-code-only M-UI named-region slice (state.md "Next Milestone" #1, handoff `**Next:**`). It is the
-last pure-code named-region slice before the backlog turns design-first or human-blocked.
+and closes sub-item (2) of the open `normal` issue **"`/` realm-index sub-region deltas vs the mockup …
+Static instance identity + realm name"** (#214 sub-2) for the `/` surface specifically. The handoff
+`**Next:**` and state.md "Next Milestone" #1 both name this as the strongest next candidate: it is the
+last cheap **code-only** slice (the remaining backlog is design-first or human-blocked), it unblocks
+honest per-deployment chrome, and the identity type it introduces is reused by the five other SSR
+mastheads in follow-on sub-steps.
+
+This is a **skeleton-first** slice: the full criterion ("Every surface carries … the instance-identity
+block") spans 7 templates + their handler constructors + the binary wiring — far more than one ≤3-file
+step. This step lays the verifiable skeleton on the single most-referenced surface (`/`) and lists the
+remaining surfaces under `## Not In Scope` so later iterations continue the same arc.
 
 ## Goal
-Render each `/records` row with a `Type` badge (Declaration / Deletion / Unknown record type),
-mapped from the verbatim `note.$schema` (ADR-0008: the only interpretation), and add the `Type`
-column header, so the served no-JS HTML carries the mockup's full 4-column record table.
+Replace the dashboard masthead's hard-coded `monitor instance` / "independent Trust & Transparency
+service" placeholder copy with three operator-supplied values (instance domain, operator/realm line,
+realm name) flowing from environment → the live binary → the rendered `/` page, and render the realm
+name in the ledger subtitle ("Realm register · <realm>"), so the served `/` masthead is honest
+per-deployment instead of generic.
 
 ## Scope
 - **Create**: (none)
-- **Modify**:
-  - `internal/proofserve/handler.go` — give `recordsData.Records` a per-row view-model carrying the
-    precomputed `Kind` label (and a stable kind key for the badge `data-*`), because `store.RecordRow`
-    is a plain store value with **no `Kind` field**; precompute it in `serveRecords` via the existing
-    `recordKind(row.NoteSchema)`.
-  - `internal/proofserve/records.html` — add the `<span>Type</span>` header, a per-row Type badge
-    cell, the 3-column→4-column grid-template update (head + row grids stay aligned), and the badge CSS
-    (DS-token-only, grayscale-safe).
-  - `internal/proofserve/records_test.go` — new `TestRecordsRendersTypeColumn` (test file; does not
-    count against the ≤3 non-test/doc budget).
+- **Modify** (3 production files):
+  - `internal/dashboard/handler.go` — add an exported `Identity struct { Instance, Operator, Realm string }`
+    view value; change `Handler(st *store.Store, statuses StatusSource)` →
+    `Handler(st *store.Store, statuses StatusSource, id Identity)`; carry the three resolved strings on
+    `pageData` (e.g. `Instance`, `Operator`, `Realm`). Apply zero-value fallbacks INSIDE the handler (a
+    blank field falls back to the current static copy / a generic realm label) so an unconfigured binary
+    renders exactly today's masthead — no behavioral regression, fail-safe defaults.
+  - `internal/dashboard/dashboard.html` — render `{{.Instance}}` in `.chrome-instance`, `{{.Operator}}`
+    in `.chrome-operator`, and the realm name in the `.ledger-title` ("Realm register · {{.Realm}}" — the
+    mockup's "Realm register · ISCC mainnet"). Keep the masthead structure, classes, logo `<img>`, and
+    the `verify ↗ monitor.iscc.codes` tier-2 link byte-unchanged; only the text nodes become templated.
+  - `cmd/iscc-monitor/main.go` — at the dashboard mount (line 271), build an `Identity` from three NEW
+    optional env vars read via `os.LookupEnv` with mockup-faithful defaults
+    (`ISCC_MONITOR_INSTANCE`, `ISCC_MONITOR_OPERATOR`, `ISCC_MONITOR_REALM`) and pass it to
+    `dashboard.Handler(st, m, id)`. Use a tiny local `envOr(key, fallback string) string` helper (or
+    inline `os.LookupEnv`) — do NOT add these keys to `internal/config` this step (see Not In Scope).
 - **Reference**:
-  - `.claude/context/learnings/http-surface.md` — the "HTML record list at `/records`" section
-    (Type col is the named-deferred slice; head must list only columns with a data cell) and the
-    "single-record page" section (the GROUND-TRUTH vacuity trap, and "match the FULL wire URI").
-  - `internal/proofserve/handler.go` lines 111-115 (`schemaDeclaration`/`schemaDeletion` +
-    `kindDeclaration`/`kindDeletion`/`kindUnknown` constants), 777-951 (`recordsData`, `serveRecords`,
-    `recordData`, `recordKind`) — the existing wiring to extend.
-  - `internal/proofserve/records.html` lines 136-198, 288-305 (the record-list grid CSS + the
-    `range .Records` row markup).
-  - `.claude/design/ISCC Monitor - Log Browser.dc.html` lines 67-77 (the authoritative 4-column head
-    `Seq · Type · ISCC-ID · Logged` and the per-row inline-block type badge with the three labels:
-    Declaration / Deletion / Unknown type).
-  - `internal/store/iscc_index.go` lines 34-93 (`ProjectionRecord` + `RecordRow` fields — note both
-    carry `NoteSchema`, the discriminator the badge keys on).
-  - `internal/proofserve/records_test.go` lines 180-229 (`TestRecordsRendersLoggedColumn`, the
-    direct-`store.Open` fixture pattern to copy) and `leafISCCID`.
+  - `.claude/context/learnings/dashboard.md` — the masthead/no-CDN bullets: the no-CDN ban is NARROWED
+    to third-party hosts (so `monitor.iscc.codes` must still pass and is positively asserted); the page
+    is a CSS-grid `<ul>` not a `<table>`; render into a `bytes.Buffer` first (500-before-200);
+    `html/template` auto-escapes; oracle gate N/A (pure HTML of persisted rows + masthead strings).
+  - `.claude/context/learnings/config.md` — why env-parsing belongs in the `internal/config` leaf (the
+    `optional(get, key, fallback)` helper pattern); the reason it is DEFERRED here is the ≤3-file budget,
+    not a design disagreement — the follow-on sub-step moves these keys into config.
+  - `internal/dashboard/handler.go` lines 67-88 (`row` + `pageData`), 99-138 (`Handler`), 147-172
+    (`buildRows`) — the existing wiring to extend.
+  - `internal/dashboard/dashboard.html` lines 354-389 (the `<header class="chrome">` masthead +
+    `.chrome-identity` block + the `.ledger-head`/`.ledger-title` "Realm register" heading).
+  - `internal/dashboard/handler_test.go` lines 24-29 (`fakeStatusSource`), 89-115
+    (`TestDashboardRendersEveryHub` fixture pattern), 259-308 (`TestDashboardRendersHeroAndNavigation` —
+    the masthead-region assertion that currently checks the literal `"monitor instance"`; this test MUST
+    be updated to the new call signature + new copy).
+  - `.claude/design/ISCC Monitor - Realm Index.dc.html` line 37 (the authoritative identity copy:
+    `monitor.iscc.id` / `instance operated by ISCC Foundation · ISCC mainnet`) and line 61 (the ledger
+    subtitle `Realm register · ISCC mainnet`).
+  - `cmd/iscc-monitor/main.go` lines 113-116 (`config.Load`), 269-277 (`buildMux` where `dashboard.Handler`
+    is mounted) — note `buildMux` does NOT currently receive any identity; the cleanest seam is to build
+    the `Identity` in `run()` (where `os.LookupEnv` already lives) and thread it through `serveMetrics` →
+    `buildMux` → the mount, OR build it directly at the mount. Pick the smaller diff; do NOT broaden
+    other handler signatures.
 
 ## Not In Scope
-- Do NOT add the styled pager buttons, the "Jump to sequence" input (it is a JS control — the no-JS
-  constraint wins), the `← <hub> dossier` back-link, or the masthead instance-identity copy — those
-  are separate named-region/issue items, not this slice.
-- Do NOT touch `store.RecordRow` / `ProjectionRecord` / `schema.sql` — `note.$schema` is already
-  stored verbatim; the kind label is a render-time projection of an existing field, computed in the
-  handler, never persisted. (Adding a column would re-trigger the open `normal` DB-migration issue.)
-- Do NOT change the badge's color-only semantics into the sole status signal — the **text label** is
-  load-bearing and grayscale-safe; the mockup's `tone`/`toneBg` hue is decorative only.
-- Do NOT alter `recordKind`'s mapping, the `Logged` column, pagination, the accepted-tree cap, or any
-  proof/crypto path — this is a template + view-model render slice only (oracle gate N/A).
+- Do NOT thread instance identity into the OTHER five SSR mastheads this step — `internal/dossier`
+  (`dossier.html:358`), `internal/certificate` (`cert.html:391`), and the proofserve surfaces
+  (`browser.html`, `records.html`, `record.html`). They keep their static `monitor instance` copy for now;
+  wiring each is its own ≤3-file follow-on sub-step (same `Identity` value, reused). `internal/verifier`
+  is EXCLUDED entirely — its chrome is correctly the `.codes` verifier-app identity, not an instance
+  (see `learnings/verifier.md`), and must stay static.
+- Do NOT add the three env keys to `internal/config` this step (it would push the diff to 4 production
+  files). Reading them inline in `main.go` with defaults is the skeleton; the follow-on sub-step that
+  threads identity to the remaining surfaces SHOULD move parsing into `internal/config` (the
+  `optional(get, key, fallback)` leaf) so all six surfaces draw from one validated source.
+- Do NOT touch the "recent declarers checked" hero footer (#214 sub-4 — needs a store lookup history that
+  does not exist), the Checkpoint/Anchor columns (already closed), the per-hub-vs-per-checkpoint Anchor
+  design question (issue:326), the logo, the hero form, the badge partial, pagination, or any proof/crypto
+  path. This is a masthead-text render + one env-wiring slice only (oracle gate N/A).
+- Do NOT change the masthead's logo `<img>`, the tier-2 `verify ↗ monitor.iscc.codes` link, or any CSS —
+  only the three identity text nodes + the ledger subtitle text become templated.
 
 ## Implementation Notes
-- **View-model, not a store change.** `recordsData.Records` is `[]store.RecordRow` and `RecordRow`
-  has no `Kind`. The template's `{{range .Records}}` can only read `RecordRow` fields, so introduce a
-  small handler-local row VM (e.g. `recordRowVM struct { store.RecordRow; Kind string; KindKey string }`
-  embedding the store row, or a flat struct copying `Seq`/`IsccID`/`NoteSchema`/`NoteTimestamp` plus
-  `Kind`/`KindKey`). In `serveRecords`, after `ListRecords`, map each row through `recordKind(row.NoteSchema)`
-  to fill `Kind` (the human label) and a stable lowercase `KindKey` (`declaration`/`deletion`/`unknown`)
-  for the badge `data-kind` selector. Keep `recordKind` as the single mapping site — `serveRecord`
-  already calls it, so reuse it; do not duplicate the switch.
-- **Labels reuse the existing constants.** `kindDeclaration="Declaration"`, `kindDeletion="Deletion"`,
-  `kindUnknown="Unknown record type"` (handler.go:113-115) already match the mockup's
-  Declaration/Deletion (the mockup's third label is "Unknown type"; our existing constant
-  "Unknown record type" is the in-repo wording — keep the existing constant, do not introduce a new
-  literal). The `KindKey` is a SEPARATE short token for CSS/`data-kind`, distinct from the display
-  label — derive it in the handler, do not parse it back out of the label.
-- **Grid alignment.** The head (`.records-head`) and each row (`.record-row`) are CSS grids. Adding
-  `Type` means changing the record-list grids from `120px 1fr 160px` to a 4-column template
-  (e.g. `120px 130px 1fr 160px`) on BOTH `.records-head` and `.record-row` so the header columns stay
-  aligned with the data cells (the `Logged` review explicitly checked this). The `.ledger-status` row
-  is independent (`160px 1fr`) and must NOT change.
-- **Badge CSS is DS-token-only, grayscale-safe.** Render the badge as an inline-block with a text
-  label; hue (if any) keys on `[data-kind=…]` like the existing `.hub-status-badge[data-status=…]`
-  block, and must use the UNQUOTED attribute-selector form (`[data-kind=declaration]`, valid CSS for
-  identifier values) — the quoted form would emit a `data-kind="…"` literal into the `<style>` and
-  could trip a future negative body assert (the cross-cutting CSS-literal trap from
-  http-surface.md/web.md). Every property must resolve to an existing `var(--*)` token in
-  `internal/web/tokens.css` (the `Logged` review verified all this page's tokens resolve — reuse
-  `--font-mono`/`--text-2xs`/`--text-xs`/spacing/radius tokens already used here).
-- **No-CDN / no-`<table>` invariants hold.** This page already has `TestRecordsLinksTokensNoCDN`
-  (bans `http://`/`https://`/`cdn.`/`jsdelivr`) and renders as a CSS grid `<ul>`, not a `<table>`.
-  The new markup must add no external URL and no `<table>`.
-- **Vacuity trap (learnings, the open `low` on `record_test.go`).** The single-record label test went
-  vacuous because it returned the `schemaDeclaration`/`schemaDeletion` *constants* and `recordKind`
-  switched on the SAME constants — reverting both constants left the suite green. Avoid that here:
-  seed the new test's `ProjectionRecord` rows with **HARDCODED literal** `note.$schema` URIs
-  (`"http://purl.org/iscc/schema/iscc-note-0.8.0.json"`,
-  `"http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json"`, and a garbage string like
-  `"iscc-note-future-9.9.9"` for the unknown case), NOT the package constants — so reverting a
-  constant makes the test FAIL.
-- **Test grounding.** Copy `TestRecordsRendersLoggedColumn`'s direct-`store.Open` + `RecordProjections`
-  + `AdvanceFollowState` fixture (buildMirror seeds uniform schemas, so build the fixture directly).
-  Seed three accepted leaves: one declaration URI, one deletion URI, one unknown schema; advance
-  `LastSize` past all three; assert the body contains all three rendered labels ("Declaration",
-  "Deletion", "Unknown record type") AND the `<span>Type</span>` header. ADR-0008: the verbatim
-  `note.$schema` still renders in the ISCC-ID cell's `.record-schema` line; the Type badge is
-  additive, not a replacement.
+- **Fail-safe defaults, mockup-faithful.** The mockup copy is the default so an unconfigured dev binary
+  still renders a sensible masthead. Suggested defaults (apply in the handler when the field is empty, so
+  the fallback is centralized and golden-testable independent of `main.go`):
+  `Instance` → today's `"monitor instance"` (keep the existing placeholder so an unset deploy is honest,
+  NOT a false `monitor.iscc.id` claim); `Operator` → today's
+  `"independent Trust & Transparency service · ISCC-Hub network"`; `Realm` → `""` → render the bare
+  "Realm register" subtitle (no `· <realm>` suffix) when empty. main.go's defaults can be the same
+  strings, OR main.go can pass the mockup values for the live testnet — but the HANDLER's empty-field
+  fallback is what the HTTP-seam test pins, so behavior is deterministic regardless of env.
+- **Conditional realm suffix.** Render the ledger title as `Realm register{{if .Realm}} · {{.Realm}}{{end}}`
+  so an empty realm renders exactly today's "Realm register" (no trailing separator) — a coverage-honesty
+  /no-empty-affordance discipline, and it keeps the existing `TestDashboardRendersHeroAndNavigation`
+  "Realm register"-adjacent assertions stable.
+- **Signature change is contained.** `dashboard.Handler` has exactly ONE production call site
+  (`main.go:271`) and SIX test call sites (`handler_test.go` lines 94, 201, 231, 262, 313, 322). Update
+  all of them: the existing tests pass a zero-value `Identity{}` (proving the fallback path); the new
+  test passes a populated `Identity`. Tests are not counted against the ≤3-file budget.
+- **html/template auto-escaping holds.** `Instance`/`Operator`/`Realm` are plain strings rendered as text
+  nodes — `html/template` escapes them, so an operator who sets `&`/`<` cannot break the page. Do NOT use
+  `template.HTML`. The mockup's operator line contains `·` (U+00B7) — render it as a literal UTF-8
+  middot in the default string (the file is UTF-8), matching the existing `&middot`-free copy.
+- **No-CDN ban unaffected.** The identity strings are scheme-less text; the only `https://` in the body
+  stays the masthead's `monitor.iscc.codes` tier-2 link, which the narrowed ban positively allows.
+  `TestDashboardLinksTokensNoCDN` must still pass — do not let a default value introduce an `http(s)://`
+  / `cdn.` / `jsdelivr` substring.
+- **Render-into-buffer + 500-before-200** stays exactly as today; you are only adding fields to the
+  template context, not changing the error path.
+- **Mutation-proof the render.** The new test must FAIL if the identity text node is dropped from
+  `dashboard.html` AND if the handler stops threading the value — assert the EXACT operator-supplied
+  strings appear in the body (not the static default), driven from a populated `Identity{}` in the test,
+  so reverting the template binding makes it fail.
 
 ## Verification
 - `mise run check` is green (build + vet + `go test ./...` all pass; `gofmt -l .` empty outside
   `cauldron/`).
-- `go test -count=1 -run TestRecords ./internal/proofserve` passes (existing record-list tests +
-  the new `TestRecordsRendersTypeColumn`).
-- The new test asserts the served `/records` body contains `<span>Type</span>` (header) and the three
-  literal labels `Declaration`, `Deletion`, `Unknown record type`, each driven from a HARDCODED
-  literal `note.$schema` URI (constant revert → test FAIL).
-- Mutation check (run + revert): deleting the per-row Type badge cell from `records.html` makes
-  `TestRecordsRendersTypeColumn` FAIL; restore byte-clean (`git diff` clean).
-- `go list -deps ./internal/store | grep -E 'net/http|proofserve'` is empty (store stays a leaf —
-  no store change).
-- The diff adds no `http://`/`https://`/`cdn.`/`jsdelivr` to the body and no `<table>`
-  (`TestRecordsLinksTokensNoCDN` + `TestRecordsRendersInMemoryStatus` still pass).
+- `go test -count=1 -run TestDashboard ./internal/dashboard` passes (all existing dashboard tests under
+  the new `Handler(st, statuses, Identity{})` signature + the new identity-render test).
+- New test (e.g. `TestDashboardRendersInstanceIdentity`): `Handler(st, nil, Identity{Instance:
+  "monitor.example.test", Operator: "operated by Example Org · example net", Realm: "example net"})`
+  renders a `/` body containing all three literals AND `Realm register · example net`; a zero-value
+  `Identity{}` renders the fallback `monitor instance` + the bare `Realm register` (no trailing `·`).
+- Mutation check (run + revert, leave tree byte-clean): deleting the `{{.Instance}}` binding (or the
+  `.chrome-instance` text node) from `dashboard.html` makes the new test FAIL; restore byte-clean
+  (`git diff` clean, HEAD unchanged).
+- `go list -deps ./internal/store | grep -E 'net/http|internal/dashboard'` is empty (store stays a leaf
+  — no store change).
+- The body adds no `http://` / `https://` (other than the existing `monitor.iscc.codes`) / `cdn.` /
+  `jsdelivr` and no `<table>` (`TestDashboardLinksTokensNoCDN` + `TestDashboardRendersEveryHub` still
+  pass).
 
 ## Done When
-`mise run check` is green and `go test -count=1 -run TestRecords ./internal/proofserve` passes with a
-mutation-proven `TestRecordsRendersTypeColumn`, so the served `/records` no-JS HTML renders the
-mockup's full 4-column `Seq · Type · ISCC-ID · Logged` head with a per-row declaration/deletion/unknown
-type badge.
+`mise run check` is green and `go test -count=1 -run TestDashboard ./internal/dashboard` passes with a
+mutation-proven `TestDashboardRendersInstanceIdentity`, so the served `/` masthead renders the
+operator-supplied instance / operator / realm identity (from `ISCC_MONITOR_INSTANCE` /
+`ISCC_MONITOR_OPERATOR` / `ISCC_MONITOR_REALM`) and falls back to today's static copy when unset.
