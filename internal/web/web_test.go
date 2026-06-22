@@ -1,11 +1,12 @@
 // Tests for the static-asset handler at the HTTP seam: they drive Handler over an
 // httptest.ResponseRecorder and assert the observable response. The token and font
-// stylesheets return 200 text/css with a non-empty body carrying a known marker; a
-// woff2 binary returns 200 font/woff2 with the woff2 magic bytes; a non-GET is 405;
-// an If-None-Match match short-circuits to 304. They also pin the load-bearing
-// CDN-free invariant: no served body references an external CDN origin (no jsdelivr,
-// no http(s) scheme, no cdn. host) — a same-origin url("/_ds/fonts/...") in fonts.css
-// is legitimate and therefore not banned.
+// stylesheets return 200 text/css with a non-empty body carrying a known marker; the
+// wasm_exec.js loader returns 200 text/javascript with the Go runtime symbol; a woff2
+// binary returns 200 font/woff2 with the woff2 magic bytes; a non-GET is 405; an
+// If-None-Match match short-circuits to 304. They also pin the load-bearing CDN-free
+// invariant: no served body references an external CDN origin in loadable content (no
+// jsdelivr, no http(s) scheme, no cdn. host) — a same-origin url("/_ds/fonts/...") in
+// fonts.css and a vendored runtime's source-comment URL are legitimate and not banned.
 package web
 
 import (
@@ -24,16 +25,39 @@ func get(t *testing.T, path string) *httptest.ResponseRecorder {
 	return rec
 }
 
-// noExternalCDN fails if body references a third-party origin. A same-origin
-// url("/_ds/...") is allowed; only jsdelivr / an http(s) scheme / a cdn. host are
-// banned, so a self-hosted @font-face src passes.
+// noExternalCDN fails if body references a third-party origin in loadable content. A
+// same-origin url("/_ds/...") is allowed; only jsdelivr / an http(s) scheme / a cdn.
+// host are banned, so a self-hosted @font-face src passes. Each line's // comment is
+// stripped before scanning, since a comment can never trigger a runtime CDN fetch —
+// this keeps the ban exactly as strict for real (loadable) content while permitting a
+// vendored runtime's source comment (e.g. wasm_exec.js's Go issue-tracker URL).
 func noExternalCDN(t *testing.T, name string, body []byte) {
 	t.Helper()
+	scanned := stripLineComments(body)
 	for _, banned := range []string{"jsdelivr", "http://", "https://", "cdn."} {
-		if bytes.Contains(body, []byte(banned)) {
+		if bytes.Contains(scanned, []byte(banned)) {
 			t.Errorf("%s references external origin %q", name, banned)
 		}
 	}
+}
+
+// stripLineComments removes the // comment tail from each line so noExternalCDN scans
+// only loadable content. A comment is non-executable text, so a URL in it cannot be a
+// runtime resource reference. It treats // as a comment only when it is NOT the //
+// inside a scheme (a preceding ':' as in https://), so a real loadable https:// URL is
+// never truncated and the ban stays exactly as strict for executable content; CSS uses
+// /* */ block comments (no // tail) and is unaffected.
+func stripLineComments(body []byte) []byte {
+	lines := bytes.Split(body, []byte("\n"))
+	for i, line := range lines {
+		for j := 0; j+1 < len(line); j++ {
+			if line[j] == '/' && line[j+1] == '/' && (j == 0 || line[j-1] != ':') {
+				lines[i] = line[:j]
+				break
+			}
+		}
+	}
+	return bytes.Join(lines, []byte("\n"))
 }
 
 func TestTokensServedAsCSS(t *testing.T) {
@@ -161,6 +185,36 @@ func TestFontsCSSReferencesEmbeddedSubsets(t *testing.T) {
 	}
 }
 
+// TestWasmExecServed checks the Go WASM runtime loader is served at WasmExecPath with
+// the text/javascript content type, the revalidating no-cache + strong ETag policy, a
+// non-empty body, and no external CDN reference — the same-origin runtime the tier-2
+// progressive enhancement loads before instantiating the verifier .wasm.
+func TestWasmExecServed(t *testing.T) {
+	rec := get(t, WasmExecPath)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/javascript; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/javascript; charset=utf-8", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	if etag := rec.Header().Get("ETag"); !strings.HasPrefix(etag, "\"") || strings.HasPrefix(etag, "W/") {
+		t.Errorf("ETag = %q, want a strong quoted-hex tag", etag)
+	}
+	body := rec.Body.Bytes()
+	if len(body) == 0 {
+		t.Fatal("body is empty")
+	}
+	// A known runtime symbol must be present so the served bytes are the real loader.
+	if !bytes.Contains(body, []byte("globalThis.Go")) {
+		t.Errorf("body missing globalThis.Go runtime symbol")
+	}
+	noExternalCDN(t, "served wasm_exec.js", body)
+}
+
 func TestFontMissingIs404(t *testing.T) {
 	if rec := get(t, "/_ds/fonts/does-not-exist.woff2"); rec.Code != http.StatusNotFound {
 		t.Errorf("missing font status = %d, want 404", rec.Code)
@@ -170,7 +224,7 @@ func TestFontMissingIs404(t *testing.T) {
 // TestIfNoneMatch304 checks the conditional-GET short-circuit: a request echoing the
 // served ETag yields 304 with an empty body and the same validating ETag.
 func TestIfNoneMatch304(t *testing.T) {
-	for _, path := range []string{TokensPath, FontsCSSPath, "/_ds/fonts/jetbrains-mono-700.woff2"} {
+	for _, path := range []string{TokensPath, FontsCSSPath, WasmExecPath, "/_ds/fonts/jetbrains-mono-700.woff2"} {
 		etag := get(t, path).Header().Get("ETag")
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -189,7 +243,7 @@ func TestIfNoneMatch304(t *testing.T) {
 }
 
 func TestMethodNotAllowed(t *testing.T) {
-	for _, path := range []string{TokensPath, FontsCSSPath, "/_ds/fonts/readex-pro-400.woff2"} {
+	for _, path := range []string{TokensPath, FontsCSSPath, WasmExecPath, "/_ds/fonts/readex-pro-400.woff2"} {
 		rec := httptest.NewRecorder()
 		Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
 		if rec.Code != http.StatusMethodNotAllowed {

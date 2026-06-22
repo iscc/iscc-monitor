@@ -1,88 +1,68 @@
-## 2026-06-22 — Review of: WASM verifier entrypoint — `cmd/wasm` exporting `verify.VerifyInclusion` to JS
+## 2026-06-22 — Serve `wasm_exec.js` from the `/_ds/` static-asset leaf (WASM loader skeleton)
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Added the Go 1.26.1 WASM runtime loader (`wasm_exec.js`) as a byte-verbatim, build-pinned
+embedded asset served at the stable, CDN-free path `/_ds/wasm_exec.js` through the existing
+`internal/web` `/_ds/` subtree handler (one new `case`, reusing the unchanged no-cache + strong-ETag +
+304 + outer-CORS policy). This is the same-origin runtime on-ramp the later tier-2 `<script>`
+enhancement loads before instantiating the verifier `.wasm`.
 
-**Summary:** The advance lays the `GOOS=js GOARCH=wasm` WASM verifier entrypoint exactly as the milestone
-arc requires: a tagged `cmd/wasm/main.go` `syscall/js` shim exposing `globalThis.isccVerifyInclusion`,
-plus a pure, linux-testable `cmd/wasm/verifyadapter` package that base64-Std-decodes the proof-bundle
-fields into the shared `internal/proof/verify` core and folds the three-way verdict into `(verified,
-errMsg)`. All gates are green, the adapter is WASM-pure and its golden-vector parity test is
-mutation-proven non-vacuous. One Codex P2 (a real but currently-unreachable JS-number truncation gotcha
-in the untagged shim) is confirmed and filed as a `normal` issue for the sub-step that wires the first
-caller; it does not block this increment.
+**Files changed:**
+- `internal/web/wasm_exec.js`: new — `cp "$(go env GOROOT)/lib/wasm/wasm_exec.js"`, byte-verbatim
+  (16992 bytes, `cmp`-identical to the toolchain copy; BSD-licensed, version-pinned like the woff2s).
+- `internal/web/web.go`: added `WasmExecPath = "/_ds/wasm_exec.js"`, `contentTypeJS =
+  "text/javascript; charset=utf-8"`, a `//go:embed wasm_exec.js var wasmExecJS []byte`, and a
+  `case WasmExecPath: writeAsset(w, r, wasmExecJS, contentTypeJS)` before the `default: serveFont`
+  fall-through; updated the package + Handler docstrings (evergreen, current-state). No new import.
+- `internal/web/web_test.go`: added `TestWasmExecServed` (200 / `text/javascript; charset=utf-8` /
+  no-cache / strong non-`W/` ETag / non-empty body carrying `globalThis.Go` / CDN-free); extended
+  `TestIfNoneMatch304` and `TestMethodNotAllowed` path lists with `WasmExecPath`; refined the shared
+  `noExternalCDN` helper to strip `//` line comments before scanning (see Notes — required so the
+  byte-verbatim loader's one Go-issue-tracker comment URL does not false-positive).
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green; all 24 packages `ok`, including
-  `cmd/wasm/verifyadapter`.
-- [x] `gofmt -l .` (excl. `cauldron/`) — empty.
-- [x] `GOOS=js GOARCH=wasm go build -o /tmp/iscc-verify.wasm ./cmd/wasm` — exit 0 (2.9 MB artifact, not
-  committed, per Not-In-Scope).
-- [x] `go vet ./cmd/wasm` on linux — exit 1 "build constraints exclude all Go files". This is the
-  EXPECTED response to a platform-empty package (it is NOT a `syscall/js` compile error); next.md's exact
-  wording ("does NOT error on the syscall/js import") assumed the adapter lived in `package main`, which
-  it no longer does (see deviation below). The gate uses `go vet ./...` (wildcard) which skips it; check
-  is green.
-- [x] `go test -count=1 -run TestVerifyJSON ./cmd/wasm/verifyadapter` — PASS, all 5 cases (positive;
-  wrong-record + tampered-root → `verified=false, errMsg==""`; malformed base64 + `index>=size` →
-  `errMsg!=""`). Run via the subpackage path, not `./cmd/wasm`.
-- [x] Golden-vector WASM-vs-server parity: `VerifyJSON("bGVhZi0x", goldenRoot, goldenProof, 1, 4)` →
-  `verified=true` — the SAME verdict the core test pins for the SAME 4-leaf vector; literals copied
-  verbatim from `internal/proof/verify/verify_test.go`.
-- [x] Mutation-proven non-vacuous: forcing `verified=true` fails `tampered_root`/`wrong_record`;
-  collapsing the error channel fails `index>=size`; reverted byte-identical, green.
-- [x] Adapter WASM-pure: imports only `encoding/base64`, `fmt`, `internal/proof/verify`;
-  `GOOS=js GOARCH=wasm go build ./cmd/wasm/verifyadapter` exit 0.
-- [x] `go mod tidy -diff` clean; `go.mod`/`go.sum` untouched by the commit (`syscall/js` is stdlib).
-- [x] Gate-integrity scan over unpushed commits — no `//nolint`, `t.Skip`, build-tag exclusions (beyond
-  the legitimate `js && wasm` tag), swallowed errors, or deleted assertions.
-- [x] Oracle gate — N/A as a *modification*: the diff does not touch `internal/proof/verify`, signature/
-  Merkle/consistency logic, `internal/didweb`, or fork/shrink/equivocation; it only *consumes* the
-  verify core. The relevant oracle (the pinned 4-leaf golden vector, identical on both sides) is green
-  inside `mise run check`.
+**Verification:** `mise run check` → green (`go build ./...`, `go vet ./...`, all 25 packages `ok`,
+`gofmt -l .` excl. `cauldron/` empty). Per-criterion:
+- [x] `go test -count=1 -run TestWasmExec ./internal/web` → PASS.
+- [x] `GET /_ds/wasm_exec.js` → 200, `Content-Type: text/javascript; charset=utf-8`, strong quoted-hex
+  ETag (no `W/`), `Cache-Control: no-cache`, non-empty body with `globalThis.Go`.
+- [x] `If-None-Match` echo → 304, empty body, same ETag (extended `TestIfNoneMatch304`).
+- [x] `noExternalCDN(t, "served wasm_exec.js", …)` → does not fail (no third-party *loadable* origin).
+- [x] non-GET → 405 (extended `TestMethodNotAllowed`).
+- [x] `wasm_exec.js` is `cmp`-identical to `$(go env GOROOT)/lib/wasm/wasm_exec.js` (byte-verbatim).
+- [x] `GOOS=js GOARCH=wasm go build ./internal/web` → OK (still WASM-shareable; embed added no import).
+- Oracle/conformance gate: N/A — pure static-asset transport (no signature/RFC-6962/Merkle/did:web/
+  fsck/proof path), the same N/A `internal/web` already carries.
 
-**Issues found:** One filed (Codex-sourced, see below). No reviewer-independent defects beyond it.
-
-**Codex second opinion:** One [P2] finding, reviewer-CONFIRMED and filed as a `normal` issue.
-- [P2] `cmd/wasm/main.go:39-40` — `js.Value.Int()` truncates a non-integer JS `index`/`size` (it is
-  `int(v.Float())`, so `1.9 → 1`), so malformed bundle metadata could read as `verified` against the
-  truncated leaf. Independently confirmed (`int(1.9)==1`). Real, but (a) lives only in the untagged glue
-  shim — the tested, parity-proven `verifyadapter.VerifyJSON` takes `uint64` and is correct; (b) there is
-  no caller yet (the wiring is explicitly Not-In-Scope), and the real callers emit server-computed
-  integer indexes. So it does not block this increment's goal. Filed for the sub-step that wires the
-  first caller (where the JS→Go arg contract belongs) rather than fixed in review (it adds a behavioral
-  validation contract, beyond a minor review fix).
-
-**Visual check:** n/a — no SSR surface changed (the diff is entirely under `cmd/wasm/`; no
-`internal/dashboard`/`dossier`/`web`/`certificate` or template touched).
-
-**Design deviation (reviewer-VERIFIED, accepted):** advance moved the pure adapter out of `package main`
-(next.md's literal layout) into a non-main subpackage `cmd/wasm/verifyadapter`. Independently reproduced
-in a scratch module AND this repo: an untagged file in `package main` whose only `func main()` is in a
-`js && wasm`-tagged file makes `go build ./...` FAIL on linux with `runtime.main_main·f: function main is
-undeclared in the main package`. next.md's scoping claim that `go build ./...` "silently skips" such a
-package is incorrect — only a package with *no* Go files for the platform is skipped. The subpackage fix
-is the idiomatic, minimal, in-scope correction (3 new files, all under `cmd/wasm/`); all other next.md
-intent (untagged+linux-tested marshaling, exported verify-to-JS, same golden vector, three-way verdict
-mapping) is preserved. Captured in the new `learnings/cmd-wasm.md` so the next WASM step does not retrip
-it.
-
-**Next:** The WASM side is now callable. The natural next sub-step is the **tier-2 progressive
-enhancement** wiring it into the certificate/dossier (embed `wasm_exec.js` from
-`$(go env GOROOT)/lib/wasm/wasm_exec.js`, a `<script>` that loads the `.wasm` and calls
-`isccVerifyInclusion` with the base64-Std fields the surface already emits) — and that is the right place
-to land the `js.Value.Int()` integer/safe-integer validation the Codex P2 issue tracks, since it wires
-the first real caller. After that: the standalone `monitor.iscc.codes` Independent Verification app
-(Surface C) and the reproducible-build / published-hash / SRI pin + `mise run build:wasm` task. A
-`VerifyConsistency` sibling export still waits for a caller and needs its own arg-order wrapper
-(proof-verify learning).
+**Next:** The runtime loader is now fetchable same-origin. The next sub-step is building and serving
+the verifier `.wasm` artifact: a `mise run build:wasm` task (`GOOS=js GOARCH=wasm go build ./cmd/wasm`),
+committing/embedding it under `/_ds/`, plus its ADR-0003 reproducible-build / published-hash / SRI pin.
+After that, the `cert.html` `<script>` loader (load `wasm_exec.js` → instantiate the `.wasm` → call
+`isccVerifyInclusion` with the base64-Std fields the surface emits) — which is where the open `normal`
+`js.Value.Int()` truncation hardening belongs, per the prior review and the issue's own note (the page
+does NOT yet emit the leaf record bytes the 5-arg call needs; emit them there).
 
 **Notes:**
-- Scope discipline clean: 3 new files (1 non-test `verify_adapter.go`, 1 tagged shim, 1 test), all under
-  `cmd/wasm/`. Nothing in `## Not In Scope` was touched — no HTML/DS/`internal/web`, no committed `.wasm`,
-  no `mise` WASM task, no `VerifyConsistency`, no fold-in of the standing `normal`/`low` hardening defects.
-- `learnings.md` index gained one pointer row (`cmd/wasm`); new `learnings/cmd-wasm.md` detail file
-  created. No promotion to the always-loaded section — these are package-local mechanics, not
-  cross-cutting. No detail file exceeded the rotation budget.
-- Standing OTS / registry / certificate `normal`/`low` issues remain open and untouched (correctly out of
-  scope for this WASM step).
+- **`noExternalCDN` helper refinement (decision, needs review eyes).** The byte-verbatim Go 1.26.1
+  `wasm_exec.js` contains exactly one banned substring — `https://github.com/golang/go/issues/28975` —
+  inside a `//` line comment (verified: all `https?://`/`jsdelivr`/`cdn.` matches in the file are inside
+  `//` comments; none in loadable code). next.md required BOTH "keep it byte-verbatim / do not hand-edit"
+  AND "assert CDN-free via the existing `noExternalCDN`", which currently bans the bare `https://`
+  substring — a direct conflict, and exactly the false-positive `learnings/web.md` already flagged
+  ("scope to a non-self host"). I did NOT hand-edit the vendored JS and did NOT weaken the gate: I made
+  `noExternalCDN` strip each line's `//` comment tail before scanning, since a comment is non-executable
+  and can never trigger a runtime CDN fetch. The strip treats `//` as a comment ONLY when not preceded by
+  `:` (so a real loadable `https://cdn…` URL — whose `//` follows the scheme `:` — is never truncated and
+  the ban stays fully strict for executable content). Mutation-probed in a scratch test (since removed,
+  tree clean): the helper still fires on a real `https://cdn.jsdelivr.net/…` src, a bare `cdn.` host, and
+  a real `https://` URL on a line that also carries a trailing `//` comment; it suppresses only pure
+  comment URLs. tokens.css/fonts.css are unaffected (they have no comment-borne banned substrings; CSS
+  uses `/* */` blocks, not `//`). This is the principled "scope the ban" fix web.md prescribed, applied to
+  the shared test helper rather than forking a second helper. Flagging it so review can confirm the helper
+  change preserves the genuine CDN-free invariant (no third-party *loadable* origin) rather than relaxes it.
+- Scope discipline: 1 non-test/doc file modified (`web.go`) + 1 new asset (`wasm_exec.js`) + the test
+  file — within the cap. Nothing in `## Not In Scope` touched: no `.wasm` artifact, no `mise run build:wasm`,
+  no `cert.html` `<script>` / record-bytes emission, no `cmd/wasm/main.go` `js.Value.Int()` hardening, no
+  `cmd/iscc-monitor` mount change (the `/_ds/` subtree already routes the new path to `web.Handler`).
+- The `globalThis.Go` body assertion is grounded in the real file (`wasm_exec.js:103 globalThis.Go =
+  class {`), so it is non-vacuous against the served bytes.
+- Standing OTS / registry / certificate / the `cmd/wasm` `js.Value.Int()` `normal`/`low` issues remain
+  open and untouched (correctly out of scope for this static-asset step).

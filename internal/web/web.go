@@ -1,10 +1,13 @@
 // Package web serves the monitor's shared static front-end assets — the ISCC
-// Design System v2 token stylesheet, the self-hosted webfont @font-face shell, and
-// the woff2 binaries themselves — over net/http as a tiny stdlib-only leaf. It is
-// the one no-JS, no-CDN style shell every server-rendered M-UI surface (the realm
-// index at "/", the hub dossier, the log browser, the certificate page) links via
-// stable paths under /_ds/, so the design tokens and fonts are defined once and
-// shared.
+// Design System v2 token stylesheet, the self-hosted webfont @font-face shell, the
+// woff2 binaries themselves, and the Go WASM runtime loader (wasm_exec.js) — over
+// net/http as a tiny stdlib-only leaf. The stylesheets and fonts are the one no-JS,
+// no-CDN style shell every server-rendered M-UI surface (the realm index at "/", the
+// hub dossier, the log browser, the certificate page) links via stable paths under
+// /_ds/, so the design tokens and fonts are defined once and shared. The wasm_exec.js
+// loader is the same-origin Go runtime glue the later tier-2 progressive enhancement
+// must load before instantiating the verifier .wasm; serving it here keeps that
+// runtime CDN-free too.
 //
 // Everything is go:embed-ed at build time, so the served bytes are build-pinned and
 // no asset references an external CDN URL (the load-bearing M-UI invariant: every
@@ -26,9 +29,10 @@
 // The package is a pure leaf: its only imports are crypto/sha256 / embed / fmt /
 // net/http / strings / io / fs (stdlib), with no internal/store, no
 // internal/metrics, and no internal/logclient, so it stays trivially testable,
-// WASM-shareable, and never pulls a heavier dependency into the asset path. CORS
-// rides the outer corsmw.Handler wrap at the mux convergence point, so this handler
-// sets no CORS headers of its own.
+// WASM-shareable, and never pulls a heavier dependency into the asset path. The
+// wasm_exec.js asset adds no import (embed is already in use). CORS rides the outer
+// corsmw.Handler wrap at the mux convergence point, so this handler sets no CORS
+// headers of its own.
 //
 // The oracle/conformance gate is N/A: this is pure static-asset transport,
 // touching no signature, RFC-6962, Merkle, did:web, fsck, or proof path.
@@ -58,6 +62,12 @@ const TokensPath = "/_ds/tokens.css"
 // TokensPath it is duplicated as a template literal that must stay in sync.
 const FontsCSSPath = "/_ds/fonts.css"
 
+// WasmExecPath is the stable exact path the Go WASM runtime loader is served at. The
+// later tier-2 progressive enhancement loads this same-origin script before
+// instantiating the verifier .wasm; like TokensPath a page's <script src> literal
+// must stay in sync with this value.
+const WasmExecPath = "/_ds/wasm_exec.js"
+
 // cacheControl is the Cache-Control policy for every /_ds/ asset. Each is served at
 // a stable, overwrite-in-place URL (not content-addressed), so it must NOT carry the
 // immutable directive — that would let a client pin a soon-overwritten asset for a
@@ -72,6 +82,11 @@ const contentTypeCSS = "text/css; charset=utf-8"
 // explicitly because a content sniffer would otherwise classify woff2 as an opaque
 // octet stream, which some browsers refuse to use as a webfont.
 const contentTypeWOFF2 = "font/woff2"
+
+// contentTypeJS is the media type served for the wasm_exec.js runtime loader. It is
+// set explicitly so the browser executes it as a script regardless of content
+// sniffing.
+const contentTypeJS = "text/javascript; charset=utf-8"
 
 // TokensCSS is the embedded ISCC Design System v2 token stylesheet — a single
 // concatenated, CDN-free file (colors, typography, spacing, base tokens), embedded
@@ -94,13 +109,22 @@ var fontsCSS []byte
 //go:embed fonts
 var fontsFS embed.FS
 
+// wasmExecJS is the embedded Go WASM runtime loader — a byte-verbatim copy of the Go
+// 1.26.1 toolchain's lib/wasm/wasm_exec.js (BSD-licensed). It is a build-pinned,
+// version-locked asset (the same posture as the committed woff2 binaries); never
+// hand-edit it. The later tier-2 enhancement loads it to bootstrap the verifier .wasm.
+//
+//go:embed wasm_exec.js
+var wasmExecJS []byte
+
 // Handler returns an http.Handler for the /_ds/ static-asset subtree. It serves the
-// token stylesheet, the @font-face stylesheet, and the woff2 binaries; the content
-// type is chosen by extension (text/css for .css, font/woff2 for .woff2). Only GET
-// is served (any other method is 405); an unknown /_ds/ path is 404. Every 200
-// carries Cache-Control: no-cache and a strong content ETag, with an If-None-Match
-// match short-circuiting to 304. It sets no CORS headers — the outer corsmw wrap at
-// the mux convergence point owns the single CORS policy.
+// token stylesheet, the @font-face stylesheet, the woff2 binaries, and the
+// wasm_exec.js runtime loader; the content type is chosen per path (text/css for the
+// .css, text/javascript for wasm_exec.js, font/woff2 for .woff2). Only GET is served
+// (any other method is 405); an unknown /_ds/ path is 404. Every 200 carries
+// Cache-Control: no-cache and a strong content ETag, with an If-None-Match match
+// short-circuiting to 304. It sets no CORS headers — the outer corsmw wrap at the mux
+// convergence point owns the single CORS policy.
 //
 // It must be mounted at Prefix (a trailing-slash subtree pattern) so the whole
 // /_ds/ tree, including /_ds/fonts/, routes here; an exact-path mount would 404 the
@@ -116,6 +140,8 @@ func Handler() http.Handler {
 			writeAsset(w, r, TokensCSS, contentTypeCSS)
 		case FontsCSSPath:
 			writeAsset(w, r, fontsCSS, contentTypeCSS)
+		case WasmExecPath:
+			writeAsset(w, r, wasmExecJS, contentTypeJS)
 		default:
 			serveFont(w, r)
 		}
