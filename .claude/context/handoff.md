@@ -1,67 +1,29 @@
-## 2026-06-22 — Review of: Make `verify.wasm` reproducible — add `-buildvcs=false`, rebuild, re-pin `WasmVerifyHash`
+## 2026-06-22 — Bring `/` realm index to its mockup's named regions — claim-lookup hero, per-row dossier links, instance-identity masthead
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Brought the `GET /` realm index to its authoritative mockup's three headline landmark regions: a claim-lookup hero (a no-JS `<form method="get" action="/inclusion/">` with an `iscc_id` input → `Find evidence →`), every hub row wrapped in an `<a href="/{{.Domain}}">` to its dossier (navigation closure, anchor count ≥ hub count), and the masthead instance-identity block + `verify ↗ monitor.iscc.codes` tier-2 link. The certificate handler gained a query-param fallback so the no-JS hero form (which can only emit a query string) resolves to a real lookup. Closes the lone open `critical`.
 
-**Summary:** The advance added the missing `-buildvcs=false` flag to the `mise run build:wasm` task,
-rebuilt `internal/web/verify.wasm` deterministically (VCS stamp gone), and re-pinned `WasmVerifyHash`
-to the emitted `f03b9b89…`. I independently rebuilt across clean / untracked-dirty / tracked-dirty /
-`go clean -cache` tree states — all four produce a byte-identical artifact equal to the committed blob
-and the const. This closes the open `critical` reproducibility issue; scope held to the exact three
-files `next.md` named.
+**Files changed:**
+- `internal/dashboard/dashboard.html`: added the hero `<section>` (eyebrow + lede + no-JS GET form), the masthead `.chrome-actions` (instance-identity block + `verify ↗` link), the `#` ledger column, wrapped each `{{range .Hubs}}` row in `<a class="ledger-row" href="/{{.Domain}}">`, and the "{{.HubCount}} hubs followed & mirrored" count. All new layout is page-scoped `<style>` over DS `var(--*)` tokens (verified every token resolves in `web/tokens.css`).
+- `internal/dashboard/handler.go`: added `HubCount` to `pageData` (`len(rows)`) and a per-row `RowNo` (`fmt.Sprintf("%02d", i+1)`, 1-based zero-padded). No new store read; both derive from the existing summaries slice. Added `fmt` import.
+- `internal/certificate/handler.go`: when the path id is empty, fall back to `r.URL.Query().Get("iscc_id")` before the `.bundle` CutSuffix, so the hero's query form flows through the identical decode→resolve→render chain; a bare `/inclusion/` with no query stays the honest "no id supplied" 200.
+- `internal/dashboard/handler_test.go`: narrowed `TestDashboardLinksTokensNoCDN`'s ban to third-party CDN hosts (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`) — mirroring the certificate's posture — and added an assertion the `monitor.iscc.codes` link is present; added `TestDashboardRendersHeroAndNavigation` pinning the hero form, per-hub dossier links (count ≥ hub count), and the masthead identity + verify link.
+- `internal/certificate/handler_test.go`: added `TestCertificateQueryFallback` asserting `GET /inclusion/?iscc_id=<golden>` certifies the same subject as `GET /inclusion/<golden>`, and bare `GET /inclusion/` (no id, no query) still renders "no ISCC-ID supplied".
 
-**Verification:**
-- [x] `mise run check` green — all 25 packages `ok` (build + vet + test).
-- [x] `go test -count=1 -run TestWasmVerifyHashPinned ./internal/web` — PASS against the rebuilt artifact
-  (`sha256(verify.wasm) == WasmVerifyHash`).
-- [x] `go test -count=1 -run TestWasmVerify ./internal/web` — PASS (serve route / content-type / ETag /
-  304 / 405 unchanged).
-- [x] `strings internal/web/verify.wasm | grep -c 'vcs\.'` → `0` (prior committed blob had 3:
-  `vcs.revision=b2667f86…`, `vcs.time=…`, `vcs.modified=true`; now none).
-- [x] Reproducibility across tree states — `mise run build:wasm` on clean, untracked-dirty,
-  tracked-dirty, and after `go clean -cache` all emit `f03b9b89…`; `git diff --stat
-  internal/web/verify.wasm` is empty after a fresh rebuild; `git show HEAD:internal/web/verify.wasm`
-  hashes to `f03b9b89…`.
-- [x] `gofmt -l .` (excl. gitignored `cauldron/`) — empty.
-- [x] Oracle/trust-root gate — N/A: diff touches only the build flag + hash const + regenerated binary;
-  `cmd/wasm` source and `internal/proof/verify` untouched (confirmed via `git diff --name-only`).
-  Functional guard still green: `verifyadapter` parity test PASS, `proof/verify` stays pure +
-  WASM-green (`GOOS=js GOARCH=wasm go build`, no net/sql/sqlite in closure). The 174-byte size delta
-  (2870559→2870385) is exactly the removed VCS build-info section, not a logic change.
-- [x] Gate-integrity scan over all unpushed commits — no `nolint`/`t.Skip`/swallowed errors/build-tag
-  exclusions/deleted assertions. Tests were ADDED (`TestWasmVerifyServed`, `TestWasmVerifyHashPinned`),
-  never weakened.
+**Verification:** `mise run check` → green (all 25 packages `ok`, `go build`/`go vet`/`go test` pass); `gofmt -l .` (excl. gitignored `cauldron/`) empty.
+- `go test -run TestDashboard ./internal/dashboard` → PASS: (a) hero `<form action="/inclusion/">` + `name="iscc_id"`, (b) dossier link per hub (anchor count ≥ hub count), (c) masthead carries the instance-identity block + `monitor.iscc.codes`.
+- `go test -run TestCertificate ./internal/certificate` → PASS: query fallback certifies the same subject as the path form; bare path stays "no id supplied" 200.
+- Updated no-CDN test still bans real CDN hosts and the body contains none, while permitting `https://monitor.iscc.codes/`.
+- Manual seam check (temp test, since removed): rendered `/` contains the hero form, `href="/sb0.iscc.id"` + `href="/sb1.amlet.id"`, the `verify ↗ monitor.iscc.codes` link, "2 hubs followed", and row numbers `01`/`02`.
 
-**Issues found:** (none) — clean, minimal, on-scope. Removed the resolved `critical` reproducibility
-entry from `issues.md` after verifying the fix.
-
-**Codex second opinion:** Clean (exit 0). Codex independently ran `go tool buildid` on the artifact and
-verdict: "The build task now disables VCS stamping, the pinned hash matches the committed WASM bytes,
-and the documented checks pass. I did not find any new actionable correctness issues in the changed
-code." No findings to triage; corroborates the reviewer's own measurements.
-
-**Visual check:** n/a — no SSR surface changed. `internal/web` serves only static `/_ds/...` assets; no
-template, no rendered-HTML surface (dashboard/dossier/web template/certificate) was touched this
-increment.
-
-**Next:** Honor the human sequencing steer in `target.md` (Titusz, 2026-06-22): now that the WASM pin
-is reproducible, front-load **M-UI design-parity** — the remaining open `critical` *"`/` realm index is
-far below its authoritative mockup"*. Bring `/` to its mockup's named regions: (a) the claim-lookup hero
-as a no-JS `GET` form → `/inclusion/…`, (b) every hub row wrapped in an `<a href>` to its dossier
-(restore the realm-index→dossier traversal, anchor count ≥ hub count), and (c) the masthead logo +
-instance-identity block + `verify ↗ monitor.iscc.codes` link. The dashboard handler golden test must
-assert those landmark regions; an ADR-0012 visual pass against the mockup confirms no headline-region
-deviation. The WASM `<script>` caller (and the `cmd/wasm/main.go:39-40` `js.Value.Int()` truncation fix
-that belongs to it) resumes after the parity pass, safely on top of a reproducible pin.
+**Next:** Carry the same named-region + `←` back-link parity pass to the remaining SSR surfaces (`internal/dossier`, `internal/proofserve` log browser / single record), which lack the masthead instance-identity block and (for dossier→log→record) the full back-link chain — the explicit follow-on sub-steps named in `next.md`'s Not-In-Scope. After that, resume the WASM `<script>` caller and the `cmd/wasm/main.go:39-40` `js.Value.Int()` truncation fix.
 
 **Notes:**
-- Toolchain: Go 1.26.1 (the `[tools] go = "1.26"` mise pin). The emitted hash + size match the prior
-  reviewer's independent measurement and Codex's `go tool buildid` check exactly.
-- The grandparent revision `b2667f8` stamped into the prior dirty blob corresponds to the
-  `b2667f8 cid(define-next): build + serve the verifier .wasm reproducibly` commit — confirming the old
-  artifact was built before this revision and never re-pinned, the exact failure the issue diagnosed.
-- Remaining open issues after this sweep: 1 `critical` (M-UI `/` parity, the Next focus), 5 `normal`
-  (two certificate latent fail-opens, the OTS stamp guard, the `hubDomain` ForceQuery gap, the WASM
-  shim `Int()` truncation, certificate §6 timestamp), and several `low` (loop-skipped). None block this
-  increment.
-- Pushing `develop` to `origin` (remote configured, upstream `origin/develop`).
+- **Mockup deviations (flagged, constraint wins):**
+  1. **No logo image.** The mockup's masthead has `<img src="assets/iscc-logo-black.png">`; no such asset is served (`/_ds/` carries only tokens/fonts/wasm) and the no-CDN constraint bans external origins. Kept the text-only `.chrome-mark` masthead (the certificate's established precedent). A self-hosted logo would be a separate `internal/web` asset step.
+  2. **Static instance identity.** Rendered "monitor instance" + a generic operator/realm line as static copy (the certificate's `monitor instance` placeholder precedent); making it env-configurable is explicitly out of scope.
+  3. **Checkpoint-size + Bitcoin-anchor data columns deferred.** Per Not-In-Scope, `HubSummary` carries no per-hub checkpoint-size-vs-observed split or OTS anchor state for the index, so I did NOT add those columns (no store read). The grid renders `#`/Hub·domain/Coverage since/Observed size/Status — the honest subset of the mockup's column set. The mockup's "Checkpoint" and "Anchor" columns are absent; surfacing them is a later store-projection step.
+  4. **"Recent declarers checked" hero footer omitted** — it requires a recent-lookup history the store does not track; out of scope.
+- **No-CDN gate not weakened.** The dashboard ban was narrowed to third-party-origin hosts only (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`), exactly matching the certificate's already-merged posture and `learnings/web.md`'s `noExternalCDN` rule (third-party origins only; same-origin/self links pass). The single permitted external origin is the intentional `https://monitor.iscc.codes/` tier-2 verifier link. The load-bearing rule (no third-party CDN origin) still holds.
+- **Oracle/conformance gate N/A** for this increment: pure SSR of persisted rows + a query-param intake on the certificate handler that does NOT alter the decode/verify/Merkle chain (the query id flows through the identical existing `buildData` path). No signature/RFC-6962/Merkle/did:web/fsck/proof code touched.
+- **Grid-ellipsis trap respected:** the only ellipsizing cell (`.hub-cell`) already carries `min-width:0`; the new `#`/rowno cell is fixed-width mono text that does not ellipsize.
+- Scope held to 3 non-test source files (dashboard.html, dashboard/handler.go, certificate/handler.go) + 2 test files.

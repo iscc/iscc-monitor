@@ -462,6 +462,17 @@ func Handler(hubList *registry.HubList, st *store.Store, statuses StatusSource) 
 			return
 		}
 		rawID := strings.TrimPrefix(r.URL.Path, PathPrefix)
+		// No-JS hero-form fallback: an HTML <form method="get"> can only emit a query
+		// string (?iscc_id=…), never a path segment, so the dashboard's claim-lookup
+		// hero posts to a bare /inclusion/ with ?iscc_id=<id>. When the path id is empty
+		// AND a query id is present, use the query value so it flows through the
+		// identical decode→resolve→render chain; a bare /inclusion/ with no query stays
+		// the honest "no id supplied" 200.
+		if rawID == "" {
+			if qID := r.URL.Query().Get("iscc_id"); qID != "" {
+				rawID = qID
+			}
+		}
 		// Detect+strip the .bundle suffix BEFORE decoding the id (the suffix is not
 		// part of the id), so /inclusion/<id> and /inclusion/<id>.bundle share the same
 		// decode→resolve→build chain.

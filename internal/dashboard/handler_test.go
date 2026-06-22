@@ -190,8 +190,11 @@ func TestDashboardRendersInMemoryStatus(t *testing.T) {
 
 // TestDashboardLinksTokensNoCDN pins the shared-shell wiring: the rendered "/" body
 // links the embedded DS token stylesheet at the literal web.TokensPath and carries
-// no external CDN URL — the load-bearing M-UI invariant that every SSR body is
-// complete with JavaScript disabled and references no third-party origin.
+// no third-party CDN URL — the load-bearing M-UI invariant that every SSR body is
+// complete with JavaScript disabled and references no third-party origin. The
+// masthead "verify ↗ monitor.iscc.codes" link is the one intentional external
+// https origin (the monitor-agnostic verifier app), so the ban is narrowed to
+// third-party CDN hosts only, mirroring the certificate's no-CDN posture.
 func TestDashboardLinksTokensNoCDN(t *testing.T) {
 	st := fixtureStore(t)
 	rec := httptest.NewRecorder()
@@ -205,9 +208,67 @@ func TestDashboardLinksTokensNoCDN(t *testing.T) {
 	if !strings.Contains(body, `href="/_ds/tokens.css"`) {
 		t.Errorf("body missing token stylesheet link\n%s", body)
 	}
-	for _, banned := range []string{"jsdelivr", "http://", "https://", "cdn."} {
+	// The intentional tier-2 verifier link must be present and same as the
+	// certificate's; real CDN hosts must not.
+	if !strings.Contains(body, "monitor.iscc.codes") {
+		t.Errorf("body missing the tier-2 verify link\n%s", body)
+	}
+	for _, banned := range []string{"jsdelivr", "cdn.", "unpkg", "googleapis"} {
 		if strings.Contains(body, banned) {
 			t.Errorf("body contains external CDN reference %q\n%s", banned, body)
+		}
+	}
+}
+
+// TestDashboardRendersHeroAndNavigation pins the three headline landmark regions the
+// mockup demands on "/": (a) the claim-lookup hero as a no-JS GET form whose action
+// resolves to /inclusion/ with an iscc_id input, (b) a dossier link per hub row (the
+// realm-index → dossier navigation closure: anchor count >= hub count), and (c) the
+// masthead instance-identity block with the tier-2 verify link. It is non-vacuous:
+// dropping the row <a> wrapper or the hero form fails these assertions.
+func TestDashboardRendersHeroAndNavigation(t *testing.T) {
+	st := fixtureStore(t)
+	rec := httptest.NewRecorder()
+	Handler(st, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// (a) The claim-lookup hero: a no-JS GET form posting ?iscc_id=… to /inclusion/.
+	for _, want := range []string{
+		`<form`,
+		`method="get"`,
+		`action="/inclusion/"`,
+		`name="iscc_id"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("hero form missing %q\n%s", want, body)
+		}
+	}
+
+	// (b) Navigation closure: one dossier <a href="/<domain>"> per hub. Count the
+	// dossier links specifically (not the masthead verify link or the hero button),
+	// and require anchor count >= hub count (here both fixture hubs).
+	dossierLinks := 0
+	for _, domain := range []string{"sb0.iscc.id", "sb1.amlet.id"} {
+		if strings.Contains(body, `href="/`+domain+`"`) {
+			dossierLinks++
+		}
+	}
+	if dossierLinks < 2 {
+		t.Errorf("dossier link count = %d, want >= 2 (one per hub)\n%s", dossierLinks, body)
+	}
+
+	// (c) The masthead instance-identity block + the tier-2 verify link.
+	for _, want := range []string{
+		"monitor instance",
+		"monitor.iscc.codes",
+		"hubs followed",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("masthead/heading missing %q\n%s", want, body)
 		}
 	}
 }

@@ -25,7 +25,9 @@
       background: var(--surface-page);
     }
 
-    /* Document chrome: the masthead identifying this monitor instance. */
+    /* Document chrome: the masthead identifying this monitor instance, with the
+       instance-identity block and the tier-2 "verify in your browser" link to the
+       monitor-agnostic verifier app (matching the certificate's chrome). */
     .chrome {
       display: flex;
       align-items: center;
@@ -48,11 +50,105 @@
       color: var(--text-muted);
       font-weight: var(--weight-light);
     }
+    .chrome-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: var(--space-5);
+      flex-wrap: wrap;
+    }
+    /* The instance-identity block: this deployment's domain + operator/realm. It is
+       static copy in this skeleton (a config-driven identity is a separate concern). */
+    .chrome-identity {
+      text-align: right;
+      line-height: var(--leading-snug);
+    }
+    .chrome-instance {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-body);
+    }
+    .chrome-operator {
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+      font-weight: var(--weight-light);
+    }
+    /* The tier-2 link to the monitor-agnostic verifier app (monitor.iscc.codes). */
+    .chrome-verify {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-link);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-xs);
+      padding: var(--space-2) var(--space-3);
+    }
 
     .page {
       max-width: 1000px;
       margin: 0 auto;
       padding: var(--space-10) var(--space-8) var(--space-14);
+    }
+
+    /* Claim-lookup hero: the foregrounded "prove an ISCC declaration is in the log"
+       action, a no-JS GET form that posts ?iscc_id=… to /inclusion/. */
+    .hero {
+      background: var(--surface-card);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-xs);
+      box-shadow: var(--shadow-sm);
+      padding: var(--space-8) var(--space-8);
+      margin-bottom: var(--space-8);
+    }
+    .hero-eyebrow {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: var(--space-2);
+    }
+    .hero-title {
+      font-size: var(--text-2xl);
+      font-weight: var(--weight-bold);
+      color: var(--text-heading);
+      margin: 0 0 var(--space-2);
+    }
+    .hero-lede {
+      font-size: var(--text-base);
+      font-weight: var(--weight-light);
+      line-height: var(--leading-normal);
+      color: var(--text-body);
+      max-width: 68ch;
+      margin: 0 0 var(--space-5);
+    }
+    .hero-form {
+      display: flex;
+      gap: 0;
+      align-items: stretch;
+      flex-wrap: wrap;
+    }
+    .hero-input {
+      flex: 1;
+      min-width: 240px;
+      font-family: var(--font-mono);
+      font-size: var(--text-base);
+      color: var(--text-body);
+      background: var(--surface-page);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-xs) 0 0 var(--radius-xs);
+      padding: var(--space-3) var(--space-4);
+    }
+    .hero-submit {
+      font-family: var(--font-sans);
+      font-size: var(--text-base);
+      font-weight: var(--weight-semibold);
+      color: var(--surface-card);
+      background: var(--text-heading);
+      border: var(--border-width) solid var(--text-heading);
+      border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+      padding: var(--space-3) var(--space-6);
+      white-space: nowrap;
+      cursor: pointer;
     }
 
     /* Realm-ledger heading row. */
@@ -89,10 +185,10 @@
     }
 
     /* Each row (and the column-header row) is a grid with the same columns:
-       Hub · domain | Coverage since | Observed size | Status. */
+       # | Hub · domain | Coverage since | Observed size | Status. */
     .ledger-row {
       display: grid;
-      grid-template-columns: 1.8fr 1.3fr 1fr 150px;
+      grid-template-columns: 34px 1.8fr 1.3fr 1fr 150px;
       gap: var(--space-4);
       align-items: center;
       padding: var(--space-3) var(--space-5);
@@ -100,6 +196,21 @@
     }
     .ledger-row:last-child {
       border-bottom: 0;
+    }
+    /* Each data row is an <a> to that hub's dossier (/<domain>), so the realm
+       index → dossier chain is traversable with JavaScript disabled. The link
+       inherits text color and is full-row clickable; the hover tint is decorative. */
+    a.ledger-row {
+      color: inherit;
+      text-decoration: none;
+    }
+    a.ledger-row:hover {
+      background: var(--surface-page);
+    }
+    .ledger-rowno {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-faint);
     }
     .ledger-colhead {
       font-family: var(--font-mono);
@@ -204,23 +315,45 @@
       <div class="chrome-mark">Trust &amp; Transparency Monitor</div>
       <div class="chrome-sub">Evidence of record · ISCC-Hub network</div>
     </div>
+    <div class="chrome-actions">
+      <div class="chrome-identity">
+        <div class="chrome-instance">monitor instance</div>
+        <div class="chrome-operator">independent Trust &amp; Transparency service · ISCC-Hub network</div>
+      </div>
+      <a class="chrome-verify" href="https://monitor.iscc.codes/">verify ↗ monitor.iscc.codes</a>
+    </div>
   </header>
 
   <main class="page">
+    <!-- Claim-lookup hero: a no-JS GET form. A <form method="get"> can only emit a
+         query string, so it posts ?iscc_id=… to /inclusion/; the certificate handler
+         falls back to the query param when the path id is empty. -->
+    <section class="hero">
+      <div class="hero-eyebrow">ISCC · ISO 24138:2024 · Transparency Log Monitor</div>
+      <h1 class="hero-title">Prove a specific ISCC declaration is in the log.</h1>
+      <p class="hero-lede">Enter an ISCC-ID to retrieve a self-contained evidence record — the hub-signed checkpoint, the inclusion proof, the record bytes and the Bitcoin timestamp — that stands without trusting the hub or this monitor.</p>
+      <form class="hero-form" method="get" action="/inclusion/">
+        <input class="hero-input" type="text" name="iscc_id" placeholder="ISCC:MEAJU5BQXK7QKMC3" aria-label="ISCC-ID">
+        <button class="hero-submit" type="submit">Find evidence →</button>
+      </form>
+    </section>
+
     <div class="ledger-head">
-      <h1 class="ledger-title">Realm register</h1>
-      <span class="ledger-count">Followed hubs and their store-provable status and coverage window.</span>
+      <h2 class="ledger-title">Realm register</h2>
+      <span class="ledger-count">{{.HubCount}} hubs followed &amp; mirrored</span>
     </div>
 
     <div class="ledger">
       <div class="ledger-row ledger-colhead">
+        <span>#</span>
         <span>Hub · domain</span>
         <span>Coverage since</span>
         <span>Observed size</span>
         <span>Status</span>
       </div>
       {{- range .Hubs}}
-      <div class="ledger-row" data-status="{{.Status}}">
+      <a class="ledger-row" href="/{{.Domain}}" data-status="{{.Status}}">
+        <span class="ledger-rowno">{{.RowNo}}</span>
         <div class="hub-cell">
           <div class="hub-name">{{.Domain}}</div>
           <div class="hub-origin">{{.Origin}}</div>
@@ -235,7 +368,7 @@
         </div>
         <div class="cell-mono">{{.LastSize}}</div>
         <div>{{template "hubStatusBadge" .}}</div>
-      </div>
+      </a>
       {{- else}}
       <div class="ledger-empty">No hubs followed.</div>
       {{- end}}

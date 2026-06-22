@@ -407,6 +407,54 @@ func TestCertificateEmptyID(t *testing.T) {
 	}
 }
 
+// TestCertificateQueryFallback asserts the no-JS hero-form fallback: the dashboard's
+// claim-lookup <form method="get"> can only emit a query string, so it posts a bare
+// /inclusion/?iscc_id=<id>. The handler must use the query id when the path id is
+// empty, so GET /inclusion/?iscc_id=<golden> certifies the SAME subject as the path
+// form GET /inclusion/<golden> (the query value reuses the decode→resolve→render
+// chain). A bare /inclusion/ with no id and no query stays the honest "no id
+// supplied" 200. Non-vacuous: removing the query fallback makes the query request
+// render "no ISCC-ID supplied" instead of the subject banner.
+func TestCertificateQueryFallback(t *testing.T) {
+	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815)
+	h := Handler(testnetHubList(), st, nil)
+
+	// The path form: the certifying reference body to match against.
+	pathRec := get(t, h, goldenID)
+	if pathRec.Code != http.StatusOK {
+		t.Fatalf("path form status = %d, want 200", pathRec.Code)
+	}
+	if !strings.Contains(pathRec.Body.String(), "is included in the transparency log") {
+		t.Fatalf("path form did not certify the golden id\n%s", pathRec.Body.String())
+	}
+
+	// The query form the hero emits: bare /inclusion/ with ?iscc_id=<golden>.
+	queryRec := httptest.NewRecorder()
+	h.ServeHTTP(queryRec, httptest.NewRequest(http.MethodGet, PathPrefix+"?iscc_id="+goldenID, nil))
+	if queryRec.Code != http.StatusOK {
+		t.Fatalf("query form status = %d, want 200", queryRec.Code)
+	}
+	queryBody := queryRec.Body.String()
+	for _, want := range []string{
+		"is included in the transparency log", // the subject banner certifies
+		"sb1.amlet.id",                        // the resolved hub domain
+		"24815",                               // the subject position
+	} {
+		if !strings.Contains(queryBody, want) {
+			t.Errorf("query form missing %q\n%s", want, queryBody)
+		}
+	}
+
+	// A bare /inclusion/ with no id and no query stays the honest "no id supplied".
+	bareRec := get(t, h, "")
+	if bareRec.Code != http.StatusOK {
+		t.Fatalf("bare form status = %d, want 200", bareRec.Code)
+	}
+	if !strings.Contains(bareRec.Body.String(), "no ISCC-ID supplied") {
+		t.Errorf("bare /inclusion/ did not render the empty-id state\n%s", bareRec.Body.String())
+	}
+}
+
 // TestCertificateNilHubList asserts a nil Hub-List makes every id resolve to "not
 // in this realm" (fail-closed), never a panic or 5xx.
 func TestCertificateNilHubList(t *testing.T) {

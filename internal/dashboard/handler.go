@@ -26,6 +26,7 @@ package dashboard
 import (
 	"bytes"
 	_ "embed"
+	"fmt"
 	"html/template"
 	"net/http"
 
@@ -53,8 +54,10 @@ var tmpl = func() *template.Template {
 // renders. It is built from a store.HubSummary so the template stays free of
 // status logic. The hubStatusBadge partial reads .Label directly (it does not
 // re-derive the label from .Status), so the row carries a precomputed Label from
-// the badge package's single source of truth.
+// the badge package's single source of truth. RowNo is the 1-based, zero-padded
+// "#" the mockup's ledger renders; it is presentation only (not a store value).
 type row struct {
+	RowNo       string
 	Domain      string
 	Origin      string
 	Status      string
@@ -65,9 +68,11 @@ type row struct {
 	SinceTime   string
 }
 
-// pageData is the whole template context: the rendered hub rows.
+// pageData is the whole template context: the rendered hub rows plus the count of
+// followed hubs (HubCount == len(Hubs)) the masthead/ledger heading reports.
 type pageData struct {
-	Hubs []row
+	Hubs     []row
+	HubCount int
 }
 
 // StatusSource reports a hub's current in-memory glossary status by hub_id. It is
@@ -107,8 +112,9 @@ func Handler(st *store.Store, statuses StatusSource) http.Handler {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		rows := buildRows(summaries, statuses)
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, pageData{Hubs: buildRows(summaries, statuses)}); err != nil {
+		if err := tmpl.Execute(&buf, pageData{Hubs: rows, HubCount: len(rows)}); err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -129,13 +135,14 @@ func Handler(st *store.Store, statuses StatusSource) http.Handler {
 // returns ok==false, so the page never renders an unlabeled badge.
 func buildRows(summaries []store.HubSummary, statuses StatusSource) []row {
 	rows := make([]row, 0, len(summaries))
-	for _, s := range summaries {
+	for i, s := range summaries {
 		status := overlayStatus(s, statuses)
 		label, ok := badge.Label(status)
 		if !ok {
 			label = status
 		}
 		rows = append(rows, row{
+			RowNo:       fmt.Sprintf("%02d", i+1),
 			Domain:      s.Domain,
 			Origin:      s.Origin,
 			Status:      status,
