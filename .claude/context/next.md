@@ -1,153 +1,109 @@
 # Next Work Package
 
-## Step: Thread config-driven instance identity into the certificate masthead
+## Step: Move the three instance-identity env keys into the `internal/config` leaf
 
 ## Advances
-target.md **M-UI — Evidence Ledger frontend**, the design-parity "Document chrome + instance identity"
-cross-cutting requirement (held on EVERY surface):
+Closes the `normal` issue **"Instance-identity env keys read inline in main.go, not validated via
+internal/config; CLAUDE.md env docs lack the three new keys"** (issues.md), which the latest `review`
+handoff names as the explicit `**Next:**`:
 
-> **Document chrome + instance identity.** Every surface carries the shared handoff header: the ISCC
-> logo + "Trust & Transparency Monitor" mark, the **instance-identity** block (this instance's domain +
-> operator + realm), and the **`verify ↗ monitor.iscc.codes`** tier-2 link — legible instance identity
-> (handoff invariant 9) and the tier-1/tier-2 split present on the page itself.
+> The config-leaf env move (the explicit NEXT sub-step, closes the open `normal`): move the three
+> identity env keys (`ISCC_MONITOR_INSTANCE` / `ISCC_MONITOR_OPERATOR` / `ISCC_MONITOR_REALM_NAME`)
+> from `main.go`'s inline `identity()` into `internal/config`'s `optional(get, key, fallback)` leaf
+> (ratifying the realm-name key name) and add them to CLAUDE.md's env table — a focused `config.go` +
+> `main.go` + CLAUDE.md change.
 
-The `/` realm-index (`b30b84e`) and the hub-dossier (`413efe8`) mastheads already render config-driven
-identity. This step continues the SAME identity arc onto the THIRD SSR masthead — the **certificate of
-inclusion** (`/inclusion/{iscc_id}`) — exactly as the latest `review` handoff `**Next:**` directs:
-"Continue the SAME identity arc to `internal/certificate` (`cert.html:391` carries the same static
-`monitor instance` placeholder — the lockstep twin)." It also chips at the open `normal` issue (the
-certificate masthead still renders the static `monitor instance` placeholder while `/` and the dossier
-are honest per-deployment).
+This is the smaller, cleaner first leg of the masthead-identity arc (the arc serves the M-UI
+"Document chrome + instance identity" cross-cutting Verify requirement). The remaining milestone-level
+Verify criteria are human-blocked (WASM "published" half — Pages repo-settings step) or design-first
+(WASM signature half, OTS Bitcoin-confirmed, per-hub Anchor honesty) per `state.md`, so this `normal`
+issue is the strongest code-only candidate and is explicitly queued as `**Next:**`. Preferred over
+re-polishing already-met surfaces.
 
 ## Goal
-Make the certificate masthead render this deployment's configured instance identity (instance domain +
-operator/realm line) — the SAME `dashboard.Identity` value already built in `main.go` for `/` and the
-dossier — instead of the hard-coded `monitor instance` placeholder, so the certificate chrome is honest
-per-deployment and ends byte-identical to the `/` and dossier mastheads it is ported from.
+Make `internal/config` the single validated source for the three optional masthead-identity strings so
+every SSR masthead (current and the future proofserve trio) draws from one validated place instead of
+`os.Getenv` calls in `main.go`, and document the keys in CLAUDE.md's env table. This ratifies the
+`ISCC_MONITOR_REALM_NAME` key name in the config leaf (the human realm NAME, distinct from the required
+realm-document PATH `ISCC_MONITOR_REALM`).
 
 ## Scope
 - **Create**: (none)
-- **Modify** (3 production files):
-  - `internal/certificate/handler.go` — add a `dashboard.Identity` argument to `Handler(hubList, st,
-    statuses)` (→ `Handler(hubList, st, statuses, id)`); add `Instance`/`Operator` string fields to
-    `certData`; apply the SAME fail-safe defaults the dashboard/dossier use so an unconfigured binary
-    (or a nil/zero `Identity`) renders today's exact static masthead copy. The masthead renders on EVERY
-    path (certifiable AND cannot-certify), and `buildData` has `certData{}` literal early returns (e.g.
-    handler.go:667, 689) that would bypass any field set inside `buildData` — so set the identity fields
-    in `Handler` on the `certData` value `buildData` RETURNS, on BOTH the HTML path (before
-    `tmpl.Execute`) and the `.bundle` path (before `serveBundle`), uniformly covering every branch
-    without editing `buildData`'s internals. Resolve `id` once in `Handler` via the ported
-    `resolveIdentity` (`instance, operator := resolveIdentity(id)`).
-  - `internal/certificate/cert.html` — replace the static `<span class="chrome-instance">monitor
-    instance</span>` (line 391) with the two-line `chrome-identity` block ported VERBATIM from
-    `dashboard.html`/`dossier.html` (`<div class="chrome-identity"><div
-    class="chrome-instance">{{.Instance}}</div><div class="chrome-operator">{{.Operator}}</div></div>`),
-    and add the `.chrome-identity`/`.chrome-operator` CSS rules (cert.html already has `.chrome-actions`,
-    `.chrome-instance`, `.chrome-verify`) so all three mastheads' CSS rule bodies stay byte-identical
-    (the byte-identical-chrome rule).
-  - `cmd/iscc-monitor/main.go` — forward the already-constructed `id` into the certificate mount: change
-    `certificate.Handler(hubList, st, m)` (`main.go:276`, inside `buildMux`) to
-    `certificate.Handler(hubList, st, m, id)`. `buildMux` already receives `id`; no other signature
-    broadens.
-- **Test files (not counted against the ≤3 budget):** add `TestCertificateRendersInstanceIdentity`
-  mirroring `TestDossierRendersInstanceIdentity` (populated path + zero-value fallback path), and update
-  any existing certificate test that calls `Handler(hubList, st, statuses)` for the new 4th arg.
+- **Modify** (2 production files + 1 doc file):
+  - `internal/config/config.go` — add `Instance`, `Operator`, `RealmName` string fields to `Config`;
+    add the three key constants (`keyInstance`/`keyOperator`/`keyRealmName`, same literals main.go uses
+    today); read each via the existing `optional(get, key, "")` helper inside `Load`. Update the package
+    doc comment's "Configuration keys" block + the `Config` struct doc to list the three optional keys.
+  - `cmd/iscc-monitor/main.go` — delete the `keyInstance`/`keyOperator`/`keyRealmName` const block
+    (lines 281-296) and the `os.Getenv`-based `identity()` body (lines 298-309); rebuild
+    `dashboard.Identity` from the `cfg` fields. `identity` is called once at `main.go:150` inside `run()`
+    where `cfg` is already in scope — make it `identity(cfg config.Config) dashboard.Identity` and pass
+    `cfg`. (`os` stays imported — still used for `os.ReadFile`/`os.LookupEnv`/`os.Exit`/`os.Stderr`.)
+  - `CLAUDE.md` — add the three keys to the "Running a local dev instance" env-var bullet list
+    (after line 47, the `ISCC_MONITOR_ADDR` bullet), each `(optional)`, noting `ISCC_MONITOR_REALM_NAME`
+    is the human realm NAME distinct from the required realm-document PATH `ISCC_MONITOR_REALM`.
 - **Reference**:
-  - `.claude/context/learnings/certificate.md` — the handler shell pattern (`html/template`,
-    `template.Must` at init, buffer-then-200, post-200 write-drop) and the masthead-lockstep note
-    ("`cert.html` is the still-pending lockstep twin").
-  - `.claude/context/learnings/dashboard.md` — the **config-driven masthead identity** bullets (the
-    `dashboard.Identity` value, the `Identity.resolve()` fail-safe that lives INSIDE the package and is
-    what makes the fallback seam-testable, the `ISCC_MONITOR_REALM_NAME`-not-`ISCC_MONITOR_REALM` key
-    rule, and the explicit "**dossier/dashboard/cert mastheads are byte-identical VERBATIM ports — edit
-    all together**" rule); also the no-CDN-ban-narrowed-to-third-party-hosts bullet.
-  - `internal/dossier/handler.go:100-127` — the `instanceFallback`/`operatorFallback` const block +
-    `resolveIdentity` helper to port VERBATIM (the proven shape; copy its "MUST stay byte-identical"
-    comment).
-  - `internal/dashboard/dashboard.html:75-99` and `internal/dossier/dossier.html` — the
-    `.chrome-identity`/`.chrome-instance`/`.chrome-operator` CSS + the masthead `chrome-identity` block
-    to mirror byte-for-byte.
-  - `internal/certificate/handler.go:215-242, 487-534, 664-693` — `certData`, `Handler`, and `buildData`
-    (note the multiple `certData{}` literal early returns), the existing wiring to extend.
-  - `internal/certificate/cert.html:66-99, 363-394` — the certificate chrome region this step edits.
+  - `.claude/context/learnings/config.md` — the pure-leaf rules (imports exactly `{fmt time}`,
+    map-backed fake test pattern, the `optional` no-validation-beyond-default contract that `keyAddr`
+    already uses).
+  - `internal/config/config_test.go` — the existing `fromMap` fake + golden/defaults/table structure to
+    extend (not a budget file).
+  - `cmd/iscc-monitor/main.go:281-309` — the existing inline `keyInstance`/`keyOperator`/`keyRealmName`
+    consts + `identity()` to delete, and the `keyRealmName` rationale comment (288-291) to port into
+    config.
+  - `internal/dashboard/handler.go:94-105` — the `Identity{Instance, Operator, Realm}` struct main builds
+    (its `Realm` field is fed from config's `RealmName`).
 
 ## Not In Scope
-- **Do NOT move the three identity env keys into `internal/config` this step.** The combined "cert
-  masthead + config-leaf move" the handoff sketched is 4 production files (`config.go` added on top of
-  the three above) plus CLAUDE.md docs — over the ≤3-file budget. Keep `cmd/iscc-monitor/main.go`'s
-  inline `identity()` reading `os.Getenv` exactly as today. The config-leaf move (ratifying
-  `ISCC_MONITOR_REALM_NAME` in `internal/config`'s `optional` leaf + adding the three keys to CLAUDE.md's
-  env table) is the dedicated NEXT sub-step — a focused `config.go` + `main.go` + CLAUDE.md change — and
-  THAT step closes the config-move `normal` issue. The `normal` stays filed; do not touch CLAUDE.md yet.
-- **Consolidating the duplicated `instanceFallback`/`operatorFallback` consts** into one shared
-  `Resolve` leaf — that is the tracked `low`, to fold once the arc reaches all surfaces; this step
-  copies them a THIRD time (deliberately, with the "MUST stay byte-identical" comment), matching the
-  dossier slice's proven pattern. Exporting `dashboard.resolve` would make `internal/dashboard` a 4th
-  prod file — over budget.
-- Do NOT touch the proofserve surfaces (`browser.html`, `records.html`, `record.html`) — later sub-steps.
-- Do NOT touch `internal/verifier` (its `.codes` chrome is correctly the verifier-app identity, EXCLUDED).
-- Do NOT change any §1–§6 clause, the proof bundle, the §3 re-verification gate, the badge, the
-  `← Realm index` back-link, any store read, or the `monitor.iscc.codes` tier-2 `chrome-verify` link.
-- Do NOT invent a certificate "Realm register · <realm>" subtitle — the certificate, like the dossier,
-  has no realm-subtitle slot; thread only `Instance`/`Operator`, ignore `id.Realm`.
+- **Do NOT thread identity into the proofserve trio** (`browser.html`, `records.html`, `record.html`).
+  That is the next slice and the trigger to consolidate the duplicated fallback consts (the `low`). This
+  step is the config move only.
+- Do NOT fold the duplicated `instanceFallback`/`operatorFallback` consts + a shared `Resolve` into one
+  leaf (the `low` issue) — that lands with the proofserve slice.
+- Do NOT rename `dashboard.Identity.Realm` or touch any handler's fail-safe defaulting — the handlers
+  keep applying the static placeholder on an empty field; config carries empty strings when keys unset.
+- Do NOT add validation/normalization to the three identity values — they are free-form display strings;
+  `optional(get, key, "")` is the right (no-validation) helper, matching `keyAddr`.
+- Do NOT import `dashboard` from `config` (that would invert the pure-leaf dependency / risk a cycle).
+  `config` stays `{fmt time}`-only; `main.go` keeps building `dashboard.Identity` from the `Config` fields.
 
 ## Implementation Notes
-- **Port, do not invent.** This is the lockstep twin of the dossier slice (`413efe8`). Copy
-  `resolveIdentity` and the two const literals from `internal/dossier/handler.go:100-127` VERBATIM
-  (keep the "MUST stay byte-identical to dashboard's consts" comment — neither package can import the
-  other's unexported consts). The certificate masthead, like the dossier's, has NO Realm subtitle slot —
-  thread only `Instance`/`Operator`, ignore `id.Realm`.
-- **Set the fields in `Handler`, not in `buildData`.** `buildData` returns fresh `certData{}` literals
-  on several early-return branches (no-id, decode-fail, infra-fault), so assigning inside `buildData`
-  would miss them. Resolve `id` once at the top of `Handler` (`instance, operator := resolveIdentity(id)`)
-  and set `data.Instance = instance; data.Operator = operator` on the value `buildData` returns — on
-  BOTH the HTML branch (before `tmpl.Execute`) and the `.bundle` branch (before `serveBundle`) — so every
-  honest 200 carries the masthead. (`serveBundle` ignores the identity fields; setting them is harmless
-  and keeps the assignment uniform.) Mirror the dossier's choice of resolving in the handler so the
-  fallback is seam-testable regardless of env.
-- **Byte-identical chrome rule (dashboard.md):** port the `.chrome-identity` CSS
-  (`text-align: right; line-height: var(--leading-snug);`) and `.chrome-operator` CSS
-  (`font-size: var(--text-xs); color: var(--text-muted); font-weight: var(--weight-light);`) EXACTLY as
-  in dashboard.html:77-90, and the two-line block nested inside `chrome-actions` BEFORE `chrome-verify`.
-  After this slice all three mastheads (dashboard / dossier / certificate) must be byte-identical.
-- **No-CDN ban (web.md / dashboard.md):** the identity strings are scheme-less text — introduce no
-  `http(s)://`/`cdn.`/`jsdelivr`/`unpkg`/`googleapis` token. The existing `https://monitor.iscc.codes/`
-  tier-2 link is the only allowed external URL and must stay positively present (the cert ban is the
-  narrowed third-party-host form, NOT a blanket `https://` ban).
-- **html/template auto-escaping holds** — `Instance`/`Operator` are plain strings rendered as text
-  nodes; do NOT use `template.HTML`. The operator fallback line's `·` (U+00B7) is a literal UTF-8 middot.
-- **Render-into-buffer + 500-before-200** stays exactly as today; you are only adding fields to the
-  template context, not changing the error path, the §3 gate, or any store read.
-- **Oracle gate is N/A** (certificate.md / dashboard.md): pure HTML render of masthead strings — no
-  signature / RFC-6962 / Merkle / did:web / fsck / proof / store path is touched; `go.mod`/`go.sum`/
-  `schema.sql` stay byte-identical. State this in the verdict.
-- **Correctness rule from the learnings index:** no crypto rule applies (pure render); the load-bearing
-  rules are dashboard.md's "fail-safe lives where it is seam-testable" + "keep dashboard/dossier/cert
-  mastheads byte-identical".
+- **Keep `internal/config` a pure leaf** (learnings index + `config.md`): the three new fields are plain
+  `string`s read through the injected `get` closure via the existing `optional` helper — NO new imports,
+  NO `os`/`net`/`dashboard`. The package must still import exactly `{fmt time}`.
+- Use `optional(get, key, "")` for all three (empty-string fallback). This matches `keyAddr`'s pattern
+  but with an empty default, so an unset key stays `""` and the dashboard/dossier/certificate handlers
+  apply their own static-masthead fail-safe — do NOT duplicate that fallback copy in config.
+- Port the `keyRealmName` rationale comment from `main.go:288-291` into config: it is the human realm
+  NAME ("ISCC mainnet"), deliberately distinct from the already-required `ISCC_MONITOR_REALM` (the
+  realm-document filesystem PATH); overloading the path var would leak a filename into the ledger
+  subtitle. This step *ratifies* that key name in the config leaf.
+- `identity()` in `main.go` becomes `identity(cfg config.Config) dashboard.Identity` returning
+  `dashboard.Identity{Instance: cfg.Instance, Operator: cfg.Operator, Realm: cfg.RealmName}`; its single
+  caller at `main.go:150` passes `cfg`. Rewrite both doc comments (the const block is gone; `identity`
+  is now config-sourced) to describe the current state, not the move (evergreen-comment rule).
+- Extend `config_test.go`: `TestLoadGolden` adds the three keys to its input map and the three fields to
+  `want` (full round-trip). `TestLoadDefaults` (minimal input) asserts the three fields are `""` when the
+  keys are absent. Add a `TestLoad` table case for a partially-set identity (e.g. only `keyInstance` set,
+  the others `""`) so per-field independence is non-vacuous.
+- **No crypto correctness rule applies** (pure startup-value parsing — no signature/Merkle/did:web/proof
+  path). Oracle gate is N/A; `go.mod`/`go.sum`/`schema.sql` stay byte-identical (state this in the verdict).
 
 ## Verification
-- `mise run check` is green (build + vet + `go test ./...`, all packages ok; `gofmt -l .` empty outside
-  `cauldron/`).
-- `go test -count=1 -run TestCertificate ./internal/certificate` passes (existing certificate tests
-  under the new 4-arg `Handler` signature + the new identity test).
-- New `TestCertificateRendersInstanceIdentity`: a populated `Identity{Instance:"monitor.example.test",
-  Operator:"operated by Example Org · example net"}` renders BOTH literals in the certificate masthead
-  AND the static placeholder `monitor instance` is ABSENT (exercise it on a cannot-certify id so the
-  masthead is tested on the honest-200 path); a zero-value `Identity{}` renders the fallback `monitor
-  instance` + the generic operator fallback `independent Trust & Transparency service · ISCC-Hub
-  network`.
-- Mutation check (advance runs + reverts, leaves tree byte-clean): deleting the `{{.Instance}}` binding
-  (or the `.chrome-instance` text node) from `cert.html` makes `TestCertificateRendersInstanceIdentity`
-  FAIL; forcing `resolveIdentity` to drop the supplied value makes it FAIL; restore byte-clean
-  (`git diff` clean, HEAD unchanged).
-- `go test -count=1 ./cmd/iscc-monitor` passes (the new `certificate.Handler(hubList, st, m, id)`
-  signature compiles; `buildMux`'s own signature is unchanged so cmd tests need no edits).
-- The certificate body still contains `monitor.iscc.codes` and contains no new `cdn.`/`jsdelivr`/
-  `unpkg`/`googleapis`/`http://` token (no-CDN ban intact).
+- `mise run check` is green (build + vet + `go test ./...` + `gofmt -l .` empty outside `cauldron/`).
+- `go test -count=1 -run TestLoad ./internal/config` passes (golden round-trip incl. the three identity
+  fields, the absent→`""` default, and the partial-set case).
+- `go test -count=1 ./cmd/iscc-monitor` passes (the `identity(cfg)` signature compiles and wires at the
+  `main.go:150` call site).
+- Assertion: with `ISCC_MONITOR_INSTANCE` / `ISCC_MONITOR_OPERATOR` / `ISCC_MONITOR_REALM_NAME` set,
+  `config.Load(...)` returns a `Config` whose `Instance`/`Operator`/`RealmName` equal those values;
+  with the keys absent, those three fields are `""`.
+- Assertion: `go list -deps github.com/iscc/iscc-monitor/internal/config` adds no new import — the
+  package's direct imports stay `{fmt time}` (no `os`/`dashboard`/`net`).
+- Mutation check (advance runs + reverts byte-clean): forcing `optional(get, keyInstance, "")` to return
+  a literal makes `TestLoadGolden`/`TestLoadDefaults` FAIL; restore, `git diff` clean.
 
 ## Done When
-`mise run check` is green and `go test -count=1 -run TestCertificate ./internal/certificate` passes with
-a mutation-proven `TestCertificateRendersInstanceIdentity`, so the served certificate masthead renders
-the configured `dashboard.Identity` instance + operator strings exactly as the `/` and dossier mastheads
-do (falling back to today's static copy when unset), with the config-leaf env move + CLAUDE.md docs and
-the remaining proofserve surfaces left for the next sub-steps.
+`internal/config` parses the three identity keys into typed `Config` fields, `main.go`'s `identity(cfg)`
+builds `dashboard.Identity` from those fields (no `os.Getenv` for identity), CLAUDE.md documents the
+three keys with the realm-name-vs-path distinction, and all Verification checks pass.
