@@ -177,6 +177,57 @@ func TestRecordsRendersInMemoryStatus(t *testing.T) {
 	}
 }
 
+// TestRecordsRendersLoggedColumn asserts the record list renders the mockup's Logged
+// column: a row whose RecordRow.NoteTimestamp is set shows that verbatim RFC-3339 time
+// (ADR-0008 — never re-formatted), a row with no timestamp shows the honest em-dash
+// placeholder, and the list carries a Logged column header. The store is built directly
+// (buildMirror seeds no timestamps) so the seeded literal time is the non-vacuous gate.
+func TestRecordsRendersLoggedColumn(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "logged.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	hubID, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	// Seq 0 carries a real timestamp; seq 1 carries none (the common NULL-column case
+	// the buildMirror fixture seeds). Both seqs are accepted (LastSize advanced to 2).
+	const loggedAt = "2026-06-21T12:34:56Z"
+	recs := []store.ProjectionRecord{
+		{HubID: hubID, Seq: 0, IsccID: leafISCCID(0), NoteTimestamp: loggedAt},
+		{HubID: hubID, Seq: 1, IsccID: leafISCCID(1)},
+	}
+	if err := st.RecordProjections(ctx, recs); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+	if err := st.AdvanceFollowState(ctx, hubID, 2); err != nil {
+		t.Fatalf("AdvanceFollowState: %v", err)
+	}
+
+	h := Handler(st, hubID, nil)
+	code, body := getRecords(t, h, "")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	// The seeded timestamp renders verbatim (hardcoded literal, so the gate is real).
+	if !strings.Contains(body, loggedAt) {
+		t.Errorf("body missing verbatim logged time %q\n%s", loggedAt, body)
+	}
+	// The timestamp-less row renders the honest em-dash placeholder, never a fabricated
+	// or zero time. The entity reference &mdash; is how the template emits it.
+	if !strings.Contains(body, "&mdash;") {
+		t.Errorf("body missing the empty-timestamp em-dash fallback\n%s", body)
+	}
+	// The named region heads its columns including Logged.
+	if !strings.Contains(body, "<span>Logged</span>") {
+		t.Errorf("body missing the Logged column header\n%s", body)
+	}
+}
+
 // countRecordLinks counts the per-record rows rendered in a /records body by counting
 // the single-record-page links each row emits (one record?index= link per row).
 func countRecordLinks(body string) int {

@@ -128,17 +128,34 @@
       color: var(--text-muted);
     }
 
-    /* The record list itself: each row is a seq + id + schema triple, newest
-       first, linking to the record's per-record view. Laid out as a CSS grid (no
-       <table>) so the whole page renders complete with JavaScript disabled. */
+    /* The record list itself: each row is a seq + id/schema + logged-time triple,
+       newest first, linking to the record's per-record view. Laid out as a CSS grid
+       (no <table>) so the whole page renders complete with JavaScript disabled. The
+       Type column the mockup heads waits for a per-row kind precomputation; until
+       then the head lists only the columns that have a data cell. */
     .records {
       list-style: none;
       margin: 0;
       padding: 0;
     }
+    .records-head {
+      display: grid;
+      grid-template-columns: 120px 1fr 160px;
+      gap: var(--space-4);
+      align-items: baseline;
+      padding: var(--space-3) var(--space-5);
+      border-bottom: var(--border-width) solid var(--border-default);
+    }
+    .records-head span {
+      font-family: var(--font-mono);
+      font-size: var(--text-2xs);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
     .record-row {
       display: grid;
-      grid-template-columns: 120px 1fr;
+      grid-template-columns: 120px 1fr 160px;
       gap: var(--space-4);
       align-items: baseline;
       padding: var(--space-3) var(--space-5);
@@ -167,6 +184,14 @@
       overflow-wrap: anywhere;
     }
     .record-schema {
+      font-family: var(--font-mono);
+      font-size: var(--text-2xs);
+      color: var(--text-muted);
+    }
+    /* The logged time: the verbatim inner note.timestamp (RFC-3339), rendered
+       as-is (ADR-0008, never re-formatted) with an honest em-dash placeholder for a
+       record that carries no timestamp. */
+    .record-logged {
       font-family: var(--font-mono);
       font-size: var(--text-2xs);
       color: var(--text-muted);
@@ -261,6 +286,11 @@
         <span>{{template "hubStatusBadge" .}}</span>
       </div>
       {{- if .Records}}
+      <div class="records-head">
+        <span>Seq</span>
+        <span>ISCC-ID</span>
+        <span>Logged</span>
+      </div>
       <ul class="records">
         {{- range .Records}}
         <li class="record-row">
@@ -269,6 +299,7 @@
             <code class="record-id">{{if .IsccID}}{{.IsccID}}{{else}}(no iscc_id){{end}}</code>
             <span class="record-schema">{{if .NoteSchema}}{{.NoteSchema}}{{else}}(no schema){{end}}</span>
           </span>
+          <span class="record-logged">{{if .NoteTimestamp}}{{.NoteTimestamp}}{{else}}&mdash;{{end}}</span>
         </li>
         {{- end}}
       </ul>
