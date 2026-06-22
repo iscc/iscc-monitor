@@ -56,6 +56,14 @@ var tmpl = func() *template.Template {
 // re-derive the label from .Status), so the row carries a precomputed Label from
 // the badge package's single source of truth. RowNo is the 1-based, zero-padded
 // "#" the mockup's ledger renders; it is presentation only (not a store value).
+//
+// Checkpoint is the accepted checkpoint size the mockup's "Checkpoint" column
+// shows (== LastSize, a relabel of the former "Observed size" cell, not a new
+// store read). Anchor is the hub's latest-stamped-root OTS status humanized for
+// display ("confirmed" / "pending" / "not anchored"), and AnchorDot is the
+// presentation-only dot keyword ("confirmed" / "pending" / "none") the template
+// keys the decorative dot color on — never the sole status signal (the Anchor
+// label carries it grayscale-safe, ADR-0010 invariant 4).
 type row struct {
 	RowNo       string
 	Domain      string
@@ -66,6 +74,9 @@ type row struct {
 	HasCoverage bool
 	SinceSize   uint64
 	SinceTime   string
+	Checkpoint  uint64
+	Anchor      string
+	AnchorDot   string
 }
 
 // pageData is the whole template context: the rendered hub rows plus the count of
@@ -141,6 +152,7 @@ func buildRows(summaries []store.HubSummary, statuses StatusSource) []row {
 		if !ok {
 			label = status
 		}
+		anchor, anchorDot := anchorLabel(s.Anchor)
 		rows = append(rows, row{
 			RowNo:       fmt.Sprintf("%02d", i+1),
 			Domain:      s.Domain,
@@ -151,9 +163,30 @@ func buildRows(summaries []store.HubSummary, statuses StatusSource) []row {
 			HasCoverage: s.Coverage.Set,
 			SinceSize:   s.Coverage.Size,
 			SinceTime:   coverageTime(s.Coverage),
+			Checkpoint:  s.LastSize,
+			Anchor:      anchor,
+			AnchorDot:   anchorDot,
 		})
 	}
 	return rows
+}
+
+// anchorLabel maps a hub's stored OTS status to its display label and the
+// presentation-only dot keyword. A confirmed root renders "confirmed" / green; a
+// pending root renders "pending" / yellow; any other value (including the empty
+// never-stamped state) renders the honest "not anchored" / no-dot — never implying
+// a Bitcoin anchor exists. It compares against store.OTSStatusConfirmed /
+// store.OTSStatusPending (not hand-typed literals) so the status strings never
+// drift from the store's single source of truth.
+func anchorLabel(status string) (label, dot string) {
+	switch status {
+	case store.OTSStatusConfirmed:
+		return "confirmed", "confirmed"
+	case store.OTSStatusPending:
+		return "pending", "pending"
+	default:
+		return "not anchored", "none"
+	}
 }
 
 // overlayStatus resolves a hub's displayed status from the store-provable subset

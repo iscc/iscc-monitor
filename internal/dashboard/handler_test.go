@@ -49,14 +49,27 @@ func fixtureStore(t *testing.T) *store.Store {
 		t.Fatalf("UpsertHub verified: %v", err)
 	}
 	observed := time.Unix(1_700_000_000, 0).UTC()
+	verifiedRoot := []byte("root-verified-32-bytes-padding!!")
 	if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
 		HubID:      verifiedID,
 		TreeSize:   42,
-		Root:       []byte("root-verified-32-bytes-padding!!"),
+		Root:       verifiedRoot,
 		Raw:        []byte("raw-checkpoint-bytes"),
 		ObservedAt: observed,
 	}); err != nil {
 		t.Fatalf("AdvanceAccepted verified: %v", err)
+	}
+	// The verified hub's accepted root is Bitcoin-anchored: a confirmed OTS row, so
+	// its Anchor cell renders the "confirmed" state. The frozen hub gets no OTS row,
+	// so it renders the honest never-stamped "not anchored" state.
+	if _, _, err := st.RecordOTS(ctx, store.OTSRecord{
+		HubID:     verifiedID,
+		TreeSize:  42,
+		Root:      verifiedRoot,
+		Status:    store.OTSStatusConfirmed,
+		StampedAt: observed,
+	}); err != nil {
+		t.Fatalf("RecordOTS verified: %v", err)
 	}
 
 	// Frozen hub: a follow_state row advanced then frozen by the freeze path.
@@ -133,6 +146,23 @@ func TestDashboardRendersEveryHub(t *testing.T) {
 	}
 	if strings.Contains(body, "<table") {
 		t.Errorf("body still contains a <table> element; the grid redress is incomplete\n%s", body)
+	}
+
+	// The six-column ledger renders the mockup's Checkpoint and Anchor columns: both
+	// colheads appear, the verified hub (a confirmed OTS row) shows the "confirmed"
+	// anchor label, and the frozen hub (no OTS row) shows the honest "not anchored"
+	// state — never implying a Bitcoin anchor exists.
+	for _, want := range []string{
+		"<span>Checkpoint</span>",
+		"<span>Anchor</span>",
+		`data-anchor="confirmed"`,
+		">confirmed<",
+		`data-anchor="none"`,
+		">not anchored<",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing anchor/checkpoint markup %q\n%s", want, body)
+		}
 	}
 }
 

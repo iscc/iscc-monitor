@@ -1,68 +1,59 @@
-## 2026-06-22 — Review of: Certificate §6 render — thread `RecordAt.NoteTimestamp` into `HistoryRow.At` and render `seq N · <at>`
+## 2026-06-22 — `/` realm-index: add the per-hub Anchor projection + render the mockup's Checkpoint & Anchor ledger columns
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added a read-only `Anchor` projection (latest-stamped-root OTS status, via a correlated
+`ots` subselect) to `store.HubSummary`/`ListHubs`, threaded `Checkpoint` (= accepted `LastSize`),
+`Anchor`, and a presentation-only `AnchorDot` into the dashboard `row` view-model, and widened the
+`/` ledger from five to the mockup's six columns (`# | Hub · domain | Coverage since | Checkpoint |
+Anchor | Status`). The store stays a leaf; this closes sub-delta (3) of the open `normal` `/`
+realm-index column-deltas issue (issues.md:214).
 
-**Summary:** The advance closes the §6 render-only `normal` exactly as `next.md` scoped it: an `At string`
-field on `HistoryRow` (with docstring), the verbatim `row.NoteTimestamp` captured under the existing
-`if found` gate in the §6 loop, and a CONDITIONAL `{{if .At}} · {{.At}}{{end}}` render in `cert.html`.
-Scope is exemplary (1 production Go file + 1 template + 1 test, nothing from `## Not In Scope`), all gates
-green, the mutation is non-vacuous (I reproduced it independently), and a visual pass confirms the §6 row
-now renders `Declaration · seq 24815 · 2026-02-14T18:40:00Z` with no trailing `· ` on the timestamp-less
-deletion row. Codex returned a clean no-issues verdict.
+**Files changed:**
+- `internal/store/hubs.go`: added `Anchor string` to `HubSummary`; extended `ListHubs` with a
+  correlated subselect `(SELECT o.status FROM ots o WHERE o.hub_id=h.hub_id ORDER BY o.stamped_at
+  DESC, o.id DESC LIMIT 1)` read through `sql.NullString` (NULL → "").
+- `internal/dashboard/handler.go`: added `Checkpoint`/`Anchor`/`AnchorDot` to `row`; new
+  `anchorLabel` helper maps `store.OTSStatusConfirmed`/`OTSStatusPending` (the consts, not literals)
+  → display label + dot keyword, defaulting any other/empty value to the honest "not anchored"/"none".
+- `internal/dashboard/dashboard.html`: both grids → `34px 1.8fr 1.2fr 1fr 1.1fr 150px`; in-template
+  column comment synced; added `.anchor-cell`/`.anchor-dot` CSS (decorative inline `<span>` dot keyed
+  on `data-anchor`, DS-token color with literal-hue fallback, no `<img>`/CDN); added Checkpoint +
+  Anchor colhead `<span>`s and the two data cells between Coverage and Status.
+- `internal/store/hubs_test.go` (new): `TestListHubsAnchorStatus` — confirmed/pending(newest-wins)/
+  never-stamped(empty) Anchor cases through the public API.
+- `internal/dashboard/handler_test.go`: `fixtureStore` seeds a confirmed `RecordOTS` row on the
+  verified hub (frozen hub left unstamped); `TestDashboardRendersEveryHub` asserts both colheads,
+  `data-anchor="confirmed"`/`>confirmed<`, and `data-anchor="none"`/`>not anchored<`.
 
-**Verification:**
-- [x] `mise run check` — green (build + vet + test, all 28 packages ok; certificate re-ran uncached PASS).
-- [x] `gofmt -l .` — empty outside `cauldron/` (no formatting failure).
-- [x] `go test -count=1 -run TestCertificateRecordHistory ./internal/certificate` — PASS (uncached): §6
-      declaration row renders `Declaration · seq 24815 · 2026-02-14T18:40:00Z`; deletion row renders;
-      no trailing `· ` artifact for the absent-timestamp deletion.
-- [x] `go test -count=1 -run TestCertificateRecordHistoryDeclarationOnly ./internal/certificate` — PASS
-      (uncached): a record with no timestamp renders `… · seq 24815` with no trailing `· `.
-- [x] Mutation (independent, reverted byte-clean) — dropping `{{if .At}}…{{end}}` from `cert.html` makes
-      `TestCertificateRecordHistory` FAIL on the exact marker
-      `body missing §6 marker "Declaration · seq 24815 · 2026-02-14T18:40:00Z"` while
-      `TestCertificateRecordHistoryDeclarationOnly` still PASSES. Tree confirmed `git diff`-clean after revert.
-- [x] Oracle/conformance gate — N/A. Name-only diff over the trust-root globs (`internal/proof/`,
-      `logclient/verify`, `didweb`, fork/shrink/equivocation/consistency, `derive_vkey`) → empty. Pure
-      store-read into an `html/template` text node; no signature/RFC-6962/Merkle/did:web/proof/fsck path.
-- [x] Gate-circumvention scan over the unpushed code range (`origin/develop..HEAD`, explicit paths) — no
-      `//nolint`, `t.Skip`, build-tag exclusion, swallowed error, or deleted assertion. The lone `-` line is
-      the §6 marker being STRENGTHENED (`Declaration · seq %d` → `Declaration · seq %d · %s`), not weakened.
+**Verification:** `mise run check` → green (build + vet + test, all 28 packages ok; dashboard + store
+ran uncached). `gofmt -l .` empty outside `cauldron/`.
+- `go test -run TestListHubs ./internal/store` → PASS (confirmed/pending/empty Anchor).
+- `go test -run TestDashboard ./internal/dashboard` → PASS (six-column grid, confirmed + not-anchored
+  cells, plus the pre-existing hero/overlay/no-CDN/method/path assertions).
+- Leaf invariant: `go list -deps ./internal/store | grep '^net/http'` empty; internal iscc-monitor
+  deps are only the pre-existing `internal/tiles` + the package itself (no `logclient`/`dashboard`).
+- Mutation (both reverted byte-clean): dropping the `.anchor-cell` data cell from `dashboard.html`
+  → `TestDashboardRendersEveryHub` FAILS the anchor assertion; reverting the `ots` subselect to a
+  literal `''` → `TestListHubsAnchorStatus` FAILS (`Anchor = "" want "confirmed"`/`"pending"`).
+- Oracle/conformance gate N/A — pure HTML render of a persisted leaf read; touches no
+  signature/RFC-6962/Merkle/`proof`/`didweb`/fsck path. schema.sql/go.mod/go.sum byte-unchanged.
 
-**Issues found:** (none reviewer-originated). The §6 render-only `normal` is RESOLVED and removed from
-`issues.md` (verified by the rendered screenshot + the non-vacuous mutation). The remaining humanization
-(`2026-02-14 18:40 UTC`) is intentional ADR-0008-deferred visual polish, not a filed delta — it lives in
-the handoff Next + `certificate.md`.
-
-**Codex second opinion:** Clean — no findings. Verdict (verbatim): "The change cleanly threads the stored
-note timestamp into the certificate history view and conditionally renders it without introducing new error
-paths. The updated tests cover both present and absent timestamp rendering, and the package/full test suites
-pass." No issue to triage; agrees with my own read.
-
-**Visual check:** Performed (ADR-0012) — `internal/certificate/cert.html` is an SSR surface. agent-browser
-0.29.0 launched headless (bundles its own Chromium; no system Chrome needed). I rendered the §6 fixture
-through the REAL handler + `html/template` (a throwaway dump test, removed after), screenshotted the served
-HTML, and read it: the §6 region renders `Declaration · seq 24815 · 2026-02-14T18:40:00Z` and
-`Deletion · seq 31002` (no trailing `· `), matching the mockup §6 form `seq {{ rec.seq }} · {{ rec.at }}`
-(`.claude/design/ISCC Monitor - Certificate.dc.html:68`). The dump renders unstyled over `file://` (the
-root-absolute `/_ds/tokens.css` does not resolve there) — that is a harness artifact, not a surface delta;
-content/structure is faithful since it is the real rendered bytes. No new visual delta filed.
-
-**Next:** Two clean self-contained picks remain, both unblocked:
-1. Wire the same `RecordRow.NoteTimestamp` into the log-browser record-list `Logged` column
-   (`internal/proofserve`) — a separate SSR surface, reuses the landed store field, no new store read.
-2. The `/` realm-index sub-region deltas (`normal`): config-driven instance identity + realm name, and the
-   honest Checkpoint/Anchor data columns (a `ListHubs`/`HubSummary` store-projection change).
-The no-migration `normal` and the WASM-verifier-signature `normal` both still want a deliberate design pass
-(STOP/design candidates), not a code-only slice. The §6 humanization is ADR-0008-deferred polish.
+**Next:** Of the same `normal` (issues.md:214), the remaining slices are NOT pure code: sub-delta (2)
+config-driven instance identity / realm name needs `internal/config` env wiring (a separate step);
+sub-delta (4) "recent declarers checked" hero footer needs a recent-lookup history the store does not
+track (out of scope). Both were deferred in this step's Not-In-Scope. A reasonable next pick is the
+config-driven masthead identity (sub-delta 2) — it is self-contained but introduces new env config,
+so it wants its own work package rather than riding a render slice.
 
 **Notes:**
-- Open count after this review: 0 critical / 4 normal / 10 low. DONE still requires 0 normal, so the loop
-  continues. The §6 close took net normal 5→4 (no new issue filed; Codex clean).
-- Learnings: `certificate.md` §6 bullet updated from KNOWN-GAP to LANDED (the `{{if .At}}` conditional
-  render + the Z-suffixed-UTC fixture rule + the remaining humanization deferral). Nothing promoted to the
-  always-loaded index (package-local render mechanics). Detail file within rotation budget.
-- Push: 4 commits ahead of `origin/develop` after this review commit (update-state + define-next + advance +
-  review). Pushing on PASS. The known `Pages` workflow failure on develop is the human-blocked custom-domain
-  repo-settings step (a documented `normal`), not a code regression from this slice.
+- The mockup's `coverageSince` cell shows date-then-size (`{{coverageSince}}` over `@ {{size}}`); the
+  live page keeps its existing size-then-time order. That ordering delta was already present before
+  this step and is outside scope (this step touched only the Checkpoint/Anchor columns) — not
+  re-litigated here.
+- `TestListHubsAnchorStatus` is a NEW store test (no prior `TestListHubs` existed; `ListHubs` was only
+  exercised through the dashboard HTTP seam). `next.md`'s `-run TestListHubs` matches it by prefix.
+- The Anchor humanization ("not anchored" vs the mockup's dot-only treatment of the empty state) is a
+  deliberate coverage-honesty choice: a never-stamped hub must read as not-anchored, never as a silent
+  confirmed-style green. The dot is decorative; the text label is the load-bearing grayscale-safe
+  signal (ADR-0010 inv.4), matching the frozen-row tint precedent.
+- No new migration: `Anchor` is a read-only projection off the existing `ots` table (no new column),
+  so the no-migration `normal` is not tripped (next.md Not-In-Scope; store.md migration note).

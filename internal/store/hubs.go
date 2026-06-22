@@ -15,11 +15,14 @@ import (
 
 // HubSummary is one followed hub's store-provable state for the dashboard: its
 // domain and log origin, whether it is active in the realm registry, its accepted
-// last_size and frozen flag (from follow_state), and its coverage start
-// (monitored_since_{size,time}). A hub with no follow_state row yet reports
-// LastSize 0 and Frozen false (the LEFT JOIN yields NULL → zero value). Coverage
-// reports Set false with zero Size / Since until the hub yields a verified
-// observation, so the renderer never implies pre-coverage guarantees (ADR-0001).
+// last_size and frozen flag (from follow_state), its coverage start
+// (monitored_since_{size,time}), and its latest-stamped-root anchor status
+// (Anchor). A hub with no follow_state row yet reports LastSize 0 and Frozen false
+// (the LEFT JOIN yields NULL → zero value). Coverage reports Set false with zero
+// Size / Since until the hub yields a verified observation, so the renderer never
+// implies pre-coverage guarantees (ADR-0001). Anchor is the OTSStatus* string of
+// the hub's most-recently-stamped root, or "" when no root has been stamped — the
+// honest "not anchored yet" state, never a guarantee.
 type HubSummary struct {
 	HubID    int64
 	Domain   string
@@ -28,6 +31,7 @@ type HubSummary struct {
 	LastSize uint64
 	Frozen   bool
 	Coverage CoverageInfo
+	Anchor   string
 }
 
 // ListHubs reads one HubSummary per followed hub, ordered by hub_id, in a single
@@ -36,11 +40,15 @@ type HubSummary struct {
 // plain Go types and consults no other package, keeping store a leaf. The coverage
 // start is read from hubs.monitored_since_{size,time}: a NULL size means coverage
 // has not started (Set false), matching Coverage's "absent is not an error"
-// convention.
+// convention. The Anchor status is a correlated subselect projecting the status of
+// the hub's most-recently-stamped root (newest stamped_at first); a never-stamped
+// hub yields SQL NULL → empty Anchor (the honest "not anchored yet" state).
 func (s *Store) ListHubs(ctx context.Context) ([]HubSummary, error) {
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT h.hub_id, h.domain, h.origin, h.active, "+
-			"f.last_size, f.frozen, h.monitored_since_size, h.monitored_since_time "+
+			"f.last_size, f.frozen, h.monitored_since_size, h.monitored_since_time, "+
+			"(SELECT o.status FROM ots o WHERE o.hub_id = h.hub_id "+
+			"ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1) "+
 			"FROM hubs h LEFT JOIN follow_state f ON f.hub_id = h.hub_id "+
 			"ORDER BY h.hub_id",
 	)
@@ -57,10 +65,11 @@ func (s *Store) ListHubs(ctx context.Context) ([]HubSummary, error) {
 			frozen    sql.NullBool
 			sinceSize sql.NullInt64
 			sinceTime sql.NullInt64
+			anchor    sql.NullString
 		)
 		if err := rows.Scan(
 			&h.HubID, &h.Domain, &h.Origin, &h.Active,
-			&lastSize, &frozen, &sinceSize, &sinceTime,
+			&lastSize, &frozen, &sinceSize, &sinceTime, &anchor,
 		); err != nil {
 			return nil, fmt.Errorf("store.ListHubs: scan: %w", err)
 		}
@@ -75,6 +84,7 @@ func (s *Store) ListHubs(ctx context.Context) ([]HubSummary, error) {
 				h.Coverage.Since = time.Unix(sinceTime.Int64, 0)
 			}
 		}
+		h.Anchor = anchor.String // NULL (no stamped root) → ""
 		hubs = append(hubs, h)
 	}
 	if err := rows.Err(); err != nil {

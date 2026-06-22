@@ -200,10 +200,10 @@
     }
 
     /* Each row (and the column-header row) is a grid with the same columns:
-       # | Hub · domain | Coverage since | Observed size | Status. */
+       # | Hub · domain | Coverage since | Checkpoint | Anchor | Status. */
     .ledger-row {
       display: grid;
-      grid-template-columns: 34px 1.8fr 1.3fr 1fr 150px;
+      grid-template-columns: 34px 1.8fr 1.2fr 1fr 1.1fr 150px;
       gap: var(--space-4);
       align-items: center;
       padding: var(--space-3) var(--space-5);
@@ -270,6 +270,32 @@
       font-family: var(--font-mono);
       font-size: var(--text-xs);
       color: var(--text-body);
+    }
+
+    /* The anchor cell: a short label (the load-bearing, grayscale-safe signal)
+       beside a decorative status dot. The dot is an inline <span> colored by a DS
+       token with a literal hue fallback (no served image, no CDN); the label alone
+       still tells confirmed / pending / not-anchored apart (ADR-0010 invariant 4). */
+    .anchor-cell {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-body);
+    }
+    .anchor-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex: none;
+      background: var(--text-faint);
+    }
+    .anchor-dot[data-anchor="confirmed"] {
+      background: var(--status-success-text, #7aa832);
+    }
+    .anchor-dot[data-anchor="pending"] {
+      background: var(--status-warning-text, #ffc300);
     }
     .cell-note {
       font-family: var(--font-mono);
@@ -367,7 +393,8 @@
         <span>#</span>
         <span>Hub · domain</span>
         <span>Coverage since</span>
-        <span>Observed size</span>
+        <span>Checkpoint</span>
+        <span>Anchor</span>
         <span>Status</span>
       </div>
       {{- range .Hubs}}
@@ -385,7 +412,11 @@
           <span class="cell-note">no coverage yet</span>
           {{- end}}
         </div>
-        <div class="cell-mono">{{.LastSize}}</div>
+        <div class="cell-mono">{{.Checkpoint}}</div>
+        <div class="anchor-cell">
+          <span class="anchor-dot" data-anchor="{{.AnchorDot}}"></span>
+          <span>{{.Anchor}}</span>
+        </div>
         <div>{{template "hubStatusBadge" .}}</div>
       </a>
       {{- else}}
