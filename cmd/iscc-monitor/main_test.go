@@ -122,6 +122,7 @@ func TestRegisterHubsRejectsReserved(t *testing.T) {
 	}{
 		{"metrics", "metrics"},
 		{"healthz", "healthz"},
+		{"version", "version"},
 		{"web prefix segment", reserved},
 		{"empty", ""},
 		{"whitespace", "   "},
@@ -263,6 +264,28 @@ func TestMirrorRouter(t *testing.T) {
 		}
 		if got, want := rec.Body.String(), `{"status":"ok"}`; got != want {
 			t.Errorf("body = %q, want %q", got, want)
+		}
+	})
+
+	// GET /version -> 200 + a non-empty "version" field: the build-provenance leaf
+	// is mounted on the shared mux as an exact path next to /metrics and /healthz.
+	t.Run("version served on shared mux", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/version", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", ct)
+		}
+		var body struct {
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("version body %q is not valid JSON: %v", rec.Body.String(), err)
+		}
+		if body.Version == "" {
+			t.Errorf("version field is empty, want a non-empty build string")
 		}
 	})
 }

@@ -20,6 +20,15 @@ go = "1.26.4"
 description = "Compile every package"
 run = "go build ./..."
 
+# Build the monitor binary with the git short SHA stamped into internal/version
+# via -ldflags -X, so the running binary reports exactly which commit it is at
+# GET /version. The Dockerfile / CI image build reuses this path. This is an
+# ADDITIONAL build (it needs git); the plain `build` / `check` tasks stay git-free
+# and compile the "dev" default, so the quality gate never depends on git.
+[tasks."build:monitor"]
+description = "Build the monitor binary with the git short SHA stamped on /version"
+run = "go build -ldflags \"-X github.com/iscc/iscc-monitor/internal/version.Version=$(git rev-parse --short HEAD)\" -o ./iscc-monitor ./cmd/iscc-monitor"
+
 [tasks.vet]
 description = "Run go vet (static checks)"
 run = "go vet ./..."

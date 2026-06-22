@@ -41,6 +41,7 @@ import (
 	"github.com/iscc/iscc-monitor/internal/registry"
 	"github.com/iscc/iscc-monitor/internal/store"
 	"github.com/iscc/iscc-monitor/internal/tilesserve"
+	"github.com/iscc/iscc-monitor/internal/version"
 	"github.com/iscc/iscc-monitor/internal/web"
 )
 
@@ -60,13 +61,14 @@ type hubRoute struct {
 
 // reservedMountNames is the set of single-label tokens that, used as a realm
 // domain, would mount the dossier at a path that collides with a built-in exact
-// route (metrics, healthz) or the web.Prefix subtree segment (_ds). The _ds entry
-// is derived from web.Prefix (not hardcoded) so it tracks the const if it changes.
-// registerHubs rejects any realm Domain in this set before mounting so a
+// route (metrics, healthz, version) or the web.Prefix subtree segment (_ds). The
+// _ds entry is derived from web.Prefix (not hardcoded) so it tracks the const if it
+// changes. registerHubs rejects any realm Domain in this set before mounting so a
 // misconfigured realm fails loudly at startup instead of panicking http.ServeMux.
 var reservedMountNames = map[string]struct{}{
 	"metrics":                     {},
 	"healthz":                     {},
+	"version":                     {},
 	strings.Trim(web.Prefix, "/"): {},
 }
 
@@ -83,8 +85,8 @@ const otsUpgradeInterval = 24 * time.Hour
 // reservedDomain reports whether a realm domain cannot be safely mounted: it is
 // empty/whitespace (the dossier would mount the exact "/", colliding with the
 // dashboard) or a reserved mount name (its exact "/"+domain dossier mount would
-// collide with a built-in route — metrics / healthz / the web.Prefix segment —
-// and panic http.ServeMux). registerHubs rejects such a domain loudly at startup;
+// collide with a built-in route — metrics / healthz / version / the web.Prefix
+// segment — and panic http.ServeMux). registerHubs rejects such a domain loudly at startup;
 // mirrorHandler uses the same predicate as defense-in-depth so building the mux
 // from a route slice can never panic even if a reserved route is constructed
 // directly.
@@ -253,7 +255,8 @@ func stampFunc() follower.Stamper {
 
 // buildMux assembles the monitor's single request multiplexer: GET / (the
 // server-rendered hub-list dashboard), GET /metrics, GET /healthz (liveness +
-// store readiness), the GET /inclusion/ subtree (the realm-wide Certificate of
+// store readiness), GET /version (the build-provenance string — git SHA or the
+// "dev" default), the GET /inclusion/ subtree (the realm-wide Certificate of
 // Inclusion, keyed on the self-describing ISCC-IDv1), the GET /_ds/ subtree (the
 // shared ISCC Design System v2 token stylesheet, the self-hosted @font-face
 // stylesheet, and the woff2 font binaries every SSR page links), plus every hub's
@@ -270,9 +273,10 @@ func stampFunc() follower.Stamper {
 // never shadows "/" or the per-hub subtrees. The same metrics registry m the
 // /metrics handler exposes is also passed to the dashboard and the certificate as
 // their in-memory status overlay (the StatusSource), so the pages can render the
-// live unresolvable / unverified verdicts the store cannot prove. Both /metrics and
-// /healthz mount as exact paths next to the per-hub mirror subtrees on the same
-// mux, so the single-listener invariant holds (no second socket). The assembled
+// live unresolvable / unverified verdicts the store cannot prove. /metrics,
+// /healthz, and /version all mount as exact paths next to the per-hub mirror
+// subtrees on the same mux, so the single-listener invariant holds (no second
+// socket). The assembled
 // mux is wrapped once in corsmw.Handler — the lone convergence point all public
 // routes pass through — so every served surface answers cross-origin browser GETs
 // uniformly (Access-Control-Allow-Origin: * on every response; OPTIONS preflights
@@ -286,6 +290,7 @@ func buildMux(st *store.Store, routes []hubRoute, hubList *registry.HubList, m *
 	mux.Handle("/", dashboard.Handler(st, m, id))
 	mux.Handle("/metrics", metricshttp.Handler(m))
 	mux.Handle("/healthz", healthz.Handler(st))
+	mux.Handle("/version", version.Handler())
 	mux.Handle(certificate.PathPrefix, certificate.Handler(hubList, st, m, id))
 	mux.Handle(web.Prefix, web.Handler())
 	return corsmw.Handler(mux)
@@ -443,8 +448,8 @@ func hubHandler(st *store.Store, hubID int64, m *metrics.Registry) http.Handler 
 //
 // It fails loudly before mounting on an empty/whitespace domain (which would
 // mount the dossier at "/" and collide with the dashboard) or a reserved mount
-// name (metrics, healthz, the web.Prefix segment _ds — whose exact dossier mount
-// would collide with the built-in route and panic http.ServeMux). A
+// name (metrics, healthz, version, the web.Prefix segment _ds — whose exact
+// dossier mount would collide with the built-in route and panic http.ServeMux). A
 // misconfigured realm therefore surfaces at startup with the bad domain named,
 // rather than crashing later in buildMux.
 func registerHubs(ctx context.Context, st *store.Store, entries []registry.Entry) ([]follower.HubTarget, []hubRoute, error) {
