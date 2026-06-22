@@ -1,66 +1,65 @@
-<!-- assessed-at: 62d5a2f18c505a184854569b4d75ac821302753e -->
+<!-- assessed-at: af6ddf2e61d9a11d2681519bc9e3eb47d975f307 -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: WASM milestone in progress — the open front is the Surface-C (`monitor.iscc.codes` Independent Verification app) GitHub-Pages deploy. The reproducible BUILD command for that deploy now exists (`cmd/verifier-site` renders the full static tree), but no Pages PUBLISH workflow exists yet, so the artifact is built-but-undeployed. Remaining WASM Verify work: the deploy workflow, the dossier tier-2 WASM caller, and the verifier-scope signature/id gap. OTS still needs a real Bitcoin-confirmed transit.
+## Phase: WASM milestone in progress — Surface-C (`monitor.iscc.codes` Independent Verification app) deploy chain. The reproducible BUILD command (`cmd/verifier-site`) and now the GitHub-Pages PUBLISH workflow (`.github/workflows/pages.yml`) both exist — but the Pages run at HEAD **FAILS** at `Configure Pages` ("repository has Pages [not] enabled / configured to build using GitHub Actions"), so the artifact is still built-but-**undeployed**. Closing the WASM "published" Verify criterion now hinges on a one-time human repo-Settings step (enable Pages → GitHub Actions source + custom domain), not on more code. OTS still needs a real Bitcoin-confirmed transit.
 
-Incremental review against assessed-at `47f4605`. The ONLY source change since is the NEW package
-`cmd/verifier-site` (`main.go` + `main_test.go`) plus the one allowed `CLAUDE.md` doc edit and
-context/docs. `cmd/verifier-site` is a thin, build-time static-site GENERATOR: `main` owns the single
-`os.Exit`; the testable `generate` drives the REAL `verifier.Handler` (→ `index.html`) and
-`web.Handler` (→ every `/_ds/` asset, fonts enumerated from the served `fonts.css`) over `httptest`
-and writes the byte-pinned tree to an out dir — one source of truth, no template re-embed, no
-network/DB/`GOOS=js` build. It fails closed (a non-200 from any handler aborts) and copies the
-byte-pinned `verify.wasm`. It is a leaf (only `internal/verifier` + `internal/web`) and does NOT mount
-a server. M1/M2/M3/M-UI/WASM-core/OTS source were untouched — all carry forward met/open as before.
-The latest `review` verdict is PASS_WITH_NOTES (loop CONTINUE), CI is `success` at current HEAD
-`62d5a2f` (== `origin/develop`), and there is no `critical` issue — but the WASM and OTS Verify
-criteria are still open and 10 `normal` issues remain, so DONE is not reached.
+Incremental review against assessed-at `62d5a2f`. The ONLY source change since is the new
+`.github/workflows/pages.yml` (the Pages build→deploy workflow) + the tracked `.github/pages/CNAME`,
+plus one allowed `CLAUDE.md` doc line and context/docs. **NO Go production file changed**
+(`git diff 62d5a2f..HEAD --stat`: 0 `.go` files). M1/M2/M3/M-UI/WASM-core/OTS source were untouched
+— all carry forward met/open as before. The workflow is well-formed (build job runs
+`go run ./cmd/verifier-site -out dist`, copies the byte-pinned `verify.wasm`, then
+configure/upload/deploy via the canonical Actions Pages contract; `verifier.Handler` remains NOT
+mounted in `cmd/iscc-monitor`, grep-confirmed). The latest `review` verdict is PASS_WITH_NOTES (loop
+CONTINUE); the **CI** workflow is `success` at HEAD `af6ddf2` (== `origin/develop`). **NEW MATERIAL
+FINDING:** the **Pages** workflow run at the same HEAD is `failure` — `Configure Pages` errors
+because GitHub Pages is not yet enabled / set to the "GitHub Actions" source on the repo (a one-time
+human Settings step). So the WASM "published" Verify criterion is **not yet closed** even though the
+workflow landed. With WASM + OTS Verify still open, DONE is not reached.
 
 ## Convergence
 - **Remaining Verify criteria:**
   - **M1: 0 open (met). M2: 0 open (met). M3: 0 open (met, 4/4). M-UI: behavioral + design-chrome
     Verify met; the mandatory M-UI exit visual-pass + human sign-off (ADR-0012) is still pending.**
   - **WASM verifier: 1/1 open.** Built/byte-pinned `.wasm` at `/_ds/verify.wasm` (`WasmVerifyHash`,
-    `TestWasmVerifyHashPinned`); first SSR tier-2 caller on the **certificate** (live-verified);
-    Surface-C `internal/verifier` resolves its target **client-side** as a single static artifact;
-    and now the reproducible **build command** for the deploy exists (`cmd/verifier-site` renders the
-    full static tree — `index.html` + every `/_ds/` asset — into an out dir, fail-closed, wasm-hash
-    verified). `internal/verifier` remains **deliberately unmounted** in `cmd/iscc-monitor`
-    (grep-confirmed). Still OPEN on the milestone Verify: **the GitHub-Pages / `monitor.iscc.codes`
-    PUBLISH workflow** (only `.github/workflows/ci.yml` exists — no Pages deploy workflow; the BUILD
-    command that workflow will invoke has landed, the workflow itself has not); **NO dossier tier-2
-    WASM caller** (grep-confirmed: no `verify.wasm`/`wasm_exec`/`isccVerify` in `internal/dossier` —
-    the dossier's `verify ↗ monitor.iscc.codes` is a static link, not a WASM island); and the
+    `TestWasmVerifyHashPinned`); certificate SSR tier-2 caller (live-verified); Surface-C
+    `internal/verifier` resolves its target **client-side** as a single static artifact; the
+    reproducible **build command** (`cmd/verifier-site`); and now the **Pages publish workflow**
+    (`.github/workflows/pages.yml`). **Still OPEN on the milestone Verify** ("the verifier artifact …
+    [is published at its] published value"): the deploy **does not actually run** — the Pages run at
+    HEAD fails at `Configure Pages` (Pages not enabled / not set to "GitHub Actions" source); the
+    artifact is built-but-undeployed pending a one-time human repo-Settings step. Also still open:
+    **NO dossier tier-2 WASM caller** (grep-confirmed: no `verify.wasm`/`wasm_exec`/`isccVerify` in
+    `internal/dossier` — the dossier's `verify ↗` is a static link, not a WASM island); and the
     **cross-origin verifier-scope gap** (the WASM core verifies inclusion math only — no
     checkpoint-signature / id-binding — so a malicious monitor can render a green `verified`).
   - **OTS anchoring: 1/1 open (carried unchanged).** Both observable HTTP halves closed (`.ots`
     serve route + certificate §5 anchor render). What remains: a root that actually transits to
     **Bitcoin-confirmed** — offline-unprovable; exercised only against an injected Upgrader.
-- **Last ~10 iterations: ~5 milestone-Verify-advancing / ~5 chrome·plumbing·hardening.** Recent
-  arc: Surface-C skeleton → Surface-C LIVE wiring (advances WASM) → dossier tier-2 chrome (M-UI
-  nav-closure) → Surface-C client-side target gating (closed the static-deploy `.HasTarget` blocker)
-  → **the Surface-C static-site generator `cmd/verifier-site` (this iteration — the reproducible
-  BUILD command the Pages deploy will invoke; advances the WASM milestone toward a deployable
-  artifact).** **DRIFT WATCH (amber, holding):** the last two increments both targeted the WASM
-  Surface-C deploy chain — good, they are on the front-of-queue open Verify — but neither has yet
-  CLOSED the milestone Verify criterion (the deploy is not live; the artifact is built but
-  unpublished). The build command is in place and the only remaining step to a live artifact is the
-  Pages publish workflow. The next increment should land that workflow (or the dossier WASM island)
-  and actually close a Verify criterion, not add further build plumbing around the still-unpublished
-  artifact.
+- **Last ~10 iterations: ~5 milestone-Verify-advancing / ~5 chrome·plumbing·hardening.** Recent arc:
+  Surface-C skeleton → Surface-C LIVE wiring → dossier tier-2 chrome → Surface-C client-side target
+  gating → `cmd/verifier-site` build command → **the Pages publish workflow (this iteration).**
+  **DRIFT WATCH (amber, holding):** the last three increments all targeted the Surface-C WASM deploy
+  chain — on the front-of-queue open Verify — but **none has yet CLOSED the milestone criterion**: the
+  build command, then the deploy workflow landed, but the deploy still does not run (blocked on the
+  human Pages-enable step). The deploy chain is now code-complete; the remaining blocker is
+  operational, not code. The next increment should either (a) supply the human-step doc + verify the
+  deploy succeeds, or (b) pivot to a code-closable WASM criterion (the dossier WASM island, or the
+  verifier-scope signature/id check) — not add further plumbing around the still-undeployed artifact.
 
 ## M1 — Read-only Monitor
-**Status**: **met** — carried forward; no M1 source touched by the `47f4605..HEAD` diff (confined to
-the new `cmd/verifier-site` + context/docs). All M1 Verify criteria remain satisfied: `origin`/`vkey`
-golden; fork/shrink/equivocation golden-tested end-to-end with freeze + alert-once + restart
-survival; structured logs; `/metrics`.
-- **Packages present**: `cmd/{iscc-monitor,notecheck,verifier-site,wasm}` (+ `cmd/wasm/verifyadapter`);
-  23 internal packages — `badge, certificate, config, corsmw, dashboard, didweb, dossier, follower,
-  healthz, index, logclient, metrics, metricshttp, ots, otsclient, proof, proofserve, registry,
-  store, tiles, tilesserve, verifier, web`. Module `github.com/iscc/iscc-monitor`, `go 1.26.1`.
+**Status**: **met** — carried forward; no M1 source touched by the `62d5a2f..HEAD` diff (confined to
+the Pages workflow + CNAME + context/docs). All M1 Verify criteria remain satisfied: `origin`/`vkey`
+golden; fork/shrink/equivocation golden-tested end-to-end with freeze + alert-once + restart survival;
+structured logs; `/metrics`.
+- **Packages present** (unchanged): `cmd/{iscc-monitor,notecheck,verifier-site,wasm}` (+
+  `cmd/wasm/verifyadapter`); 23 internal packages — `badge, certificate, config, corsmw, dashboard,
+  didweb, dossier, follower, healthz, index, logclient, metrics, metricshttp, ots, otsclient, proof,
+  proofserve, registry, store, tiles, tilesserve, verifier, web`. Module
+  `github.com/iscc/iscc-monitor`, `go 1.26.1`.
 - **Reuse imports wired**: `golang.org/x/mod/sumdb/note`, `modernc.org/sqlite`,
   `transparency-dev/{merkle,tessera,formats}`, `gopkg.in/yaml.v3`,
   `github.com/iscc/iscc-lib/packages/go`, `github.com/nbd-wtf/opentimestamps`.
@@ -101,42 +100,45 @@ carries the shared chrome (self-hosted logo + text mark + divider).
 
 ## WASM verifier · OTS anchoring
 **Status**: **WASM — milestone OPEN: certificate tier-2 caller live-verified; Surface-C
-(`internal/verifier`) resolves `?monitor=`/`?id=` CLIENT-side as a single static artifact; and the
-reproducible BUILD command for the deploy now exists (`cmd/verifier-site`, fail-closed, wasm-hash
-verified) — but the Pages PUBLISH workflow is still absent, so the artifact is built-but-undeployed;
-NO dossier WASM caller (static verify-link only); the deploy workflow and verifier-scope signature/id
-gaps remain. OTS — both observable HTTP halves landed; only a real Bitcoin confirmation remains
-(offline-unprovable).**
+(`internal/verifier`) resolves `?monitor=`/`?id=` CLIENT-side as a single static artifact; the
+reproducible BUILD command (`cmd/verifier-site`) AND the Pages PUBLISH workflow
+(`.github/workflows/pages.yml`) both exist — but the Pages deploy at HEAD FAILS at `Configure Pages`
+(Pages not enabled / not set to GitHub-Actions source), so the artifact is still built-but-undeployed
+(one-time human repo-Settings step needed); NO dossier WASM caller (static verify-link only); the
+verifier-scope signature/id gap remains. OTS — both observable HTTP halves landed; only a real Bitcoin
+confirmation remains (offline-unprovable).**
 - **WASM:** `cmd/wasm/main.go` (tagged `//go:build js && wasm`) registers `isccVerifyInclusion`; the
   pure `cmd/wasm/verifyadapter.VerifyJSON` base64-decodes the bundle into `verify.VerifyInclusion`.
   `cert.html` embeds the tier-2 proof island + `/_ds/wasm_exec.js` + `/_ds/verify.wasm` loader and
   shows the WASM verdict only when §3 passed. `internal/verifier` is a SINGLE STATIC artifact (the
   `Handler` execs `nil` data; the always-emitted loader reads `?monitor=&id=`, fetches
   `<monitor>/inclusion/<id>.bundle`, runs `isccVerifyInclusion`, and gates the verdict on a real
-  re-verification). **NEW this iteration:** `cmd/verifier-site` is the reproducible BUILD command —
-  `generate(outDir)` drives `verifier.Handler` (→ `index.html`) + `web.Handler` (→ `/_ds/` tree,
-  fonts enumerated from `fonts.css`) over `httptest`, writes a 14-file tree, copies the byte-pinned
-  `verify.wasm` (hash == `web.WasmVerifyHash`, review-verified), and fails closed on any non-200
-  (mutation-proven by `TestGenerate`). It is a leaf (only `internal/verifier` + `internal/web`; no
-  store/DB/follower; `net/http` only via `httptest`) and is NOT a server — it does not mount
-  `verifier.Handler` in `cmd/iscc-monitor` (grep-confirmed). **Still 1/1 open on the milestone
-  Verify:** the GitHub-Pages / `monitor.iscc.codes` PUBLISH workflow does not exist (only `ci.yml`;
-  no Pages deploy step — `cmd/verifier-site` is its build command, not the deploy); NO dossier WASM
-  tier-2 caller (grep-confirmed — the dossier's verify-link is static); identical-verdict (WASM vs
-  server) parity exercised end-to-end live (golden-tested as markup only).
+  re-verification). `cmd/verifier-site` is the reproducible BUILD command —
+  `generate(outDir)` drives `verifier.Handler` (→ `index.html`) + `web.Handler` (→ `/_ds/` tree),
+  writes the 14-file tree, copies the byte-pinned `verify.wasm` (hash == `web.WasmVerifyHash`), and
+  fails closed on any non-200. **NEW this iteration:** `.github/workflows/pages.yml` is the Pages
+  PUBLISH workflow — a `build` job (checkout → setup-go 1.26 → `go run ./cmd/verifier-site -out dist`
+  → `cp .github/pages/CNAME dist/CNAME` → configure-pages@v5 → upload-pages-artifact@v3) and a
+  `deploy` job (`needs: build`, `environment: github-pages`, deploy-pages@v4), triggered on
+  push[develop] + workflow_dispatch, permissions {contents:read, pages:write, id-token:write}. It does
+  NOT rebuild the WASM (copy-not-rebuild). **Still 1/1 OPEN on the milestone Verify — the deploy is
+  not live:** the Pages run at HEAD (`27941954154`) is `failure` at the `Configure Pages` step —
+  `##[error]Get Pages site failed. Please verify that the repository has Pages enabled and configured
+  to build using GitHub Actions` — so `upload`/`deploy` are skipped and nothing reaches
+  `monitor.iscc.codes`. This is the one-time human Settings step the review flagged (filed as the Pages
+  custom-domain `normal`), now proven blocking the entire deploy (not just the custom-domain binding).
+  Also still open: NO dossier WASM tier-2 caller (grep-confirmed); identical-verdict (WASM vs server)
+  parity exercised end-to-end live but golden-tested as markup only.
   **Carried `normal` defects (NOT fixed):** (a) `safeIndex` is a pure `float64→(uint64,string)` fn
   trapped in the tagged `main.go` with NO executable test — move it into the untagged `verifyadapter`
   and table-test the reject branches; (b) the WASM verifier core proves inclusion math ONLY (no
   checkpoint-signature check, no id-binding), so a malicious cross-origin monitor can render a green
   `verified` — same scope the certificate tier-2 already ships, more acute on Surface C; the success
   copy overstates it; (c) Surface-C `readTarget` (`verifier.html:550-553`) accepts opaque-scheme
-  monitor forms (`https:example.com`) the Go `parseTarget` rejected — NOT a trust defect (the browser
-  resolves to the same host, WASM re-verifies the bundle), fix = return `u.href` not the raw
-  `monitor`.
-  **New `low` (this iteration):** `cmd/verifier-site` `generate` writes non-atomically — `index.html`
-  is written before the asset loop, so a mid-run error leaves a partial tree in a reused out dir; the
-  run-level fail-closed (errors → `os.Exit(1)`) is intact, only the output dir is half-written. Filed
-  `low` (Codex P3); fix = stage to a temp dir + rename, or buffer all responses before the first write.
+  monitor forms (`https:example.com`) the Go `parseTarget` rejected — NOT a trust defect, fix = return
+  `u.href` not the raw `monitor`.
+  **Carried `low`:** `cmd/verifier-site` `generate` writes non-atomically; the new Pages custom-domain
+  doc gap (filed `normal` — the artifact CNAME is a no-op under Actions).
 - **OTS:** the `.ots` serve route (`internal/proofserve`), the §5 anchor clause, the store layer
   (`internal/store/ots.go`), the off-path stamp/upgrade loop (`OTSTick` in
   `internal/follower/otsloop.go`), the offline classifier (`internal/ots.Confirmed`), and the
@@ -148,40 +150,51 @@ gaps remain. OTS — both observable HTTP halves landed; only a real Bitcoin con
   `safeStamp`.
 
 ## Quality gates
-**Status**: **GREEN — gate runnable, latest `review` verdict is PASS_WITH_NOTES (loop CONTINUE), CI
-green at current HEAD.**
+**Status**: **GREEN for the code gate (CI `success` at HEAD); the Pages PUBLISH workflow run is
+`failure` — blocked on a one-time repo-Settings step, not a code/gate defect.**
 - `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.26.1`); `mise run check` runnable.
-  Review reported `mise run check` green at HEAD (all 27 packages ok incl. `cmd/verifier-site`;
-  `gofmt -l .` empty); `GOOS=js GOARCH=wasm go build ./cmd/wasm` OK.
-- **Latest `review` verdict: PASS_WITH_NOTES (loop CONTINUE)** for the `cmd/verifier-site` generator.
-  Tight diff (1 non-test/doc production file + 1 test + the one allowed `CLAUDE.md` + docs), all gates
-  green, fail-closed contract mutation-proven (handler-404 → `generate` aborts), generated tree =
-  14 files, `verify.wasm` SHA-256 == `web.WasmVerifyHash`, no-CDN re-asserted on the live output,
-  dep closure verified leaf, `verifier.Handler` still NOT mounted in `buildMux`. Visual check N/A (no
-  SSR template touched).
+  Review reported `mise run check` green at HEAD (all 27 packages ok; `gofmt -l .` empty);
+  `GOOS=js GOARCH=wasm go build ./cmd/wasm` OK. No Go production file changed this iteration.
+- **Latest `review` verdict: PASS_WITH_NOTES (loop CONTINUE)** for the Pages publish workflow. Tight
+  diff (0 Go production files; 1 workflow + 1 CNAME + 1 doc line + context), gates green, workflow
+  YAML valid + shape matches the canonical Pages contract, deployed `verify.wasm` hash ==
+  `web.WasmVerifyHash`, `verifier.Handler` still NOT mounted. Visual check N/A.
 - **CI**: `.github/workflows/ci.yml` runs the inlined `mise run check` + the `cmd/notecheck` oracle
   on push/PR (`go-version: "1.26"`). Remote `origin` = `github.com/iscc/iscc-monitor.git`, branch
-  `develop`, in sync with `origin/develop` (both at `62d5a2f`). **Latest CI run is `success` at
-  current HEAD** (run 27940905908). **No GitHub-Pages publish workflow exists yet** — only `ci.yml`.
-- **Open issues: 0 `critical`, 10 `normal`, 10 `low`.** (The lone "critical" grep hit is the issues.md
+  `develop`, in sync with `origin/develop` (both at `af6ddf2`). **CI run is `success` at HEAD**
+  (run 27941953978).
+- **Pages**: `.github/workflows/pages.yml` exists and runs on push to develop, but the run at HEAD
+  (run 27941954154) is **`failure`** — the `Configure Pages` step errors "Get Pages site failed …
+  verify that the repository has Pages enabled and configured to build using GitHub Actions"; the
+  `Render static site` + `Add CNAME` steps PASS, `Upload` + `deploy` are skipped. This is a one-time
+  human repo-Settings step (enable Pages → "GitHub Actions" source + custom domain), already filed as
+  a `normal` issue; it is NOT a code defect and NOT a `mise run check` / gate failure.
+- **Open issues: 0 `critical`, 11 `normal`, 8 `low`.** (The lone "critical" grep hit is the issues.md
   format-legend line, not a real issue.) DONE requires 0 critical AND 0 normal, so the loop stays
-  CONTINUE. The 10 normal span: certificate §5 digest binding, OTS `safeStamp` guard, `hubDomain`
-  ForceQuery gap, §4/bundle `host:port` DID encode, certificate §6 timestamp, the `safeIndex` test
-  gap, the certificate tier-2 no-JS honesty-copy overstatement, the `/` sub-region parity deltas, the
-  WASM verifier-scope signature/id-binding gap, and the Surface-C `readTarget` opaque-URL permissiveness.
+  CONTINUE. The 11 normal span: the Pages custom-domain/enablement gap, certificate §5 digest binding,
+  OTS `safeStamp` guard, `hubDomain` ForceQuery gap, §4/bundle `host:port` DID encode, certificate §6
+  timestamp, the `safeIndex` test gap, the certificate tier-2 no-JS honesty-copy overstatement, the
+  `/` sub-region parity deltas, the WASM verifier-scope signature/id-binding gap, and the Surface-C
+  `readTarget` opaque-URL permissiveness.
 
 ## Next Milestone
-**Continue the WASM milestone — it is the front-of-queue open Verify.** The reproducible BUILD command
-(`cmd/verifier-site`) now exists, so the natural next closer is the **GitHub-Pages / `monitor.iscc.codes`
-PUBLISH workflow** itself: add a `.github/workflows/*` that runs `go run ./cmd/verifier-site -out <dir>`
-and deploys the tree to Pages (no such workflow exists today). The alternative next sub-step is wiring
-the tier-2 WASM caller into the **hub dossier** (no WASM island in `internal/dossier` today; its chrome
-shell exists) — mirror the certificate/verifier data-island + `/_ds/wasm_exec.js` + `/_ds/verify.wasm`
-loader. At a WASM-verifier-scope touch, expand the core to verify the checkpoint signature against the
-hub's did:web key + bind the record to the requested id (the cross-origin trust-path gap), move
-`safeIndex` into the untagged `verifyadapter` with table-tested reject branches, fold in the
-`readTarget` `u.href` normalization, and (when `cmd/verifier-site` is next edited) stage-and-rename for
-atomic output.
+**Continue the WASM milestone — it is the front-of-queue open Verify.** The deploy chain is now
+code-complete (build command + publish workflow), but the deploy **does not run**: the Pages workflow
+fails at `Configure Pages` because the repo has not enabled Pages with the "GitHub Actions" source.
+Two ways forward, pick one:
+1. **Unblock + verify the deploy.** This is primarily the one-time human repo-Settings step (Settings
+   → Pages → source "GitHub Actions" + custom domain `monitor.iscc.codes` + the DNS CNAME). The
+   code-side follow-up is the deploy-setup doc note (the existing Pages custom-domain `normal`); once
+   Pages is enabled, re-run the workflow and confirm a `success` deploy — that actually CLOSES the
+   "published" half of the WASM Verify criterion. (Note: a workflow file alone cannot self-enable
+   Pages, so the loop cannot fully close this criterion autonomously without the human step.)
+2. **Pivot to a code-closable WASM criterion** while the deploy is blocked: wire the tier-2 WASM
+   caller into the **hub dossier** (no WASM island in `internal/dossier` today — mirror the
+   certificate/verifier data-island + `/_ds/wasm_exec.js` + `/_ds/verify.wasm` loader), and/or expand
+   the WASM core to verify the checkpoint signature against the hub's did:web key + bind the record to
+   the requested id (the cross-origin trust-path gap), move `safeIndex` into the untagged
+   `verifyadapter` with table-tested reject branches, and fold in the `readTarget` `u.href`
+   normalization.
 
 Subsequent: the OTS "upgrades to Bitcoin-confirmed" half (offline-unprovable) plus folding in
 `safeStamp`, the §5 digest-binding, and the `host:port` DID `%3A`-encode when those exact lines are
