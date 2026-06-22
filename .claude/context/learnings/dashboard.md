@@ -30,12 +30,10 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   settled: the per-hub log-browser cell (`proofserve.serveBrowser`) now reuses this exact
   `StatusSource`-interface + `overlayStatus` shape (its own local copy, no `internal/dashboard` import —
   see `learnings/http-surface.md`). Reuse the same shape for the upcoming hub dossier / record pages.
-- **`inactive` is currently unreachable through the public store API (no `SetActive` writer; `UpsertHub`
-  inserts the schema default `active=1`).** So the golden HTTP-seam test cannot drive a hub to
-  `inactive`; the advance covered it with a white-box table test on the package-private `hubStatus`
-  (hence `package dashboard`, not `dashboard_test`). When a registry-deactivation writer lands, add an
-  end-to-end inactive-render assertion through the public surface — until then the table test is the
-  only coverage and is correct.
+- settled: `inactive` is unreachable through the public store API (no `SetActive` writer; `UpsertHub`
+  inserts schema default `active=1`), so it is covered only by a white-box table test on package-private
+  `hubStatus` (hence `package dashboard`, not `dashboard_test`). When a registry-deactivation writer lands,
+  add an end-to-end inactive-render assertion through the public surface.
 - **Coverage honesty (ADR-0001) is rendered, not just stored: `HasCoverage` false → literal "no coverage
   yet"; true → "size N at <RFC3339>".** `ListHubs` reads `monitored_since_{size,time}` via the
   `LEFT JOIN follow_state` so a never-polled hub still appears (its `last_size`/`frozen` are NULL → zero
@@ -65,17 +63,10 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   min-content width and the ellipsis never engages — a long domain pushes the coverage/status columns out of
   view. Fixed by `.hub-cell { min-width: 0 }` on the wrapping div (Codex P2, confirmed + fixed in review). Any
   future ledger cell that intends to ellipsize must carry `min-width: 0` on the grid item, not just the children.
-- **The frozen dossier (`internal/dossier`) adds an Exhibit panel ON TOP OF the badge — markup-distinct
-  per ADR-0010, gated `{{if .Frozen}}` where `Frozen = status == "frozen"`.** It is a full bordered
-  `<section class="exhibit">` (loud heading "Exhibit — self-consistency violation" + literal "Do not
-  trust new state from this hub." + a per-violation `kind`/`detected_at` list), NOT a recolored chip.
-  Non-dismissable by construction: no `<button>`, no `<script>`, no `hidden` attr (tests ban ` hidden>`/
-  ` hidden=` specifically, NOT the CSS `overflow: hidden`). The `ListViolations` read stays off the hot
-  path — only a frozen hub queries it (safe because `overlayStatus` never downgrades `frozen`, only
-  promotes `verified`); a frozen-with-zero-rows hub still renders the panel header via an `{{else}}`
-  fallback, never a broken `{{range}}`. Empty-list and NULL-detected-at ("detected at an unknown time")
-  branches are coverage-honesty discipline applied to evidence timestamps. Both the ordering and the
-  Frozen gate are mutation-proven non-vacuous (reviewer reconfirmed independently).
+- settled: the frozen dossier (`internal/dossier`) adds a non-dismissable Exhibit `<section>` ON TOP OF the
+  badge, gated `{{if .Frozen}}` (markup-distinct per ADR-0010, no `<button>`/`<script>`/` hidden` attr). The
+  `ListViolations` read stays off the hot path (only a frozen hub queries it; safe because `overlayStatus`
+  never downgrades `frozen`; a frozen-with-zero-rows hub still renders the panel header via `{{else}}`).
 - **The `/` named-region parity landed: claim-lookup hero + per-row dossier `<a>` + masthead identity.**
   The hero is a no-JS `<form method="get" action="/inclusion/">` with `<input name="iscc_id">` — a
   `method=get` form can ONLY emit a query string, so the certificate handler gained the symmetric
@@ -92,9 +83,9 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   must pass, so the test now ALSO positively asserts `monitor.iscc.codes` is present. This mirrors the
   certificate's already-merged posture and `web.md`'s `noExternalCDN` rule (third-party origins only).
   The load-bearing rule (no third-party CDN origin) still holds; this is the precedent, not a weakening.
-  Mockup deviations accepted as constraint-wins (all flagged): no logo `<img>` (no served asset + no-CDN),
-  static instance identity (`monitor instance` placeholder, env-config out of scope), "recent declarers"
-  hero footer omitted (no store history). The `#` row number is `RowNo = fmt.Sprintf("%02d", i+1)` on the
+  Mockup deviations accepted as constraint-wins (all flagged): "recent declarers"
+  hero footer omitted (no store history). (Logo + config-driven instance identity have since landed — see
+  the instance-identity bullet below.) The `#` row number is `RowNo = fmt.Sprintf("%02d", i+1)` on the
   view-model — presentation only, no store value; the new `34px` grid column is fixed-width mono and does
   not ellipsize (the `min-width:0` trap applies only to `.hub-cell`).
 - **The Checkpoint + Anchor columns LANDED (six-column grid `34px 1.8fr 1.2fr 1fr 1.1fr 150px`).**
@@ -140,3 +131,24 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   taxonomy — that is the pending `metrics.Registry` thread-through. `TestDashboardRendersEveryHub` asserts
   the badge markup (`class="hub-status-badge"` + `>Verified<`/`M8.4 12.3` + `>Frozen<`/`M8.2 3.3h7.6`),
   so a regression to `{{.Status}}` fails the test (reviewer mutation-confirmed).
+- **Config-driven masthead identity LANDED on `/` (the `dashboard.Identity` view value).** Three
+  operator-supplied strings flow env → binary → page: `Identity{Instance, Operator, Realm}`, passed as the
+  3rd arg to `Handler(st, statuses, id)`. **The fail-safe fallback lives in `Identity.resolve()` INSIDE the
+  package (not main.go)** — a blank `Instance`/`Operator` falls back to the `instanceFallback`/`operatorFallback`
+  consts (today's static copy), a blank `Realm` stays "" so the template's `Realm register{{if .Realm}} · {{.Realm}}{{end}}`
+  renders the bare subtitle with NO trailing separator. Keeping the default in the handler is what makes the
+  fallback golden-testable at the HTTP seam regardless of env. `TestDashboardRendersInstanceIdentity` pins
+  BOTH the populated path (exact operator strings present, static placeholder ABSENT) and the zero-value
+  fallback path; reviewer mutation-confirmed non-vacuous on BOTH the template binding (`{{.Instance}}`→literal
+  FAILS) AND the wiring (`resolve` ignoring the supplied value FAILS). Visual pass: live binary renders
+  `monitor.iscc.id` / `instance operated by ISCC Foundation · ISCC mainnet` / `REALM REGISTER · ISCC MAINNET`
+  exactly matching the Realm-Index mockup.
+- **The realm-name env var is `ISCC_MONITOR_REALM_NAME`, NOT `ISCC_MONITOR_REALM`.** `ISCC_MONITOR_REALM`
+  is ALREADY the REQUIRED realm-document filesystem PATH in `internal/config` — overloading it would leak a
+  filename (`…/realm.txt`) into the ledger subtitle. The masthead needs the human realm NAME, so it uses a
+  distinct optional key. `ISCC_MONITOR_INSTANCE`/`ISCC_MONITOR_OPERATOR` are genuinely new. These three keys
+  are read inline in `cmd/iscc-monitor/main.go` `identity()` (deferred from `internal/config` for the ≤3-file
+  budget); the follow-on sub-step that threads identity to the other five SSR mastheads SHOULD move parsing
+  into the config leaf — adopt `ISCC_MONITOR_REALM_NAME` (or finalize the name) there. Reuse the SAME
+  `dashboard.Identity` value across dossier/cert/proofserve mastheads (the dossier+cert mastheads are
+  byte-identical ports — keep them in lockstep).

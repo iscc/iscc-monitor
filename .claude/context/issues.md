@@ -211,7 +211,7 @@ filed it and does **not** affect priority.
 - **Spec:** target.md M-UI hard CDN-free constraint; `learnings/web.md` `noExternalCDN` bans third-party
   origins; CLAUDE.md "Never weaken a quality gate to pass" (the fix is the root cause, not the gate).
 
-## `/` realm-index sub-region deltas vs the mockup (logo, instance-identity copy, Checkpoint/Anchor columns)
+## `/` realm-index: only the "recent declarers checked" hero footer remains vs the mockup (logo, instance-identity, Checkpoint/Anchor all CLOSED)
 - **Priority:** normal
 - **Source:** [review] (visual pass vs the Realm-Index mockup, after the named-region parity landed)
 - **What / where / how to verify:** The three HEADLINE landmark regions (claim-lookup hero, per-row
@@ -221,11 +221,16 @@ filed it and does **not** affect priority.
   (1) **No logo** — **CLOSED (reviewer-confirmed `6a442b4`).** The self-hosted logo now renders on ALL SIX
   SSR mastheads (`/`, dossier, certificate, the three proofserve surfaces); the ADR-0012 visual pass shows no
   remaining "no logo" delta on any surface. No further action — kept here only as a resolved sub-item record.
-  (2) **Static instance identity + realm name** — the mockup shows `monitor.iscc.id` / "instance operated
-  by ISCC Foundation · ISCC mainnet" and a "REALM REGISTER · ISCC MAINNET" subtitle; the live page renders
-  generic static copy ("monitor instance" / "independent Trust & Transparency service" and a bare "Realm
-  register") because the identity is not env-configurable. Needs the deferred config-driven instance
-  identity (domain / operator / realm name) before it can be honest per-deployment.
+  (2) **Static instance identity + realm name** — **CLOSED for `/` (reviewer-confirmed `b30b84e`).** The
+  `/` masthead now renders three operator-supplied strings (`dashboard.Identity{Instance, Operator, Realm}`)
+  flowing env → binary → page via `ISCC_MONITOR_INSTANCE` / `ISCC_MONITOR_OPERATOR` / `ISCC_MONITOR_REALM_NAME`
+  (the last distinct from config's required realm-document PATH `ISCC_MONITOR_REALM`), with handler-side
+  fail-safe fallback to today's static copy when unset. Visual pass confirms the live binary renders
+  `monitor.iscc.id` / "instance operated by ISCC Foundation · ISCC mainnet" / "REALM REGISTER · ISCC MAINNET"
+  matching the mockup; mutation-proven non-vacuous (template binding + wiring). The SAME `dashboard.Identity`
+  value still needs threading into the OTHER five SSR mastheads (dossier, certificate, the three proofserve
+  surfaces) — tracked separately as the follow-on arc; `internal/verifier` stays excluded (`.codes` chrome).
+  Kept here only as a resolved sub-item record for the `/` surface.
   (3) **Checkpoint-size + Bitcoin-anchor data columns** — **CLOSED (reviewer-confirmed `b74931f`).** The
   `/` ledger now renders the mockup's six columns `# | Hub · domain | Coverage since | Checkpoint | Anchor
   | Status`; `store.HubSummary` gained a read-only `Anchor` projection (latest-stamped-root OTS status via
@@ -351,4 +356,23 @@ filed it and does **not** affect priority.
   the data does not support); ADR-0004 OTS async/best-effort; ADR-0010 Evidence-Ledger honesty;
   `.claude/design/ISCC Monitor - Realm Index.dc.html` per-hub anchorState model; `learnings/dashboard.md`
   per-hub-vs-per-checkpoint Anchor note; `internal/certificate/handler.go` §5 authoritative per-root surface.
+
+## Instance-identity env keys read inline in main.go, not validated via internal/config; CLAUDE.md env docs lack the three new keys
+- **Priority:** normal
+- **Source:** [review] (filed alongside the `/` masthead-identity slice `b30b84e`)
+- **What / where / how to verify:** The `/` masthead-identity slice reads `ISCC_MONITOR_INSTANCE` /
+  `ISCC_MONITOR_OPERATOR` / `ISCC_MONITOR_REALM_NAME` inline in `cmd/iscc-monitor/main.go` `identity()`
+  (the three keys are `const`s there), deliberately DEFERRING the move into the `internal/config`
+  `optional(get, key, fallback)` leaf to stay within the ≤3-file budget (next.md Not-In-Scope). Two
+  follow-ups remain: (a) when identity is threaded into a SECOND SSR masthead, move parsing into
+  `internal/config` so all six surfaces draw from one validated source (and FINALIZE the realm-name key —
+  the slice chose `ISCC_MONITOR_REALM_NAME` because `ISCC_MONITOR_REALM` is the already-required
+  realm-document filesystem PATH; that name decision should be ratified in config, not left in main.go);
+  (b) CLAUDE.md's "Running a local dev instance" env-var list does NOT yet document the three new keys.
+  Does NOT block progress — the keys are optional, the handler fail-safe defaults, all gates green, and the
+  config move is explicitly the follow-on sub-step's job. Verify fixed: the three identity keys are parsed
+  through `internal/config` (not `os.Getenv` in main.go) with the realm-name key name ratified, AND
+  CLAUDE.md lists `ISCC_MONITOR_INSTANCE` / `ISCC_MONITOR_OPERATOR` / `<realm-name key>` in its env table.
+- **Spec:** `learnings/config.md` (env parsing belongs in the config leaf); CLAUDE.md "Running a local dev
+  instance" env-var documentation; next.md Not-In-Scope (config move deferred to the follow-on sub-step).
 
