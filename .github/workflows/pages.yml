@@ -1,0 +1,70 @@
+# Publishes the Surface-C verifier app (the monitor-agnostic Independent
+# Verification page) to GitHub Pages at monitor.iscc.codes. The build job runs the
+# reproducible build command `go run ./cmd/verifier-site -out dist` — the generator
+# renders verifier.Handler's page and COPIES the byte-pinned verify.wasm (it never
+# rebuilds the WASM), so the deployed artifact hash equals the committed,
+# golden-tested value (ADR-0003: Pages-from-repo ties the deployed WASM to a public
+# commit). The generator fails closed (a non-200 from any handler exits non-zero),
+# so a broken render aborts the deploy rather than publishing a partial site. The
+# tracked .github/pages/CNAME is copied to dist/CNAME so Pages serves the custom
+# domain. Separate from ci.yml so CI and Pages have independent triggers.
+name: Pages
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: render verifier-site
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      # The reproducible build command. The generator fails closed on any non-200,
+      # so a non-zero exit here aborts the deploy and a broken render is never
+      # published. It copies the byte-pinned verify.wasm, never rebuilds it.
+      - name: Render static site
+        run: go run ./cmd/verifier-site -out dist
+
+      # Apply the custom domain. The tracked CNAME must land at the artifact root.
+      - name: Add CNAME
+        run: cp .github/pages/CNAME dist/CNAME
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    name: deploy to monitor.iscc.codes
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

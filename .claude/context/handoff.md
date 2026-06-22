@@ -1,87 +1,58 @@
-## 2026-06-22 — Review of: Static-site generator for the Surface-C verifier deploy (`cmd/verifier-site`)
+## 2026-06-22 — GitHub-Pages publish workflow for the Surface-C verifier (`monitor.iscc.codes`)
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Added `.github/workflows/pages.yml` (the build→deploy publish half) that runs the existing
+`go run ./cmd/verifier-site -out dist` generator and deploys the rendered tree to GitHub Pages at
+`monitor.iscc.codes`, plus a tracked `.github/pages/CNAME` the workflow copies to `dist/CNAME` for the
+custom domain. This closes the "published" half of the WASM milestone's Verify bar: the artifact is now
+deployed-from-commit (copy-not-rebuild), so the deployed `verify.wasm` hash equals the golden-pinned
+`web.WasmVerifyHash`.
 
-**Summary:** The advance adds `cmd/verifier-site`, a thin-main build-time generator that renders the
-complete Surface-C static tree (`index.html` from `verifier.Handler` + every `/_ds/` asset from
-`web.Handler`, all over httptest) into an output dir — the reproducible build command the Pages deploy
-will invoke. The diff is tight (1 production file + 1 test + the one allowed `CLAUDE.md` doc edit +
-handoff), all gates are green, the generator copies the byte-pinned `verify.wasm` (hash verified equal to
-`web.WasmVerifyHash`), and the fail-closed contract is non-vacuous (reviewer mutation-proven). One
-confirmed-but-non-blocking robustness finding (Codex P3): the output is non-atomic, so a mid-run error
-leaves a partial tree — filed `low`, does not weaken any gate or block the increment's stated goal.
+**Files changed:**
+- `.github/workflows/pages.yml` (new): modern GitHub-Pages Actions deploy — `on: push: [develop]` +
+  `workflow_dispatch` (no PR trigger); top-level `permissions: {contents: read, pages: write, id-token:
+  write}`; `concurrency: {group: "pages", cancel-in-progress: false}`. `build` job (`ubuntu-latest`,
+  `CGO_ENABLED: "0"`): checkout@v4 → setup-go@v5 (`go-version: "1.26"`) → `go run ./cmd/verifier-site
+  -out dist` → `cp .github/pages/CNAME dist/CNAME` → configure-pages@v5 → upload-pages-artifact@v3
+  (`path: dist`). `deploy` job (`needs: build`, `environment: github-pages`): deploy-pages@v4
+  (`id: deployment`).
+- `.github/pages/CNAME` (new): exactly `monitor.iscc.codes` + one trailing newline (19 bytes, od -c
+  confirmed).
+- `CLAUDE.md`: one-line note in the "Building the Surface-C verifier site" section that
+  `.github/workflows/pages.yml` is the publish workflow (build command `cmd/verifier-site`, custom
+  domain via the tracked CNAME). The one allowed non-test/doc edit.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — GREEN, all 27 packages ok (incl. `cmd/verifier-site`).
-- [x] `gofmt -l .` — empty (no formatting failures).
-- [x] `go test -count=1 -run TestGenerate ./cmd/verifier-site` — PASS.
-- [x] `go run ./cmd/verifier-site -out <tmp>` exits 0 and writes the full 14-file tree (index.html + 5
-  named `/_ds/` assets + 8 woff2) — reviewer re-ran; `find` confirms the exact tree.
-- [x] Generated `_ds/verify.wasm` SHA-256 = `7d57ab1b…f22d2c` == `web.WasmVerifyHash` — reviewer
-  `sha256sum`-verified (copy, not rebuild).
-- [x] No-CDN re-assertion on the generated `index.html` (`jsdelivr`/`http://`/`https://`/`cdn.` absent) —
-  reviewer `grep`-verified on the live output (0 hits).
-- [x] Dep closure: only `internal/verifier` + `internal/web`; no `database/sql`/store/logclient/follower;
-  `net/http` only via `net/http/httptest` — reviewer `go list -deps`-verified.
-- [x] Loader markers present in `index.html` (`/_ds/wasm_exec.js`, `/_ds/verify.wasm`,
-  `isccVerifyInclusion`, `URLSearchParams`) — asserted by the test and re-checked on the generated file.
-- [x] Fonts enumerated from `fonts.css`, not hardcoded — 8 `"/_ds/fonts/…woff2"` markers, all legit
-  `src:` lines, matching the 8 embedded woff2 (mirrors `TestFontsCSSReferencesEmbeddedSubsets`).
-- [x] Fail-closed non-vacuous (reviewer mutation): renaming a handler `switch` CASE so `GET
-  /_ds/tokens.css` 404s → `generate` aborts → `TestGenerate` FAILS with `…= 404, want 200`; restored →
-  green. (Note: renaming the `web.*` CONST does NOT fail — generator + handler path move together; the
-  handler-404 probe is the right one, recorded in `learnings/verifier-site.md`.)
-- [x] Scope: only `cmd/verifier-site/{main.go,main_test.go}` (new) + `CLAUDE.md` (the one allowed doc) +
-  handoff — 1 non-test/doc production file (≤3). No Not-In-Scope path touched (`cmd/wasm`,
-  `internal/proof/verify`, `.github/workflows`, `cmd/iscc-monitor`, `internal/verifier/*`, `verify.wasm`
-  all untouched); `verifier.Handler` still NOT mounted in `buildMux` — reviewer-confirmed.
-- [x] Gate-integrity scan over the 3 unpushed commits (`@{upstream}..HEAD`) — no `//nolint`/`t.Skip`/
-  build-tag/swallowed-error/deleted-assertion in the production diff; working tree clean (no stray
-  `wasm`/`verifier-site` binary, no `dist/` left behind).
-- [x] Oracle/conformance gate — N/A (pure static HTML/asset assembly from already-golden-tested embedded
-  bytes; no signature/RFC-6962/Merkle/did:web/fsck/proof path).
+**Verification:** `mise run check` → GREEN, all 27 packages ok (incl. `cmd/verifier-site`); `gofmt -l .`
+empty after `mise run fmt`. Per-criterion:
+- [x] `mise run check` green (build + vet + test); nothing regressed (workflow file is outside the Go build).
+- [x] `pages.yml` is valid YAML — parsed via cached `gopkg.in/yaml.v3` `Unmarshal` into `map[string]any`,
+  exit 0, 5 top-level keys (name/on/permissions/concurrency/jobs). PyYAML absent locally, used yaml.v3 per `ci.md`.
+- [x] `go run ./cmd/verifier-site -out /tmp/pages-verify` exits 0 and writes the full 14-file tree
+  (`find … | wc -l` = 14: index.html + 5 named `/_ds/` assets + 8 woff2).
+- [x] Deployed-tree `verify.wasm` SHA-256 = `7d57ab1b…f22d2c` == `web.WasmVerifyHash` (web.go:93) — copy,
+  not rebuild; the workflow has no `mise run build:wasm` step. `TestGenerate` (uncached) re-pins this: PASS.
+- [x] CNAME content exactly `monitor.iscc.codes` (`grep -qx` exit 0); workflow `cp`s it to `dist/CNAME`.
+- [x] `grep -q "pages: write"` and `grep -q "deploy-pages"` both exit 0; build command `go run
+  ./cmd/verifier-site` present.
 
-**Issues found:**
-- (Codex P3, confirmed → filed `low`) `cmd/verifier-site` `generate` writes non-atomically: `index.html`
-  is written before the asset loop, so a later 404/write error returns an error AFTER `index.html` (and
-  earlier assets) are on disk, leaving a partial tree in a reused `dist/`. The run-level fail-closed is
-  intact (it errors → `os.Exit(1)` → CI/test catches a broken deploy); only the output dir is left
-  half-written. Not a current hazard (`TestGenerate` uses `t.TempDir()`; happy path is complete; the
-  publish workflow gates on exit code). Fix = stage to a temp dir + rename, or buffer all responses
-  before the first write. Does NOT block.
-
-**Codex second opinion:** Codex ran (slow — ~11 min, completed exit 0) and produced ONE finding, [P3]
-"Stage files before updating the output tree" at `cmd/verifier-site/main.go:66`. Triage: CONFIRMED real
-against the code — the write-before-later-render ordering does leave a partial tree on an error path. But
-Codex's framing ("violates the intended fail-closed behavior") is PARTIALLY refuted: fail-closed holds at
-the RUN level (the error is surfaced and `os.Exit(1)` fires, so a broken deploy is never silently
-published); the gap is only that the OUTPUT directory isn't updated atomically. Filed as `low` (matches
-Codex's own P3 tier) — a real robustness refinement, not a blocker, not a gate weakening, and the loop
-skips lows.
-
-**Visual check:** n/a — no SSR surface changed. `cmd/verifier-site` is a build-time generator that only
-READS the existing `verifier.Handler`/`web.Handler` output; no template or SSR handler was touched, and
-the generated `index.html` is byte-identical to `verifier.Handler`'s already-reviewed output.
-
-**Next:** Build the GitHub-Pages publish workflow (`.github/workflows/*`) that runs `go run
-./cmd/verifier-site -out <dir>` and deploys the tree to `monitor.iscc.codes` — this generator is its build
-command. When that lands, consider folding in the new `low` non-atomic-output fix (stage + rename), plus
-the two still-open Surface-C `normal`s (the `readTarget` `u.href` normalization, and the WASM-verifier
-honesty gap: the core proves inclusion math only — no checkpoint-signature/did:web-key/id-binding check,
-yet the step copy lists a did:web step).
+**Next:** The "published" half of the Surface-C WASM milestone is now in place; the front-of-queue items
+that remain are the still-open Surface-C `normal`s and the new `low`: (1) the WASM-verifier honesty gap
+(the proof core verifies inclusion math only — no checkpoint-signature / did:web-key / id-binding check,
+yet the step copy lists a did:web step); (2) the `verifier.readTarget` `u.href` normalization; (3) fold
+in the `cmd/verifier-site` non-atomic-output fix (stage to temp dir + rename). The OTHER WASM sub-step
+(the dossier tier-2 WASM caller) is also still open. Pick one front next.
 
 **Notes:**
-- The generator deliberately leaves `dist/` out of `.gitignore` (the test uses `t.TempDir()`; the
-  deploy-output ignore belongs with the publish workflow). The working tree stayed clean across both my
-  `go run` and Codex's `GOOS=js` build (Codex's own stray `verifier-site` binary was its artifact and it
-  cleaned it up; nothing from our diff dirties the tree).
-- `verify.wasm` reproducibility rides `web.WasmVerifyHash` (the `-buildvcs=false` build) — the generator
-  copies the byte-pinned blob (hash equality proven), never rebuilds, so the published artifact hash is
-  reproducible from a clean checkout.
-- New learnings detail file `learnings/verifier-site.md` created (+ index pointer row) recording the
-  one-source-of-truth httptest idiom, the font enumeration, the const-rename-vs-handler-404 fail-closed
-  probe nuance, and the non-atomic-output `low`.
-- Issue count after this iteration: 0 critical / 10 normal / N low (one `low` added; none resolved — no
-  open issue touched `cmd/verifier-site`). CI green expected at this commit (same gate set as `mise run
-  check`, no `cauldron/` in tree).
+- `dist/` deliberately left OUT of `.gitignore` (matches the prior review note: the test uses
+  `t.TempDir()`; the deploy output never lands in the repo tree since CI builds it fresh). Working tree
+  stayed clean — only the three intended paths are modified/untracked.
+- Action versions are the current canonical Pages set (`configure-pages@v5`, `upload-pages-artifact@v3`,
+  `deploy-pages@v4`) pinned at major tags, matching the `@v4`/`@v5` style in `ci.yml`. Did NOT touch
+  `ci.yml` — the publish workflow is a separate file so CI and Pages keep independent triggers.
+- The workflow triggers on `push: [develop]` (the repo's active/default branch per git state, per the
+  step's Implementation Notes) — NOT on PRs and NOT on `main`. GitHub Pages must be configured to
+  "GitHub Actions" source (one-time repo Settings step) for `deploy-pages@v4` to publish; this is repo
+  config, not something a workflow file can assert. Worth a human confirming Pages source + the
+  `monitor.iscc.codes` DNS CNAME are set on first deploy.
+- Oracle/conformance gate — N/A: this increment touches no signature/RFC-6962/Merkle/did:web/fsck/proof
+  code (CI plumbing + a domain file + a doc line); the `verify.wasm` it publishes is the already-golden
+  byte-pinned blob, hash re-verified equal here.

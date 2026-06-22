@@ -29,7 +29,9 @@ site. `cmd/verifier-site` is its reproducible build command: it renders `verifie
 `index.html` and copies every `/_ds/` asset (the DS token/font stylesheets, the woff2 binaries, the Go
 WASM runtime loader, and the SRI-pinned `verify.wasm`) into an output directory, so the bytes are
 identical to what the handler golden tests gate. Run `go run ./cmd/verifier-site -out dist` (default
-`dist/`); the GitHub-Pages deploy publishes that tree.
+`dist/`); the GitHub-Pages deploy publishes that tree. `.github/workflows/pages.yml` is that publish
+workflow — it runs `cmd/verifier-site` as its build command and deploys to `monitor.iscc.codes`
+(custom domain pinned via the tracked `.github/pages/CNAME`).
 
 ## Running a local dev instance
 
