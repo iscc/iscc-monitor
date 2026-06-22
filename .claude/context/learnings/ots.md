@@ -35,3 +35,14 @@ Bitcoin-confirmed yet and at what height? Does NO network I/O. Read this before 
 - **The next sub-step's `Upgrader` must keep calendar/`UpgradeSequence` network calls OFF the poll path** so
   the live wiring does not regress "OTS never blocks the follower." This adapter does no I/O, so it honors
   that trivially; the regression risk is downstream in the closure that calls `Confirmed`.
+- **Two classifiers, one core: `Confirmed` (digest-agnostic) vs `ConfirmedFor(otsBytes, root)`
+  (digest-bound).** The upgrade loop + `.ots` route key on the row's OWN root, so they trust the write
+  path's (root, proof) pairing → `Confirmed`. A self-verifiable surface (certificate §5) must NOT — it
+  calls `ConfirmedFor`, which fail-closes (wrapped error, same contract as a parse failure) unless
+  `bytes.Equal(file.Digest, root)`, so the caller's `cerr == nil` guard treats a mismatch exactly like an
+  unparseable proof (silent decline, never confirmed, never 500). Both share the private `classify(file)`
+  holding the attestation + `>MaxInt64` overflow guard — keep ONE parse + ONE overflow guard; the digest
+  check interposes between parse and classify so a mismatched proof never reaches the int64 cast. When
+  adding a NEW root-asserting caller, use `ConfirmedFor`, never `Confirmed` (a built proof is not a
+  verified one). `TestOTSConfirmedForDigestBound` pins it; removing the `bytes.Equal` gate makes the
+  mismatch subcase return `(true, 358391, nil)` and FAIL.

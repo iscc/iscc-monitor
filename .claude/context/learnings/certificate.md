@@ -26,8 +26,7 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   same cap caps it (no frozen branch). The store keys `iscc_id` VERBATIM+PREFIXED and `SeqsForISCCID` is
   exact-bytes, so canonicalize to `"ISCC:" + strings.TrimPrefix(rawID, "ISCC:")` — any seam keyed on
   `iscc_id` must use the prefixed ground truth, never the bare decode input.
-  - settled: the cap + prefixed-lookup mutations are pinned by `TestCertificateUnacceptedLeaf` /
-    `…KnownID` / `…PrefixedLookup` (git history).
+  - settled: cap + prefixed-lookup pinned by `TestCertificateUnacceptedLeaf`/`…KnownID`/`…PrefixedLookup`.
 
 - **§2 CHECKPOINT reads the accepted root back via `CheckpointAt(hub.HubID, hub.LastSize)`** (follow_state
   does NOT persist the root — store.md); root is base64-**Std**, byte-identical to the log browser +
@@ -50,9 +49,8 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `VerifyInclusion` is a SILENT decline (never a 500); any other fault → 500 (buffered before any 200).
   `arts.record`/`arts.builtProof` are captured ONLY inside this `if ok` block — they are the SINGLE gate
   shared by the page ✓, the bundle, AND the tier-2 caller's `RecordB64`.
-  - settled: §3 gate evolved unconditional → `!hub.Frozen` → re-verification, closing the fork-poll
-    TOCTOU; the re-verify rule is promoted to the index; `fixtureStoreTiled` seeds `leaf-i` bundles so
-    `HashLeaf==tree.LeafHash` (git history).
+  - settled: §3 gate evolved to re-verification (closed the fork-poll TOCTOU; rule promoted to index);
+    `fixtureStoreTiled` seeds `leaf-i` bundles so `HashLeaf==tree.LeafHash` (git history).
 
 - **Tier-2 in-browser verifier (the certificate is the first SSR WASM caller — mechanics in
   `cmd-wasm.md`).** `RecordB64 = base64.StdEncoding.EncodeToString(record)` is set inside the §3 `if ok`
@@ -77,9 +75,8 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   resolved from. The §4 `SigningKeyDID` AND the proof-bundle `Hub.DID` both route through the local
   `didWeb(domain)` helper (`handler.go:116`, `strings.Replace(domain, ":", "%3A", 1)`, the resolver's
   idiom); a no-port domain round-trips byte-identical.
-  - settled: the `host:port` DID bug (both sites) is CLOSED, pinned by
-    `TestCertificateSigningKeyDIDPortEncoded` (§4) + `TestCertificateProofBundleDIDPortEncoded`
-    (bundle), both mutation-proven, with `…DIDCleanDomain` as the no-port regression (git history).
+  - settled: both DID sites CLOSED + pinned (`TestCertificateSigningKeyDIDPortEncoded`,
+    `…ProofBundleDIDPortEncoded`, `…DIDCleanDomain` regression), mutation-proven (git history).
 - **`html/template` entity-escapes base64 `+`/`/` in text nodes (`+`→`&#43;`)** — only the
   execution-path contextual escaper, not `html.EscapeString`. Any test asserting on rendered base64
   chips must `html.UnescapeString(body)` first (the §3/§5 tests do); the on-page entity escaping is
@@ -96,16 +93,24 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
     (filed `normal`): the mockup §6 row carries a `· at` timestamp `RecordRow` has no column for —
     needs a store schema change, the impl renders `label · seq N` only (git history).
 
-- **§5 BITCOIN ANCHOR reads the mirrored OTS row of §2's root and classifies via `ots.Confirmed`.**
-  Inside `HasClause2`, `st.OTSForRoot(ctx, hub.HubID, hub.LastSize, root)` keys on §2's RAW `[]byte` root
-  (NOT the base64 `CheckpointRoot`), the same `(hub,size,root)` key the `.ots` route + stamp loop use.
-  Three fail-closed states (ADR-0001/0004): a miss OR the empty-`OTSBytes` sentinel → §5 OMITTED; an
-  unparseable proof → SILENT decline (never 500); a parseable proof → `HasClause5=true` (confirmed shows
-  `block <height>` + `UpgradedAt` RFC-3339; pending shows "awaiting Bitcoin confirmation"). `internal/ots`
-  is NOT WASM-pure but certificate is server-side only.
-  - settled: four state mutations pinned (height tied to oracle literal 358391); fixtures byte-identical
-    from `internal/ots/testdata`. KNOWN GAP (filed `normal`, see issues.md): §5 does NOT bind the proof's
-    `File.Digest` to §2's root, so a mis-stamped row would falsely render "block N" — fix `bytes.Equal`.
+- **§5 BITCOIN ANCHOR reads the mirrored OTS row of §2's root and classifies via `ots.ConfirmedFor`
+  (DIGEST-BOUND, not the digest-agnostic `ots.Confirmed`).** Inside `HasClause2`,
+  `st.OTSForRoot(ctx, hub.HubID, hub.LastSize, root)` keys on §2's RAW `[]byte` root (NOT the base64
+  `CheckpointRoot`), the same `(hub,size,root)` key the `.ots` route + stamp loop use; the classifier then
+  fail-closes unless the proof's committed `File.Digest` equals that root, so §5 vouches "block N" only for
+  a proof that provably commits to §2's accepted root (the re-VERIFICATION-not-a-flag index rule). Four
+  fail-closed states (ADR-0001/0004): a miss OR the empty-`OTSBytes` sentinel → §5 OMITTED; an unparseable
+  proof OR a digest mismatch → SILENT decline (the `cerr == nil` guard treats both identically, never 500);
+  a parseable, digest-bound proof → `HasClause5=true` (confirmed shows `block <height>` + `UpgradedAt`
+  RFC-3339; pending shows "awaiting Bitcoin confirmation"). `internal/ots` is NOT WASM-pure but certificate
+  is server-side only.
+  - settled: the digest-binding gap is CLOSED — `TestCertificateBitcoinAnchorDigestMismatch` pins it
+    (reverting §5 to `ots.Confirmed` renders §5 for the mismatched row → FAIL, mutation-proven). The
+    confirmed/pending render tests drive `acceptedRoot == fixture digest` via `seedOTSAtRoot` +
+    `fixtureStoreTiled`'s override, which forces `acceptedRoot != tree.Hash()` so §3 declines and is NOT
+    asserted in those two; §3 stays covered by the clean-tree tests + the mismatch test. Five state
+    mutations pinned (height tied to oracle literal 358391); fixtures byte-identical from
+    `internal/ots/testdata` (git history).
 
 - **COMPARISON ANCHOR is §2's `(size, root)` reframed as the monitor's own observation — a SEPARATE,
   distinctly-labelled element from §5, NOT Bitcoin.** Set `data.HasComparisonAnchor = true` inside the
@@ -117,9 +122,8 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   lexicon (a panel-slice test bans `Bitcoin`/`anchoring`/`OpenTimestamps`/`BITCOIN ANCHOR`/`ots verify`
   inside the sliced panel). Coverage honesty (ADR-0001): `Coverage.Set`→state the window (`since size N`
   `· <RFC-3339>` only when the time is non-zero, mirroring `SigningKeyRevoked`'s zero-guard); the
-  `{{else}}` "coverage just started" branch is effectively dead for a rendered panel — `AdvanceAccepted`
-  always sets `monitored_since_size` in the same tx that advances `last_size`, so any §2-rendering hub has
-  `Coverage.Set==true` (kept as defensive fail-safe, fine). Mockup omits this panel; target.md mandates it
+  `{{else}}` "coverage just started" branch is dead for a rendered panel (`AdvanceAccepted` always sets
+  `monitored_since_size` with `last_size`) — kept as a defensive fail-safe. Mockup omits this panel; target.md mandates it
   (design-parity: constraint > mockup), flagged in the docstrings. Mutations (review): `HasComparisonAnchor
   = false` AND `CoverageSize = 0` each fail the three new tests.
 
