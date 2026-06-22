@@ -1,0 +1,63 @@
+# Publishes the deployable monitor container image to GitHub Container Registry
+# (ghcr.io/iscc/iscc-monitor) on every push to develop, so iscc-infra can pull a
+# pinnable image instead of building it on the box. The image is the existing root
+# Dockerfile (built unchanged here) and is tagged BOTH `develop` (floating, the
+# always-latest develop build) AND `sha-<short>` (immutable, for pin/rollback).
+# Separate from ci.yml — which keeps its docker job a pure build+smoke with no
+# registry login — so the publish trigger + permissions stay independent (mirrors
+# the pages.yml separation). The auto-provided GITHUB_TOKEN + `packages: write` is
+# all the push needs; making the package public / issuing read tokens is
+# iscc-infra's one-time repo-settings work, not this workflow's.
+name: Publish
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: "publish"
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: build + push ghcr.io/iscc/iscc-monitor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Derive the immutable 7-hex short SHA for the sha-<short> tag. github.sha is
+      # always populated in Actions (it cannot empty-expand the way a $(git rev-parse)
+      # substitution can), so the immutable tag and the VERSION build-arg both carry
+      # a non-empty value — the Dockerfile fail-fasts on an empty VERSION.
+      - name: Derive short SHA
+        id: vars
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build the existing root Dockerfile unchanged and push both tags. The tags are
+      # hand-written and inspectable (the Verify contract asks for exactly that):
+      # `:develop` is the floating latest-develop tag; `:sha-<short>` is the immutable
+      # pin/rollback tag. VERSION is the required non-empty build-arg — github.sha is
+      # always populated, so the published image always carries a non-empty /version.
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            VERSION=${{ github.sha }}
+          tags: |
+            ghcr.io/iscc/iscc-monitor:develop
+            ghcr.io/iscc/iscc-monitor:sha-${{ steps.vars.outputs.short }}

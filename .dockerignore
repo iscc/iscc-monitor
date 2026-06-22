@@ -17,11 +17,23 @@ cauldron/
 /iscc-monitor
 /cmd/iscc-monitor/iscc-monitor
 
-# Local SQLite databases and WAL/SHM sidecars — runtime state, never source.
+# Local SQLite databases and WAL/SHM sidecars — runtime state, never source. The
+# `*.db`/`*.sqlite*` globs do NOT match the `-wal`/`-shm` sidecars, so list those
+# explicitly. (.claude/settings.local.json is already covered by the .claude/ line.)
 *.db
 *.sqlite
 *.sqlite3
 *.sqlite*
+*.db-wal
+*.db-shm
+
+# Local secrets — never bake a developer's credentials into the build-STAGE layer.
+# The published image is unaffected (the final stage only COPY --from=build's the
+# binary), but a `.dockerignore` for a `COPY . .` Dockerfile must be a SUPERSET of
+# the repo .gitignore's never-commit secret set, as defense-in-depth hygiene.
+.env
+.env.*
+**/auth.json
 
 # Loop/agent and host-only trees that are irrelevant to the build.
 .claude/

@@ -25,9 +25,14 @@ run = "go build ./..."
 # GET /version. The Dockerfile / CI image build reuses this path. This is an
 # ADDITIONAL build (it needs git); the plain `build` / `check` tasks stay git-free
 # and compile the "dev" default, so the quality gate never depends on git.
+#
+# The SHA lookup is split out and guarded: an empty `-X …Version=` OVERRIDES the
+# in-code "dev" default rather than being a no-op, so a git failure (no .git, no
+# git on PATH) would silently stamp a blank /version. The `[ -n "$sha" ]` gate
+# aborts with a non-zero exit and emits NO binary instead of an empty-version one.
 [tasks."build:monitor"]
 description = "Build the monitor binary with the git short SHA stamped on /version"
-run = "go build -ldflags \"-X github.com/iscc/iscc-monitor/internal/version.Version=$(git rev-parse --short HEAD)\" -o ./iscc-monitor ./cmd/iscc-monitor"
+run = "sha=$(git rev-parse --short HEAD) && [ -n \"$sha\" ] && go build -ldflags \"-X github.com/iscc/iscc-monitor/internal/version.Version=$sha\" -o ./iscc-monitor ./cmd/iscc-monitor"
 
 [tasks.vet]
 description = "Run go vet (static checks)"
