@@ -26,10 +26,16 @@ concurrency:
 jobs:
   publish:
     name: build + push ghcr.io/iscc/iscc-monitor
+    # Pin the floating :develop tag to the develop ref. push:[develop] already
+    # satisfies this, so the guard is a no-op on the normal path; it only bites a
+    # workflow_dispatch from another ref, so a manual dispatch off a feature branch
+    # cannot republish that branch's code as :develop. The immutable :sha-<short>
+    # tag is keyed on the SHA and is unaffected.
+    if: github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Derive the immutable 7-hex short SHA for the sha-<short> tag. github.sha is
       # always populated in Actions (it cannot empty-expand the way a $(git rev-parse)

@@ -27,15 +27,21 @@ concurrency:
 jobs:
   build:
     name: render verifier-site
+    # Pin the monitor.iscc.codes deploy to the develop ref. push:[develop] already
+    # satisfies this, so the guard is a no-op on the normal path; it only bites a
+    # workflow_dispatch from another ref, so a manual dispatch off a feature branch
+    # cannot republish that branch's site. deploy needs:build, so a skipped build
+    # skips deploy too.
+    if: github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     env:
       CGO_ENABLED: "0"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
 
@@ -50,10 +56,10 @@ jobs:
         run: cp .github/pages/CNAME dist/CNAME
 
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: dist
 
@@ -67,4 +73,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
