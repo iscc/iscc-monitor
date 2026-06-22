@@ -61,27 +61,6 @@ filed it and does **not** affect priority.
 - **Spec:** CLAUDE.md "Write evergreen comments that describe the current state" (docstring must match
   behavior); next.md Implementation Note "Prefer nil-tolerant, mirroring the Loop's nil-Logger discipline".
 
-## Hub-List `hubDomain` accepts a trailing `?` (ForceQuery fail-open against the bare-host contract)
-- **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed)
-- **What / where / how to verify:** `internal/registry/registry.go` `hubDomain` (line 188) now rejects
-  `u.Path != "" || u.RawQuery != "" || u.Fragment != ""`, but `net/url` represents a bare trailing `?`
-  (e.g. `https://sb0.iscc.id?`) as `ForceQuery == true` with `RawQuery == ""`, so the guard does NOT
-  fire and `ParseHubList` accepts the url. `u.String()` round-trips the delimiter (`"https://sb0.iscc.id?"`),
-  and `Hub.URL` is retained for callers, so the query delimiter survives despite the docstring's
-  "path/query/fragment not allowed" contract. Reviewer-confirmed: `hubDomain("https://sb0.iscc.id?")`
-  returns `("sb0.iscc.id", nil)` (no error). The trailing-`#` case (`https://sb0.iscc.id#`) Go drops
-  on round-trip (harmless), so only `?`/`ForceQuery` is load-bearing. Same fail-open class as the two
-  path/missing-hub_id gaps just closed; not currently exploitable (live wiring deferred, fixture uses
-  clean `https://host` urls), but a trust-root-adjacent resolver should fully enforce its stated
-  contract before the certificate page consumes it. Fix when `hubDomain` is next touched: add
-  `|| u.ForceQuery` to the line-188 reject; add a `TestParseHubListErrors` case with url
-  `https://sb0.iscc.id?` asserting the "not a bare host base url" fragment. Verify fixed: `ParseHubList`
-  with a `https://host?` url returns a non-nil error + nil list, and reverting the `u.ForceQuery` clause
-  makes that test FAIL.
-- **Spec:** next.md "Fail closed, like Parse" Implementation Note; ADR-0010 Hub-List schema; CLAUDE.md
-  registry-rejects-URL-shapes precedent (a bare host base url carries no query).
-
 ## Certificate §6 RECORD HISTORY omits the per-record `· at` timestamp the mockup shows
 - **Priority:** normal
 - **Source:** [review] (visual pass vs the §6 mockup region)
