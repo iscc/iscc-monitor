@@ -1,74 +1,76 @@
-## 2026-06-22 — Review of: Version-stamp the binary (`-ldflags -X`) and surface it on `GET /version`
+## 2026-06-22 — Production multi-stage Dockerfile + CI container `/healthz` smoke job
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Added a tracked root `Dockerfile` (multi-stage `CGO_ENABLED=0` static build of
+`cmd/iscc-monitor` into `gcr.io/distroless/static-debian12:nonroot` — non-root uid 65532, CA roots
+present, baked interim realm) and a `.dockerignore` (excludes `.git`, the built binary, `cauldron/`,
+`*.db`, `.claude/`, etc.), plus a sibling `docker` job in `.github/workflows/ci.yml` that builds the
+image, runs it with a tmp DB + baked realm, and asserts `GET /healthz` → 200. The image's `VERSION` is
+a required, fail-fast build-arg: an empty value aborts the build stage rather than shipping a blank
+`/version` (folds in the `normal` empty-stamp fix). No Go source touched.
 
-**Summary:** The advance adds `internal/version`, a pure-stdlib HTTP leaf (`var Version = "dev"` as the
-`-ldflags -X` target + a `Handler()` serving `GET /version` → `{"version":%q}`), mounts it as an exact
-reserved path, and adds a `build:monitor` mise task that stamps the git short SHA. It mirrors the
-`healthz`/`metricshttp` leaf style exactly, the scope is tight (1 new prod file + 1 modified prod file +
-`mise.toml`, within the ≤3 budget), and every gate is green. One Codex-confirmed `normal` issue filed:
-the `build:monitor` git-SHA command substitution empty-expands on git failure, silently stamping an
-empty `/version` — a latent trap the next Dockerfile slice will hit, not a current-gate failure.
+**Files changed:**
+- `Dockerfile` (new): stage 1 `golang:1.26.4` builds with `-trimpath -ldflags "-s -w -X …version.Version=${VERSION}"`,
+  guarded by `[ -n "$VERSION" ] || { …; exit 1; } &&` before the build; stage 2 distroless static
+  nonroot, `COPY --from=build /iscc-monitor`, `COPY internal/registry/testdata/realm.txt
+  /etc/iscc-monitor/realm.txt`, `EXPOSE 9464`, `ENTRYPOINT ["/iscc-monitor"]`. `ARG VERSION` is NOT
+  defaulted (defaulting would mask the trap).
+- `.dockerignore` (new): keeps `.git`, `/iscc-monitor`, `/cmd/iscc-monitor/iscc-monitor`, `cauldron/`,
+  `*.db`/`*.sqlite*`, `.claude/`, `.devcontainer/`, `.github/`, the Dockerfile + dockerignore itself out
+  of the build context.
+- `.github/workflows/ci.yml`: added `docker` job (sibling to `check`, NOT folded in) — `checkout@v4`
+  (matched existing pins), `docker build --build-arg VERSION="$(git rev-parse --short HEAD)"`, detached
+  `docker run -d -p 9464:9464` with `ISCC_MONITOR_DB=/tmp/monitor.db`,
+  `ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt`, `ISCC_MONITOR_ADDR=0.0.0.0:9464`, a 15s
+  `curl -fsS …/healthz` poll loop that fails the job + dumps `docker logs` if it never returns 200, and
+  an `if: always()` cleanup. `set -euo pipefail` in the run blocks.
 
-**Verification:**
-- [x] `mise run check` → GREEN — all 27 packages `ok` (incl. new `internal/version`); build + vet clean.
-- [x] `gofmt -l .` → empty (touched files clean).
-- [x] `go test -count=1 -run TestVersion ./internal/version` → PASS (GET→200/`application/json`/non-empty
-  `version`==`Version`; non-GET→405; default-is-`dev`).
-- [x] `go test -run 'TestBuildMux|TestMirrorRouter|TestRegisterHubsRejectsReserved' ./cmd/iscc-monitor`
-  → PASS — `version` subtests added to both the reserved-domain table and the mirror-router table run
-  green; `TestBuildMuxReservedDomainNoPanic` green with `"version"` in `reservedMountNames`.
-- [x] Mechanical `-X` injection: built with `-X …Version=test123`, ran against the testnet realm, `curl
-  /version` → `200`/`application/json`/`{"version":"test123"}`; default build → `{"version":"dev"}`;
-  `mise run build:monitor` → `{"version":"9e36d9c"}` (== `git rev-parse --short HEAD`). Stamp flows
-  env-free from `-ldflags` to the response.
-- [x] `go.mod`/`go.sum`/`internal/store/schema.sql` byte-identical (empty `git diff --stat`); no new dep.
-  `internal/version` is a pure leaf (`go list -deps` shows no other `internal/*`). Build artifacts
-  (`./iscc-monitor`, `cmd/iscc-monitor/iscc-monitor`) gitignored; working tree clean.
-- [x] Gate-integrity scan of unpushed code (`origin/develop..HEAD`) — no `//nolint`, `t.Skip`,
-  build-tag exclusion, swallowed error, or loosened gate in the diff (the two grep hits are handoff
-  prose + a learnings note, not code). `check`/`build` left git-free so the gate never depends on `git`.
+**Verification:** `mise run check` → GREEN (all 28 packages `ok`, build + vet clean — confirms no Go
+regression; no source touched). `gofmt -l .` clean outside `cauldron/`. `go.mod`/`go.sum`/`schema.sql`
+byte-identical (empty `git diff --stat`; no new dependency). Per criterion:
+- [x] `mise run check` green — verified.
+- [x] image build / `-ldflags -X` host-equivalent: `go build -ldflags "-X …Version=testsha" -o …
+  ./cmd/iscc-monitor` succeeds; running it (tmp DB + testnet realm + `127.0.0.1:41466` +
+  `NORMAL=10m`) → `curl /healthz` = `{"status":"ok"}` (HTTP 200) and `curl /version` =
+  `{"version":"testsha"}`. The stamp flows through. **(`docker build`/`docker run` themselves run in
+  CI — Docker is absent on this host; marked verified-in-CI.)**
+- [x] empty-stamp regression: `go build -ldflags "-X …Version=" …` produces `{"version":""}` (proves
+  the empty stamp clobbers `dev` — not a no-op), and the Dockerfile guard `[ -n "$VERSION" ] || { …;
+  exit 1; } &&` was POSIX-shell-verified: empty `VERSION` → refuse + exit 1 (build never runs),
+  non-empty → build runs + exit 0. So `docker build --build-arg VERSION=` FAILS in CI. **(CI;
+  host-inspected + shell-proven.)**
+- [x] non-root + small image: Dockerfile uses `distroless/static-debian12:nonroot` (uid 65532, CA
+  roots) — confirmed by reading the base + the absence of any `USER root`. **(`docker image inspect`
+  in CI.)**
+- [x] `ci.yml` valid YAML and the `docker` job reproduces build+run+`/healthz`-200: validated via
+  `gopkg.in/yaml.v3` (YAML OK), and parsed to confirm two sibling jobs (`check`, `docker`) each with
+  their steps. **(Verified locally.)**
 
-**Issues found:** One filed (Codex-confirmed, see below). No reviewer-independent defect; the existing
-backlog is unaffected by this increment.
-
-**Codex second opinion:** Ran to completion (it independently probed the `-ldflags -X` injection path).
-One finding, **[P2] — CONFIRMED real and filed as a `normal` issue**: `build:monitor`'s
-`-X …Version=$(git rev-parse --short HEAD)` empty-expands when `git rev-parse` fails (no `.git` in a
-Docker build context, a source export, or no `git` on PATH) — git exits 128 but `$( )` yields `""` and
-the outer `go build` still succeeds, so the binary serves an empty `/version`, defeating the provenance.
-Reviewer-confirmed by two probes: (1) `git rev-parse` exits 128 in a non-git dir and `$( )` captures the
-empty string; (2) `-ldflags "-X …Version="` builds clean and prints an empty version (the empty stamp
-OVERRIDES the `dev` default — it is not a no-op). Does NOT fail this increment's gates (`check`/`build`
-are git-free and build the non-empty `dev`; the HTTP-seam test asserts non-empty; the injection check
-stamped the real SHA), but the very next M-Deploy slice (the Dockerfile, `critical`) consumes this exact
-path, so it must be fixed with/before that slice. Filed `normal` with the fail-fast fix
-(`sha=$(…) && [ -n "$sha" ] && go build …`).
-
-**Visual check:** n/a — no SSR surface changed. The diff is an HTTP JSON leaf (`GET /version`) plus
-build wiring; it touches no server-rendered HTML surface (`dashboard`/`dossier`/`certificate`/`web`/
-embedded template).
-
-**Next:** The front-of-queue is the M-Deploy `critical` multi-stage Dockerfile + GHCR publish workflow
-(ADR-0013), which consumes this `-ldflags -X` seam. The define-next for it should fold in the fail-fast
-SHA-lookup fix (the new `normal` issue) so the image never ships an empty `/version` — either fix
-`build:monitor` first or compute the SHA as a Dockerfile build-arg that fails the stage on empty. Other
-cheap independent M-Deploy slices still open: `deploy/realm-testnet.txt` (canonical realm doc),
-the operability/deployment footprint doc, and the root `README.md` (which `target.md` "Done When"
-requires before DONE is reachable).
+**Next:** The GHCR **publish workflow** — M-Deploy's second Verify bullet and the second half of the
+GHCR `critical` issue: on push to `develop`, build + push `ghcr.io/iscc/iscc-monitor` tagged `develop`
++ `sha-<short>` (this Dockerfile is the artifact it publishes; the publish step adds
+`docker/login-action` + `docker/build-push-action` or a plain `docker push` with `GITHUB_TOKEN` and
+`packages: write` permission — a new `.github/workflows/publish.yml` or a job in `ci.yml`). Other cheap
+M-Deploy slices still open: the canonical `deploy/realm-testnet.txt`, the operability/deployment doc,
+and the root `README.md` (which `target.md` "Done When" requires before DONE is reachable).
 
 **Notes:**
-- The increment is correctly scoped per `next.md`: `internal/config` untouched (a compile-time stamp,
-  not a runtime env key); `internal/healthz` left byte-identical; no richer build-info struct (YAGNI).
-- The reserved-mount discipline was applied correctly and completely: `"version"` added to
-  `reservedMountNames` AND all four doc comments updated to name it — consistent with the
-  `learnings/cmd-monitor.md` reserved-name rule.
-- New `learnings/version.md` records the leaf mechanics + the `-X` empty-stamp trap; promoted the durable
-  cross-cutting `-X`-empty-overrides-default rule to the Go-conventions index (it binds any future stamp,
-  not just this package).
-- Oracle gate N/A (pure HTTP wiring + a build string; no signature/RFC-6962/Merkle/did:web/proof/fsck
-  path). `notecheck`/golden-vector/hub-receipt oracles untouched.
-- 0 critical (the increment opened none), backlog otherwise unchanged. Loop CONTINUE — NEEDS_WORK was
-  not warranted (gates green, increment Verify bar met); the empty-stamp trap is a `normal` follow-on the
-  next consumer slice fixes, per the fully-autonomous policy.
+- **Docker is NOT installed on this host** (confirmed: `which docker` empty), so the three
+  container-run Verify items (`docker build`/`docker run`/`docker image inspect`) genuinely run in CI,
+  not locally — I verified the host-independent equivalents (the exact `-ldflags -X` host build boots,
+  serves `/healthz` 200, carries the stamp) and inspected the Dockerfile + CI run blocks statically, as
+  the `next.md` Local-verification fallback directs. I did NOT claim the `docker` commands passed
+  locally.
+- The empty-SHA `normal` issue is fixed **for the image** via the Dockerfile build-arg guard, as
+  scoped. The host `mise.toml` `build:monitor` task is deliberately left untouched (out of scope per
+  `next.md`; the Dockerfile is the consumer that actually hits the trap). Whether to also harden
+  `build:monitor` remains the open `normal` issue.
+- The image bakes `internal/registry/testdata/realm.txt` at `/etc/iscc-monitor/realm.txt` as an
+  **interim** realm purely so the CI smoke test has a registerable realm — `next.md` explicitly defers
+  inventing `deploy/realm-testnet.txt` to a later slice. An operator overrides `ISCC_MONITOR_REALM` to
+  point at their own document.
+- `EXPOSE 9464` documents the default `ISCC_MONITOR_ADDR` port (`:9464`, confirmed in
+  `internal/config` `defaultAddr`); it publishes nothing by itself (CI uses `-p 9464:9464`).
+- Oracle/conformance gate is **N/A**: this slice is packaging + CI only, touches no signature /
+  RFC-6962 / Merkle / did:web / proof / fsck path; `internal/*` and `cmd/*` are byte-identical.
+- The `.gitattributes`-free repo will commit the Dockerfile with whatever line endings git defaults to;
+  the RUN guard uses `sh` `[ -n … ]` which is LF-agnostic in a Linux build image.

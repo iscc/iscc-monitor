@@ -1,0 +1,31 @@
+# Build-context hygiene for the root Dockerfile. The image build only needs the
+# Go module sources plus go.mod/go.sum; everything below is either large,
+# secret, host-only, or actively breaks the build, so it is kept out of the
+# context COPY . . sends to the daemon.
+
+# Git metadata — large and never needed inside the build (the VERSION stamp is
+# passed as a --build-arg, not read from .git).
+.git
+
+# Gitignored reference trees: cauldron/ pulls external deps the root module
+# lacks, so its presence breaks `go build ./...` (see learnings: cauldron breaks
+# a fresh build).
+cauldron/
+
+# Compiled monitor binaries — the 26MB artifacts `go build` emits at the repo
+# root and the command dir; the image builds its own, never copies the host's.
+/iscc-monitor
+/cmd/iscc-monitor/iscc-monitor
+
+# Local SQLite databases and WAL/SHM sidecars — runtime state, never source.
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite*
+
+# Loop/agent and host-only trees that are irrelevant to the build.
+.claude/
+.devcontainer/
+.github/
+.dockerignore
+Dockerfile
