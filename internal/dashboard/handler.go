@@ -79,11 +79,55 @@ type row struct {
 	AnchorDot   string
 }
 
-// pageData is the whole template context: the rendered hub rows plus the count of
-// followed hubs (HubCount == len(Hubs)) the masthead/ledger heading reports.
+// pageData is the whole template context: the rendered hub rows, the count of
+// followed hubs (HubCount == len(Hubs)) the masthead/ledger heading reports, and
+// the resolved instance-identity strings the masthead/ledger render (Instance and
+// Operator on the chrome, Realm in the "Realm register · <realm>" subtitle).
 type pageData struct {
 	Hubs     []row
 	HubCount int
+	Instance string
+	Operator string
+	Realm    string
+}
+
+// Identity is the operator-supplied identity of this monitor deployment, rendered
+// on the masthead so the served "/" page is honest per-deployment instead of
+// generic: Instance is this instance's domain (the chrome's instance line),
+// Operator is the operator/realm line beneath it, and Realm names the followed
+// realm in the ledger subtitle ("Realm register · <realm>"). All three are
+// optional; the handler applies fail-safe defaults for any empty field so an
+// unconfigured binary renders exactly today's static masthead.
+type Identity struct {
+	Instance string
+	Operator string
+	Realm    string
+}
+
+// Default masthead copy used when an identity field is left empty, so an
+// unconfigured deployment renders today's honest placeholder rather than a false
+// claim. instanceFallback keeps the neutral "monitor instance" placeholder (never
+// asserting a specific domain), operatorFallback keeps the generic service line,
+// and an empty Realm renders the bare "Realm register" subtitle (no "· <realm>"
+// suffix) via the template's conditional.
+const (
+	instanceFallback = "monitor instance"
+	operatorFallback = "independent Trust & Transparency service · ISCC-Hub network"
+)
+
+// resolve applies the fail-safe defaults: a blank Instance or Operator falls back
+// to the static masthead copy, while a blank Realm is left empty so the template
+// renders the bare "Realm register" subtitle with no trailing separator. Defaults
+// live here (not in the binary) so the fallback is centralized and golden-testable
+// independent of main.go.
+func (id Identity) resolve() Identity {
+	if id.Instance == "" {
+		id.Instance = instanceFallback
+	}
+	if id.Operator == "" {
+		id.Operator = operatorFallback
+	}
+	return id
 }
 
 // StatusSource reports a hub's current in-memory glossary status by hub_id. It is
@@ -107,8 +151,11 @@ type StatusSource interface {
 // st must be non-nil (the binary always passes the real store); there is no
 // nil-guard branch. statuses is the in-memory status overlay (the metrics
 // registry); a nil statuses is tolerated and simply leaves every store-verified
-// hub showing "verified".
-func Handler(st *store.Store, statuses StatusSource) http.Handler {
+// hub showing "verified". id is the operator-supplied instance identity rendered
+// on the masthead; any empty field falls back to the static placeholder copy
+// (Identity.resolve), so a zero-value Identity renders exactly today's masthead.
+func Handler(st *store.Store, statuses StatusSource, id Identity) http.Handler {
+	id = id.resolve()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -125,7 +172,14 @@ func Handler(st *store.Store, statuses StatusSource) http.Handler {
 		}
 		rows := buildRows(summaries, statuses)
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, pageData{Hubs: rows, HubCount: len(rows)}); err != nil {
+		data := pageData{
+			Hubs:     rows,
+			HubCount: len(rows),
+			Instance: id.Instance,
+			Operator: id.Operator,
+			Realm:    id.Realm,
+		}
+		if err := tmpl.Execute(&buf, data); err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}

@@ -147,7 +147,7 @@ func run() error {
 	hubList := hubListFromEntries(entries)
 
 	m := metrics.New()
-	go serveMetrics(ctx, cfg.Addr, st, routes, hubList, m, logger)
+	go serveMetrics(ctx, cfg.Addr, st, routes, hubList, m, identity(), logger)
 	go runOTSLoop(ctx, st, stampFunc(), otsclient.NewUpgrader(), logger)
 
 	loop := &follower.Loop{
@@ -176,8 +176,8 @@ func run() error {
 // (mirroring how Run treats context.Canceled as clean) and is logged, not
 // surfaced; any other listen error is logged so a misconfigured address is never
 // silent.
-func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hubRoute, hubList *registry.HubList, m *metrics.Registry, logger *slog.Logger) {
-	srv := &http.Server{Addr: addr, Handler: buildMux(st, routes, hubList, m)}
+func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hubRoute, hubList *registry.HubList, m *metrics.Registry, id dashboard.Identity, logger *slog.Logger) {
+	srv := &http.Server{Addr: addr, Handler: buildMux(st, routes, hubList, m, id)}
 
 	go func() {
 		<-ctx.Done()
@@ -265,15 +265,47 @@ func stampFunc() follower.Stamper {
 // uniformly (Access-Control-Allow-Origin: * on every response; OPTIONS preflights
 // succeed with 204) without per-handler CORS code. It is factored out of
 // serveMetrics so the full routing is unit-testable against an
-// httptest.ResponseRecorder without binding a socket.
-func buildMux(st *store.Store, routes []hubRoute, hubList *registry.HubList, m *metrics.Registry) http.Handler {
+// httptest.ResponseRecorder without binding a socket. The operator-supplied
+// instance identity (id) is rendered on the dashboard masthead; an empty field
+// falls back to the static placeholder copy inside dashboard.Handler.
+func buildMux(st *store.Store, routes []hubRoute, hubList *registry.HubList, m *metrics.Registry, id dashboard.Identity) http.Handler {
 	mux := mirrorHandler(st, routes, m)
-	mux.Handle("/", dashboard.Handler(st, m))
+	mux.Handle("/", dashboard.Handler(st, m, id))
 	mux.Handle("/metrics", metricshttp.Handler(m))
 	mux.Handle("/healthz", healthz.Handler(st))
 	mux.Handle(certificate.PathPrefix, certificate.Handler(hubList, st, m))
 	mux.Handle(web.Prefix, web.Handler())
 	return corsmw.Handler(mux)
+}
+
+// Instance-identity environment keys: the operator-supplied values rendered on the
+// masthead so the served "/" page is honest per-deployment. They are read inline
+// here (not in internal/config) for now; the follow-on sub-step that threads
+// identity to the remaining surfaces moves them into the config leaf. An unset key
+// leaves the field empty and the dashboard applies its own fail-safe default.
+//
+// keyRealmName is deliberately distinct from internal/config's existing required
+// ISCC_MONITOR_REALM (the realm-document filesystem PATH): the masthead needs the
+// human realm NAME ("ISCC mainnet"), not the on-disk path, so overloading the path
+// var would leak a filename into the ledger subtitle. The name var is optional and
+// falls back to the bare "Realm register" subtitle when unset.
+const (
+	keyInstance  = "ISCC_MONITOR_INSTANCE"
+	keyOperator  = "ISCC_MONITOR_OPERATOR"
+	keyRealmName = "ISCC_MONITOR_REALM_NAME"
+)
+
+// identity builds the dashboard's instance identity from the optional
+// ISCC_MONITOR_INSTANCE / ISCC_MONITOR_OPERATOR / ISCC_MONITOR_REALM_NAME
+// environment variables. Unset keys stay empty strings, which dashboard.Handler
+// renders as its static fallback masthead, so an unconfigured binary is honest
+// rather than asserting a false instance.
+func identity() dashboard.Identity {
+	return dashboard.Identity{
+		Instance: os.Getenv(keyInstance),
+		Operator: os.Getenv(keyOperator),
+		Realm:    os.Getenv(keyRealmName),
+	}
 }
 
 // hubListFromEntries builds the interim realm-wide Hub-List for the certificate

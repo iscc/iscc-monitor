@@ -1,44 +1,72 @@
-## 2026-06-22 — Review of: Render the record-list `Type` column (per-row declaration/deletion/unknown badge)
+## 2026-06-22 — Render config-driven instance identity on the `/` realm-index masthead (skeleton)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Replaced the dashboard masthead's hard-coded `monitor instance` / static service copy and the
+bare "Realm register" ledger subtitle with three operator-supplied values (instance domain, operator/realm
+line, realm name) that flow from environment → the live binary → the rendered `/` page. A new
+`dashboard.Identity` view value carries them; `dashboard.Handler` gained an `Identity` parameter and applies
+fail-safe defaults INSIDE the handler so an unconfigured binary renders exactly today's masthead.
 
-**Summary:** A clean, tightly-scoped M-UI render slice that completes the mockup's full 4-column
-`Seq · Type · ISCC-ID · Logged` record-list head by adding a per-row Type badge mapped from the verbatim
-`note.$schema` (ADR-0008). It introduces a handler-local `recordRowVM` (embedding `store.RecordRow` +
-`Kind`/`KindKey`) and a `recordKindKey` CSS-token mapping that mirrors `recordKind`'s switch on the SAME
-schema constants, so the label and the badge key can never drift. No store/struct/schema change; scope is
-exactly 1 production file + 1 template + 1 test file. All gates green, the new test is mutation-proven
-non-vacuous (both the badge-cell deletion AND the constant revert make it FAIL — the constant-vs-constant
-vacuity trap is avoided), Codex clean, and the visual pass confirms the Type column lands matching the
-mockup's named region with no new delta.
+**Files changed:**
+- `internal/dashboard/handler.go`: added exported `Identity struct { Instance, Operator, Realm string }`
+  with an `Identity.resolve()` that centralizes the empty-field fallbacks (`instanceFallback` =
+  "monitor instance", `operatorFallback` = the generic service line, empty Realm left empty); changed
+  `Handler(st, statuses)` → `Handler(st, statuses, id Identity)`; carried `Instance`/`Operator`/`Realm` on
+  `pageData`.
+- `internal/dashboard/dashboard.html`: templated the three identity text nodes —
+  `{{.Instance}}` in `.chrome-instance`, `{{.Operator}}` in `.chrome-operator`, and
+  `Realm register{{if .Realm}} · {{.Realm}}{{end}}` in `.ledger-title`. Masthead structure, classes, logo
+  `<img>`, and the `verify ↗ monitor.iscc.codes` link byte-unchanged.
+- `cmd/iscc-monitor/main.go`: added an `identity()` helper reading three optional env vars via `os.Getenv`,
+  threaded `dashboard.Identity` through `serveMetrics` → `buildMux` → the `/` mount. The buildMux/serveMetrics
+  signatures gained the `id` param.
+- `internal/dashboard/handler_test.go` (test): updated the 6 existing `Handler(...)` call sites to pass
+  `Identity{}` (fallback path) and added mutation-proven `TestDashboardRendersInstanceIdentity`.
+- `cmd/iscc-monitor/main_test.go` (test): updated the 8 `buildMux(...)` call sites to pass
+  `dashboard.Identity{}` and added the `dashboard` import.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green, all 28 packages ok.
-- [x] `go test -count=1 -run TestRecords ./internal/proofserve` — PASS (existing record-list tests + new `TestRecordsRendersTypeColumn`, verbose-confirmed it actually runs).
-- [x] New test asserts `<span>Type</span>` header + `Declaration`/`Deletion`/`Unknown record type` labels + the additive verbatim `http://purl.org/...iscc-note-0.8.0.json` schema, each driven from a HARDCODED literal URI.
-- [x] Mutation 1 (reviewer-run, restored byte-clean): deleting the `.record-type` badge cell from `records.html` → `TestRecordsRendersTypeColumn` FAILS; restore byte-clean (`git diff`-clean, HEAD unchanged).
-- [x] Mutation 2 / non-vacuity (reviewer-run, restored byte-clean): reverting `schemaDeclaration` to the short form `iscc-note-0.8.0` → test FAILS (the hardcoded-literal grounding works; not tied to the constant under test).
-- [x] `gofmt -l .` — empty outside `cauldron/`.
-- [x] Store leaf invariant: `go list -deps ./internal/store | grep -E 'net/http|proofserve'` empty (store untouched).
-- [x] Grid alignment: `.records-head` + `.record-row` both `120px 130px 1fr 160px` (head columns aligned to data cells); `.ledger-status` (`160px 1fr`) correctly untouched.
-- [x] All 12 new `.record-type` CSS tokens resolve in `internal/web/tokens.css` (`--font-mono`, `--text-2xs`, `--weight-bold`, `--tracking-wide`, `--space-1/2`, `--border-width`, `--border-subtle`, `--radius-xs`, `--text-muted`, `--status-success-text`, `--status-warning-text`).
-- [x] CSS-literal trap closed: the `.record-type[data-kind=…]` selectors use the UNQUOTED form; the only `data-kind="…"` literals are an HTML attribute on the row (templated) + a prose CSS comment, never a quoted selector in `<style>`. `TestRecordsLinksTokensNoCDN` + `TestRecordsRendersInMemoryStatus` still pass.
-- [x] No-CDN/`<table>` ban holds: `buildMirror` fixtures (which `TestRecordsLinksTokensNoCDN` uses) seed empty schemas → the badge is the neutral "Unknown record type" carrying no URL, so the whole-body `http://` ban still passes.
-- [x] Oracle/trust-path: name-only diff over `internal/proof/`, `logclient/verify`, `didweb`, `index`, `notecheck`, `go.mod`, `go.sum`, `schema.sql`, consistency/equivocation/fork/shrink is empty — oracle gate correctly N/A (pure HTML render of the persisted, schema-agnostic `note.$schema`).
-- [x] Gate-circumvention scan over all unpushed commits: no `nolint`/`t.Skip`/build-tag/swallowed-error in added code (the two matches are prose inside handoff text). The other two unpushed commits are pure CID-context (`next.md`, `state.md`), no code.
-- [x] Scope discipline: 1 prod file (`handler.go`) + 1 template (`records.html`) + 1 test file; nothing from `## Not In Scope` (pager buttons / jump-to-sequence / back-link / masthead / store change) was touched.
+**Verification:** `mise run check` → green (build + vet + `go test ./...`, all 28 packages ok).
+- [x] `go test -count=1 -run TestDashboard ./internal/dashboard` passes (all existing tests under the new
+  3-arg signature + new identity test).
+- [x] New `TestDashboardRendersInstanceIdentity`: populated `Identity` renders all three literals AND
+  `Realm register · example net` AND does NOT show the static placeholder; zero-value `Identity{}` renders
+  `monitor instance` + `independent Trust &amp; Transparency service` + the exact bare
+  `<h2 class="ledger-title">Realm register</h2>` with NO trailing `·`.
+- [x] Mutation A (template): replacing `{{.Instance}}` with the literal `monitor instance` → test FAILS;
+  restored byte-clean.
+- [x] Mutation B (threading): handler ignoring `id.Instance` (uses `instanceFallback`) → test FAILS;
+  restored byte-clean. Proves the test pins BOTH the template binding AND the wired value (non-vacuous).
+- [x] `go list -deps ./internal/store | grep -E 'net/http|internal/dashboard'` empty (store stays a leaf).
+- [x] `gofmt -l .` empty outside `cauldron/`.
+- [x] `TestDashboardLinksTokensNoCDN` + `TestDashboardRendersEveryHub` still pass (no new `http(s)://` /
+  `cdn.` / `jsdelivr` / `<table>`; `monitor.iscc.codes` still positively asserted present).
 
-**Issues found:** (none) — the increment does exactly what `next.md` asked. The deferred siblings (pager buttons, jump-to-sequence JS input, `← <hub> dossier` back-link, masthead instance-identity) remain correctly Not-In-Scope and are already-tracked issues, not defects of this slice.
-
-**Codex second opinion:** Clean. Codex: "The change cleanly projects record schemas into a view-model-backed Type badge and updates the template/tests accordingly. I did not find any actionable regressions in the modified code." Codex independently grepped `recordKind` across `internal/certificate` + `internal/proofserve` and confirmed the mapping-consistency design. No findings to triage; matches my own assessment.
-
-**Visual check:** Performed (agent-browser 0.29.0). Built the binary, seeded a fixture DB with declaration/deletion/unknown records (the live testnet renders empty schemas, so a fixture is needed to exercise the badge's rich states), launched against a long-poll realm so the fixture survives, and screenshotted `GET /sb0.iscc.id/log/records` vs `.claude/design/ISCC Monitor - Log Browser.dc.html`. The live page renders the full `SEQ · TYPE · ISCC-ID · LOGGED` head with per-row badges — Declaration green (`--status-success-text`), Deletion amber (`--status-warning-text`), Unknown neutral muted — and the verbatim `note.$schema` still rendering below each ISCC-ID (additive, ADR-0008). Matches the mockup's Type named region. Deltas observed are all pre-existing tracked items (pager buttons, jump-to-sequence, back-link, masthead identity, and the decorative blue-vs-green badge hue — text label is the load-bearing signal per ADR-0010 inv. 4). No NEW delta from this slice; nothing filed.
-
-**Next:** This was the last pure-code M-UI named-region slice on the log-browser surface. The remaining log-browser deltas are design-first or human-blocked (pager buttons, jump-to-sequence JS input, `← <hub> dossier` back-link). The next cheapest slice likely shifts to another surface or to one of the open `normal` issues — the strongest candidates: the `/` realm-index config-driven instance-identity copy (#214 sub-2, blocks honest per-deployment masthead and recurs across all six SSR mastheads), the on-disk DB migration story (#40, the first operational hazard once a populated prod DB needs in-place upgrade), or the WASM verifier signature half (design-first; the cross-origin trust gap). define-next should weigh the instance-identity copy first — it is code-only, unblocks multiple mastheads, and is the most-referenced remaining `normal`.
+**Next:** Continue the same arc to the OTHER five SSR mastheads with the SAME `dashboard.Identity` value
+(reused), one ≤3-file sub-step each: `internal/dossier` (`dossier.html:358`), `internal/certificate`
+(`cert.html:391`), and the proofserve surfaces (`browser.html`, `records.html`, `record.html`).
+`internal/verifier` stays EXCLUDED (its chrome is the `.codes` verifier-app identity). When the second
+surface lands, move the env parsing into `internal/config`'s `optional(get, key, fallback)` leaf so all six
+surfaces draw from one validated source (deferred here only for the ≤3-file budget). The dossier+cert
+mastheads are byte-identical ports (learnings/dashboard.md) — keep them in lockstep when templating them.
 
 **Notes:**
-- Mapping consistency is sound: `recordKind` (label) and `recordKindKey` (CSS token) switch on the SAME `schemaDeclaration`/`schemaDeletion` constants — the key is derived from the schema, never parsed from the label, so they cannot drift. This is the right factoring for the cross-cutting "single mapping site" rule.
-- The `recordRowVM` embeds `store.RecordRow`, so the template still reads `.Seq`/`.IsccID`/`.NoteSchema`/`.NoteTimestamp` verbatim and only adds `.Kind`/`.KindKey` — no field collision (build + tests + field-ref audit confirm). The kind is render-time only, never a stored column (store stays a leaf; the open DB-migration issue is NOT re-triggered).
-- The vacuity trap that left the single-record label test green (`record_test.go`, open `low`) is correctly avoided here by seeding HARDCODED literal schema URIs — reviewer-proven by the constant-revert mutation. That `low` on `record_test.go` is a DIFFERENT file (single-record page), untouched here, so it stays open.
-- Open `normal` issues remain (DB migration #40; `/` realm-index instance-identity copy #214 sub-2; WASM verifier signature half; Pages custom-domain binding; realm-index Anchor design-honesty) — none preempt the M-UI named-region work and none are touched here.
+- **HUMAN REVIEW REQUESTED — env-var name deviation from `next.md`.** `next.md` Scope named the realm-name
+  env var `ISCC_MONITOR_REALM`, but that key is ALREADY taken by `internal/config` as the REQUIRED
+  realm-membership-document **filesystem path** (documented in CLAUDE.md and `internal/config/config.go:37`).
+  Reading `os.Getenv("ISCC_MONITOR_REALM")` for the masthead would render the document path (e.g.
+  `internal/registry/testdata/realm.txt`) into the ledger subtitle in every production deployment — a real
+  regression, not the mockup's human realm name. I used a distinct NEW key `ISCC_MONITOR_REALM_NAME` for the
+  realm display name instead. `ISCC_MONITOR_INSTANCE` and `ISCC_MONITOR_OPERATOR` are genuinely new, as
+  specified. This is the smallest correct fix; flagging because it diverges from the literal env-var name in
+  the work package. The follow-on config-leaf sub-step should adopt `ISCC_MONITOR_REALM_NAME` (or pick the
+  final name) when these keys move into `internal/config`.
+- Defaults are centralized in `Identity.resolve()` in the handler (not main.go), so the HTTP-seam test pins
+  the fallback deterministically regardless of env — exactly as `next.md` requested. main.go passes raw
+  `os.Getenv` values (empty when unset); the handler owns the fallback.
+- Docs: I did NOT update CLAUDE.md's env-var list — `next.md` lists no doc files in scope, and CLAUDE.md's
+  env table belongs with the config-leaf integration (deferred). Review may want to add
+  `ISCC_MONITOR_INSTANCE` / `ISCC_MONITOR_OPERATOR` / `ISCC_MONITOR_REALM_NAME` to the "Running a local dev
+  instance" section then.
+- Oracle/trust-path gate N/A: pure HTML render of persisted rows + masthead strings; no signature / RFC-6962
+  / Merkle / did:web / fsck / proof path; go.mod/go.sum/schema byte-identical.
+- Production file count: 3 (`handler.go`, `dashboard.html`, `main.go`) — within the ≤3 budget; the two
+  `_test.go` files are not counted.

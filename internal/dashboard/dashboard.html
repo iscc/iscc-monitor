@@ -362,8 +362,8 @@
     </div>
     <div class="chrome-actions">
       <div class="chrome-identity">
-        <div class="chrome-instance">monitor instance</div>
-        <div class="chrome-operator">independent Trust &amp; Transparency service · ISCC-Hub network</div>
+        <div class="chrome-instance">{{.Instance}}</div>
+        <div class="chrome-operator">{{.Operator}}</div>
       </div>
       <a class="chrome-verify" href="https://monitor.iscc.codes/">verify ↗ monitor.iscc.codes</a>
     </div>
@@ -384,7 +384,7 @@
     </section>
 
     <div class="ledger-head">
-      <h2 class="ledger-title">Realm register</h2>
+      <h2 class="ledger-title">Realm register{{if .Realm}} · {{.Realm}}{{end}}</h2>
       <span class="ledger-count">{{.HubCount}} hubs followed &amp; mirrored</span>
     </div>
 

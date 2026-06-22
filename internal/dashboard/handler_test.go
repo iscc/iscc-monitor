@@ -91,7 +91,7 @@ func TestDashboardRendersEveryHub(t *testing.T) {
 	rec := httptest.NewRecorder()
 	// nil StatusSource: every store-verified hub renders as "verified" (no overlay),
 	// so this test pins the store-provable subset exactly as before the overlay.
-	Handler(st, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -198,7 +198,7 @@ func TestDashboardRendersInMemoryStatus(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	Handler(st, statuses).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	Handler(st, statuses, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -228,7 +228,7 @@ func TestDashboardRendersInMemoryStatus(t *testing.T) {
 func TestDashboardLinksTokensNoCDN(t *testing.T) {
 	st := fixtureStore(t)
 	rec := httptest.NewRecorder()
-	Handler(st, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -259,7 +259,7 @@ func TestDashboardLinksTokensNoCDN(t *testing.T) {
 func TestDashboardRendersHeroAndNavigation(t *testing.T) {
 	st := fixtureStore(t)
 	rec := httptest.NewRecorder()
-	Handler(st, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -307,10 +307,77 @@ func TestDashboardRendersHeroAndNavigation(t *testing.T) {
 	}
 }
 
+// TestDashboardRendersInstanceIdentity proves the masthead renders the
+// operator-supplied instance identity at the HTTP seam: a populated Identity
+// surfaces its exact Instance / Operator strings on the chrome and its Realm in the
+// ledger subtitle ("Realm register · <realm>"), and a zero-value Identity falls
+// back to the static placeholder copy (the neutral "monitor instance" line and the
+// bare "Realm register" subtitle with no trailing separator). It is non-vacuous:
+// dropping the {{.Instance}} binding (or the .chrome-instance text node) from the
+// template, or threading a constant default instead of the supplied value, makes
+// the populated-identity assertions fail because the exact operator strings would
+// no longer appear.
+func TestDashboardRendersInstanceIdentity(t *testing.T) {
+	st := fixtureStore(t)
+
+	// Populated identity: the masthead must render these exact operator-supplied
+	// strings (not the static defaults), driven through the live render so reverting
+	// the template binding fails the test.
+	id := Identity{
+		Instance: "monitor.example.test",
+		Operator: "operated by Example Org · example net",
+		Realm:    "example net",
+	}
+	rec := httptest.NewRecorder()
+	Handler(st, nil, id).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"monitor.example.test",
+		"operated by Example Org · example net",
+		"Realm register · example net",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing identity literal %q\n%s", want, body)
+		}
+	}
+	// The static placeholder copy must NOT appear when an operator configures the
+	// instance — otherwise the test would pass even if the template ignored the
+	// supplied value and kept the hard-coded default.
+	if strings.Contains(body, "monitor instance") {
+		t.Errorf("body still shows the static placeholder despite a configured Instance\n%s", body)
+	}
+
+	// Zero-value identity: the fallback masthead renders the neutral placeholder and
+	// the bare "Realm register" subtitle (no trailing "· " separator), so an
+	// unconfigured deployment is honest rather than asserting a false instance.
+	recDefault := httptest.NewRecorder()
+	Handler(st, nil, Identity{}).ServeHTTP(recDefault, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recDefault.Code != http.StatusOK {
+		t.Fatalf("default status = %d, want 200", recDefault.Code)
+	}
+	defaultBody := recDefault.Body.String()
+	for _, want := range []string{
+		"monitor instance",
+		"independent Trust &amp; Transparency service",
+		`<h2 class="ledger-title">Realm register</h2>`,
+	} {
+		if !strings.Contains(defaultBody, want) {
+			t.Errorf("default body missing fallback %q\n%s", want, defaultBody)
+		}
+	}
+	// The bare subtitle must carry no trailing realm separator when Realm is empty.
+	if strings.Contains(defaultBody, "Realm register ·") {
+		t.Errorf("default body shows a trailing realm separator for an empty realm\n%s", defaultBody)
+	}
+}
+
 func TestDashboardMethodNotAllowed(t *testing.T) {
 	st := fixtureStore(t)
 	rec := httptest.NewRecorder()
-	Handler(st, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+	Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST / status = %d, want 405", rec.Code)
 	}
@@ -319,7 +386,7 @@ func TestDashboardMethodNotAllowed(t *testing.T) {
 func TestDashboardUnknownPath(t *testing.T) {
 	st := fixtureStore(t)
 	rec := httptest.NewRecorder()
-	Handler(st, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/unknown", nil))
+	Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/unknown", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("GET /unknown status = %d, want 404", rec.Code)
 	}
