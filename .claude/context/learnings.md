@@ -74,6 +74,7 @@ touch it. Everything package-local stays in the detail file. See `README.md` for
 | Area / path | Detail file | Gist |
 | --- | --- | --- |
 | `internal/logclient` | `learnings/logclient.md` | signed-note verify; shrink/fork/equivocation triggers; consistency/inclusion proof builders; leaf hasher; fsck glue; did:web resolver + checkpoint/tile transport + AcceptCheckpoint seam |
+| `internal/proof/verify` | `learnings/proof-verify.md` | pure WASM-shareable inclusion-verifier core shared by server + verify-for-me + WASM; three-way (true,nil)/(false,nil)/(false,err) verdict contract; arg-order hidden; golden 4-leaf vector |
 | `internal/didweb` | `learnings/didweb.md` | DocumentURL W3C mapping; ValidAt half-open window; parseTime fail-closed; assertionMethod polymorphism; WASM-pure verifier seam |
 | `internal/tiles` | `learnings/tiles.md` | layout re-export; PartialTileSize / TileCoords / BundleCoords boundary math (the p→width / index-1 partial trap) |
 | `internal/store` | `learnings/store.md` | single-writer SQLite leaf; SQLiteFetcher p→width read-back; iscc_index; AdvanceAccepted tx; coverage set-once; modernc v1.46.1 pin |
