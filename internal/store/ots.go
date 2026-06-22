@@ -151,18 +151,24 @@ func (s *Store) OTSForRoot(ctx context.Context, hubID int64, treeSize uint64, ro
 	return r, true, nil
 }
 
-// PendingOTS reads the still-pending stamped roots the upgrade loop must re-poll,
-// oldest-first (ORDER BY stamped_at ASC, id ASC) for a fair upgrade order. It is a
-// leaf []OTSRecord read scoped by status = OTSStatusPending (a confirmed row drops
-// out); a network with no pending rows returns an empty slice and a nil error. The
-// nullable columns are read through sql.NullInt64 / sql.NullString exactly as
-// OTSForRoot, so a NULL degrades to the zero value.
-func (s *Store) PendingOTS(ctx context.Context) ([]OTSRecord, error) {
+// PendingOTS reads the still-pending stamped roots whose back-off has elapsed at
+// now — the rows the upgrade loop must re-poll this pass — oldest-first (ORDER BY
+// stamped_at ASC, id ASC) for a fair upgrade order. It is a leaf []OTSRecord read
+// scoped by status = OTSStatusPending (a confirmed row drops out) AND a back-off
+// filter `next_retry IS NULL OR next_retry <= now`: a freshly-stamped row has a
+// NULL next_retry so it is immediately due, while a row a MarkOTSAttempted back-off
+// pushed into the future is excluded until now reaches its next_retry. A network
+// with no due rows returns an empty slice and a nil error. The nullable columns are
+// read through sql.NullInt64 / sql.NullString exactly as OTSForRoot, so a NULL
+// degrades to the zero value. now is bound directly via now.Unix() (NOT unixOrNil —
+// now is never the zero time on the upgrade path).
+func (s *Store) PendingOTS(ctx context.Context, now time.Time) ([]OTSRecord, error) {
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT hub_id, tree_size, root, status, ots_bytes, calendar_urls, "+
 			"stamped_at, upgraded_at, btc_height, attempts, next_retry "+
-			"FROM ots WHERE status = ? ORDER BY stamped_at ASC, id ASC",
-		OTSStatusPending,
+			"FROM ots WHERE status = ? AND (next_retry IS NULL OR next_retry <= ?) "+
+			"ORDER BY stamped_at ASC, id ASC",
+		OTSStatusPending, now.Unix(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store.PendingOTS: query: %w", err)
@@ -225,6 +231,26 @@ func (s *Store) MarkOTSUpgraded(ctx context.Context, hubID int64, treeSize uint6
 	)
 	if err != nil {
 		return fmt.Errorf("store.MarkOTSUpgraded: hub %d size %d: %w", hubID, treeSize, err)
+	}
+	return nil
+}
+
+// MarkOTSAttempted records a backed-off retry for a still-pending stamped root:
+// the upgrade loop sets attempts to the new count and next_retry to the future
+// instant before which PendingOTS must not re-surface the row. It does NOT touch
+// status — the row stays OTSStatusPending so PendingOTS re-serves it once next_retry
+// elapses. It is a plain UPDATE keyed on (hub_id, tree_size, root) and, like
+// SetCoverage / MarkOTSUpgraded, ignores RowsAffected so an absent row is a silent
+// no-op rather than an error. nextRetry is written as NULL when zero via unixOrNil.
+func (s *Store) MarkOTSAttempted(ctx context.Context, hubID int64, treeSize uint64, root []byte, attempts int64, nextRetry time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE ots SET attempts = ?, next_retry = ? "+
+			"WHERE hub_id = ? AND tree_size = ? AND root = ?",
+		attempts, unixOrNil(nextRetry),
+		hubID, int64(treeSize), root,
+	)
+	if err != nil {
+		return fmt.Errorf("store.MarkOTSAttempted: hub %d size %d: %w", hubID, treeSize, err)
 	}
 	return nil
 }

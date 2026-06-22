@@ -1,10 +1,11 @@
 // Tests for the typed OTS-table CRUD helpers (RecordOTS, OTSForRoot, PendingOTS,
-// MarkOTSUpgraded). Each drives the public method against a t.TempDir() database
-// (via openTemp from checkpoints_test.go) and asserts on observable rows / return
-// values — never on Store internals. The assertions are mutation-targeted: the
-// dedupe id check breaks if DO NOTHING becomes a plain insert, the pending-order
-// check breaks if ASC becomes DESC, and the pending-filter check breaks if the
-// status WHERE is dropped.
+// MarkOTSUpgraded, MarkOTSAttempted). Each drives the public method against a
+// t.TempDir() database (via openTemp from checkpoints_test.go) and asserts on
+// observable rows / return values — never on Store internals. The assertions are
+// mutation-targeted: the dedupe id check breaks if DO NOTHING becomes a plain
+// insert, the pending-order check breaks if ASC becomes DESC, the pending-filter
+// check breaks if the status WHERE is dropped, and the back-off-exclusion check
+// breaks if MarkOTSAttempted is a no-op or PendingOTS drops the next_retry filter.
 package store
 
 import (
@@ -244,7 +245,7 @@ func TestPendingOTS(t *testing.T) {
 	}
 
 	// An empty index returns an empty slice and a nil error.
-	none, err := s.PendingOTS(ctx)
+	none, err := s.PendingOTS(ctx, time.Unix(1_700_000_000, 0))
 	if err != nil {
 		t.Fatalf("PendingOTS (none): %v", err)
 	}
@@ -277,7 +278,7 @@ func TestPendingOTS(t *testing.T) {
 		t.Fatalf("RecordOTS confirmed: %v", err)
 	}
 
-	got, err := s.PendingOTS(ctx)
+	got, err := s.PendingOTS(ctx, later)
 	if err != nil {
 		t.Fatalf("PendingOTS: %v", err)
 	}
@@ -358,7 +359,7 @@ func TestMarkOTSUpgraded(t *testing.T) {
 	}
 
 	// The upgraded root drops out of PendingOTS; the other pending root remains.
-	pending, err := s.PendingOTS(ctx)
+	pending, err := s.PendingOTS(ctx, time.Unix(1_700_086_400, 0))
 	if err != nil {
 		t.Fatalf("PendingOTS after upgrade: %v", err)
 	}
@@ -402,5 +403,143 @@ func TestMarkOTSUpgradedIdempotent(t *testing.T) {
 	// Marking a (hub, size, root) with no row is likewise not an error.
 	if err := s.MarkOTSUpgraded(ctx, hubID, 999, []byte("absent-root-padding-32bytes-here"), proof, 1, upgradedAt); err != nil {
 		t.Fatalf("MarkOTSUpgraded absent: %v", err)
+	}
+}
+
+// TestMarkOTSAttempted confirms a backed-off retry sets attempts / next_retry,
+// keeps the row pending (status untouched), and so excludes it from PendingOTS until
+// now reaches next_retry, after which it re-surfaces with the bumped attempts count.
+// (Mutation: a no-op MarkOTSAttempted leaves attempts at 0 and next_retry NULL, so
+// the row is never excluded — the back-off-exclusion assertion fails.)
+func TestMarkOTSAttempted(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	root := []byte("backoff-target-root-padding-32by")
+	stamped := time.Unix(1_700_000_000, 0)
+	if _, _, err := s.RecordOTS(ctx, OTSRecord{
+		HubID: hubID, TreeSize: 100, Root: root, Status: OTSStatusPending, StampedAt: stamped,
+	}); err != nil {
+		t.Fatalf("RecordOTS: %v", err)
+	}
+
+	// A freshly-stamped row (next_retry NULL) is immediately due.
+	if pending, err := s.PendingOTS(ctx, stamped); err != nil {
+		t.Fatalf("PendingOTS before back-off: %v", err)
+	} else if len(pending) != 1 {
+		t.Fatalf("PendingOTS before back-off returned %d rows, want 1", len(pending))
+	}
+
+	nextRetry := stamped.Add(time.Hour)
+	if err := s.MarkOTSAttempted(ctx, hubID, 100, root, 1, nextRetry); err != nil {
+		t.Fatalf("MarkOTSAttempted: %v", err)
+	}
+
+	// The row stays pending with attempts bumped and next_retry set.
+	got, found, err := s.OTSForRoot(ctx, hubID, 100, root)
+	if err != nil || !found {
+		t.Fatalf("OTSForRoot after back-off: found=%v err=%v", found, err)
+	}
+	if got.Status != OTSStatusPending {
+		t.Errorf("Status = %q, want %q (back-off keeps it pending)", got.Status, OTSStatusPending)
+	}
+	if got.Attempts != 1 {
+		t.Errorf("Attempts = %d, want 1", got.Attempts)
+	}
+	if !got.NextRetry.Equal(nextRetry) {
+		t.Errorf("NextRetry = %v, want %v", got.NextRetry, nextRetry)
+	}
+
+	// Before next_retry elapses the row is excluded from PendingOTS.
+	if pending, err := s.PendingOTS(ctx, nextRetry.Add(-time.Second)); err != nil {
+		t.Fatalf("PendingOTS during back-off: %v", err)
+	} else if len(pending) != 0 {
+		t.Errorf("PendingOTS during back-off returned %d rows, want 0 (backed off)", len(pending))
+	}
+
+	// At next_retry (the <= boundary) the row is due again.
+	pending, err := s.PendingOTS(ctx, nextRetry)
+	if err != nil {
+		t.Fatalf("PendingOTS at next_retry: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("PendingOTS at next_retry returned %d rows, want 1 (re-surfaced)", len(pending))
+	}
+	if pending[0].Attempts != 1 {
+		t.Errorf("re-surfaced Attempts = %d, want 1", pending[0].Attempts)
+	}
+
+	// A second back-off bumps attempts and pushes next_retry further out.
+	nextRetry2 := nextRetry.Add(2 * time.Hour)
+	if err := s.MarkOTSAttempted(ctx, hubID, 100, root, pending[0].Attempts+1, nextRetry2); err != nil {
+		t.Fatalf("second MarkOTSAttempted: %v", err)
+	}
+	got2, found, err := s.OTSForRoot(ctx, hubID, 100, root)
+	if err != nil || !found {
+		t.Fatalf("OTSForRoot after second back-off: found=%v err=%v", found, err)
+	}
+	if got2.Attempts != 2 {
+		t.Errorf("Attempts after second back-off = %d, want 2", got2.Attempts)
+	}
+	if !got2.NextRetry.Equal(nextRetry2) {
+		t.Errorf("NextRetry after second back-off = %v, want %v", got2.NextRetry, nextRetry2)
+	}
+}
+
+// TestMarkOTSAttemptedAbsent confirms marking a (hub, size, root) with no row is a
+// no-op nil-error (like MarkOTSUpgraded, MarkOTSAttempted ignores RowsAffected).
+func TestMarkOTSAttemptedAbsent(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	if err := s.MarkOTSAttempted(ctx, hubID, 999, []byte("absent-root-padding-32bytes-here"), 1, time.Unix(1_700_003_600, 0)); err != nil {
+		t.Fatalf("MarkOTSAttempted absent: %v", err)
+	}
+}
+
+// TestMarkOTSAttemptedZeroNextRetryNull confirms a zero nextRetry is written as NULL
+// (the unixOrNil convention), so the row immediately re-surfaces via PendingOTS's
+// `next_retry IS NULL` leg rather than being permanently backed off.
+func TestMarkOTSAttemptedZeroNextRetryNull(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	root := []byte("zero-nextretry-root-padding-32by")
+	if _, _, err := s.RecordOTS(ctx, OTSRecord{
+		HubID: hubID, TreeSize: 100, Root: root, Status: OTSStatusPending, StampedAt: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("RecordOTS: %v", err)
+	}
+	if err := s.MarkOTSAttempted(ctx, hubID, 100, root, 1, time.Time{}); err != nil {
+		t.Fatalf("MarkOTSAttempted zero nextRetry: %v", err)
+	}
+
+	var nextRetry any
+	if err := s.db.QueryRow(
+		"SELECT next_retry FROM ots WHERE hub_id = ? AND tree_size = ? AND root = ?",
+		hubID, 100, root,
+	).Scan(&nextRetry); err != nil {
+		t.Fatalf("read next_retry: %v", err)
+	}
+	if nextRetry != nil {
+		t.Errorf("next_retry = %v, want NULL (zero time → NULL)", nextRetry)
+	}
+	// The NULL row is immediately due again.
+	if pending, err := s.PendingOTS(ctx, time.Unix(1_700_000_000, 0)); err != nil {
+		t.Fatalf("PendingOTS: %v", err)
+	} else if len(pending) != 1 {
+		t.Errorf("PendingOTS with NULL next_retry returned %d rows, want 1", len(pending))
 	}
 }
