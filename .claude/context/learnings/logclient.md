@@ -333,6 +333,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   reading a constant/outer schema FAILS both that test and the schema-agnostic case. Oracle gate
   correctly N/A — pure JSON + content-SHA-256 fold, no signature/RFC-6962/Merkle/did:web/fsck path;
   `notecheck`/`derive_vkey.py` untouched, re-arm at the fsck/inclusion-cross-check wiring slice.
+- **`Projection.Timestamp` reads the verbatim optional inner `note.timestamp` (RFC-3339 string, "" when
+  absent) — the §6 `· at` source.** Read from `recordEnvelope.Note.Timestamp`, NOT the ISCC-ID-embedded
+  `body>>12` time, because a deletion carries the declaration's id (same embedded time) — only the inner
+  `note.timestamp` distinguishes the two §6 rows. Read raw, never parsed (ADR-0008): the file-level
+  import set stays `crypto/sha256`+`encoding/json`+`fmt`+`tessera/api` (NO `time`), so WASM purity holds
+  (`GOOS=js GOARCH=wasm go build ./internal/logclient` exit 0). The golden pins present + absent→"" on
+  the two records; constant-Timestamp mutation FAILS both. Follower copies it field-by-field into
+  `store.ProjectionRecord.NoteTimestamp` (store never imports logclient).
 
 ## Self-consistency verdict (`internal/logclient/checkconsistency.go`)
 

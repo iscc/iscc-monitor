@@ -46,6 +46,19 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   matches `note_schema` against a literal (e.g. a kind-label map) MUST use the full URI, and its test
   MUST seed the URI, not a glossary short form — CLAUDE.md's `iscc-note-0.8.0` is prose shorthand, never
   the wire value (the open `proofserve` kind-label issue is exactly this trap shipped).
+- **`note_timestamp` is the one RFC-3339-TEXT exception to the unix-seconds time convention** (verbatim
+  optional `note.timestamp`, both note types — `schema.py:364/443` `Timestamp | None`). Written via
+  `nullStringOrNil` (absent "" → SQL NULL, a true NULL distinct from a present empty string), read back
+  "" through `sql.NullString` in `RecordAt`/`ListRecords`; never parsed (ADR-0008). It is the §6 `· at`
+  store prerequisite — the certificate render is still the open follow-up; mutation-proven non-vacuous on
+  both the present and the NULL→"" leaf (drop it from `DO UPDATE SET` → `…Idempotent` FAILS).
+- **No on-disk migration story exists for ANY added column — codebase-wide, by design (not a defect of
+  this slice).** `Open` applies `schema.sql` as one `db.Exec` of 9 `CREATE TABLE IF NOT EXISTS` (zero
+  `ALTER TABLE`, no `PRAGMA user_version`, no migration framework), so a column added to an EXISTING
+  table is a silent no-op on a pre-existing DB — an upgraded node would then hit `no such column: <col>`
+  on the new INSERT/SELECT. This is intentional (`next.md` Not-In-Scope: dev DBs are ephemeral; every
+  prior column landed this way). Adding an `ALTER`/migration is a deliberate, design-reviewed step — do
+  NOT introduce the project's first migration mechanism as a side effect of a field slice. Filed `normal`.
 
 ## SQLite store (`internal/store`)
 

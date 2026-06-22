@@ -97,9 +97,12 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   accepted tree (`if seq >= hub.LastSize { continue }`, same boundary as §1) so a deletion above the
   accepted checkpoint is dropped; a `RecordAt` MISS lists the seq with the `kindUnknown` label, not a 500
   (only a DB fault 500s). `HasDeletion` ORs the per-row `isDeletion` for the deletion note.
-  - settled: `HasClause6`/`isDeletion` mutations pinned by `TestCertificateRecordHistory`; KNOWN GAP
-    (filed `normal`): the mockup §6 row carries a `· at` timestamp `RecordRow` has no column for —
-    needs a store schema change, the impl renders `label · seq N` only (git history).
+  - settled: `HasClause6`/`isDeletion` mutations pinned by `TestCertificateRecordHistory`. KNOWN GAP
+    (still filed `normal`): the mockup §6 row carries a `· at` timestamp — the STORE prerequisite now
+    LANDED (`store.RecordRow.NoteTimestamp` from the `iscc_index.note_timestamp` column, advance
+    `bc608a0`), so the remaining work is RENDER-ONLY: wire `RecordAt`'s `NoteTimestamp` into a
+    `HistoryRow.At` and render `seq N · <at>` in `cert.html` (pick the format/relativize policy for the
+    verbatim RFC-3339 string — deferred per ADR-0008). The impl still renders `label · seq N` only.
 
 - **§5 BITCOIN ANCHOR reads the mirrored OTS row of §2's root and classifies via `ots.ConfirmedFor`
   (DIGEST-BOUND, not the digest-agnostic `ots.Confirmed`).** Inside `HasClause2`,

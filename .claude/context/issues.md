@@ -37,24 +37,49 @@ filed it and does **not** affect priority.
 - **Spec:** CLAUDE.md "Write evergreen comments that describe the current state" (docstring must match
   behavior); next.md Implementation Note "Prefer nil-tolerant, mirroring the Loop's nil-Logger discipline".
 
-## Certificate §6 RECORD HISTORY omits the per-record `· at` timestamp the mockup shows
+## Certificate §6 RECORD HISTORY omits the per-record `· at` timestamp the mockup shows (store prerequisite LANDED — render-only now)
 - **Priority:** normal
 - **Source:** [review] (visual pass vs the §6 mockup region)
 - **What / where / how to verify:** The certificate mockup `.claude/design/ISCC Monitor -
   Certificate.dc.html:68` renders each §6 row as `label` + `seq N · at` — a per-record
-  timestamp. The landed §6 (`internal/certificate/handler.go:591-613`, `cert.html:376-378`)
-  renders only `{{.Label}} · seq {{.Seq}}` with no time, because the projection it reads
-  (`store.RecordRow` = `Seq`/`IsccID`/`NoteSchema`, `iscc_index.go:80-84`) carries no
-  per-record timestamp column. The named-region's primary affordance (kind + seq +
-  deletion note) is complete and correct; the missing `· at` is cosmetic and does not
-  affect certification correctness. Surfacing it cleanly needs a store change: add a
-  timestamp to the `iscc_index` projection (written by `RecordProjections`) and surface it
-  via `RecordAt`, then render it in the §6 row — a schema change touching store + follower
-  ingest, larger than this clause. Fix when §6 (or a step that adds a record timestamp to
-  the projection) is next touched. Verify fixed: a §6 row renders `label · seq N · <time>`
-  and a test asserts the time component is present for a seeded record.
+  timestamp. UPDATE (advance `bc608a0`): the STORE PREREQUISITE this issue named is now CLOSED —
+  `store.RecordRow.NoteTimestamp` (and `ProjectionRecord.NoteTimestamp`) carries the verbatim optional
+  `note.timestamp` from the new `iscc_index.note_timestamp` column, written by `RecordProjections` and
+  read by `RecordAt`/`ListRecords`. What REMAINS is RENDER-ONLY: the landed §6
+  (`internal/certificate/handler.go` §6 loop, `cert.html:376-378`) still renders only
+  `{{.Label}} · seq {{.Seq}}` because the cert handler does not yet thread `RecordAt`'s `NoteTimestamp`
+  into a `HistoryRow.At`. The missing `· at` is cosmetic and does not affect certification correctness.
+  Fix when §6 is next touched: wire `RecordAt`'s `NoteTimestamp` → a `HistoryRow.At` field and render
+  `seq N · <at>` in `cert.html`, picking the format/relativize policy for the verbatim RFC-3339 string
+  (deferred per ADR-0008). The log-browser record-list `Logged` column (`internal/proofserve`) can reuse
+  the same `RecordRow.NoteTimestamp`. Verify fixed: a §6 row renders `label · seq N · <time>` and a test
+  asserts the time component is present for a seeded record.
 - **Spec:** target.md M-UI certificate Verify criterion (record history); `.dc.html` §6
   region line 68; CLAUDE.md "Projection" (a derived view — adding a column is additive).
+
+## No on-disk DB migration story — a column added to an existing table never reaches a pre-existing database
+- **Priority:** normal
+- **Source:** [review] (Codex P1, reviewer-confirmed against `store.Open`; codebase-wide pre-existing gap)
+- **What / where / how to verify:** `store.Open` (`internal/store/sqlite.go:72`) applies the embedded
+  `schema.sql` as one `db.Exec(schemaSQL)` whose every statement is `CREATE TABLE IF NOT EXISTS` (9
+  tables, ZERO `ALTER TABLE`, no `PRAGMA user_version`, no migration framework — reviewer grep-confirmed).
+  So a column added to an EXISTING table (here `iscc_index.note_timestamp`, but this applies to EVERY
+  column ever added: `note_schema`, `record_sha256`, the OTS columns, the freeze columns, …) is a silent
+  no-op on a database created before that commit. An upgraded node opening such a DB would then fail the
+  new INSERT/SELECT paths with `no such column: note_timestamp`. This is **not a regression of the
+  timestamp slice** — it is a pre-existing, codebase-wide property: every prior column landed the same
+  way, and `next.md` Not-In-Scope explicitly chose it (dev DBs are ephemeral; no schema-versioning
+  framework). Does NOT block this increment (fresh DBs — the only deployed kind so far — get the column;
+  all gates green). It becomes a real operational hazard the first time the monitor needs an in-place
+  upgrade over a populated production DB. Fix when a deliberate migration step is scheduled: introduce a
+  `PRAGMA user_version`-gated (or `ALTER TABLE ADD COLUMN`-idempotent) migration mechanism applied on
+  `Open` AFTER the `CREATE TABLE IF NOT EXISTS` pass, covering all post-bootstrap columns; this is a
+  design decision (it is the project's FIRST migration mechanism), not a field-slice side effect. Verify
+  fixed: opening a DB seeded with the pre-`note_timestamp` `iscc_index` DDL then running an ingest +
+  `RecordAt` succeeds (column auto-added), with a test that seeds the old schema and asserts no
+  `no such column` error.
+- **Spec:** ADR-0007 one-file-per-network store; CLAUDE.md "Irreplaceable evidence" (a populated prod DB
+  that cannot be upgraded in place is a backup/continuity risk); `next.md` Not-In-Scope migration note.
 
 ## Single-record label test is vacuous on the kind-label constant value
 - **Priority:** low

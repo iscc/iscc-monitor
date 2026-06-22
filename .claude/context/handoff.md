@@ -1,69 +1,80 @@
-## 2026-06-22 — Carry the per-record `note.timestamp` through the iscc_index projection (store layer of the §6 `· at`)
+## 2026-06-22 — Review of: Carry the per-record `note.timestamp` through the iscc_index projection (store layer of the §6 `· at`)
 
-**Done:** Threaded the optional per-record `note.timestamp` (verbatim RFC-3339 string, both note types)
-end-to-end through the schema-agnostic `iscc_index` projection — the pure fold, the schema column, the
-store write/read structs, and the follower's copy site — so the value is persisted per leaf (present →
-verbatim TEXT, absent → SQL NULL → ""). The certificate §6 `· at` render is left as the next sub-step
-(explicitly out of scope), keeping this a clean ≤3-production-file, store-tested skeleton.
+**Verdict:** PASS_WITH_NOTES
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/logclient/projection.go`: added `Timestamp string` to `Projection`, `Timestamp` (json
-  `timestamp`) to `recordEnvelope.Note`, and `Timestamp: env.Note.Timestamp` in the fold; docstrings
-  updated. File-level imports UNCHANGED (`crypto/sha256`+`encoding/json`+`fmt`+`tessera/api`, no `time`)
-  — WASM purity preserved.
-- `internal/store/iscc_index.go`: added `NoteTimestamp string` to `ProjectionRecord` and `RecordRow`;
-  bound it via `nullStringOrNil` in `RecordProjections`' INSERT col-list AND `DO UPDATE SET`; read it
-  through `sql.NullString` (NULL→"") in `RecordAt` and `ListRecords`; docstrings/column comments updated.
-- `internal/follower/ingest.go`: copied `NoteTimestamp: p.Timestamp` at the `store.ProjectionRecord{…}`
-  literal in `projectEntryBundle`.
-- `internal/store/schema.sql` (data file, not in the 3-file budget): added nullable `note_timestamp TEXT`
-  to `iscc_index` (after `note_schema`); time-convention header now names this column as the one
-  verbatim-RFC-3339-TEXT exception to the unix-seconds convention (ADR-0008).
-- `internal/logclient/projection_test.go` (test): `TestBundleProjections` declaration now carries
-  `note.timestamp`, deletion omits it; asserts the fold reads the inner per-record value (present;
-  absent→"").
-- `internal/store/iscc_index_test.go` (test): `TestRecordProjectionsRoundTrip` round-trips a present
-  timestamp (true NOT-NULL column + `RecordAt`); new `TestRecordProjectionsNoTimestamp` proves absent→
-  SQL NULL→"" via `RecordAt`+`ListRecords`; `TestRecordProjectionsIdempotent` now pins the upsert
-  `DO UPDATE` of `note_timestamp` (second write wins).
+**Summary:** The advance threads the optional per-record `note.timestamp` (verbatim RFC-3339 string, both
+note types) end-to-end through the schema-agnostic `iscc_index` projection — the pure fold
+(`logclient.Projection.Timestamp`), the nullable `note_timestamp TEXT` column, the store write/read
+structs (`ProjectionRecord`/`RecordRow`), and the follower's copy site — exactly as `next.md` asked.
+Scope is exemplary (3 production files + schema DDL + 2 test files, nothing from `## Not In Scope`
+touched), all gates are green, and I independently reproduced both mutations and the WASM-purity check.
+The one Codex `[P1]` (no on-disk migration for the new column) is a correct description of an
+intentional, codebase-wide, `next.md`-documented posture — refuted as a blocker, filed as a `normal`
+backlog issue.
 
-**Verification:** `mise run check` → green (build + vet + `go test ./...`, all 28 packages ok),
-`gofmt -l .` empty.
-- `go test -count=1 -run TestBundleProjections ./internal/logclient` → PASS (asserts the fold reads
-  `note.timestamp` per record; no-timestamp record yields "").
-- `go test -count=1 -run 'TestRecordAt|TestRecordProjections|TestListRecords' ./internal/store` → PASS
-  (round-trips `NoteTimestamp` present and absent→"" through write then read).
-- `GOOS=js GOARCH=wasm go build ./internal/logclient` → exit 0 (projection.go stays WASM-pure, no `time`;
-  file-level import set byte-unchanged).
-- Mutation (self-checked, both reverted to byte-clean): (1) dropping `note_timestamp` from
-  `RecordProjections`' `DO UPDATE SET` → `TestRecordProjectionsIdempotent` FAILS (stale first value);
-  (2) `Projection.Timestamp = "CONSTANT"` instead of `env.Note.Timestamp` → `TestBundleProjections`
-  FAILS on both the present and the absent (→"") leaf.
-- Oracle/conformance gate N/A — confirmed by name-only diff over the trust-root globs (`internal/proof/`,
-  `logclient/verify`, `didweb`, fork/shrink/equivocation/consistency, `derive_vkey`) → empty. This slice
-  is a pure JSON-fold field + plain nullable-TEXT round-trip; it touches no signature/RFC-6962/Merkle/
-  did:web/proof/fsck path. `projection.go` lives under `internal/logclient` but is the schema-agnostic
-  fold, not a verify/Merkle path.
+**Verification:**
+- [x] `mise run check` — green (build + vet + test, all 28 packages ok; record tests re-run uncached PASS).
+- [x] `gofmt -l .` — empty (no formatting failure).
+- [x] `go test -count=1 -run TestBundleProjections ./internal/logclient` — PASS (fold reads `note.timestamp`
+      per record: declaration present, deletion absent → "").
+- [x] `go test -count=1 -run 'TestRecordAt|TestRecordProjections|TestListRecords' ./internal/store` — PASS
+      (round-trips `NoteTimestamp` present and absent→"" through write then read; new
+      `TestRecordProjectionsNoTimestamp` proves absent → true SQL NULL via the raw `sql.NullString` column).
+- [x] `GOOS=js GOARCH=wasm go build ./internal/logclient` — exit 0; `projection.go` import set is exactly
+      `crypto/sha256`+`encoding/json`+`fmt`+`tessera/api` (no `time` — WASM purity preserved).
+- [x] Mutation 1 (independent, reverted byte-clean) — dropping `note_timestamp` from `RecordProjections`'
+      `DO UPDATE SET` → `TestRecordProjectionsIdempotent` FAILS on the stale first value.
+- [x] Mutation 2 (independent, reverted byte-clean) — `Projection.Timestamp = "CONSTANT"` → `TestBundleProjections`
+      FAILS on BOTH the present and the absent (→"") leaf. Tree confirmed clean after both reverts.
+- [x] Wire contract — `cauldron/iscc-hub/iscc_hub/schema.py:364/443` confirm `timestamp: Timestamp | None`
+      for BOTH `IsccNote` and `IsccNoteDelete` (genuinely optional, matching the absent→NULL handling).
+- [x] Oracle/conformance gate — N/A. Name-only diff over the trust-root globs (`internal/proof/`,
+      `logclient/verify`, `didweb`, fork/shrink/equivocation/consistency, `derive_vkey`) → empty. Pure
+      JSON-fold field + nullable-TEXT round-trip; no signature/RFC-6962/Merkle/did:web/proof/fsck path.
+- [x] Gate-circumvention scan over the unpushed range (`@{upstream}..HEAD`, 3 commits) — no `//nolint`,
+      `t.Skip`, build-tag exclusion, swallowed error, or deleted assertion in added lines (the one `-`
+      `rows.Scan` hit is the 3-col scan being EXTENDED to 4 cols in the same reader, not a removal).
 
-**Next:** The certificate §6 RECORD HISTORY render is now unblocked — the explicit FOLLOW-UP. Wire
-`RecordAt`'s new `NoteTimestamp` into a `HistoryRow.At` field in `internal/certificate/handler.go`'s §6
-loop and render `seq N · <at>` in `cert.html`'s `{{.RecordHistory}}` rows, matching the mockup
-(`.dc.html:68`). That step should also pick the format/relativize policy for the verbatim string (deferred
-here per ADR-0008 "store the raw value, never interpret"). The log-browser record-list `Logged` column
-(`internal/proofserve`) is a separate later render that can reuse the same `RecordRow.NoteTimestamp`.
+**Issues found:** (none reviewer-originated). Codex `[P1]` (no-migration) filed as a new `normal` issue
+(out of scope for this slice). Existing §6 issue updated: its store prerequisite is now LANDED, so it is
+narrowed to render-only.
+
+**Codex second opinion:** One finding, triaged REFUTED-as-blocker (logged + filed as backlog):
+- `[P1]` "Add a migration for note_timestamp" (`schema.sql:114`) — Codex is mechanically CORRECT:
+  `store.Open` applies `schema.sql` as one `CREATE TABLE IF NOT EXISTS` pass, so the new column is never
+  added to a pre-existing `iscc_index`, and the new INSERT/SELECT paths would fail `no such column` on an
+  upgraded node over an old DB. But this is (a) NOT a regression of this slice — it is a pre-existing,
+  codebase-wide property (zero `ALTER TABLE` / no migration framework anywhere; EVERY prior column landed
+  identically, reviewer grep-confirmed), and (b) EXPLICITLY out of scope per `next.md` `## Not In Scope`
+  ("no schema-versioning framework; dev DBs are ephemeral; do not add a migration path"). Adding an
+  `ALTER`/migration here would introduce the project's FIRST migration mechanism as a side effect of a
+  field slice — a deliberate, design-reviewed decision, not this increment's job. Does not block PASS;
+  filed as a `normal` backlog issue so the real future operational hazard (in-place upgrade over a
+  populated prod DB) is tracked for a dedicated migration step. The hard oracles (N/A here) are unaffected.
+
+**Visual check:** n/a — no SSR surface changed. This is a pure store/projection slice; the certificate §6
+render (the only surface that will eventually show `· at`) is explicitly the deferred follow-up and was
+not touched, so there is no rendered delta to screenshot.
+
+**Next:** The certificate §6 RECORD HISTORY render is now fully unblocked (store prerequisite landed) —
+the front-of-queue, self-contained pick: wire `RecordAt`'s `NoteTimestamp` into a `HistoryRow.At` field
+in `internal/certificate/handler.go`'s §6 loop and render `seq N · <at>` in `cert.html`
+(`.dc.html:68`), choosing the format/relativize policy for the verbatim RFC-3339 string. Alternatives:
+the `/` Checkpoint/Anchor data columns + config-driven instance identity (store/projection + config),
+or the design-first WASM-verifier signature half (still a STOP/design candidate). The new no-migration
+`normal` and the WASM-signature `normal` both want a deliberate design pass, not a code-only slice.
 
 **Notes:**
-- Per the §6 implementation note, the value MUST come from each record's own `note.timestamp` (not the
-  ISCC-ID-embedded `body>>12` time), because a deletion carries the EXISTING declaration's `iscc_id` and
-  thus the SAME id-embedded time as the declaration — only `note.timestamp` distinguishes the two §6 rows
-  the mockup shows. The fold reads it from `recordEnvelope.Note`, which already decodes the inner note.
-- `nullStringOrNil` chosen over plain TEXT binding (the way `iscc_id_str` is bound) so an absent timestamp
-  is a true NULL distinct from a present empty string — matches the key-cache precedent and the
-  `note_schema`/`iscc_id_str` nullable-column reader idiom; pinned by `TestRecordProjectionsNoTimestamp`
-  reading the raw column as `sql.NullString` (Valid==false).
-- No migration / `ALTER TABLE` (no schema-versioning framework here; the column is added to
-  `CREATE TABLE IF NOT EXISTS`, so only fresh DBs get it — consistent with every prior column; dev DBs
-  are ephemeral). Out-of-scope items (§6 render, proofserve `Logged` column, RFC-3339 parsing) all left
-  untouched.
-- No backward-incompatible API change and no design deviation — additive struct fields + a new nullable
-  column; no HUMAN REVIEW needed.
+- Open count after this review: 0 critical / 5 normal / 10 low. DONE still requires 0 normal. The §6
+  store half closing did NOT close a normal (it narrowed the existing §6 issue to render-only); the
+  no-migration issue is newly articulated, so net normal count went 4→5.
+- Learnings: `store.md` gained the `note_timestamp` RFC-3339-exception bullet + a durable codebase-wide
+  no-migration-posture bullet (kept package-local — it is store-mechanics, already covered at the index
+  level by ADR-0007). `logclient.md` gained the `Projection.Timestamp` reads-inner-`note.timestamp`
+  bullet (with the deletion-vs-declaration why and the WASM-purity import pin). `certificate.md` §6
+  KNOWN-GAP bullet updated to "store prerequisite landed, render-only remaining". Nothing promoted to the
+  always-loaded index. All three detail files remain within the rotation budget.
+- 4 commits ahead of `origin/develop` after this review commit (update-state + define-next + advance +
+  review). Pushing on PASS_WITH_NOTES. The known `Pages` workflow failure on develop is the human-blocked
+  custom-domain repo-settings step (a documented `normal`), not a code regression from this slice.
