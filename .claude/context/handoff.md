@@ -1,70 +1,55 @@
-## 2026-06-22 — Review of: Write the deployment/operability doc (`deploy/OPERATING.md`)
+## 2026-06-22 — Bake `ISCC_MONITOR_REALM` into the image so the deploy quick-start boots
 
-**Verdict:** NEEDS_WORK
-**Loop:** CONTINUE
+**Done:** Added one `ENV ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt` to the Dockerfile so a fresh
+container has the required realm var set out of the box (the baked FILE is now also a set VAR). Dropped
+the now-redundant `-e ISCC_MONITOR_REALM` from the CI smoke job so its `/healthz` 200 mechanically
+proves the bake. Corrected `deploy/OPERATING.md`'s phantom-default wording, the quick-start inline
+comment, and added a uid-65532 volume-prep note — so an operator can copy-paste a booting deploy.
 
-**Summary:** The advance added a single tracked operator doc (`deploy/OPERATING.md`, 219 lines,
-doc-only — no Go/test/Dockerfile/workflow touched), scope-clean and well-sourced: every code fact I
-spot-checked is correct (uid 65532, bind `:9464`/no host-publish, baked realm path, OTS calendar host,
-WAL `-wal`/`-shm` siblings, single-writer `SetMaxOpenConns(1)`, `GET /version` JSON shape, SIGTERM
-drain, `:develop`+`:sha-<short>` tags, the single-mux route list). But the doc's headline deliverable —
-the "copy-pasteable" quick-start — **does not boot**: it omits the REQUIRED `ISCC_MONITOR_REALM` (Codex
-P1, reviewer-confirmed) and mounts a fresh root-owned volume the non-root uid cannot write (Codex P2).
-Both are reviewer-confirmed against the code, so the doc cannot yet close the persistence `critical`.
+**Files changed:**
+- `Dockerfile`: added `ENV ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt` right after the realm-doc
+  `COPY` (makes the existing "valid ISCC_MONITOR_REALM out of the box" comment TRUE); left
+  `ISCC_MONITOR_DB` un-defaulted (no safe image default — must point at the operator's volume).
+- `.github/workflows/ci.yml`: removed the `-e ISCC_MONITOR_REALM=…` line from the `docker` smoke job's
+  `docker run`; updated the step comment to explain the realm now comes from the image's baked `ENV`
+  and that an absent `-e` is the mechanical proof. `-e ISCC_MONITOR_DB`/`-e ISCC_MONITOR_ADDR` stay.
+- `deploy/OPERATING.md`: (a) "State, volume & backup" now says the image **sets** the var via `ENV`
+  (not the false "defaults to the baked path"), a deploy overrides by passing its own var; (b) Compose
+  snippet inline comment corrected to "baked into the image, set it only to use a mounted document";
+  (c) added a "Volume ownership (do this first)" note (pre-`chown 65532:65532` or a 65532-writable bind
+  mount) plus a `(see note below)` pointer, and clarified the `docker run` block omits the realm var
+  because it is baked.
 
-**Verification:**
-- [x] `mise run check` green — 28 packages `ok` (doc-only; gate stayed green)
-- [x] `gofmt -l .` clean (exit 0, no files listed)
-- [x] `test -f deploy/OPERATING.md` — PASS
-- [x] `grep monitor-test.iscc.io` — PASS (names the first-consumer instance)
-- [x] `grep 65532` — PASS (and verified === Dockerfile uid)
-- [x] `grep :9464` + `no host port|publishes no` — PASS (verified === `EXPOSE 9464`, no host-publish)
-- [x] `grep -- -wal` + `backup` — PASS (verified === `PRAGMA journal_mode=WAL`)
-- [x] `grep /metrics` — PASS (verified === single-mux `serveMetrics`; exposure decision recorded)
-- [x] `grep alice.btc.calendar.opentimestamps.org` + `did.json` — PASS (verified === `DefaultCalendarURL`)
-- [x] `grep 'recreate the volume|schema change'` — PASS (interim migration policy stated)
-- [x] CLAUDE.md anchor `#running-a-local-dev-instance` — matches live `## Running a local dev instance`
-- [x] Quality-gate integrity — scanned all unpushed commits (`@{upstream}..HEAD`, 3 commits); only
-  non-`.claude` file is `deploy/OPERATING.md`. No `nolint`/`t.Skip`/skipped-or-deleted tests/loosened
-  gates (the lone grep hits are handoff prose).
-- [ ] **Manual content check — quick-start examples do not boot.** The doc's "valid `ISCC_MONITOR_REALM`
-  out of the box" claim (l.65-68) and both quick-start snippets (l.192-193 Compose, l.209-215 `docker
-  run`) are factually wrong: `config.Load` requires `ISCC_MONITOR_REALM` (`config.go:123`) and the
-  Dockerfile sets NO `ENV` (only `COPY`s the file). So the persistence `critical` is not yet satisfied.
+**Verification:** `mise run check` → green (28 packages `ok`, no Go source changed; gate re-confirmed).
+`gofmt -l .` → empty. Per-criterion:
+- [x] Dockerfile sets var: `grep -n 'ENV ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt' Dockerfile` →
+  exactly one line (51).
+- [x] CI no longer passes the var: `grep -c 'ISCC_MONITOR_REALM' .github/workflows/ci.yml` → `0`.
+- [x] No phantom default: `grep -n 'defaults to the baked' deploy/OPERATING.md` → nothing.
+- [x] Volume-prep note in quick-start region: `grep -n '65532' deploy/OPERATING.md` → hits at
+  l.198/209/214/217/218/219 (a `chown 65532:65532` note), not only the `:56-59` requirement.
+- [~] Local Docker boot proof: **Docker unavailable on this host** (`docker info` fails) — could not run
+  the realm-less `docker build`/`docker run`/`curl /healthz` end-to-end. Per next.md this falls through
+  to the pushed CI `docker` job as the authoritative gate; it now runs the identical realm-less boot, so
+  a failed bake (missing/misspelled `ENV`) would make `config.Load` exit non-zero and time out the smoke
+  loop.
 
-**Issues found:**
-- **[critical]** `deploy/OPERATING.md` quick-start omits the required `ISCC_MONITOR_REALM` → snippets
-  exit at startup with `config: required key "ISCC_MONITOR_REALM" is missing`. Filed (Codex P1).
-- **[normal]** quick-start mounts a fresh `root:root` named volume that uid 65532 cannot write →
-  `store.Open` fails permission-denied; contradicts the doc's own uid-65532 requirement. Filed (Codex P2).
-- The 3 iscc-infra `critical`s (persistence, exposure, egress) stay OPEN — the doc answers the substance
-  but the non-booting boot instructions mean the persistence ask's contract is not yet correctly stated.
-
-**Codex second opinion:** Two findings, both reviewer-CONFIRMED → filed as issues (not dismissed):
-- **[P1] CONFIRMED → critical issue.** Quick-start omits `ISCC_MONITOR_REALM`. Verified: `config.Load`
-  calls `required(get, keyRealm)`; Dockerfile has ZERO `ENV` lines and no Go code defaults `RealmPath`,
-  so the baked realm FILE does not make the VAR set — the snippets do not boot.
-- **[P2] CONFIRMED → normal issue.** Fresh named volume is root-owned; image runs as uid 65532, so
-  `store.Open` cannot create `/data/monitor.db`. The doc states the uid-65532 requirement but the runnable
-  snippet doesn't satisfy it.
-- (Note: Codex took ~4 min and explored far beyond the doc — for a doc-only change it still surfaced two
-  real, actionable deployment blockers. The hard oracles are N/A here — no trust-root path touched.)
-
-**Visual check:** n/a — no SSR surface changed (a Markdown doc, no template/handler/`.dc.html` touched).
-
-**Next:** Fix the `deploy/OPERATING.md` quick-start (the active step's deliverable) — the smallest correct
-change is to set `ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt` explicitly in BOTH snippets and correct
-the "valid out of the box" sentence, AND add a one-line volume-prep note (pre-`chown 65532:65532` or a
-65532-writable bind mount) so the quick start boots; OR add `ENV ISCC_MONITOR_REALM=...` to the Dockerfile
-(makes the "out of the box" claim true, but that is a Dockerfile change — weigh against the doc-only fix).
-Then the 3 iscc-infra `critical`s can be cleared and the root `README.md` is the last DONE gate.
+**Next:** Write the root `README.md` — the last `target.md` "Done When" gate, its own ≤3-file work
+package. With this `critical` closed, the 3 iscc-infra `critical`s (persistence / exposure / egress)
+can clear since the operability doc now states a correctly-booting deploy.
 
 **Notes:**
-- The doc's SUBSTANCE is strong and accurate — this is NOT a rewrite; it is two precise corrections to the
-  quick-start + one overstated sentence. The persistence/exposure/egress content all maps correctly to the
-  3 critical asks; only the runnable examples are wrong.
-- Durable trap recorded in `learnings/config.md`: the baked realm FILE is not a set realm-config VAR — the
-  Dockerfile `COPY`s the file but sets no `ENV`, so `ISCC_MONITOR_REALM` stays required in the image. Any
-  future deploy doc/snippet must set it (or the Dockerfile must add the `ENV`).
-- DONE blocked: 1 open `critical` (the new doc-boot fix) + the pre-existing 3 iscc-infra `critical`s, and
-  the root `README.md` `normal` is still the last `target.md` "Done When" gate.
+- The next.md grep criterion `grep -c 'ISCC_MONITOR_REALM' .github/workflows/ci.yml` → `0` conflicts
+  literally with the instruction to "update the step comment to say the realm comes from the `ENV`": a
+  comment naming the env key would make the count non-zero. I resolved this honoring the grep's clear
+  intent (no `-e ISCC_MONITOR_REALM` passing remains) — the comment now refers to "the required realm
+  path" / "baked ENV" without the bare literal token, so it satisfies both the count-0 check and the
+  comment-update ask. Not a weakened gate; just avoided the literal token in a comment.
+- The decisive end-to-end Docker check could not run locally (no Docker daemon). The CI `docker` job is
+  the authoritative gate for it and is now wired to boot realm-less. `review` should confirm that job
+  goes green after push.
+- No Go source touched; `internal/config` left intact (`ISCC_MONITOR_REALM` stays a `required` config
+  key — the image supplies a default value via `ENV`, the loader does not). Oracle/conformance tests are
+  N/A (no signature/consistency/proof code touched).
+- The OPERATING.md anchor `#state-volume--backup` matches the live `## State, volume & backup` heading
+  slug (GitHub: `&`/`,` stripped, the trailing `& ` leaves the double hyphen).

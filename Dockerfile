@@ -45,6 +45,11 @@ COPY --from=build /iscc-monitor /iscc-monitor
 # mount its own document and point ISCC_MONITOR_REALM at it.
 COPY deploy/realm-testnet.txt /etc/iscc-monitor/realm.txt
 
+# Point the required ISCC_MONITOR_REALM at the baked document so a fresh container
+# boots without it being passed. ISCC_MONITOR_DB is left UN-defaulted on purpose:
+# it must point at the operator's mounted volume, so there is no safe image default.
+ENV ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt
+
 # Documents the default ISCC_MONITOR_ADDR port (:9464); publishes nothing by itself.
 EXPOSE 9464
 

@@ -63,9 +63,10 @@ writing goroutine, WAL plus a `busy_timeout`. Do not point two running instances
 the same `.db` file.
 
 The image bakes the canonical testnet realm document at
-**`/etc/iscc-monitor/realm.txt`** (from `deploy/realm-testnet.txt`), so a fresh
-container has a valid `ISCC_MONITOR_REALM` out of the box. A deploy may instead mount
-its own realm document and repoint `ISCC_MONITOR_REALM` at it.
+**`/etc/iscc-monitor/realm.txt`** (from `deploy/realm-testnet.txt`) and **sets
+`ISCC_MONITOR_REALM` to that path via `ENV`**, so a fresh container has a valid
+`ISCC_MONITOR_REALM` out of the box — you need not pass it. A deploy may instead mount
+its own realm document and override `ISCC_MONITOR_REALM` by passing its own var.
 
 ## Migration policy (interim)
 
@@ -189,12 +190,12 @@ services:
     image: ghcr.io/iscc/iscc-monitor:develop   # pin :sha-<short> for a fixed build
     environment:
       ISCC_MONITOR_DB: /data/monitor.db        # on the mounted volume below
-      # ISCC_MONITOR_REALM defaults to the baked /etc/iscc-monitor/realm.txt;
-      # set it only to use a mounted realm document instead.
+      # ISCC_MONITOR_REALM is baked into the image (-> /etc/iscc-monitor/realm.txt);
+      # set it here only to use a mounted realm document instead.
       ISCC_MONITOR_NORMAL: 5m                   # clean-hub poll interval
       ISCC_MONITOR_ADDR: ":9464"               # internal bind; do NOT publish to host
     volumes:
-      - monitor-data:/data                      # the volume dir must be writable by uid 65532
+      - monitor-data:/data                      # the volume dir must be writable by uid 65532 (see note below)
     stop_grace_period: 60s                      # cover a clean poll + store flush on SIGTERM
     # No `ports:` — caddy-docker-proxy terminates TLS and publishes 80/443.
     # Add the caddy-docker-proxy labels for the monitor-test.iscc.io vhost here,
@@ -204,7 +205,22 @@ volumes:
   monitor-data:
 ```
 
-The equivalent bare `docker run` (no host port published) is:
+**Volume ownership (do this first).** A fresh named Docker volume is created
+`root:root`, but the image runs as uid 65532, so a bare `-v monitor-data:/data`
+makes `store.Open` fail permission-denied on the first write. Either pre-`chown` the
+volume once before the first run, e.g.
+
+```sh
+docker run --rm -v monitor-data:/data alpine chown -R 65532:65532 /data
+```
+
+or bind-mount a host directory you have already made 65532-writable
+(`mkdir -p ./monitor-data && sudo chown 65532:65532 ./monitor-data`, then
+`-v ./monitor-data:/data`). This is the same uid-65532 requirement stated in
+[State, volume & backup](#state-volume--backup) above.
+
+The equivalent bare `docker run` (no host port published — `ISCC_MONITOR_REALM` comes
+from the image's baked `ENV`, so it is not passed) is:
 
 ```sh
 docker run --rm \

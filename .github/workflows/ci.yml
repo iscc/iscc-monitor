@@ -84,16 +84,20 @@ jobs:
           docker build --build-arg VERSION="$(git rev-parse --short HEAD)" -t iscc-monitor:ci .
 
       # Run the container detached and assert GET /healthz -> 200 within ~15s.
-      # The realm hubs are unreachable in CI (no egress) — that is fine: /healthz
-      # pings only the SQLite store, not the hubs, so it returns 200 as soon as the
-      # store opens. ISCC_MONITOR_DB points at /tmp (distroless nonroot can write
-      # there); ISCC_MONITOR_ADDR binds all interfaces so -p can reach it.
+      # The required realm path is deliberately NOT passed with -e: it comes from
+      # the image's baked ENV (-> /etc/iscc-monitor/realm.txt). If that ENV were
+      # missing or misspelled, config.Load would exit non-zero, the container would
+      # never serve, and this /healthz loop would time out and FAIL — so the absent
+      # -e is the mechanical proof the bake works. The realm hubs are unreachable in CI
+      # (no egress) — that is fine: /healthz pings only the SQLite store, not the
+      # hubs, so it returns 200 as soon as the store opens. ISCC_MONITOR_DB points
+      # at /tmp (distroless nonroot can write there; it has no safe image default);
+      # ISCC_MONITOR_ADDR binds all interfaces so -p can reach it.
       - name: Run container and smoke /healthz
         run: |
           set -euo pipefail
           docker run -d --name mon -p 9464:9464 \
             -e ISCC_MONITOR_DB=/tmp/monitor.db \
-            -e ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt \
             -e ISCC_MONITOR_ADDR=0.0.0.0:9464 \
             iscc-monitor:ci
 
