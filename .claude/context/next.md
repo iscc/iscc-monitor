@@ -1,118 +1,150 @@
 # Next Work Package
 
-## Step: Version-stamp the binary (`-ldflags -X`) and surface it on `GET /version`
+## Step: Production multi-stage Dockerfile + CI container `/healthz` smoke job
 
 ## Advances
-M-Deploy Verify criterion (target.md, "Packaged & operable instance"):
+Milestone **M-Deploy — Packaged & operable instance** (ADR-0013, PRD story 13), its **first** Verify
+bullet, quoted:
 
-> the binary is **version-stamped** (git SHA via `-ldflags`, default `dev` when unset) and reports it on
-> `/healthz` JSON or `GET /version` — an HTTP-seam test asserts a non-empty version field;
+> a tracked **`Dockerfile`** builds `cmd/iscc-monitor` as a `CGO_ENABLED=0` static binary into a minimal
+> **non-root** final image (`scratch`/distroless, CA roots present), and a **CI job builds it, runs the
+> container** with a tmp `ISCC_MONITOR_DB` + the baked realm, and asserts `GET /healthz` → `200`;
 
-This closes one standalone M-Deploy Verify item. It is the natural fold-in the `review` handoff named
-("Fold in the `-ldflags` git-SHA build stamp surfaced on `/healthz` JSON or a tiny `GET /version` — the
-version-stamp slice was deferred out of the SIGTERM step"). It is also a prerequisite the Dockerfile
-step will consume: the production image build passes the git SHA via `-ldflags`, so landing the
-testable injection seam FIRST means the later (locally-unverifiable, Docker-less) image step just wires
-to an already-proven `var`. Skeleton-first ordering for M-Deploy: the runnable, pure-Go-testable slice
-before the container infra (Docker is not available in this environment — the image step's
-container-runs-`/healthz` check cannot be verified locally, so it must be its own later step).
+This also closes the `critical` issue **"Publish a deployable container image to GHCR (Dockerfile +
+push workflow)"** *in part* (the image-build half) and folds in the `normal` issue **"`build:monitor`'s
+git-SHA command substitution empty-expands on git failure"** by computing the SHA as a Dockerfile
+build-arg that **fails the stage on empty** — so the image never ships an empty `/version`. The GHCR
+*publish workflow* (the second M-Deploy bullet) is deliberately a separate later step (see Not In Scope).
 
 ## Goal
-Give the running binary a build-provenance string (default `dev`, overridable to the git short SHA at
-build time via `-ldflags -X`) and expose it at `GET /version` so an operator (and a CI smoke check) can
-confirm exactly which build is live. This is the M-Deploy "which build is running?" requirement, and it
-unblocks the Dockerfile step that will inject the real SHA.
+Produce the deployable artifact M-Deploy is built around: a small, non-root, statically-linked container
+image of `cmd/iscc-monitor` that CI proves actually boots and serves `/healthz` → 200. This is the
+front-of-queue code-closable M-Deploy work and unblocks the GHCR publish step that follows.
 
 ## Scope
-- **Create**: `internal/version/version.go` — a tiny HTTP leaf: an exported `var Version = "dev"` (the
-  `-ldflags -X` injection target) plus a `Handler() http.Handler` that serves `GET /version` as JSON
-  (`{"version":"<Version>"}`). Mirror the `internal/metricshttp` / `internal/healthz` HTTP-leaf style.
-- **Modify**:
-  - `cmd/iscc-monitor/main.go` — in `buildMux`, mount `mux.Handle("/version", version.Handler())`
-    (an exact path, like `/metrics` and `/healthz`); and add `"version"` to the `reservedMountNames`
-    map so a realm domain literally named `version` cannot collide with the exact mount and panic
-    `http.ServeMux` (the same reserved-name discipline `learnings/cmd-monitor.md` documents for
-    `/metrics`, `/healthz`, `/_ds`). Add the `internal/version` import.
-  - `mise.toml` — add the `-ldflags` stamp so a real build injects the SHA: a `tasks."build:monitor"`
-    that runs
-    `go build -ldflags "-X github.com/iscc/iscc-monitor/internal/version.Version=$(git rev-parse --short HEAD)" -o ./iscc-monitor ./cmd/iscc-monitor`
-    (the path the Dockerfile/CI will reuse). Keep `tasks.check` / `tasks.build` (plain `go build ./...`)
-    UNTOUCHED so the default `dev` value still compiles and is what the gate builds — do NOT make `git`
-    a hard requirement of the default `check` task.
+- **Create**: `Dockerfile` (repo root) — multi-stage `CGO_ENABLED=0` build into a non-root minimal final
+  image with CA roots; `.dockerignore` (repo root) — exclude `.git`, the built `/iscc-monitor` binary,
+  `cauldron/`, `*.db`, and `.claude/` from the build context.
+- **Modify**: `.github/workflows/ci.yml` — add a job (`docker`) that builds the image, runs the
+  container, and asserts `GET /healthz` → 200 (CI/config file, not a non-test/doc source file).
 - **Reference**:
-  - `internal/metricshttp/handler.go` + `internal/healthz/handler.go` — the HTTP-leaf style to mirror
-    (fixed Content-Type, drop the post-status write error deliberately, no nil-guard; `healthz` shows
-    the 405-on-non-GET shape).
-  - `.claude/context/learnings/cmd-monitor.md` — the `reservedMountNames` / `reservedDomain` discipline
-    (an exact bare-domain mount over an operator-controlled realm domain MUST be reserved-name-gated or
-    `http.ServeMux.Handle` PANICS on a duplicate pattern) and the thin-`main` / `buildMux` wiring rules.
-  - `.claude/context/learnings/config.md` — confirms why this is NOT a config key (it is a build-time
-    `-ldflags` stamp, not a runtime env value; `internal/config` stays a `{fmt time}`-only leaf).
+  - `.claude/context/learnings/version.md` — the `-X` empty-stamp-OVERRIDES-default trap this step must
+    guard with a fail-fast build-arg.
+  - `.claude/context/learnings/ci.md` — CI is one `ubuntu-latest`, `CGO_ENABLED=0` job; how the existing
+    `check` job is structured (add the new job alongside it, do not fold into it).
+  - `.claude/context/learnings/cmd-monitor.md` — the binary's entrypoint, required env, and the
+    `/healthz` / `/version` reserved mounts.
+  - `mise.toml` `[tasks."build:monitor"]` — the `-ldflags -X …version.Version=<sha>` stamp the Dockerfile
+    build stage reproduces (and must guard against an empty SHA).
+  - `internal/registry/testdata/realm.txt` — the interim realm baked into the image so the container has
+    a valid `ISCC_MONITOR_REALM` for the smoke test.
 
 ## Not In Scope
-- The production `Dockerfile` and the GHCR publish workflow (the next M-Deploy step — it CONSUMES this
-  `-X` injection; Docker is not available in this environment, so its container-runs-`/healthz` CI check
-  cannot be verified locally and must be its own step).
-- Adding the version to `/healthz` JSON. Pick the `GET /version` surface (the target offers either);
-  do NOT rewrite the healthz handler's fixed-byte-literal bodies (its "no marshal-failure branch"
-  design is deliberate — leave `internal/healthz` byte-identical).
-- A richer build-info struct (build time, Go version, `debug.ReadBuildInfo` VCS data). YAGNI — the
-  Verify bar asks only for a non-empty version field; a single string default-`dev` meets it.
-- Making `version` an `internal/config` key or an `ISCC_MONITOR_*` env var — it is a compile-time stamp,
-  so `internal/config` is NOT touched.
-- The `deploy/realm-testnet.txt` canonical realm doc, the operability/deployment doc, and the root
-  `README.md` — separate M-Deploy slices, not this step.
+- **The GHCR publish workflow** (push to `develop` → `ghcr.io/iscc/iscc-monitor` tagged `develop` +
+  `sha-<short>`). That is M-Deploy's *second* Verify bullet and the second half of the GHCR `critical`
+  issue — it is its own next step. Build the image and prove it boots first; publishing it follows.
+- **The canonical `deploy/realm-testnet.txt`** + the operability/deployment doc + the root `README.md` —
+  each is its own later M-Deploy slice. This step bakes the existing `internal/registry/testdata/realm.txt`
+  as an *interim* realm purely so the CI smoke test has a registerable realm; do not invent `deploy/` here.
+- **Fixing `mise.toml`'s `build:monitor` task** itself. The empty-SHA trap is fixed *for the image* via
+  the Dockerfile build-arg guard here; whether to also harden the host `build:monitor` task is left to the
+  `normal` issue (the Dockerfile is the consumer that actually hits the trap). Do not exceed the file
+  budget chasing it.
+- The on-disk DB migration mechanism, `/metrics` exposure policy, volume/egress docs — separate items.
 
 ## Implementation Notes
-- **Default and injection.** `var Version = "dev"` at package scope is the standard `-ldflags -X`
-  target: `go build -ldflags "-X github.com/iscc/iscc-monitor/internal/version.Version=abc1234"`
-  overrides it at link time; an un-stamped build (the gate's plain `go build ./...`) keeps `dev`. The
-  `-X` path is `<module>/internal/version.Version` — module is `github.com/iscc/iscc-monitor`
-  (confirmed via `go list -m`). `-X` only overrides a `string` var initialized to a constant, so keep
-  it a plain `var Version = "dev"` (NOT a `const`, NOT computed/concatenated).
-- **Handler style.** Mirror `metricshttp.Handler` / `healthz.Handler`: an `http.HandlerFunc` that, on
-  `GET`, sets `Content-Type: application/json`, calls `WriteHeader(200)`, then writes
-  `{"version":"<Version>"}`. Build the body so a stamped SHA stays valid JSON — `strconv.Quote(Version)`
-  inside the object (or `fmt.Sprintf(\`{"version":%q}\`, Version)`) avoids a broken body if the stamp
-  ever contains a quote. Reject non-GET with 405 exactly as `healthz` does (consistency across the leaf
-  endpoints). Drop the post-status write error deliberately (documented convention — a derived body
-  cannot fail for content reasons after `WriteHeader`; only a broken client conn, unrecoverable).
-- **Purity / leaf.** `internal/version` imports only stdlib (`net/http`, `fmt`/`strconv`) and NO
-  `internal/*` package, so it stays a leaf. It is NOT WASM-shared (it is an HTTP leaf like
-  `metricshttp`), so the `proof/verify`/`didweb` import-purity rule does not bind it.
-- **Reserved-mount discipline (load-bearing).** `/version` is an EXACT mount in `buildMux`. The
-  existing `reservedMountNames` is `{metrics, healthz, _ds}` (the `_ds` derived from `web.Prefix`); a
-  realm line `version` would otherwise build an exact `/version` dossier mount in `mirrorHandler` BEFORE
-  `buildMux` registers the real `/version`, panicking `http.ServeMux.Handle` on the duplicate pattern.
-  Add `"version"` to `reservedMountNames` so `reservedDomain("version")` is true → `registerHubs` fails
-  loudly at startup AND `mirrorHandler` skips the dossier mount (defense-in-depth). This mirrors exactly
-  how `/metrics` and `/healthz` are protected (see `learnings/cmd-monitor.md`).
-- **Oracle gate is N/A** — pure HTTP wiring + a build-stamp string; touches no signature / RFC-6962 /
-  Merkle / did:web / proof / fsck path. `go.mod` / `go.sum` / `internal/store/schema.sql` MUST stay
-  byte-identical (no new dependency — stdlib only).
-- **Gate honesty.** Do NOT weaken `mise run check` — leave its `go build ./...` as-is (it builds the
-  `dev` default, correct for the gate). The `-ldflags` stamp is an ADDITIONAL build path for the
-  image/CI, not a replacement for the gate build.
+- **Multi-stage build.** Stage 1: `FROM golang:1.26.4 AS build` (matches the module's `go 1.26.1`
+  directive + `mise.toml` toolchain `1.26.4`; pin the concrete tag for reproducibility). `WORKDIR /src`,
+  `COPY go.mod go.sum ./` then `RUN go mod download`, then `COPY . .`. Build with
+  `CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w -X
+  github.com/iscc/iscc-monitor/internal/version.Version=${VERSION}" -o /iscc-monitor ./cmd/iscc-monitor`.
+- **Fail-fast SHA (the `normal` empty-stamp fix).** Declare `ARG VERSION` and **guard it inside the build
+  RUN** so an empty value aborts the stage, e.g. begin the RUN with
+  `[ -n "$VERSION" ] || { echo 'VERSION build-arg is empty — refusing to ship an empty /version stamp'; exit 1; }`.
+  Per `learnings/version.md`, an empty `-X …Version=` OVERRIDES the `dev` default (it is NOT a no-op), so
+  the guard is load-bearing: never let `--build-arg VERSION=` (or an unset arg expanding empty) produce an
+  empty-version image. The CI job passes `--build-arg VERSION=$(git rev-parse --short HEAD)`; locally a
+  caller can pass `dev`. (Do NOT default `ARG VERSION=dev` — that would mask the very trap we are
+  guarding; require the caller to pass a non-empty value.)
+- **Final stage — non-root, CA roots, scratch-class.** Prefer
+  `FROM gcr.io/distroless/static-debian12:nonroot` (ships CA roots, a `nonroot` uid 65532, and is
+  `scratch`-class for a static binary — satisfies "non-root" + "CA roots present" in one line). If you
+  instead use `scratch`, you MUST `COPY --from=build /etc/ssl/certs/ca-certificates.crt
+  /etc/ssl/certs/` AND set a numeric `USER 65532:65532` (scratch has no `/etc/passwd`, so use a numeric
+  uid, not a name). `COPY --from=build /iscc-monitor /iscc-monitor`. `COPY` the interim realm
+  (`internal/registry/testdata/realm.txt`) to a fixed documented path, e.g. `/etc/iscc-monitor/realm.txt`.
+  `EXPOSE 9464` (documents the default `ISCC_MONITOR_ADDR` port; publishes nothing). `ENTRYPOINT
+  ["/iscc-monitor"]`. CA roots matter for runtime did:web + hub HTTPS even though the smoke test only
+  needs `/healthz`; the Verify bar names them.
+- **The container must bind a reachable address for the smoke test.** `cmd/iscc-monitor` defaults
+  `ISCC_MONITOR_ADDR` to `:9464` (confirmed: `main.go` `serveMetrics(ctx, cfg.Addr, …)`, default port
+  9464). For CI to curl it, run with `-p 9464:9464` and pass `ISCC_MONITOR_ADDR=0.0.0.0:9464` (a bare
+  `:9464` binds all interfaces too, but be explicit). `ISCC_MONITOR_DB` must point at a **writable** path
+  inside the container — distroless `nonroot` cannot write `/`; use `/tmp/monitor.db` (distroless has a
+  writable `/tmp`). For the smoke test, `/tmp/monitor.db` is simplest.
+- **The realm hubs will be unreachable in CI** (no egress to `sb0.iscc.id`); that is FINE — `/healthz`
+  pings only the SQLite store (`healthz.Pinger` → `store.Ping`), not the hubs (confirmed in
+  `internal/healthz/handler.go`), so it returns 200 as soon as the store opens, independent of poll
+  success. The smoke test asserts store-readiness, not hub reach.
+- **CI job shape (`ci.yml`).** Add a second job `docker` (sibling to `check`, NOT folded into it — keep
+  the gate job fast and the image job independent, per `learnings/ci.md`). Steps: `actions/checkout@v4`
+  (match the existing pins — do NOT bump action majors here; the Node-20 bump is a separate `low` issue);
+  `docker build --build-arg VERSION="$(git rev-parse --short HEAD)" -t iscc-monitor:ci .`; run detached
+  `docker run -d --name mon -p 9464:9464 -e ISCC_MONITOR_DB=/tmp/monitor.db -e
+  ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt -e ISCC_MONITOR_ADDR=0.0.0.0:9464 iscc-monitor:ci`; poll
+  `http://localhost:9464/healthz` for up to ~15s and assert HTTP 200 (a `for` loop curling with
+  `--fail`, failing the job if it never returns 200); `docker logs mon` on failure for diagnosis;
+  `docker rm -f mon` cleanup. Use `set -euo pipefail` in the run blocks. Keep it a plain `docker`
+  invocation (ubuntu-latest has Docker preinstalled) — do not pull in buildx/registry actions (those
+  belong to the publish step).
+- **Build context hygiene (`.dockerignore`).** Without it, `COPY . .` would copy `.git`, the 26 MB
+  gitignored `/iscc-monitor` binary, and `cauldron/` (which breaks `go build ./...` per the always-loaded
+  learning) into the build context. Exclude at minimum: `.git`, `/iscc-monitor`,
+  `/cmd/iscc-monitor/iscc-monitor`, `cauldron/`, `*.db`, `*.sqlite*`, `.claude/`, `.devcontainer/`,
+  `.github/`. The Go build only needs the module sources + `go.mod`/`go.sum`.
+- **No application source changes.** This step adds packaging + CI only; `internal/*` and `cmd/*` stay
+  byte-identical. `go.mod`/`go.sum` unchanged (no new dependency).
+
+## Local-verification fallback (Docker is NOT installed in this environment)
+`docker` is confirmed absent on this host (the prior version-stamp handoff warned of this), so the
+container-run Verify items below cannot run locally — they run in CI. `advance` should therefore verify
+locally by **static inspection + a host-build dry run**, and rely on CI for the container assertions:
+- Confirm the same `-ldflags -X` target builds on the host (no Docker):
+  `go build -ldflags "-X github.com/iscc/iscc-monitor/internal/version.Version=testsha" -o /tmp/iscc-monitor-img ./cmd/iscc-monitor`
+  succeeds, and running it (tmp `ISCC_MONITOR_DB` + `internal/registry/testdata/realm.txt` realm +
+  `ISCC_MONITOR_ADDR=127.0.0.1:41466` + `ISCC_MONITOR_NORMAL=10m`) then `curl 127.0.0.1:41466/healthz`
+  → `{"status":"ok"}` and `curl 127.0.0.1:41466/version` → `{"version":"testsha"}`. This proves the
+  binary the image wraps boots, serves `/healthz` 200, and carries the stamp — the only parts that are
+  host-independent of Docker.
+- Validate `ci.yml` is well-formed YAML (the same `gopkg.in/yaml.v3` path `learnings/ci.md` notes the
+  prior CI step used to validate the workflow locally, since PyYAML is absent).
+- Lint the `Dockerfile` by reading it for the guard, the non-root user, the CA-roots base, and the
+  `COPY`/`ENTRYPOINT` correctness; do NOT claim the `docker build`/`docker run` Verify lines passed
+  locally — mark them "verified in CI" in the handoff.
 
 ## Verification
-- `mise run check` is green (build + vet + test all pass; the default `dev` build compiles).
-- `gofmt -l .` lists nothing (touched files clean).
-- `go test -count=1 -run TestVersion ./internal/version` passes — an HTTP-seam test that drives
-  `version.Handler()` over `httptest` asserts `GET /version` → `200`, `Content-Type: application/json`,
-  a body parsing as JSON with a **non-empty** `version` field equal to `version.Version` (default
-  `"dev"`), and a non-GET → `405`. (Name it `TestVersion…` so the `-run TestVersion` filter catches it.)
-- `go test -count=1 -run TestBuildMux ./cmd/iscc-monitor` passes — the existing buildMux routing /
-  reserved-domain tests stay green with `/version` mounted and `"version"` added to
-  `reservedMountNames` (extend the reserved-domain assertion to cover `version` if a table drives it).
-- Mechanical injection check (proves the `-X` target path is correct and the var is overridable):
-  `go build -ldflags "-X github.com/iscc/iscc-monitor/internal/version.Version=test123" -o /tmp/iscc-monitor-vt ./cmd/iscc-monitor`
-  builds, and starting it (tmp `ISCC_MONITOR_DB` + the `internal/registry/testdata/realm.txt` realm +
-  `ISCC_MONITOR_ADDR=127.0.0.1:41465` + a long `ISCC_MONITOR_NORMAL=10m`) then
-  `curl -s 127.0.0.1:41465/version` returns a body containing `test123` — the stamp flows env-free from
-  `-ldflags` to the served response. (A default un-stamped build serves `dev`.)
+- `mise run check` is green (unchanged — no Go source touched; confirms the step did not regress the
+  gate).
+- `docker build --build-arg VERSION=testsha -t iscc-monitor:ci .` succeeds and produces an image. *(CI;
+  host-equivalent: the `-ldflags -X` host build above succeeds.)*
+- `docker run -d -p 9464:9464 -e ISCC_MONITOR_DB=/tmp/monitor.db -e
+  ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt -e ISCC_MONITOR_ADDR=0.0.0.0:9464 iscc-monitor:ci`
+  starts, and within ~15s `curl -fsS http://localhost:9464/healthz` returns HTTP 200 with
+  `{"status":"ok"}`. *(CI; host-equivalent above.)*
+- `curl -fsS http://localhost:9464/version` returns `{"version":"testsha"}` (the build-arg stamp flowed
+  through `-ldflags -X`; proves the version stamp is non-empty in the image). *(CI; host-equivalent
+  above.)*
+- `docker build --build-arg VERSION= -t iscc-monitor:empty .` **FAILS** (the fail-fast guard aborts the
+  build stage rather than shipping an empty `/version`) — the regression proof for the folded-in `normal`
+  empty-stamp fix. *(CI; locally inspect the guard line in the Dockerfile and confirm the host build with
+  an empty `-X …Version=` would be refused by the same `[ -n "$VERSION" ]` check.)*
+- `docker image inspect iscc-monitor:ci` shows a non-root user (uid 65532 / `nonroot`, not root) and a
+  small final image (well under ~30 MB). *(CI; locally confirm the `nonroot` base + `USER` directive in
+  the Dockerfile.)*
+- The new `docker` job in `.github/workflows/ci.yml` is valid YAML and its `run` blocks reproduce the
+  build + run + `/healthz`-200 assertion above. *(Verifiable locally.)*
 
 ## Done When
-`GET /version` serves a non-empty version string (default `dev`, overridable to the git SHA via the
-documented `-ldflags -X github.com/iscc/iscc-monitor/internal/version.Version=<sha>`), the new
-`internal/version` HTTP-seam test and the buildMux reserved-name tests pass, and `mise run check` is
-green with `go.mod` / `go.sum` / `schema.sql` byte-identical.
+A tracked root `Dockerfile` + `.dockerignore` build a non-root, CA-roots, statically-linked,
+non-empty-version-stamped `cmd/iscc-monitor` image, a CI `docker` job builds it and asserts `GET
+/healthz` → 200, an empty `VERSION` build-arg fails the build, and `mise run check` stays green.
