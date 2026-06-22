@@ -70,10 +70,21 @@
       gap: var(--space-5);
       flex-wrap: wrap;
     }
+    /* The instance-identity block: this deployment's domain + operator/realm,
+       config-driven from the masthead Identity (byte-identical to the dashboard). */
+    .chrome-identity {
+      text-align: right;
+      line-height: var(--leading-snug);
+    }
     .chrome-instance {
       font-family: var(--font-mono);
       font-size: var(--text-xs);
       color: var(--text-body);
+    }
+    .chrome-operator {
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+      font-weight: var(--weight-light);
     }
     /* The tier-2 link to the monitor-agnostic verifier app (monitor.iscc.codes).
        The dossier has no single ISCC-ID subject to re-verify in-browser, so its
@@ -355,7 +366,10 @@
       </div>
     </div>
     <div class="chrome-actions">
-      <span class="chrome-instance">monitor instance</span>
+      <div class="chrome-identity">
+        <div class="chrome-instance">{{.Instance}}</div>
+        <div class="chrome-operator">{{.Operator}}</div>
+      </div>
       <a class="chrome-verify" href="https://monitor.iscc.codes/">verify ↗ monitor.iscc.codes</a>
     </div>
   </header>

@@ -13,9 +13,13 @@
 //
 // The dossier depends on internal/store + internal/badge + the StatusSource
 // interface (NOT internal/metrics), so it stays golden-testable with a fake and
-// keeps a minimal closure. The overlayStatus / hubStatus / coverageTime shape is
-// deliberately a third local copy of the dashboard/proofserve pattern; consolidating
-// it into internal/badge is its own tracked step, not a prerequisite here.
+// keeps a minimal closure. It also reuses internal/dashboard's Identity type (the
+// masthead identity value the "/" page already receives) rather than redefining it,
+// applying its own resolveIdentity fail-safe so the dossier and dashboard mastheads
+// render byte-identical chrome. The overlayStatus / hubStatus / coverageTime shape
+// is deliberately a third local copy of the dashboard/proofserve pattern;
+// consolidating it into internal/badge is its own tracked step, not a prerequisite
+// here.
 //
 // The oracle/conformance gate is N/A: this is a pure HTML render of one persisted
 // store row plus an in-memory status overlay, touching no signature, RFC-6962,
@@ -30,6 +34,7 @@ import (
 	"time"
 
 	"github.com/iscc/iscc-monitor/internal/badge"
+	"github.com/iscc/iscc-monitor/internal/dashboard"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -55,6 +60,12 @@ var tmpl = func() *template.Template {
 // guarantee, ADR-0001). The hubStatusBadge partial reads .Label directly, so the
 // view carries a precomputed Label from the badge package's single source of truth.
 //
+// Instance and Operator are the resolved instance-identity strings the masthead
+// chrome renders (Instance is this deployment's domain, Operator the operator/realm
+// line beneath it), carried verbatim so the dossier and dashboard mastheads stay
+// byte-identical. They are always non-empty — resolveIdentity applies the static
+// fallback copy so an unconfigured binary renders today's masthead.
+//
 // Frozen gates the non-dismissable Exhibit panel (ADR-0006 irreplaceable evidence):
 // when true the template renders the categorically-distinct "do not trust new
 // state" panel listing each Violations row. A frozen hub may carry zero Violations
@@ -69,6 +80,8 @@ type dossierData struct {
 	HasCoverage bool
 	SinceSize   uint64
 	SinceTime   string
+	Instance    string
+	Operator    string
 	Frozen      bool
 	Violations  []violationRow
 }
@@ -82,6 +95,35 @@ type dossierData struct {
 type violationRow struct {
 	Kind       string
 	DetectedAt string
+}
+
+// Default masthead identity copy used when an identity field is left empty, so an
+// unconfigured deployment renders today's static placeholder rather than a false
+// claim. These MUST stay byte-identical to internal/dashboard's instanceFallback /
+// operatorFallback consts: both the dossier and the dashboard masthead are required
+// to render the same chrome, and neither package can import the other's unexported
+// consts, so the defaults are duplicated here as literals.
+const (
+	instanceFallback = "monitor instance"
+	operatorFallback = "independent Trust & Transparency service · ISCC-Hub network"
+)
+
+// resolveIdentity applies the dossier-side fail-safe for the masthead identity,
+// mirroring dashboard.Identity.resolve semantics so the dossier and dashboard
+// chrome stay in lockstep: a blank Instance or Operator falls back to the static
+// placeholder copy. It lives here (not in internal/dashboard) so the fallback is
+// seam-testable at the dossier HTTP boundary without making internal/dashboard a
+// fourth edited file (its resolve is unexported). Realm has no slot on the dossier
+// masthead (its title is the realm-subtitle-free "Hub dossier"), so it is ignored.
+func resolveIdentity(id dashboard.Identity) (instance, operator string) {
+	instance, operator = id.Instance, id.Operator
+	if instance == "" {
+		instance = instanceFallback
+	}
+	if operator == "" {
+		operator = operatorFallback
+	}
+	return instance, operator
 }
 
 // StatusSource reports a hub's current in-memory glossary status by hub_id. It is
@@ -110,8 +152,13 @@ type StatusSource interface {
 //
 // st must be non-nil (the binary always passes the real store). statuses is the
 // in-memory status overlay (the metrics registry); a nil statuses is tolerated and
-// simply leaves a store-verified hub showing "verified".
-func Handler(st *store.Store, hubID int64, statuses StatusSource) http.Handler {
+// simply leaves a store-verified hub showing "verified". id is the operator-supplied
+// instance identity rendered on the masthead chrome; any empty field falls back to
+// the static placeholder copy (resolveIdentity), so a zero-value Identity renders
+// exactly today's masthead. It is the SAME dashboard.Identity value the "/" masthead
+// receives, so the two mastheads stay byte-identical.
+func Handler(st *store.Store, hubID int64, statuses StatusSource, id dashboard.Identity) http.Handler {
+	instance, operator := resolveIdentity(id)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -142,7 +189,7 @@ func Handler(st *store.Store, hubID int64, statuses StatusSource) http.Handler {
 			}
 		}
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, buildData(summary, status, violations)); err != nil {
+		if err := tmpl.Execute(&buf, buildData(summary, status, violations, instance, operator)); err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -173,8 +220,10 @@ func findHub(summaries []store.HubSummary, hubID int64) (store.HubSummary, bool)
 // view still falls back to the status string if badge.Label ever returns ok==false,
 // so the page never renders an unlabeled badge. The caller passes the violations
 // (empty for a non-frozen hub, which never reads them); buildData folds them into
-// the Exhibit rows and sets Frozen so the template renders the panel.
-func buildData(s store.HubSummary, status string, violations []store.Violation) dossierData {
+// the Exhibit rows and sets Frozen so the template renders the panel. instance and
+// operator are the already-resolved masthead identity strings (resolveIdentity has
+// applied the fail-safe fallback) carried verbatim onto the view-model.
+func buildData(s store.HubSummary, status string, violations []store.Violation, instance, operator string) dossierData {
 	label, ok := badge.Label(status)
 	if !ok {
 		label = status
@@ -188,6 +237,8 @@ func buildData(s store.HubSummary, status string, violations []store.Violation) 
 		HasCoverage: s.Coverage.Set,
 		SinceSize:   s.Coverage.Size,
 		SinceTime:   coverageTime(s.Coverage),
+		Instance:    instance,
+		Operator:    operator,
 		Frozen:      status == "frozen",
 		Violations:  violationRows(violations),
 	}

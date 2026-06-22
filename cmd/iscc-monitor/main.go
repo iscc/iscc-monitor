@@ -269,7 +269,7 @@ func stampFunc() follower.Stamper {
 // instance identity (id) is rendered on the dashboard masthead; an empty field
 // falls back to the static placeholder copy inside dashboard.Handler.
 func buildMux(st *store.Store, routes []hubRoute, hubList *registry.HubList, m *metrics.Registry, id dashboard.Identity) http.Handler {
-	mux := mirrorHandler(st, routes, m)
+	mux := mirrorHandler(st, routes, m, id)
 	mux.Handle("/", dashboard.Handler(st, m, id))
 	mux.Handle("/metrics", metricshttp.Handler(m))
 	mux.Handle("/healthz", healthz.Handler(st))
@@ -348,7 +348,10 @@ func hubListFromEntries(entries []registry.Entry) *registry.HubList {
 // (e.g. /sb0.iscc.id): an exact pattern, more-specific than and disjoint from the
 // "/" + Origin + "/" mirror subtree, so http.ServeMux keeps both and routes only that
 // exact path to the dossier. The same metrics registry m is the dossier's in-memory
-// status overlay, so its five-status badge matches the dashboard and log browser.
+// status overlay, so its five-status badge matches the dashboard and log browser. The
+// same operator-supplied instance identity id is rendered on the dossier masthead so
+// its chrome stays byte-identical to the "/" dashboard masthead; an empty field falls
+// back to the static placeholder copy inside dossier.Handler.
 //
 // The dossier mount is skipped for a reservedDomain (empty or a reserved mount
 // name) so building the mux can never panic on a duplicate pattern with a built-in
@@ -357,14 +360,14 @@ func hubListFromEntries(entries []registry.Entry) *registry.HubList {
 // total over any route slice. The mirror subtree mount stays — "/"+Origin+"/" is a
 // subtree (e.g. /metrics/log/), which never collides with the built-in exact
 // /metrics, so only the exact dossier mount is conditional.
-func mirrorHandler(st *store.Store, routes []hubRoute, m *metrics.Registry) *http.ServeMux {
+func mirrorHandler(st *store.Store, routes []hubRoute, m *metrics.Registry, id dashboard.Identity) *http.ServeMux {
 	mux := http.NewServeMux()
 	for _, r := range routes {
 		prefix := "/" + r.Origin + "/"
 		strip := "/" + r.Origin // leave the leading slash on the suffix
 		mux.Handle(prefix, http.StripPrefix(strip, hubHandler(st, r.HubID, m)))
 		if !reservedDomain(r.Domain) {
-			mux.Handle("/"+r.Domain, dossier.Handler(st, r.HubID, m))
+			mux.Handle("/"+r.Domain, dossier.Handler(st, r.HubID, m, id))
 		}
 	}
 	return mux

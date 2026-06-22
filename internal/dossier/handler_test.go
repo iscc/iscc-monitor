@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iscc/iscc-monitor/internal/dashboard"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -102,7 +103,7 @@ func frozenHub(t *testing.T) (*store.Store, int64) {
 func TestDossierFrozenExhibit(t *testing.T) {
 	st, id := frozenHub(t)
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -153,7 +154,7 @@ func TestDossierFrozenExhibit(t *testing.T) {
 func TestDossierNoExhibitWhenNotFrozen(t *testing.T) {
 	st, id := coveredHub(t)
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -176,7 +177,7 @@ func TestDossierRendersCoveredHub(t *testing.T) {
 	st, id := coveredHub(t)
 	rec := httptest.NewRecorder()
 	// nil StatusSource: a store-verified hub renders as "verified" (no overlay).
-	Handler(st, id, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -249,7 +250,7 @@ func TestDossierRendersCoveredHub(t *testing.T) {
 func TestDossierChromeTierTwoAndBackLink(t *testing.T) {
 	st, id := coveredHub(t)
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -276,6 +277,69 @@ func TestDossierChromeTierTwoAndBackLink(t *testing.T) {
 	}
 }
 
+// TestDossierRendersInstanceIdentity proves the dossier masthead renders the
+// operator-supplied instance identity at the HTTP seam, the SAME dashboard.Identity
+// value the "/" page receives: a populated Identity surfaces its exact Instance /
+// Operator strings on the chrome, and a zero-value Identity falls back to the static
+// placeholder copy (the neutral "monitor instance" line and the generic operator
+// line). It is non-vacuous: dropping the {{.Instance}} binding (or the
+// .chrome-instance text node) from the template, or threading a constant default
+// instead of the supplied value, makes the populated-identity assertions fail
+// because the exact operator strings would no longer appear. Realm has no slot on
+// the dossier masthead (its title is the realm-subtitle-free "Hub dossier"), so it
+// is intentionally not asserted here.
+func TestDossierRendersInstanceIdentity(t *testing.T) {
+	st, id := coveredHub(t)
+
+	// Populated identity: the masthead must render these exact operator-supplied
+	// strings (not the static defaults), driven through the live render so reverting
+	// the template binding fails the test. Realm is set but has no dossier slot.
+	idv := dashboard.Identity{
+		Instance: "monitor.example.test",
+		Operator: "operated by Example Org · example net",
+		Realm:    "example net",
+	}
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, idv).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"monitor.example.test",
+		"operated by Example Org · example net",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing identity literal %q\n%s", want, body)
+		}
+	}
+	// The static placeholder copy must NOT appear when an operator configures the
+	// instance — otherwise the test would pass even if the template ignored the
+	// supplied value and kept the hard-coded default.
+	if strings.Contains(body, "monitor instance") {
+		t.Errorf("body still shows the static placeholder despite a configured Instance\n%s", body)
+	}
+
+	// Zero-value identity: the fallback masthead renders the neutral placeholder and
+	// today's generic operator line, so an unconfigured deployment is honest rather
+	// than asserting a false instance. The fallback strings MUST match the dashboard's
+	// so the two mastheads stay byte-identical.
+	recDefault := httptest.NewRecorder()
+	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(recDefault, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if recDefault.Code != http.StatusOK {
+		t.Fatalf("default status = %d, want 200", recDefault.Code)
+	}
+	defaultBody := recDefault.Body.String()
+	for _, want := range []string{
+		"monitor instance",
+		"independent Trust &amp; Transparency service",
+	} {
+		if !strings.Contains(defaultBody, want) {
+			t.Errorf("default body missing fallback %q\n%s", want, defaultBody)
+		}
+	}
+}
+
 // TestDossierCoverageHonestyNoCoverage asserts a followed-but-unpolled hub (no
 // coverage set) renders the explicit "no coverage yet" state, never a fabricated
 // size+time — the ADR-0001 coverage-honesty rule at the dossier seam.
@@ -292,7 +356,7 @@ func TestDossierCoverageHonestyNoCoverage(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -318,7 +382,7 @@ func TestDossierRendersInMemoryStatus(t *testing.T) {
 	st, id := coveredHub(t)
 	statuses := fakeStatusSource{id: "unresolvable"}
 	rec := httptest.NewRecorder()
-	Handler(st, id, statuses).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, statuses, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -344,7 +408,7 @@ func TestDossierRendersInMemoryStatus(t *testing.T) {
 func TestDossierNonGET(t *testing.T) {
 	st, id := coveredHub(t)
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sb0.iscc.id", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
 	}
@@ -356,7 +420,7 @@ func TestDossierNonGET(t *testing.T) {
 func TestDossierHubNotInStore(t *testing.T) {
 	st, id := coveredHub(t)
 	rec := httptest.NewRecorder()
-	Handler(st, id+999, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id+999, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", rec.Code)
 	}
