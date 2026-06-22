@@ -8,10 +8,10 @@
 //
 // main stays thin and owns process exit (config/file/store failures print to
 // stderr and exit non-zero); all the registry -> store -> target wiring lives in
-// the testable registerHubs helper. The poll loop runs until SIGINT, which a
-// signal-bound context cancels so Loop.Run returns cleanly; the /metrics server
-// runs in a background goroutine and is shut down on the same context so serving
-// never blocks polling.
+// the testable registerHubs helper. The poll loop runs until SIGINT or SIGTERM,
+// which a signal-bound context cancels so Loop.Run returns cleanly; the /metrics
+// server runs in a background goroutine and is shut down on the same context so
+// serving never blocks polling.
 package main
 
 import (
@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/iscc/iscc-monitor/internal/certificate"
@@ -102,10 +103,22 @@ func main() {
 	}
 }
 
+// notifyShutdown returns the process's signal-bound shutdown context: it cancels
+// on SIGINT or SIGTERM, so an interactive Ctrl-C and a container/orchestrator stop
+// (docker / Compose / Kubernetes / systemd all send SIGTERM, not SIGINT) both
+// drain the in-flight poll, run the deferred store.Close, and exit cleanly. It is
+// extracted as a named seam so the SIGTERM registration is unit-testable without
+// driving the whole of run. SIGTERM is defined on every Go platform (the runtime
+// maps it on Windows too), so the registration is unconditional and cross-platform.
+func notifyShutdown() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
 // run loads configuration, registers every realm hub into the store, and drives
 // the follower loop until the signal-bound context is cancelled. It returns an
 // error for any startup or shutdown fault so main owns the single os.Exit; on a
-// clean SIGINT shutdown Loop.Run returns ctx.Err(), which run reports as nil.
+// clean SIGINT or SIGTERM shutdown Loop.Run returns ctx.Err(), which run reports
+// as nil.
 func run() error {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	slog.SetDefault(logger)
@@ -130,7 +143,7 @@ func run() error {
 	}
 	defer func() { _ = st.Close() }()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := notifyShutdown()
 	defer stop()
 
 	targets, routes, err := registerHubs(ctx, st, entries)
