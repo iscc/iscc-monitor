@@ -49,6 +49,20 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `$(go env GOROOT)/lib/wasm/wasm_exec.js` (Go 1.26.1, `cmp`-identical), via the same in-handler `case`
   + `writeAsset` + no-cache/strong-ETag/304 leaf (`contentTypeJS = text/javascript; charset=utf-8`).
   Never hand-edit it; re-`cp` it on a toolchain bump.**
+- **`verify.wasm` is served at `WasmVerifyPath` (`/_ds/verify.wasm`, `application/wasm`) via the same
+  `case`+`writeAsset` leaf, and its SHA-256 is pinned in `WasmVerifyHash` (TestWasmVerifyHashPinned,
+  mutation-proven). The SERVE side is sound; the REPRODUCIBLE-BUILD side is the trap.**
+- **A `GOOS=js GOARCH=wasm` `go build` is NOT reproducible without `-buildvcs=false` — `-trimpath
+  -ldflags=-buildid=` is INSUFFICIENT.** Go stamps `debug.ReadBuildInfo` VCS metadata (`vcs.revision`,
+  `vcs.modified`, the `mod` `+dirty` suffix) into the wasm `data` section by default, so the hash changes
+  with EVERY commit and flips on a dirty vs clean tree (an 8-byte `data`-section delta; reviewer measured
+  3 distinct hashes — clean / dirty / parent-rev — and 0/10 reproductions of a committed-at-parent-rev
+  artifact). The committed `verify.wasm`'s build settings are readable via
+  `strings verify.wasm | grep vcs.` — confirm `vcs.modified=false` and that `vcs.revision` matches the
+  commit. The fix is `-buildvcs=false` in the `mise run build:wasm` task (verified: stable single hash
+  across clean / dirty / `go clean -cache`); then rebuild AND re-pin `WasmVerifyHash`. Any future
+  committed wasm/binary artifact whose hash is published as an SRI pin MUST be built with `-buildvcs=false`
+  or the published hash is unreproducible from a clean checkout (CI rebuild-and-compare can never pass).
 - **The `noExternalCDN` helper strips each line's `//` comment tail before scanning (so the vendored
   `wasm_exec.js`'s one Go-issue-tracker comment URL stops false-positiving). The predicate is now
   comment-context only: `//` is a comment ONLY at line-start or when preceded by whitespace (space/tab)

@@ -330,3 +330,66 @@ filed it and does **not** affect priority.
   truncated input is NOT an identical vector; learnings.md always-loaded "a built proof is not a verified
   proof / fail closed"; `learnings/cmd-wasm.md` JS-call-boundary truncation gotcha.
 
+## `/` realm index is far below its authoritative mockup — no claim-lookup hero, rows not linked, masthead chrome absent
+- **Priority:** critical
+- **Source:** [human] (Titusz — dev-instance review 2026-06-22; escalated normal→critical at Titusz's request to front-load visible UI progress)
+- **What / where / how to verify:** The served `/` (`internal/dashboard/dashboard.html` rendered by
+  `internal/dashboard/handler.go`) renders only the realm-register grid (domain · coverage · observed-size
+  · status badge). Against the authoritative mockup `.claude/design/ISCC Monitor - Realm Index.dc.html`
+  (target.md design-parity named-region bar, lines 158-162) it is missing the surface's THREE headline
+  landmark regions:
+  (1) **claim-lookup hero** foregrounded *above* the register (ISO-24138 eyebrow + plain-language
+  explainer + ISCC-ID lookup → certificate) — the page's primary call to action; **absent entirely**.
+  (2) **every row a link to that hub's dossier** — the served HTML has **0 `<a>` tags**
+  (`curl -s localhost:41464/ | grep -c '<a '` → `0`); target.md:155 already flags "the
+  realm-index→dossier row link, today absent, must restore", so with JS disabled `/` is a navigation
+  dead-end (no traversal into dossier → log → record → certificate).
+  (3) the cross-cutting **document chrome + instance identity** (target.md:148-151, handoff invariant 9):
+  the ISCC logo, the instance-identity block (this instance's domain + operator + realm), and the
+  `verify ↗ monitor.iscc.codes` tier-2 link. Today only a bare "Trust & Transparency Monitor" mark
+  renders. Also missing vs the mockup: the `#` row number, the **Checkpoint**-size column, the
+  **Bitcoin-anchor** dot+label column, and the "N hubs followed & mirrored" count.
+  No-JS is satisfiable: the hero's ISCC-ID input becomes a plain `GET` form targeting the existing
+  `/inclusion/{iscc_id}` route (target.md:144 "an interactive control becomes its plain-link/GET-form
+  equivalent"). NOTE the over-claim this corrects: `state.md` lists the "`/` realm-index grid" under M-UI
+  **Met**, but the surface is met only at functional-grid fidelity, not at the mockup's named-region bar.
+  Verify fixed: served `/` HTML carries (a) a hero region with a no-JS `GET` lookup form whose action
+  resolves to `/inclusion/…`, (b) each hub row wrapped in an `<a href>` to that hub's dossier (anchor
+  count ≥ hub count), and (c) the masthead logo + instance-identity + `verify ↗` link region; the
+  `internal/dashboard` handler golden test asserts those landmark regions are present; and the ADR-0012
+  visual pass against the mockup files no remaining headline-region deviation.
+- **Spec:** target.md M-UI design-parity "named-region" bar (lines 138-162, the "`/` realm index" region)
+  + the cross-cutting "Document chrome + instance identity" and "Navigation closure" requirements;
+  ADR-0010 Evidence-Ledger handoff.
+
+## `verify.wasm` is NOT reproducible — committed bytes embed a `+dirty` parent-revision VCS stamp; the published hash cannot be regenerated
+- **Priority:** critical
+- **Source:** [review] (Codex P1, reviewer-confirmed by measurement)
+- **What / where / how to verify:** The `mise run build:wasm` task (`mise.toml:42`) omits
+  `-buildvcs=false`, so `go build` stamps `debug.ReadBuildInfo` VCS metadata into the `verify.wasm`
+  `data` section. The committed artifact (`internal/web/verify.wasm`,
+  `WasmVerifyHash=17b0f4f8…`) was built from a DIRTY working tree at the PARENT revision — readable via
+  `strings internal/web/verify.wasm | grep vcs.`: `vcs.revision=b2667f86215c…` (parent of the advance
+  commit), `vcs.modified=true`, `mod …+dirty`. After the advance committed, HEAD moved, so the documented
+  task now embeds a DIFFERENT `vcs.revision` and a clean/dirty-dependent `vcs.modified`, yielding a
+  DIFFERENT hash on every regeneration. Reviewer-measured: 10× `mise run build:wasm` produced
+  `d99e9a4f…` ×9 (dirty) and `2f3dc3eb…` ×1 (clean) — and `17b0f4f8…` (the pinned const) **0 times**.
+  This breaks the step's core Verify ("re-running it after `go clean -cache` produces a byte-identical
+  file") and `Done When` ("`mise run build:wasm` deterministically builds … its SHA-256 is pinned in
+  `WasmVerifyHash`"): the published hash is unreproducible from a clean checkout, so any CI/human
+  rebuild-and-compare — and `TestWasmVerifyHashPinned` after the prescribed rebuild — fails. The SERVE
+  side (route, content-type, ETag/304/405, embed) is correct and `mise run check` is green (the pin test
+  only compares the const to the COMMITTED bytes, which it never rebuilds), so this is latent until
+  regeneration, but it defeats the entire reproducible-build / published-hash / SRI-pin purpose of the
+  step. Fix: add `-buildvcs=false` to the `build:wasm` task, rebuild, and re-pin `WasmVerifyHash` to the
+  emitted hash (reviewer-verified `-buildvcs=false` gives a STABLE single hash `f03b9b89…`,
+  byte-identical across clean / dirty / `go clean -cache`). Verify fixed: `strings verify.wasm | grep
+  vcs.modified` shows `false` and `vcs.revision` matches the committing revision; two `mise run
+  build:wasm` from different tree states are byte-identical; `git diff --stat internal/web/verify.wasm`
+  after a fresh `mise run build:wasm` is empty; `TestWasmVerifyHashPinned` passes against the rebuilt
+  artifact.
+- **Spec:** next.md Verification "re-running it after `go clean -cache` produces a byte-identical file —
+  reproducibility holds"; next.md `Done When` (deterministic `mise run build:wasm`); target.md WASM
+  milestone "reproducible build + published hash + SRI pin (ADR-0003, ADR-0010)"; `learnings/web.md`
+  reproducible-wasm `-buildvcs=false` rule.
+
