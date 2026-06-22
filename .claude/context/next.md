@@ -1,109 +1,98 @@
 # Next Work Package
 
-## Step: Move the three instance-identity env keys into the `internal/config` leaf
+## Step: Render certificate timestamps in UTC (`.UTC().Format`) to green the gate on non-UTC hosts
 
 ## Advances
-Closes the `normal` issue **"Instance-identity env keys read inline in main.go, not validated via
-internal/config; CLAUDE.md env docs lack the three new keys"** (issues.md), which the latest `review`
-handoff names as the explicit `**Next:**`:
-
-> The config-leaf env move (the explicit NEXT sub-step, closes the open `normal`): move the three
-> identity env keys (`ISCC_MONITOR_INSTANCE` / `ISCC_MONITOR_OPERATOR` / `ISCC_MONITOR_REALM_NAME`)
-> from `main.go`'s inline `identity()` into `internal/config`'s `optional(get, key, fallback)` leaf
-> (ratifying the realm-name key name) and add them to CLAUDE.md's env table — a focused `config.go` +
-> `main.go` + CLAUDE.md change.
-
-This is the smaller, cleaner first leg of the masthead-identity arc (the arc serves the M-UI
-"Document chrome + instance identity" cross-cutting Verify requirement). The remaining milestone-level
-Verify criteria are human-blocked (WASM "published" half — Pages repo-settings step) or design-first
-(WASM signature half, OTS Bitcoin-confirmed, per-hub Anchor honesty) per `state.md`, so this `normal`
-issue is the strongest code-only candidate and is explicitly queued as `**Next:**`. Preferred over
-re-polishing already-met surfaces.
+Preempts milestone work to restore the **quality gate** the rest of M-Deploy verifies against.
+Closes the `normal` issue *"Certificate renders coverage + §5-confirmation timestamps in LOCAL time,
+not UTC — TZ-dependent test failures (red on any non-UTC machine)"* (issues.md). Per target.md's
+non-negotiable Quality bar — *"`mise run check` is green: … `go test ./...` … all pass"* and the
+cross-platform requirement — the gate is currently **RED on any non-UTC host** (reproduced this
+iteration: `TZ=America/New_York go test ./internal/certificate` FAILS; `TZ=UTC` passes). This preempts
+the M-Deploy critical work (SIGTERM trap, Dockerfile/GHCR, version stamp) because **every one of those
+steps' CI jobs and local verifications run `mise run check`** — a gate that is environment-dependently
+red cannot cleanly verify the next increment. The state's "Next Milestone" item #1 and the `review`
+handoff both name this as the slice to land first.
 
 ## Goal
-Make `internal/config` the single validated source for the three optional masthead-identity strings so
-every SSR masthead (current and the future proofserve trio) draws from one validated place instead of
-`os.Getenv` calls in `main.go`, and document the keys in CLAUDE.md's env table. This ratifies the
-`ISCC_MONITOR_REALM_NAME` key name in the config leaf (the human realm NAME, distinct from the required
-realm-document PATH `ISCC_MONITOR_REALM`).
+Normalize the four `.Format(time.RFC3339)` call sites in `internal/certificate/handler.go` to
+`.UTC().Format(time.RFC3339)` so every rendered timestamp is locale-independent `…Z`, matching the rest
+of the federation (dashboard/dossier/log-browser all render UTC). This makes `mise run check` green
+regardless of the host timezone — the precondition for cleanly verifying the queued M-Deploy work.
 
 ## Scope
 - **Create**: (none)
-- **Modify** (2 production files + 1 doc file):
-  - `internal/config/config.go` — add `Instance`, `Operator`, `RealmName` string fields to `Config`;
-    add the three key constants (`keyInstance`/`keyOperator`/`keyRealmName`, same literals main.go uses
-    today); read each via the existing `optional(get, key, "")` helper inside `Load`. Update the package
-    doc comment's "Configuration keys" block + the `Config` struct doc to list the three optional keys.
-  - `cmd/iscc-monitor/main.go` — delete the `keyInstance`/`keyOperator`/`keyRealmName` const block
-    (lines 281-296) and the `os.Getenv`-based `identity()` body (lines 298-309); rebuild
-    `dashboard.Identity` from the `cfg` fields. `identity` is called once at `main.go:150` inside `run()`
-    where `cfg` is already in scope — make it `identity(cfg config.Config) dashboard.Identity` and pass
-    `cfg`. (`os` stays imported — still used for `os.ReadFile`/`os.LookupEnv`/`os.Exit`/`os.Stderr`.)
-  - `CLAUDE.md` — add the three keys to the "Running a local dev instance" env-var bullet list
-    (after line 47, the `ISCC_MONITOR_ADDR` bullet), each `(optional)`, noting `ISCC_MONITOR_REALM_NAME`
-    is the human realm NAME distinct from the required realm-document PATH `ISCC_MONITOR_REALM`.
+- **Modify**: `internal/certificate/handler.go` (the one production file; 4 `.Format(time.RFC3339)`
+  sites — lines ~653, ~962, ~1013, ~1040).
+- **Modify (test)**: `internal/certificate/handler_test.go` — add ONE focused regression test that
+  pins UTC rendering independent of host TZ (see Implementation Notes); does not count against the
+  ≤3 non-test/doc budget.
 - **Reference**:
-  - `.claude/context/learnings/config.md` — the pure-leaf rules (imports exactly `{fmt time}`,
-    map-backed fake test pattern, the `optional` no-validation-beyond-default contract that `keyAddr`
-    already uses).
-  - `internal/config/config_test.go` — the existing `fromMap` fake + golden/defaults/table structure to
-    extend (not a budget file).
-  - `cmd/iscc-monitor/main.go:281-309` — the existing inline `keyInstance`/`keyOperator`/`keyRealmName`
-    consts + `identity()` to delete, and the `keyRealmName` rationale comment (288-291) to port into
-    config.
-  - `internal/dashboard/handler.go:94-105` — the `Identity{Instance, Operator, Realm}` struct main builds
-    (its `Realm` field is fed from config's `RealmName`).
+  - `.claude/context/learnings/certificate.md` (cert handler mechanics: §5 `BTCConfirmedAt`,
+    Comparison-Anchor `CoverageSince`, §4 `SigningKeyRevoked`, the `html/template` base64-escaping note
+    — read before touching).
+  - `.claude/context/issues.md` → "Certificate renders coverage + §5-confirmation timestamps in LOCAL
+    time, not UTC" (the exact failing tests + expected `Z` strings + fix directive).
+  - `internal/certificate/handler_test.go:1458` (`TestCertificateComparisonAnchor`) and `:1656`
+    (`TestCertificateBitcoinAnchorConfirmed`) — the two existing tests this greens.
 
 ## Not In Scope
-- **Do NOT thread identity into the proofserve trio** (`browser.html`, `records.html`, `record.html`).
-  That is the next slice and the trigger to consolidate the duplicated fallback consts (the `low`). This
-  step is the config move only.
-- Do NOT fold the duplicated `instanceFallback`/`operatorFallback` consts + a shared `Resolve` into one
-  leaf (the `low` issue) — that lands with the proofserve slice.
-- Do NOT rename `dashboard.Identity.Realm` or touch any handler's fail-safe defaulting — the handlers
-  keep applying the static placeholder on an empty field; config carries empty strings when keys unset.
-- Do NOT add validation/normalization to the three identity values — they are free-form display strings;
-  `optional(get, key, "")` is the right (no-validation) helper, matching `keyAddr`.
-- Do NOT import `dashboard` from `config` (that would invert the pure-leaf dependency / risk a cycle).
-  `config` stays `{fmt time}`-only; `main.go` keeps building `dashboard.Identity` from the `Config` fields.
+- **Do NOT trap SIGTERM, add a Dockerfile/GHCR workflow, version-stamp the binary, add a `deploy/`
+  realm doc, write the operability doc, or the root README.** Those are the queued M-Deploy steps and
+  each is its own ≤3-file increment; this step only restores the green gate they depend on. Touching
+  `cmd/iscc-monitor/main.go` here is out of scope.
+- Do NOT change the timestamp FORMAT (no humanizing `2026-02-14 18:40 UTC` — the cert §6 mockup-humanize
+  note in certificate.md is a separate deliberate format-policy step). Keep RFC-3339; only fix the zone.
+- Do NOT touch the other SSR surfaces' timestamp rendering (dashboard/dossier/log-browser already render
+  UTC `Z` — verified). This is the cert handler diverging, not a codebase-wide change.
+- Do NOT add a `t.Setenv("TZ", …)`-based test that mutates process-global state — prefer a test that
+  asserts the rendered chip is `…Z` so it holds on any host without per-test env juggling (see
+  Implementation Notes).
 
 ## Implementation Notes
-- **Keep `internal/config` a pure leaf** (learnings index + `config.md`): the three new fields are plain
-  `string`s read through the injected `get` closure via the existing `optional` helper — NO new imports,
-  NO `os`/`net`/`dashboard`. The package must still import exactly `{fmt time}`.
-- Use `optional(get, key, "")` for all three (empty-string fallback). This matches `keyAddr`'s pattern
-  but with an empty default, so an unset key stays `""` and the dashboard/dossier/certificate handlers
-  apply their own static-masthead fail-safe — do NOT duplicate that fallback copy in config.
-- Port the `keyRealmName` rationale comment from `main.go:288-291` into config: it is the human realm
-  NAME ("ISCC mainnet"), deliberately distinct from the already-required `ISCC_MONITOR_REALM` (the
-  realm-document filesystem PATH); overloading the path var would leak a filename into the ledger
-  subtitle. This step *ratifies* that key name in the config leaf.
-- `identity()` in `main.go` becomes `identity(cfg config.Config) dashboard.Identity` returning
-  `dashboard.Identity{Instance: cfg.Instance, Operator: cfg.Operator, Realm: cfg.RealmName}`; its single
-  caller at `main.go:150` passes `cfg`. Rewrite both doc comments (the const block is gone; `identity`
-  is now config-sourced) to describe the current state, not the move (evergreen-comment rule).
-- Extend `config_test.go`: `TestLoadGolden` adds the three keys to its input map and the three fields to
-  `want` (full round-trip). `TestLoadDefaults` (minimal input) asserts the three fields are `""` when the
-  keys are absent. Add a `TestLoad` table case for a partially-set identity (e.g. only `keyInstance` set,
-  the others `""`) so per-field independence is non-vacuous.
-- **No crypto correctness rule applies** (pure startup-value parsing — no signature/Merkle/did:web/proof
-  path). Oracle gate is N/A; `go.mod`/`go.sum`/`schema.sql` stay byte-identical (state this in the verdict).
+- The four sites, all in `internal/certificate/handler.go`, store UTC instants and currently render them
+  in the server's LOCAL zone:
+  - `:653` — `key.Revoked.Format(time.RFC3339)` (proof-bundle key `Revoked`; currently untested).
+  - `:962` — `key.Revoked.Format(time.RFC3339)` (§4 `SigningKeyRevoked`; currently untested).
+  - `:1013` — `rec.UpgradedAt.Format(time.RFC3339)` (§5 `BTCConfirmedAt`; pinned by
+    `TestCertificateBitcoinAnchorConfirmed`).
+  - `:1040` — `hub.Coverage.Since.Format(time.RFC3339)` (Comparison-Anchor `CoverageSince`; pinned by
+    `TestCertificateComparisonAnchor`).
+  Change each to `.UTC().Format(time.RFC3339)` — e.g. `rec.UpgradedAt.UTC().Format(time.RFC3339)`,
+  `hub.Coverage.Since.UTC().Format(time.RFC3339)`, `key.Revoked.UTC().Format(time.RFC3339)` (twice).
+  Fix ALL FOUR even though only two are test-covered, to satisfy the issue's grep-the-handler directive
+  and keep the surface uniformly locale-independent (the two `Revoked` sites are the same hazard, just
+  un-asserted today). Line numbers are approximate — grep `Format(time.RFC3339)` to locate exactly.
+- **Correctness rule (always-loaded learnings, Coverage honesty / ADR-0001):** the certificate's
+  RFC-3339 times are honesty-bearing UI; rendering them in UTC `Z` keeps every instance's output
+  byte-identical regardless of host, which is also the cross-platform requirement (target.md Quality bar).
+- **`html/template` escaping nuance (certificate.md):** these timestamp chips are plain text nodes, not
+  base64 — no `+`/`/` entity-escaping applies, so a test may assert the raw `…Z` substring directly
+  (unlike the §3/§5 base64 chips, which the existing tests `html.UnescapeString` first).
+- **Test design — TZ-independent assertion:** add a `TestCertificate…UTC…` test that renders the §5
+  confirmed / coverage chip on a fixture seeded with a NON-zero-offset wall instant and asserts the body
+  contains the `Z`-suffixed UTC string (never a `+HH:MM` offset). The strongest non-vacuous form: seed a
+  timestamp like `time.Date(2026, 2, 14, 18, 40, 0, 0, time.FixedZone("CET", 3600))` and assert the body
+  renders `2026-02-14T17:40:00Z` (the UTC equivalent) AND does NOT contain `+01:00` — this fails before
+  the `.UTC()` fix on EVERY host (the stored instant carries a non-UTC location), so the test is
+  host-independent and proves the fix rather than merely tracking `mise run check`'s TZ-sensitivity.
+  (The two existing tests already cover the UTC-stored path; the new test covers the non-UTC-stored path
+  so reverting any `.UTC()` makes it FAIL regardless of `TZ`.)
+- Oracle gate is **N/A**: pure timestamp-rendering change, no signature / RFC-6962 / Merkle / did:web /
+  proof / `go.mod` / `go.sum` / `schema.sql` path touched (state this in the verdict).
 
 ## Verification
-- `mise run check` is green (build + vet + `go test ./...` + `gofmt -l .` empty outside `cauldron/`).
-- `go test -count=1 -run TestLoad ./internal/config` passes (golden round-trip incl. the three identity
-  fields, the absent→`""` default, and the partial-set case).
-- `go test -count=1 ./cmd/iscc-monitor` passes (the `identity(cfg)` signature compiles and wires at the
-  `main.go:150` call site).
-- Assertion: with `ISCC_MONITOR_INSTANCE` / `ISCC_MONITOR_OPERATOR` / `ISCC_MONITOR_REALM_NAME` set,
-  `config.Load(...)` returns a `Config` whose `Instance`/`Operator`/`RealmName` equal those values;
-  with the keys absent, those three fields are `""`.
-- Assertion: `go list -deps github.com/iscc/iscc-monitor/internal/config` adds no new import — the
-  package's direct imports stay `{fmt time}` (no `os`/`dashboard`/`net`).
-- Mutation check (advance runs + reverts byte-clean): forcing `optional(get, keyInstance, "")` to return
-  a literal makes `TestLoadGolden`/`TestLoadDefaults` FAIL; restore, `git diff` clean.
+- `mise run check` is green **on a non-UTC host** — e.g. `TZ=America/New_York mise run check` passes
+  (it FAILS on parent `HEAD` — reproduced this iteration).
+- `TZ=America/New_York go test -count=1 ./internal/certificate` passes (parent: 2 failures).
+- `TZ=UTC go test -count=1 ./internal/certificate` still passes (no regression on UTC hosts).
+- The new test FAILS when any one `.UTC()` is reverted: with the fix in place,
+  `TZ=UTC go test -count=1 -run TestCertificate ./internal/certificate` is green; manually reverting a
+  single `.UTC()` insertion turns the new non-UTC-stored test red (mutation check).
+- `gofmt -l internal/certificate/handler.go internal/certificate/handler_test.go` is empty and
+  `go vet ./internal/certificate` is clean.
 
 ## Done When
-`internal/config` parses the three identity keys into typed `Config` fields, `main.go`'s `identity(cfg)`
-builds `dashboard.Identity` from those fields (no `os.Getenv` for identity), CLAUDE.md documents the
-three keys with the realm-name-vs-path distinction, and all Verification checks pass.
+`mise run check` is green on any host timezone (verified via `TZ=America/New_York`), the new TZ-independent
+test passes and fails on a reverted `.UTC()`, and all four cert handler `.Format(time.RFC3339)` sites are
+`.UTC()`-normalized — clearing the gate so the queued M-Deploy critical steps can be verified cleanly.
