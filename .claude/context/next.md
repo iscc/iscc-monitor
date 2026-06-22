@@ -1,106 +1,118 @@
 # Next Work Package
 
-## Step: Trap SIGTERM so `run()` shuts down gracefully under `docker stop`
+## Step: Version-stamp the binary (`-ldflags -X`) and surface it on `GET /version`
 
 ## Advances
-Closes the `critical` M-Deploy ops issue **"Trap SIGTERM so the container shuts down gracefully
-(run() handles SIGINT only)"** and moves toward the M-Deploy Verify criterion (target.md, ADR-0013):
+M-Deploy Verify criterion (target.md, "Packaged & operable instance"):
 
-> **SIGTERM** cancels the run context: the process drains the in-flight poll, runs the deferred
-> `store.Close()`, and exits `0` within the grace window — asserted by a test (start the binary, send
-> `SIGTERM`, assert clean exit + store closed); reverting the SIGTERM registration in
-> `signal.NotifyContext` makes that test FAIL.
+> the binary is **version-stamped** (git SHA via `-ldflags`, default `dev` when unset) and reports it on
+> `/healthz` JSON or `GET /version` — an HTTP-seam test asserts a non-empty version field;
 
-This is the front-of-queue M-Deploy slice: M-Deploy is 0/Verify with 6 `critical` ops issues open, the
-gate is now green on every host (so the in-repo Verify items verify cleanly), and the `review` handoff's
-`**Next:**` names this exact step. It is also the cleanest unblock *before* the Dockerfile/GHCR work so
-`docker stop` (which sends SIGTERM, not SIGINT) drains the store rather than `SIGKILL`-ing it mid-commit
-over what the glossary calls *irreplaceable evidence*.
+This closes one standalone M-Deploy Verify item. It is the natural fold-in the `review` handoff named
+("Fold in the `-ldflags` git-SHA build stamp surfaced on `/healthz` JSON or a tiny `GET /version` — the
+version-stamp slice was deferred out of the SIGTERM step"). It is also a prerequisite the Dockerfile
+step will consume: the production image build passes the git SHA via `-ldflags`, so landing the
+testable injection seam FIRST means the later (locally-unverifiable, Docker-less) image step just wires
+to an already-proven `var`. Skeleton-first ordering for M-Deploy: the runnable, pure-Go-testable slice
+before the container infra (Docker is not available in this environment — the image step's
+container-runs-`/healthz` check cannot be verified locally, so it must be its own later step).
 
 ## Goal
-Make `run()` cancel its run context on **SIGTERM** as well as SIGINT, so a container/orchestrator stop
-drains the in-flight poll, runs the deferred `store.Close()`, and exits 0 — proven by a mutation-grade
-test that fails if the SIGTERM registration is reverted.
+Give the running binary a build-provenance string (default `dev`, overridable to the git short SHA at
+build time via `-ldflags -X`) and expose it at `GET /version` so an operator (and a CI smoke check) can
+confirm exactly which build is live. This is the M-Deploy "which build is running?" requirement, and it
+unblocks the Dockerfile step that will inject the real SHA.
 
 ## Scope
-- **Modify**: `cmd/iscc-monitor/main.go` (1 production file — add `syscall.SIGTERM` to the shutdown
-  `signal.NotifyContext` at `main.go:133`, extracted behind a tiny named seam so it is unit-testable;
-  update the package/`run` docstrings that say "until SIGINT" / "on a clean SIGINT shutdown" to name
-  SIGTERM too).
-- **Create**: a test in `cmd/iscc-monitor/` (e.g. `shutdown_test.go`) that drives the seam and asserts
-  SIGTERM cancels the context.
+- **Create**: `internal/version/version.go` — a tiny HTTP leaf: an exported `var Version = "dev"` (the
+  `-ldflags -X` injection target) plus a `Handler() http.Handler` that serves `GET /version` as JSON
+  (`{"version":"<Version>"}`). Mirror the `internal/metricshttp` / `internal/healthz` HTTP-leaf style.
+- **Modify**:
+  - `cmd/iscc-monitor/main.go` — in `buildMux`, mount `mux.Handle("/version", version.Handler())`
+    (an exact path, like `/metrics` and `/healthz`); and add `"version"` to the `reservedMountNames`
+    map so a realm domain literally named `version` cannot collide with the exact mount and panic
+    `http.ServeMux` (the same reserved-name discipline `learnings/cmd-monitor.md` documents for
+    `/metrics`, `/healthz`, `/_ds`). Add the `internal/version` import.
+  - `mise.toml` — add the `-ldflags` stamp so a real build injects the SHA: a `tasks."build:monitor"`
+    that runs
+    `go build -ldflags "-X github.com/iscc/iscc-monitor/internal/version.Version=$(git rev-parse --short HEAD)" -o ./iscc-monitor ./cmd/iscc-monitor`
+    (the path the Dockerfile/CI will reuse). Keep `tasks.check` / `tasks.build` (plain `go build ./...`)
+    UNTOUCHED so the default `dev` value still compiles and is what the gate builds — do NOT make `git`
+    a hard requirement of the default `check` task.
 - **Reference**:
-  - `.claude/context/learnings/cmd-monitor.md` — the `run()` wiring + the `Run returns ctx.Err()
-    unwrapped → main.go's err != context.Canceled (==, not errors.Is) is correct` note. **Do not break
-    that contract** — SIGTERM must cancel the *same* context whose cancel `loop.Run` returns as clean.
-  - `cmd/iscc-monitor/main.go:133` — the current `signal.NotifyContext(context.Background(),
-    os.Interrupt)` site, and `main.go:131` the `defer func() { _ = st.Close() }()` it must let run.
-  - `cmd/iscc-monitor/main_test.go` — existing test style to match (no test classes; simple focused
-    funcs; `t.TempDir()` stores; `Test…` names selectable by `-run`).
-  - The open issue **"Trap SIGTERM …"** in `.claude/context/issues.md` (the ops acceptance wording: a
-    `docker stop` shows graceful exit, no SIGKILL).
+  - `internal/metricshttp/handler.go` + `internal/healthz/handler.go` — the HTTP-leaf style to mirror
+    (fixed Content-Type, drop the post-status write error deliberately, no nil-guard; `healthz` shows
+    the 405-on-non-GET shape).
+  - `.claude/context/learnings/cmd-monitor.md` — the `reservedMountNames` / `reservedDomain` discipline
+    (an exact bare-domain mount over an operator-controlled realm domain MUST be reserved-name-gated or
+    `http.ServeMux.Handle` PANICS on a duplicate pattern) and the thin-`main` / `buildMux` wiring rules.
+  - `.claude/context/learnings/config.md` — confirms why this is NOT a config key (it is a build-time
+    `-ldflags` stamp, not a runtime env value; `internal/config` stays a `{fmt time}`-only leaf).
 
 ## Not In Scope
-- **The Dockerfile + GHCR publish workflow** — the larger `critical` follow-on (its own ≤3-file step);
-  this slice only fixes the signal trap that makes `docker stop` clean.
-- **Version-stamping the binary** (`-ldflags` git SHA on `/healthz` / `GET /version`) — a separate
-  M-Deploy slice; do not add it here.
-- **`deploy/realm-testnet.txt`, the operability/deployment doc, the root `README.md`** — independent
-  M-Deploy slices, not this step.
-- **A configurable `stop_grace_period` / shutdown-timeout knob** — the issue *mentions* recommending a
-  Compose `stop_grace_period`, but that is a doc line for the later deployment doc, NOT a new config key;
-  do not touch `internal/config`. The existing 5s `serveMetrics` shutdown timeout is unchanged.
-- **Restructuring `run()`'s body** beyond extracting the one signal seam — keep the change minimal; do
-  not reorder the `store.Open` / `defer Close` / `registerHubs` / goroutine wiring.
+- The production `Dockerfile` and the GHCR publish workflow (the next M-Deploy step — it CONSUMES this
+  `-X` injection; Docker is not available in this environment, so its container-runs-`/healthz` CI check
+  cannot be verified locally and must be its own step).
+- Adding the version to `/healthz` JSON. Pick the `GET /version` surface (the target offers either);
+  do NOT rewrite the healthz handler's fixed-byte-literal bodies (its "no marshal-failure branch"
+  design is deliberate — leave `internal/healthz` byte-identical).
+- A richer build-info struct (build time, Go version, `debug.ReadBuildInfo` VCS data). YAGNI — the
+  Verify bar asks only for a non-empty version field; a single string default-`dev` meets it.
+- Making `version` an `internal/config` key or an `ISCC_MONITOR_*` env var — it is a compile-time stamp,
+  so `internal/config` is NOT touched.
+- The `deploy/realm-testnet.txt` canonical realm doc, the operability/deployment doc, and the root
+  `README.md` — separate M-Deploy slices, not this step.
 
 ## Implementation Notes
-- **The fix is one line of behavior**: `signal.NotifyContext(context.Background(), os.Interrupt,
-  syscall.SIGTERM)` (add the `"syscall"` import). `syscall.SIGTERM` is defined on **every** Go platform
-  incl. Windows (Go maps it), so the production change stays cross-platform per CLAUDE.md — no build tag
-  on `main.go`.
-- **Make it testable with a tiny seam, not by signalling through the whole `run()`.** Extract the
-  registration into a package-level helper, e.g.
-  `func notifyShutdown() (context.Context, context.CancelFunc) { return signal.NotifyContext(
-  context.Background(), os.Interrupt, syscall.SIGTERM) }`, and call it from `run()` in place of the
-  inline call (`ctx, stop := notifyShutdown(); defer stop()`). The test then calls `notifyShutdown()`
-  directly, sends itself SIGTERM, and asserts the returned context's `Done()` fires within a short
-  deadline. This keeps `run()` (which opens a real store, wires goroutines, and blocks on `loop.Run`)
-  out of the test — driving the full `run()` would need env wiring and is the wrong seam.
-- **Deliver the signal in-process** with `syscall.Kill(syscall.Getpid(), syscall.SIGTERM)` (Unix). Then
-  `select { case <-ctx.Done(): /* pass */ case <-time.After(2 * time.Second): t.Fatal(...) }`. After the
-  assertion, **call the returned `stop()` (cancel)** so the test un-registers the handler and does not
-  leak a process-wide SIGTERM trap into sibling tests (`signal.NotifyContext` installs a *process*
-  handler; use `defer stop()` / `t.Cleanup(stop)` — otherwise a later SIGTERM the OS sends could be
-  swallowed). The main suite has no `t.Parallel`, so a transient process-wide trap inside one test is
-  safe as long as it is torn down.
-- **Cross-platform test hygiene:** `syscall.Kill` / `syscall.Getpid` self-signalling is Unix-only. Put
-  the test file behind `//go:build unix` (or guard with `if runtime.GOOS == "windows" { t.Skip(...) }`)
-  so `go build ./...` and `mise run check` stay green on Windows while the assertion runs on the Linux
-  CI gate — this is a platform-capability skip of an OS-specific test *mechanism*, NOT a gate dodge of
-  the feature (the production `syscall.SIGTERM` registration is unconditional and compiled on every OS).
-- **Non-vacuous (mutation) requirement:** the test must FAIL if SIGTERM is dropped from the
-  registration. Because `notifyShutdown` is the single seam, reverting it to `signal.NotifyContext(...,
-  os.Interrupt)` leaves the SIGTERM handler unset → the process takes SIGTERM's *default* disposition
-  (terminate), so `<-ctx.Done()` never fires and the test hits its `time.After` fatal. Confirm this by
-  reverting locally and seeing the test fail, then restore.
-- **Docstrings**: update the two evergreen comments that currently say "until SIGINT" (`main.go` package
-  doc, ~lines 11-14) and "on a clean SIGINT shutdown Loop.Run returns ctx.Err()" (`run` doc, ~line 108)
-  to read "SIGINT or SIGTERM", per CLAUDE.md "evergreen comments describe the current state."
-- **Oracle gate is N/A** — pure process-lifecycle wiring; no signature / RFC-6962 / Merkle / did:web /
-  proof / `go.mod` / `go.sum` / `schema.sql` path is touched. `proof/verify` purity and the WASM build
-  are unaffected (this is `cmd/iscc-monitor`, not a WASM-shared leaf).
+- **Default and injection.** `var Version = "dev"` at package scope is the standard `-ldflags -X`
+  target: `go build -ldflags "-X github.com/iscc/iscc-monitor/internal/version.Version=abc1234"`
+  overrides it at link time; an un-stamped build (the gate's plain `go build ./...`) keeps `dev`. The
+  `-X` path is `<module>/internal/version.Version` — module is `github.com/iscc/iscc-monitor`
+  (confirmed via `go list -m`). `-X` only overrides a `string` var initialized to a constant, so keep
+  it a plain `var Version = "dev"` (NOT a `const`, NOT computed/concatenated).
+- **Handler style.** Mirror `metricshttp.Handler` / `healthz.Handler`: an `http.HandlerFunc` that, on
+  `GET`, sets `Content-Type: application/json`, calls `WriteHeader(200)`, then writes
+  `{"version":"<Version>"}`. Build the body so a stamped SHA stays valid JSON — `strconv.Quote(Version)`
+  inside the object (or `fmt.Sprintf(\`{"version":%q}\`, Version)`) avoids a broken body if the stamp
+  ever contains a quote. Reject non-GET with 405 exactly as `healthz` does (consistency across the leaf
+  endpoints). Drop the post-status write error deliberately (documented convention — a derived body
+  cannot fail for content reasons after `WriteHeader`; only a broken client conn, unrecoverable).
+- **Purity / leaf.** `internal/version` imports only stdlib (`net/http`, `fmt`/`strconv`) and NO
+  `internal/*` package, so it stays a leaf. It is NOT WASM-shared (it is an HTTP leaf like
+  `metricshttp`), so the `proof/verify`/`didweb` import-purity rule does not bind it.
+- **Reserved-mount discipline (load-bearing).** `/version` is an EXACT mount in `buildMux`. The
+  existing `reservedMountNames` is `{metrics, healthz, _ds}` (the `_ds` derived from `web.Prefix`); a
+  realm line `version` would otherwise build an exact `/version` dossier mount in `mirrorHandler` BEFORE
+  `buildMux` registers the real `/version`, panicking `http.ServeMux.Handle` on the duplicate pattern.
+  Add `"version"` to `reservedMountNames` so `reservedDomain("version")` is true → `registerHubs` fails
+  loudly at startup AND `mirrorHandler` skips the dossier mount (defense-in-depth). This mirrors exactly
+  how `/metrics` and `/healthz` are protected (see `learnings/cmd-monitor.md`).
+- **Oracle gate is N/A** — pure HTTP wiring + a build-stamp string; touches no signature / RFC-6962 /
+  Merkle / did:web / proof / fsck path. `go.mod` / `go.sum` / `internal/store/schema.sql` MUST stay
+  byte-identical (no new dependency — stdlib only).
+- **Gate honesty.** Do NOT weaken `mise run check` — leave its `go build ./...` as-is (it builds the
+  `dev` default, correct for the gate). The `-ldflags` stamp is an ADDITIONAL build path for the
+  image/CI, not a replacement for the gate build.
 
 ## Verification
-- `mise run check` is green (build + vet + `gofmt -l .` empty + all packages `ok`).
-- `go test -count=1 -run TestSIGTERM ./cmd/iscc-monitor` passes (name the test `TestSIGTERM…` so this
-  filter catches it — the filter-shorthand caveat prior OTS reviews flagged).
-- **Mutation check (run manually, then restore):** reverting `notifyShutdown` to
-  `signal.NotifyContext(context.Background(), os.Interrupt)` makes `go test -run TestSIGTERM
-  ./cmd/iscc-monitor` FAIL.
-- `grep -n "syscall.SIGTERM" cmd/iscc-monitor/main.go` shows the registration is present, and no bare
-  `os.Interrupt`-only `signal.NotifyContext` remains in `cmd/iscc-monitor`.
+- `mise run check` is green (build + vet + test all pass; the default `dev` build compiles).
+- `gofmt -l .` lists nothing (touched files clean).
+- `go test -count=1 -run TestVersion ./internal/version` passes — an HTTP-seam test that drives
+  `version.Handler()` over `httptest` asserts `GET /version` → `200`, `Content-Type: application/json`,
+  a body parsing as JSON with a **non-empty** `version` field equal to `version.Version` (default
+  `"dev"`), and a non-GET → `405`. (Name it `TestVersion…` so the `-run TestVersion` filter catches it.)
+- `go test -count=1 -run TestBuildMux ./cmd/iscc-monitor` passes — the existing buildMux routing /
+  reserved-domain tests stay green with `/version` mounted and `"version"` added to
+  `reservedMountNames` (extend the reserved-domain assertion to cover `version` if a table drives it).
+- Mechanical injection check (proves the `-X` target path is correct and the var is overridable):
+  `go build -ldflags "-X github.com/iscc/iscc-monitor/internal/version.Version=test123" -o /tmp/iscc-monitor-vt ./cmd/iscc-monitor`
+  builds, and starting it (tmp `ISCC_MONITOR_DB` + the `internal/registry/testdata/realm.txt` realm +
+  `ISCC_MONITOR_ADDR=127.0.0.1:41465` + a long `ISCC_MONITOR_NORMAL=10m`) then
+  `curl -s 127.0.0.1:41465/version` returns a body containing `test123` — the stamp flows env-free from
+  `-ldflags` to the served response. (A default un-stamped build serves `dev`.)
 
 ## Done When
-`run()` registers SIGTERM (alongside SIGINT) on its shutdown context via a named seam, a `//go:build
-unix` (or GOOS-guarded) `TestSIGTERM…` proves SIGTERM cancels that context and FAILS if the registration
-is reverted, and `mise run check` is green.
+`GET /version` serves a non-empty version string (default `dev`, overridable to the git SHA via the
+documented `-ldflags -X github.com/iscc/iscc-monitor/internal/version.Version=<sha>`), the new
+`internal/version` HTTP-seam test and the buildMux reserved-name tests pass, and `mise run check` is
+green with `go.mod` / `go.sum` / `schema.sql` byte-identical.
