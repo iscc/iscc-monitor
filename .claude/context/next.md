@@ -1,119 +1,135 @@
 # Next Work Package
 
-## Step: Serve the mirrored OTS proof at `GET /<domain>/log/checkpoint.ots`
+## Step: Light up certificate §5 BITCOIN ANCHOR (confirmed / pending) from the mirrored OTS row
 
 ## Advances
-The **OTS / Bitcoin anchoring** milestone Verify criterion (target.md §"OTS / Bitcoin anchoring"):
+The **M-UI — Evidence Ledger frontend** milestone Verify criterion (target.md M-UI):
 
-> stamp each distinct observed root daily … + background upgrade loop (pending → Bitcoin-confirmed) +
-> **serve `.ots`**; never blocks the follower. **Verify:** a stamped root upgrades to Bitcoin-confirmed
-> and the served `.ots` verifies with the standard `ots` client.
+> "the **Bitcoin-anchor** panel and the **comparison-anchor** panel are separate, distinctly-labelled
+> elements ("anchoring" copy is Bitcoin-only; a not-yet-anchored root renders the normal "pending"
+> state, not an error)"
 
-This step closes the **observable HTTP-surface half** of that criterion — the first served, parseable
-`.ots` file keyed on the monitor's accepted `(size, root)`. The stamp→upgrade transit is already wired in
-code (state.md); the criterion is still 1/1 open *only* because no `.ots` route exists, so the served
-bytes cannot be handed to the standard `ots` client. state.md is explicit: "The single best next step is
-now the `.ots` route" and "A step that adds another internal OTS seam instead of an observable HTTP
-surface is drift." This is the observable surface, not another seam.
+and the per-surface certificate named region (target.md "certificate of inclusion" mockup region):
+
+> "the numbered clauses **§1 Subject · §2 Checkpoint · §3 Inclusion proof · §4 Signing key · §5 Bitcoin
+> anchor · §6 Record history**"
+
+This is the **last open certificate clause** (`HasClause5` is declared at
+`internal/certificate/handler.go:286` but **never assigned `true`** — re-verified this iteration). It is
+the nearest unmet **observable** Verify-closer; the state, handoff, and review `**Next:**` all name it
+as the single next step. It also touches the **OTS / Bitcoin anchoring** milestone (the §5 surface is
+the certificate-side observable for the anchor), whose remaining bar after this is the
+offline-unprovable live-chain confirmation.
 
 ## Goal
-Add a `GET /checkpoint.ots` route to `proofserve.Handler` that resolves the hub's accepted `(size, root)`,
-reads the mirrored OTS proof via `store.OTSForRoot`, and writes `OTSBytes` verbatim so a client can fetch
-it and run the standard `ots` toolchain against it. This is the canonical anchoring artifact every later
-OTS surface (certificate §5, the dossier §4 Bitcoin-anchor panel) links to.
+Render the §5 BITCOIN ANCHOR clause on the certificate page for a certifiable id whose accepted root has
+an OTS row: a **confirmed** anchor shows the Bitcoin block height (+ confirmation time), a **pending**
+(stamped-but-not-yet-confirmed) anchor shows the honest "pending" state — never an error — and an
+un-anchored root simply omits §5. This closes the last numbered certificate clause and is the
+certificate-side observable surface for the anchoring milestone.
 
 ## Scope
-- **Create**: `/workspace/iscc-monitor/internal/proofserve/ots_test.go` (test, not counted) — HTTP-seam
-  golden tests for the new route.
-- **Modify** (≤3 non-test/doc source files):
-  - `/workspace/iscc-monitor/internal/proofserve/handler.go` — add a `serveOTS` func + a
-    `case "/checkpoint.ots":` to the `Handler` dispatch switch. (1 of ≤3)
-  - `/workspace/iscc-monitor/cmd/iscc-monitor/main.go` — add `mux.Handle("/checkpoint.ots", proofs)` to
-    `hubHandler` so the exact mount beats the `/` subtree (mirroring the existing `/record`, `/inclusion`,
-    … mounts). (2 of ≤3)
-  - `/workspace/iscc-monitor/CLAUDE.md` — document the new `GET /<domain>/log/checkpoint.ots` endpoint in
-    the "Running a local dev instance" route list (doc, not counted).
-- **Reference** (read before writing):
-  - `/workspace/iscc-monitor/.claude/context/learnings/otsclient.md` — read before touching ANY OTS code:
-    `internal/ots`/`internal/otsclient` are NOT WASM-pure and pull `net/http`/`opentimestamps`; keep them
-    out of any closure that must stay a leaf.
-  - `/workspace/iscc-monitor/.claude/context/learnings/http-surface.md` — the proofserve dispatch, the
-    `CheckpointAt found==false` → 500 contract, the `serveVerify` inverted-status posture, the
-    buffer-then-200 discipline, and the Mux-mount trap (exact route vs the `/` subtree).
-  - `/workspace/iscc-monitor/internal/store/ots.go` — `OTSForRoot(ctx, hubID, treeSize, root) (OTSRecord,
-    found bool, err error)`; an un-anchored root is a plain miss `(OTSRecord{}, false, nil)`, NOT an error.
-  - `/workspace/iscc-monitor/internal/proofserve/handler.go` `serveVerify` (≈ lines 485-510) — the exact
-    `FollowState` → `size := fs.LastSize` → `CheckpointAt(ctx, hubID, size)` → `root` resolution to copy.
-  - `/workspace/iscc-monitor/internal/tilesserve/handler.go` `writeBlob` (lines 169-191) — the
-    `application/octet-stream` + strong content-ETag + `If-None-Match` → 304 pattern to mirror.
+- **Create**: (none — §5 reuses the existing `cert.html` `{{if .HasClause5}}` block, filled in)
+- **Modify**:
+  - `internal/certificate/handler.go` (≤3 budget, 1 of 1) — populate the §5 fields in `buildData`
+  - `internal/certificate/cert.html` (template, not counted against the 3-file budget) — fill the empty
+    §5 `clause-value` with the confirmed/pending markup
+  - `internal/certificate/handler_test.go` (test, not counted) — add §5 HTTP-seam tests
+- **Reference**:
+  - `.claude/context/learnings/certificate.md` (the §1–§6 buildData mechanics + buffer-then-200 +
+    `html/template` base64-escape trap)
+  - `.claude/context/learnings/ots.md` (`ots.Confirmed` is fail-closed, NOT WASM-pure — keep it out of
+    WASM-shared closures; certificate is server-side-only so importing it is fine)
+  - `.claude/context/learnings/http-surface.md` (the `.ots` route's empty-`OTSBytes` sentinel edge case)
+  - `internal/store/ots.go` (`OTSForRoot` signature + the empty-`OTSBytes` sentinel + miss-is-not-error)
+  - `internal/ots/ots.go` (`Confirmed(otsBytes) (confirmed, height int64, err)`)
+  - `.claude/design/ISCC Monitor - Certificate.dc.html:66` (the §5 named-region: status dot +
+    `block N · <time> UTC` + "OpenTimestamps … run `ots verify`" note)
+  - `internal/certificate/cert.html:375-380` (the empty `HasClause5` block to fill)
 
 ## Not In Scope
-- **Certificate §5 BITCOIN ANCHOR** (`HasClause5` in `internal/certificate/handler.go`) — a separate later
-  sub-step that reads `OTSForRoot` + classifies via `ots.Confirmed`; do NOT touch the certificate handler.
-- **The dossier / certificate Bitcoin-anchor vs comparison-anchor panels** — a later M-UI sub-step.
-- **The `safeStamp` guard / nil-Stamper fix** (the open `normal`+`low` OTS issues) — this route is a pure
-  store-read serve and does NOT touch the stamp path (`internal/otsclient`/`internal/follower`); fold
-  `safeStamp` in when that path is next edited, not here.
-- **Importing `internal/ots` or `internal/otsclient` into production proofserve** — serve `OTSBytes` as
-  opaque bytes; do NOT parse/classify them in the route (keeps proofserve off the anchoring + non-WASM
-  closure).
-- A real Bitcoin-confirmed `.ots` (depends on a live calendar + chain confirmation; offline-unprovable —
-  the criterion's "upgrades to Bitcoin-confirmed" half stays open after this step).
+- The **separate comparison-anchor panel** (target.md names Bitcoin-anchor AND comparison-anchor as
+  distinct elements). §5 is the Bitcoin-anchor side; the comparison-anchor element is a later sub-step —
+  do not build it here.
+- The **dossier §4 Bitcoin-anchor** region (`ISCC Monitor - Hub Dossier.dc.html` "§4 Bitcoin anchor")
+  — a different surface; a separate step.
+- The **`safeStamp` guard** (open `normal` OTS issue) — that lives on the *stamp* path
+  (`internal/otsclient`/`internal/follower`), NOT touched by this read-only §5 clause; fold it in when
+  the stamp path is next edited.
+- The deferred **`host:port` DID `%3A`-encode** fix — §5 does not build a DID; do not touch §4's
+  `"did:web:" + data.Domain` here (handler.go is touched, but §5 adds no DID; leave §4/bundle DID alone
+  so the fix stays a single coherent later step).
+- A **Bitcoin-confirmed live-chain transit** — offline-unprovable (needs a live calendar + real BTC
+  confirmation); §5 renders whatever the mirrored row already holds.
+- The **proof-bundle `ots?` member** — the bundle currently omits OTS; adding it is a later sub-step,
+  not part of the page §5 clause.
+- Touching `cmd/iscc-monitor/main.go` — the §5 read uses the `st *store.Store` the handler already
+  holds; no new wiring is needed, so main.go must stay byte-unchanged.
 
 ## Implementation Notes
-- **Resolution order (copy `serveVerify`):** `fs, err := st.FollowState(ctx, hubID)` → on err 500;
-  `size := fs.LastSize`; if `size == 0` → **404** "no accepted checkpoint" (coverage honesty — there is no
-  root to anchor yet); `root, _, found, err := st.CheckpointAt(ctx, hubID, size)` → on err 500, on `!found`
-  → 500 (a genuine store inconsistency at the accepted size, exactly as `serveVerify` treats it).
-- **OTS lookup:** `rec, found, err := st.OTSForRoot(ctx, hubID, size, root)` → on err 500; on `!found` →
-  **404** "root not yet anchored" (the honest pending state, NOT a 5xx — `OTSForRoot` already returns
-  `(…, false, nil)` for a miss). Also treat `found && len(rec.OTSBytes) == 0` as 404: a row with the
-  empty-OTSBytes sentinel (stamped-but-not-yet-calendar-submitted) has no servable proof yet — serving
-  zero bytes would hand the client an unparseable `.ots`. **This empty-sentinel guard is the load-bearing
-  edge case.**
-- **Serve verbatim:** write `rec.OTSBytes` as `Content-Type: application/octet-stream`. Mirror
-  `tilesserve.writeBlob`'s strong content-ETag (`fmt.Sprintf("\"%x\"", sha256.Sum256(data))`) +
-  `If-None-Match` (`*` or exact) → 304 pattern; `Cache-Control: no-cache` (the served proof is overwritten
-  in place on the pending→confirmed upgrade, so it is revalidating, never `immutable`). Do NOT export a
-  helper from tilesserve — proofserve is a separate package; inline a tiny proofserve-local block to stay
-  in budget. Method-not-GET → 405 is already handled by the `Handler` wrapper.
-- **Stay opaque (learnings/otsclient.md):** do NOT import `internal/ots` or `internal/otsclient` into
-  production proofserve — they pull `net/http`/`opentimestamps` and are NOT WASM-pure. `OTSBytes` is an
-  opaque `[]byte` from the store leaf; serve it without parsing.
-- **Mux mount (learnings/http-surface.md):** `/checkpoint.ots` MUST be an exact `mux.Handle` in
-  `hubHandler` (like `/record`, `/inclusion`), else the `/` subtree dispatch sends it to `tilesserve`,
-  which would 404 the unknown path. Note `tilesserve` serves the raw `/checkpoint` BLOB (the signed note);
-  `.ots` is a DIFFERENT artifact (the timestamp proof) served by proofserve from the `ots` table — not a
-  tilesserve mirror BLOB.
-- **Correctness rule (learnings.md, always-loaded):** "OTS never blocks/crashes the follower" — this route
-  is a pure read off the HTTP path, so it cannot block the follower; just keep it fail-closed
-  (200-or-honest-status, never panic), like the sibling proof routes.
-- **Oracle gate:** N/A — opaque-byte serve of an already-stored proof; no signature/RFC-6962/Merkle/
-  did:web/proof code touched. The `ots verify` oracle still applies to the unchanged `internal/ots`
-  classifier + its `testdata/*.ots` fixtures.
+- **Where:** add the §5 read in `buildData` AFTER §2 sets `HasClause2`/`data.CheckpointSize`/`root` (it
+  needs the accepted `root []byte` and `hub.LastSize`), guarded by `if data.HasClause2`. The §5 read is
+  `st.OTSForRoot(r.Context(), hub.HubID, hub.LastSize, root)` — same `(hubID, treeSize, root)` key the
+  `.ots` route and store CRUD use. `root` here is `CheckpointAt`'s **raw `[]byte`** (already in hand in
+  the §2 branch), NOT the base64 `CheckpointRoot` string — `OTSForRoot` keys on raw bytes.
+- **Three honest states (fail-closed, ADR-0001):**
+  1. `OTSForRoot` miss (`found == false`) OR the empty-`OTSBytes` sentinel (`len(rec.OTSBytes) == 0`,
+     stamped-at-observation-but-not-yet-calendar-submitted — the load-bearing edge case the `.ots`
+     route guards, see learnings/http-surface.md) → **no §5** (`HasClause5` stays false). An
+     un-anchored root simply omits the clause; this is NOT an error.
+  2. A row with non-empty `OTSBytes`: classify via `ots.Confirmed(rec.OTSBytes)`. A `Confirmed` **error**
+     (malformed/garbage proof) is a SILENT decline of §5 (`HasClause5` stays false), NEVER a 500 — same
+     discipline as §3's `proof.VerifyInclusion` non-nil silent decline. OTS must never crash/fault the
+     surface (learnings/ots.md: `Confirmed` is fail-closed and panic-recovered).
+  3. A parseable row: set `HasClause5 = true`. If `confirmed`, populate the block height (`int64`) and,
+     if present, the confirmation time from `rec.UpgradedAt` (RFC-3339, omit if zero — mirror §4's
+     `SigningKeyRevoked` zero-time guard). If NOT confirmed, render the honest **"pending"** state
+     ("calendar-asserted, awaiting Bitcoin confirmation"), per target.md "a not-yet-anchored root
+     renders the normal 'pending' state, not an error".
+- **A `store.OTSForRoot` DB error is a 500** (buffer-then-200, like every other clause's DB-fault split
+  — `CheckpointAt`/`LookupHubKey`/`RecordAt`). Only the genuine DB fault 500s; a miss / sentinel /
+  `Confirmed`-parse-error are honest declines.
+- **certData fields:** `HasClause5 bool` is already declared — add `BTCConfirmed bool`, `BTCHeight int64`
+  (or a pre-formatted string), `BTCConfirmedAt string` (RFC-3339, rendered conditionally), with
+  evergreen docstrings matching the §4 field style. Keep the view-model flat (no nested struct) to match
+  the existing clauses.
+- **Template (`cert.html:375-380`):** fill the empty `<div class="clause-value"></div>` per the mockup
+  region (`.dc.html:66`): a status dot + `{{if .BTCConfirmed}}block {{.BTCHeight}}{{if .BTCConfirmedAt}}
+  · {{.BTCConfirmedAt}}{{end}}{{else}}pending — calendar-asserted, awaiting Bitcoin confirmation{{end}}`
+  + the note "OpenTimestamps. Run `ots verify` for the authoritative check." Use existing `clause-mono`
+  / `clause-note` classes for consistency with §3/§4/§6. **"anchoring" copy is Bitcoin-only** (target.md
+  invariant) — do not use the word for the comparison-anchor role.
+- **Correctness rule (learnings index):** "OTS never blocks / never crashes the follower" — here it
+  generalizes to: an OTS parse fault on a *read* surface fails closed (decline §5), never 5xx.
+- **Fixture:** seed a confirmed OTS row by writing a real bundled vector. The `internal/ots/testdata`
+  vectors (`hello-world.txt.ots` → height 358391, `empty.ots` → 129405) are the external `ots verify`
+  oracle. Copy ONE verbatim into `internal/certificate/testdata/` (hermetic — do NOT read another
+  package's testdata at runtime) and `RecordOTS` it for the accepted `(hubID, LastSize, root)` of the
+  `fixtureStoreTiled` certifiable hub, then assert the rendered page carries `block 358391`. For the
+  un-anchored assertion seed either no `ots` row or a row with the empty-`OTSBytes` sentinel and assert
+  the body lacks the `§5 BITCOIN ANCHOR` marker. For the pending state, if no calendar-only bundled
+  vector is available, cover it via a row whose `Confirmed` returns `(false, 0, nil)` (a non-empty proof
+  with only a calendar attestation) — otherwise document that confirmed + un-anchored fully exercise the
+  `HasClause5` gate and the pending branch is asserted at the template-string level.
 
 ## Verification
-- `mise run check` is green (build + vet + test, all packages; `gofmt -l .` excl. `cauldron/` empty).
-- `go test -count=1 -run TestOTS ./internal/proofserve` passes (name the new tests `TestOTS…` so this
-  filter catches them all — avoid the prior `-run TestOTS` under-selection issue).
-- The test seeds a hub with an accepted checkpoint (`RecordCheckpoint` + `AdvanceAccepted`, or the
-  fixture-store helper the other proofserve tests use) AND an `ots` row whose `OTSBytes` is a real fixture
-  (read `internal/ots/testdata/hello-world.txt.ots` — note the `.txt.ots` suffix — and store those bytes
-  via `RecordOTS`), then asserts `GET /checkpoint.ots` returns `200`, `Content-Type:
-  application/octet-stream`, and a body **byte-equal** to the stored `OTSBytes`.
-- Parse-validity assertion (the "verifies with the standard `ots` client" half, offline form): a test
-  parses the served body with `opentimestamps.ReadFromFile(body)` and asserts no error + a non-nil
-  `*opentimestamps.File`, proving the served bytes are a real `.ots`, not opaque garbage. Keep the
-  `opentimestamps` import to a `_test.go` only (do NOT pull it into production proofserve); if a test-only
-  import still trips the dep-closure check, put the parse assertion in an `internal/ots` test instead and
-  keep proofserve's test asserting byte-equality.
-- `GET /checkpoint.ots` for a hub with `LastSize == 0` → 404; for an accepted root with no `ots` row → 404;
-  for a row with the empty-OTSBytes sentinel → 404 "not yet anchored" (never 5xx). All asserted in the test.
-- `go list -deps ./internal/proofserve | grep -E 'iscc-monitor/internal/ots($|/)|iscc-monitor/internal/otsclient'`
-  is empty (production proofserve stays off the anchoring/non-WASM closure).
+- `mise run check` is green (build + vet + test, all packages; `gofmt -l .` clean; `go mod tidy -diff`
+  clean — no new prod dep beyond `internal/ots`/`internal/store`, both already in the module).
+- `go test -count=1 -run TestCertificate ./internal/certificate` passes (existing + new §5 tests).
+- A new `TestCertificateBitcoinAnchorConfirmed` (or similarly named): a certifiable id whose accepted
+  root has a confirmed OTS row renders a §5 clause body containing `§5 BITCOIN ANCHOR` AND the block
+  height literal (e.g. `block 358391`).
+- A new `TestCertificateBitcoinAnchorUnanchored` (or similar): a certifiable id whose accepted root has
+  NO OTS row (or only the empty-`OTSBytes` sentinel) renders the page **without** the `§5 BITCOIN
+  ANCHOR` marker (`HasClause5 == false`), and the rest of the certificate (§1–§4,§6) is unaffected.
+- **Mutation (non-vacuous):** forcing `HasClause5 = true` unconditionally renders §5 for the un-anchored
+  fixture → `TestCertificateBitcoinAnchorUnanchored` FAILS; reverting restores green. (Record this in
+  the advance so review can re-run it.)
+- `GOOS=js GOARCH=wasm go build ./internal/didweb ./internal/index ./internal/badge` still builds (proves
+  `internal/ots`'s non-WASM-pure closure did NOT leak into a WASM-shared package — certificate is
+  server-side only).
 
 ## Done When
-`mise run check` is green, `GET /<domain>/log/checkpoint.ots` returns the stored OTS proof bytes verbatim
-(byte-equal, parseable as a valid `.ots`) for an anchored accepted root and an honest 404 for an
-un-anchored / unpolled one, and production proofserve's dep closure still excludes `internal/ots` +
-`internal/otsclient`.
+§5 BITCOIN ANCHOR renders the confirmed (block height) and honest pending states from the mirrored OTS
+row and omits cleanly for an un-anchored root, with all Verification criteria — including the
+unanchored-no-§5 mutation and the WASM-purity guard — passing under `mise run check`.
