@@ -1,83 +1,19 @@
-## 2026-06-22 — Review of: Render the self-hosted ISCC logo in the remaining FOUR SSR mastheads
+## 2026-06-22 — Surface-C skeleton: render the standalone Independent Verification page (`internal/verifier`)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Created the new `internal/verifier` leaf — a pure, no-JS, no-CDN, self-hosted SSR page (Surface C) that renders the named regions of the `Independent Verification.dc.html` mockup: the shared masthead chrome (logo + text mark + instance-identity + verify-link), the `← Certificate` back-link, the "Independent verification" eyebrow + "Re-run the proof yourself." head, the `.codes ↔ .id` independence statement, the five-step verification-record block, the skeptical-client split-view GET form, and the guided "Mismatch — possible split view … do not discard either" alert. No live `?monitor=` fetch / WASM run / query parse (deferred, per Not In Scope) — the alert states render as static markup matching the no-JS baseline, and the verification-record copy describes the steps the verifier WILL run without claiming an un-run verdict.
 
-**Summary:** Advance `6a442b4` adds the identical one-line `<img class="chrome-logo"
-src="/_ds/iscc-logo-black.png" alt="ISCC">` + `.chrome-divider` (inside a `.chrome-brand` flex wrapper)
-plus the three `.chrome-brand`/`.chrome-logo`/`.chrome-divider` CSS rules — copied byte-verbatim from
-`dashboard.html` — to the four SSR mastheads that still rendered a text-only mark
-(`certificate/cert.html`, `proofserve/{browser,record,records}.html`), extending the certificate and
-browser handler tests to assert the src. The ISCC logo now renders on ALL SIX server-rendered surfaces,
-fully closing the front-of-queue human `critical`. The work is tight and exactly on-scope (4 template
-edits + 2 test-loop additions; zero `.go` source change; `go.mod`/`go.sum` untouched), all gates pass,
-both new assertions are mutation-proven non-vacuous, and the ADR-0012 visual pass confirms the masthead
-matches the mockup chrome with no remaining "no logo" delta.
+**Files changed:**
+- `internal/verifier/handler.go` (new): `package verifier` leaf — `//go:embed verifier.html` parsed once via `template.Must` at init; exported `Handler() http.Handler` (no args — no per-request data), GET-only (405 otherwise), buffer-then-200 with post-200 write-drop, `Content-Type: text/html; charset=utf-8`. Mirrors the `internal/dossier` shape; docstring states the oracle/conformance gate is N/A and that the handler is deliberately NOT mounted in `buildMux` (Surface C is a different origin).
+- `internal/verifier/verifier.html` (new): the SSR template. Ports the named regions; reuses the `dashboard.html` `.chrome*` block + the three logo CSS rules byte-for-byte; drops the mockup's hashed jsDelivr token path + `_ds_bundle.js` (ADR-0010 design-parity: the self-hosted/no-CDN constraint wins). Links `/_ds/tokens.css` + `/_ds/fonts.css`, the self-hosted logo, and references `/_ds/verify.wasm` + `/_ds/wasm_exec.js` (kept in sync with `web.WasmVerifyPath`/`web.WasmExecPath` as literals).
+- `internal/verifier/handler_test.go` (new test, not counted vs the 3-file budget): golden HTTP-seam test asserting 200 text/html, every named-region marker, the independence statement (both origins + "not in the trust path"), the guided mismatch alert, the no-CDN body ban, and 405 on non-GET.
 
-**Verification:**
-- [x] `mise run check` — green (build + vet + test, all 25 packages `ok`).
-- [x] `gofmt -l .` (excl. `cauldron/`) — clean (zero files listed).
-- [x] `go test -run TestCertificate ./internal/certificate` — PASS; the extended `TestCertificateKnownID`
-  asserts the served cert HTML contains `src="/_ds/iscc-logo-black.png"`.
-- [x] `go test ./internal/proofserve` — PASS; the existing no-CDN body bans (`jsdelivr`/`http://`/`https://`/
-  `cdn.`) stay green with the new same-origin `/_ds/` img src; `TestBrowserLinksTokensNoCDN` now also asserts it.
-- [x] `grep -L 'iscc-logo-black.png'` over all four templates — prints nothing (all four reference the logo).
-- [x] Mutation check (certificate) — dropping the `<img>` line from `cert.html` makes `TestCertificateKnownID`
-  FAIL; restoring → PASS; cert.html restored byte-identical.
-- [x] Mutation check (proofserve) — dropping the `<img>` line from `browser.html` makes
-  `TestBrowserLinksTokensNoCDN` FAIL; restoring → PASS. Both new assertions are non-vacuous.
-- [x] Masthead markup + CSS byte-equal to the `dashboard.html` canonical block (reviewer-compared
-  lines 40-54 + 328-336); `<img src>` literal byte-equal to `web.LogoPath`.
-- [x] Oracle/conformance gate — N/A (pure static-asset rendering; no signature/RFC-6962/Merkle/proof path touched).
-- [x] Gate-circumvention scan over unpushed range (`origin/develop..HEAD`, 3 commits) — no
-  `//nolint`/`t.Skip`/swallowed-error/build-tag/deleted-assertion patterns in code (two grep hits are in
-  handoff prose only); diff is purely additive markup + CSS + two test assertions.
-- [x] Scope discipline — 4 template edits + 2 test-loop additions, zero `.go` source change, matching
-  `next.md`; nothing from `## Not In Scope` done (serve route, instance-identity block, Checkpoint/Anchor
-  columns, the unrelated open `normal` issues all left untouched).
+**Verification:** `mise run check` → green (build + vet + test; all 26 packages `ok`, `internal/verifier` included). `gofmt -l .` (excl. `cauldron/`) → clean. Per-criterion: 200 text/html ✓; "Independent verification" ✓; independence statement names both `monitor.iscc.codes` + `monitor.iscc.id` ✓; all five verification-record step labels ✓; "Mismatch — possible split view" ✓; "do not discard either" guidance ✓; `src="/_ds/iscc-logo-black.png"` ✓; `/_ds/verify.wasm` ✓; no-CDN body ban (jsdelivr/`http://`/`https://`/`cdn.`) ✓; non-GET → 405 ✓. Mutation-proven: replacing the `mismatch-title` "Mismatch — possible split view" copy makes `TestVerifierGuidedMismatchAlert` FAIL; restoring → PASS (template restored byte-identical). Oracle/conformance gate: N/A (pure static HTML render; no signature/RFC-6962/Merkle/did:web/fsck/proof path touched).
 
-**Issues found:** (none new from this diff.) Resolved + deleted: the front-of-queue human `critical` "Add
-the ISCC logo to the remaining FOUR mastheads" — all four served mastheads now carry
-`<img src="/_ds/iscc-logo-black.png">`, the certificate + browser handler tests assert it (mutation-proven),
-`mise run check` is green, and the visual pass files no remaining "no logo" delta on any SSR surface. The
-"`/` realm-index sub-region deltas" issue's sub-item (1) "No logo" was also marked CLOSED (the logo renders
-on all six surfaces); that issue's remaining scope is items 2-4 (instance-identity copy, Checkpoint/Anchor
-columns, recent-declarers footer). No open `critical` remains.
-
-**Codex second opinion:** Clean — "The change consistently adds the self-hosted logo markup and matching
-CSS to the remaining mastheads without altering routing or server behavior. The referenced asset is already
-served under the shared /_ds/ path, and the test suite passes." No findings to triage; matches my own review.
-
-**Visual check:** Performed (ADR-0012). `agent-browser` 0.29.0 launches its bundled browser. Built the
-binary, ran a live testnet instance (`0.0.0.0:41464`, 30s poll), and screenshotted the live log browser
-(`/sb0.iscc.id/log/`), the record-list (`/sb0.iscc.id/log/records`), and the certificate page (cannot-certify
-honest state) against the Log-Browser + Certificate `.dc.html` mockups. All three live mastheads now render
-the ISCC logo silhouette + 1px divider + "TRUST & TRANSPARENCY MONITOR" / "Evidence of record · ISCC-Hub
-network" — matching the mockup's left-side chrome exactly; the prior text-only delta is gone on every touched
-surface. (The single-record page was not screenshotted as rich state — the live testnet index is cold-start
-empty, so no leaf exists; its masthead is the identical `record.html` block already verified by the
-mutation-proven cross-surface CSS/markup equality.) No NEW visual delta filed: the remaining index
-sub-region deltas (instance-identity copy, Checkpoint/Anchor columns, recent-declarers footer) are already
-tracked in the existing `normal` "/ realm-index sub-region deltas" issue (items 2-4), out of scope for this
-critical.
-
-**Next:** The lone `critical` is fully closed — every SSR surface carries the shared chrome (logo + text mark
-+ divider), satisfying target.md:148-151. The WASM milestone resumes: wire the tier-2 in-browser verifier
-caller into the hub dossier (mirroring the certificate's data-island + `/_ds/` loader pattern), then build the
-standalone monitor-agnostic `monitor.iscc.codes` Independent Verification app (takes `?monitor=<url>`,
-verifies that instance client-side). The open `normal` issues — certificate §5 digest binding, OTS
-`safeStamp` panic/timeout guard, registry `hubDomain` ForceQuery, §4/bundle `host:port` DID, §6 timestamp,
-the `safeIndex` test gap, the tier-2 honesty copy, the `/` sub-region deltas — are weighed against the
-state→target gap by `define-next`. Optional KISS follow-up (still deferred, not required): factor the now
-six near-identical mastheads into a shared `html/template` chrome partial.
+**Next:** The deferred Surface-C live-wiring sub-step: parse `?monitor=<url>` (and `?id=`), embed the `/_ds/wasm_exec.js` + `/_ds/verify.wasm` loader + JSON data-island (mirror the certificate tier-2 pattern in `cert.html` lines 499–581 + `cmd-wasm.md`), fetch the target instance's proof bundle client-side, run `isccVerifyInclusion`, and gate the rendered ✓ / mismatch-alert on the genuine re-VERIFICATION (NOT a status flag — the always-loaded Correctness rule, and avoid the certificate's no-JS present-tense honesty bug). Keep the three render states distinct (`error` broken-input vs `failed` negative-verdict/split-view vs `verified`). The sibling open WASM sub-step (dossier tier-2 caller) is still also open. After both, the GitHub Pages / `monitor.iscc.codes` deploy workflow (republish the audited `verify.wasm`/`wasm_exec.js` + this page at the static origin) is the final Surface-C piece.
 
 **Notes:**
-- The `<img src>` literal is byte-equal to `web.LogoPath` in all four templates (templates can't read the Go
-  const; the cert + browser test assertions are the regression guards). No Go-side template field — the
-  static literal is intentional, matching dashboard/dossier (learnings/web.md logo contract, now updated to
-  record all-six-mastheads-covered).
-- `internal/web` purity unaffected — no Go change; `contentTypePNG` stays a string literal (no `image/*`
-  import), the leaf remains the WASM-green pure-stdlib closure.
-- DONE is not reachable: no `critical` remains, but the WASM milestone (tier-2 dossier caller +
-  `monitor.iscc.codes` app) is incomplete and 8 `normal` issues are open. Loop CONTINUE.
-- Pushing to `origin/develop` on this PASS.
+- The leaf does NOT import `internal/web` — the `/_ds/...` paths are template literals (kept in sync via comments, same convention as dashboard/dossier, which also don't import web for those hrefs). Direct imports are stdlib only (`bytes`, `embed`, `html/template`, `net/http`); `go list -deps` shows only the unavoidable `net/http` transitive closure (identical profile to `internal/dossier`). The leaf is import-clean per the purity rule.
+- The chrome instance-identity block reads `monitor.iscc.codes` (this surface IS the verifier app, not an instance), distinguishing it from the dashboard chrome's instance identity — the `.codes ↔ .id` distinction is reinforced in both the chrome and the body independence statement (Handoff invariant 5).
+- The `.bundle`/breadcrumb hrefs are path-rooted relative (`/inclusion/`, `/`) to stay no-CDN; the static deploy will rewrite cross-origin links in the live-wiring step (out of scope here).
+- ADR-0012 visual pass was NOT run by `advance` (the handler is intentionally unmounted, so there is no live route to screenshot this step). `review` may render the page via a throwaway local mount or `tmpl.Execute` dump if a visual check is wanted; the markup reuses the already-visually-verified `dashboard.html` chrome block byte-for-byte.
+- No `## Not In Scope` work done: no `?monitor=` parse, no WASM run, no Pages workflow, no `buildMux` mount, no dossier tier-2 caller, and none of the open `normal` issues touched.

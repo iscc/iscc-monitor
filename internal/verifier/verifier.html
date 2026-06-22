@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ISCC Monitor — Independent Verification</title>
+  <!-- Shared ISCC Design System v2 token stylesheet (CDN-free, self-hosted).
+       The path is a literal because templates cannot read Go consts; keep it in
+       sync with web.TokensPath. This Surface-C page lives on a different origin
+       (the static monitor.iscc.codes site), which republishes these same audited
+       bytes under its own /_ds/ — so the literal paths stay identical. -->
+  <link rel="stylesheet" href="/_ds/tokens.css">
+  <!-- Self-hosted @font-face shell (Readex Pro / JetBrains Mono woff2 under
+       /_ds/fonts/, no runtime CDN). The path is a literal; keep it in sync with
+       web.FontsCSSPath. -->
+  <link rel="stylesheet" href="/_ds/fonts.css">
+  <!-- Page-scoped layout for the Independent Verification surface. Every rule is
+       expressed through the embedded DS tokens (var(--*)) so the type resolves to
+       the self-hosted Readex Pro / JetBrains Mono and the surface uses the DS
+       palette. Kept local to this page (not in the shared tokens.css) so it can
+       never regress another surface. No external/CDN URL appears here — the
+       mockup's hashed jsDelivr-style token path + _ds_bundle.js are dropped per
+       ADR-0010 design-parity (the self-hosted/no-CDN constraint wins). -->
+  <style>
+    body {
+      font-family: var(--font-sans);
+      color: var(--text-body);
+      background: var(--surface-page);
+    }
+
+    /* Document chrome: the masthead identifying this monitor instance, with the
+       instance-identity block and the tier-2 "verify in your browser" link to the
+       monitor-agnostic verifier app (matching the dashboard/certificate chrome). */
+    .chrome {
+      display: flex;
+      align-items: center;
+      gap: var(--space-4);
+      flex-wrap: wrap;
+      padding: var(--space-4) var(--space-8);
+      background: var(--surface-card);
+      border-bottom: var(--border-width) solid var(--border-default);
+    }
+    .chrome-brand {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+    }
+    .chrome-logo {
+      height: 19px;
+      width: auto;
+      display: block;
+    }
+    .chrome-divider {
+      width: 1px;
+      height: 24px;
+      background: var(--border-default);
+    }
+    .chrome-mark {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      letter-spacing: var(--tracking-widest);
+      text-transform: uppercase;
+      color: var(--text-heading);
+      font-weight: var(--weight-semibold);
+    }
+    .chrome-sub {
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+      font-weight: var(--weight-light);
+    }
+    .chrome-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: var(--space-5);
+      flex-wrap: wrap;
+    }
+    .chrome-identity {
+      text-align: right;
+      line-height: var(--leading-snug);
+    }
+    .chrome-instance {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-body);
+    }
+    .chrome-operator {
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+      font-weight: var(--weight-light);
+    }
+    .chrome-verify {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-link);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-xs);
+      padding: var(--space-2) var(--space-3);
+    }
+
+    .page {
+      max-width: 840px;
+      margin: 0 auto;
+      padding: var(--space-10) var(--space-8) var(--space-14);
+    }
+
+    /* Navigation closure: the back-link to the certificate (the mockup breadcrumb). */
+    .breadcrumb {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      margin-bottom: var(--space-4);
+    }
+    .breadcrumb a {
+      color: var(--text-link);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-semibold);
+    }
+
+    /* The verification card: a bordered, shadowed surface holding the head, the
+       independence statement, the verification-record block and the split-view
+       input. */
+    .card {
+      background: var(--surface-card);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-xs);
+      box-shadow: var(--shadow-sm);
+      padding: var(--space-10) var(--space-10) var(--space-12);
+    }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      letter-spacing: var(--tracking-widest);
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: var(--space-2);
+    }
+    .head {
+      font-size: 1.7rem;
+      font-weight: var(--weight-bold);
+      letter-spacing: -.01em;
+      color: var(--text-heading);
+      margin: 0 0 var(--space-2);
+    }
+    /* The independence statement: names both origins and states the result is
+       produced HERE while the monitor instance is not in the trust path. The
+       .codes ↔ .id distinction must stay visible (Handoff invariant 5). */
+    .independence {
+      font-size: .92rem;
+      font-weight: var(--weight-light);
+      line-height: var(--leading-relaxed);
+      color: var(--text-body);
+      margin: 0 0 var(--space-6);
+      max-width: 66ch;
+    }
+    .independence .mono {
+      font-family: var(--font-mono);
+    }
+    .independence strong {
+      font-weight: var(--weight-semibold);
+    }
+
+    /* Verification-record block: the steps the verifier WILL run, as static no-JS
+       rows. No live ✓ verdict is rendered in this skeleton (the WASM run is
+       deferred), so each row carries a neutral "pending" marker and the copy never
+       claims a verdict that has not run. */
+    .vrecord {
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+    }
+    .vrecord-head {
+      background: var(--surface-page);
+      border-bottom: var(--border-width) solid var(--border-subtle);
+      padding: var(--space-3) var(--space-4);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .vrecord-title {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+    .vrecord-runlabel {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+    }
+    .vrecord-body {
+      padding: var(--space-4) var(--space-5);
+    }
+    .vstep {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      padding: var(--space-2) 0;
+      border-bottom: var(--border-width) solid var(--border-subtle);
+    }
+    .vstep:last-of-type {
+      border-bottom: 0;
+    }
+    .vstep-dot {
+      flex: none;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-faint);
+    }
+    .vstep-label {
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      color: var(--text-body);
+    }
+    .vrun {
+      margin-top: var(--space-4);
+      width: 100%;
+      background: var(--text-heading);
+      color: var(--surface-card);
+      border: none;
+      border-radius: var(--radius-sm);
+      padding: var(--space-4);
+      font-size: var(--text-md);
+      font-weight: var(--weight-semibold);
+    }
+
+    /* Split-view input: the no-JS equivalent of the mockup's JS buttons — a plain
+       GET form so a skeptical client can compare its own (size, root). The live
+       comparison is wired in the deferred Surface-C sub-step; here the inputs and
+       the Compare affordance render statically. */
+    .splitview {
+      margin-top: var(--space-6);
+      border-top: var(--border-width) solid var(--border-subtle);
+      padding-top: var(--space-5);
+    }
+    .splitview-eyebrow {
+      font-family: var(--font-mono);
+      font-size: var(--text-2xs);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--text-faint);
+      margin-bottom: var(--space-1);
+    }
+    .splitview-title {
+      font-size: 1.02rem;
+      font-weight: var(--weight-bold);
+      color: var(--text-heading);
+      margin-bottom: var(--space-1);
+    }
+    .splitview-lede {
+      font-size: .83rem;
+      font-weight: var(--weight-light);
+      color: var(--text-muted);
+      margin: 0 0 var(--space-4);
+      max-width: 70ch;
+    }
+    .splitview-form {
+      display: flex;
+      gap: var(--space-3);
+      flex-wrap: wrap;
+      align-items: flex-end;
+    }
+    .splitview-field {
+      display: flex;
+      flex-direction: column;
+    }
+    .splitview-field.size {
+      flex: none;
+      width: 120px;
+    }
+    .splitview-field.root {
+      flex: 1;
+      min-width: 200px;
+    }
+    .splitview-field label {
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+      margin-bottom: var(--space-1);
+    }
+    .splitview-field input {
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      padding: var(--space-2) var(--space-3);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-sm);
+      background: var(--surface-page);
+    }
+    .splitview-compare {
+      background: var(--text-heading);
+      color: var(--surface-card);
+      border: none;
+      border-radius: var(--radius-sm);
+      padding: var(--space-3) var(--space-5);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-semibold);
+    }
+
+    /* The guided split-view mismatch alert — the load-bearing Verify fragment. The
+       mismatch path is a GUIDED alert, never a dead error: it names the possible
+       split view and tells the reader to KEEP both signed histories as evidence. It
+       renders as static markup in this skeleton; the live wiring shows/hides it on
+       a real verdict. The error hue is decorative — the heading + guidance copy
+       carry the meaning grayscale-safe. -->
+    .mismatch {
+      margin-top: var(--space-5);
+      border: var(--border-width) solid var(--status-error-text);
+      background: var(--status-error-bg, rgba(245, 97, 105, 0.06));
+      border-radius: var(--radius-sm);
+      padding: var(--space-4) var(--space-5);
+    }
+    .mismatch-head {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+    }
+    .mismatch-title {
+      font-size: 1rem;
+      font-weight: var(--weight-bold);
+      color: var(--status-error-text);
+    }
+    .mismatch-body {
+      font-size: .84rem;
+      font-weight: var(--weight-light);
+      color: var(--text-body);
+      margin: var(--space-2) 0 0;
+      line-height: var(--leading-normal);
+    }
+
+    .footnote {
+      font-size: var(--text-xs);
+      font-weight: var(--weight-light);
+      color: var(--text-faint);
+      line-height: var(--leading-normal);
+      margin: var(--space-4) var(--space-1) 0;
+    }
+  </style>
+</head>
+<body>
+  <header class="chrome">
+    <div class="chrome-brand">
+      <img class="chrome-logo" src="/_ds/iscc-logo-black.png" alt="ISCC">
+      <span class="chrome-divider"></span>
+      <div>
+        <div class="chrome-mark">Trust &amp; Transparency Monitor</div>
+        <div class="chrome-sub">Evidence of record · ISCC-Hub network</div>
+      </div>
+    </div>
+    <div class="chrome-actions">
+      <div class="chrome-identity">
+        <div class="chrome-instance">monitor.iscc.codes</div>
+        <div class="chrome-operator">independent verifier app · audits any monitor instance</div>
+      </div>
+      <a class="chrome-verify" href="/">verify ↗ monitor.iscc.codes</a>
+    </div>
+  </header>
+
+  <main class="page">
+    <nav class="breadcrumb">
+      <a href="/inclusion/">← Certificate</a>
+    </nav>
+
+    <div class="card">
+      <div class="eyebrow">Independent verification</div>
+      <h1 class="head">Re-run the proof yourself.</h1>
+      <!-- Independence statement: both origins named, .codes ↔ .id visible. -->
+      <p class="independence">A WASM verifier from the independent origin <span class="mono">monitor.iscc.codes</span> recomputes this proof in your browser. The result below is produced <strong>here</strong> — the monitor instance <span class="mono">monitor.iscc.id</span> is not in the trust path. The audited checker is controlled by no monitor.</p>
+
+      <!-- Verification-record block: the steps the verifier WILL run, as static
+           no-JS rows. The skeleton renders no live ✓ — it describes the procedure
+           and offers the run affordance, never asserting an un-run verdict. -->
+      <div class="vrecord">
+        <div class="vrecord-head">
+          <span class="vrecord-title">Verification record</span>
+          <span class="vrecord-runlabel">not yet run</span>
+        </div>
+        <div class="vrecord-body">
+          <div class="vstep">
+            <span class="vstep-dot"></span>
+            <span class="vstep-label">Fetch proof bundle from the monitor</span>
+          </div>
+          <div class="vstep">
+            <span class="vstep-dot"></span>
+            <span class="vstep-label">Recompute the leaf hash from the record bytes</span>
+          </div>
+          <div class="vstep">
+            <span class="vstep-dot"></span>
+            <span class="vstep-label">Walk the Merkle inclusion path</span>
+          </div>
+          <div class="vstep">
+            <span class="vstep-dot"></span>
+            <span class="vstep-label">Rebuild the root and match the hub-signed checkpoint</span>
+          </div>
+          <div class="vstep">
+            <span class="vstep-dot"></span>
+            <span class="vstep-label">Check the signature against the hub's did:web key</span>
+          </div>
+          <!-- The run affordance. The skeleton renders it inert (no JS); the
+               deferred live-wiring sub-step loads /_ds/wasm_exec.js + /_ds/verify.wasm
+               and runs isccVerifyInclusion when it is pressed, gating any ✓ on a
+               genuine re-VERIFICATION (never a status flag). -->
+          <p class="footnote">Run verification in my browser — the in-browser WASM checker (<span style="font-family:var(--font-mono)">/_ds/verify.wasm</span>, loaded via <span style="font-family:var(--font-mono)">/_ds/wasm_exec.js</span>) recomputes the steps above locally; until it runs, no verdict is claimed.</p>
+        </div>
+      </div>
+
+      <!-- Skeptical-client split-view input: a no-JS GET form. -->
+      <div class="splitview">
+        <div class="splitview-eyebrow">Skeptical client · split-view check</div>
+        <div class="splitview-title">Compare your own (size, root)</div>
+        <p class="splitview-lede">If the checkpoint your client saw disagrees with the monitor's, the hub presented two histories.</p>
+        <form class="splitview-form" method="get" action="/">
+          <div class="splitview-field size">
+            <label for="sv-size">Tree size</label>
+            <input id="sv-size" type="text" name="size" inputmode="numeric" placeholder="48902">
+          </div>
+          <div class="splitview-field root">
+            <label for="sv-root">Root hash</label>
+            <input id="sv-root" type="text" name="root" placeholder="base64-encoded root">
+          </div>
+          <button class="splitview-compare" type="submit">Compare</button>
+        </form>
+      </div>
+
+      <!-- Guided split-view mismatch alert (load-bearing): a guided alert, never a
+           dead error. Static markup in this skeleton. -->
+      <div class="mismatch">
+        <div class="mismatch-head">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.4 21 19H3z"></path><path d="M12 9.4v4.2"></path><circle cx="12" cy="16.3" r="0.7" fill="currentColor"></circle></svg>
+          <span class="mismatch-title">Mismatch — possible split view</span>
+        </div>
+        <p class="mismatch-body">Your (size, root) does not match the monitor's mirrored tree. The hub may have shown you a different history. Keep your signed checkpoint and the bundle — both signed histories are evidence. Report it; do not discard either.</p>
+      </div>
+    </div>
+
+    <p class="footnote">This verifier app is a static site on monitor.iscc.codes — a different origin from any monitor instance. It takes the instance to audit as a parameter and recomputes every proof locally, so the instance you point it at is never in the trust path. One audited checker serves the whole federation.</p>
+  </main>
+</body>
+</html>
