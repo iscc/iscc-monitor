@@ -277,21 +277,29 @@ filed it and does **not** affect priority.
   learnings.md always-loaded "gate a rendered ✓ on a re-VERIFICATION" (a full re-verification includes
   the signature + id binding, not inclusion math alone); `learnings/cmd-wasm.md` `isccVerifyInclusion` scope.
 
-## `pages.yml` actions target deprecated Node 20 — bump to current major versions
+## `publish.yml`'s `docker/login-action@v3` + `docker/build-push-action@v6` still target deprecated Node 20
 - **Priority:** low
-- **Source:** [human] (deprecation warning surfaced on Pages run `27965858770`, 2026-06-22)
-- **What / where / how to verify:** the live Pages deploy run annotated: "Node.js 20 is deprecated. The
-  following actions target Node.js 20 but are being forced to run on Node.js 24: `actions/checkout@v4`,
-  `actions/configure-pages@v5`, `actions/setup-go@v5`, `actions/upload-artifact@v4`." The deploy is GREEN
-  today (GitHub force-runs them on Node 24), so this does NOT block — but the warning will become a hard
-  failure once GitHub removes the Node 20 shim (see github.blog/changelog/2025-09-19-deprecation-of-node-20).
-  Fix when `pages.yml` is next touched: bump the pinned action majors to their current Node-24 releases
-  (`actions/checkout@v5`, `actions/setup-go@v6`, `actions/upload-artifact@v5`, `actions/configure-pages` +
-  `actions/deploy-pages` to their latest), confirming each new major's inputs still match this workflow's
-  usage. Verify fixed: a dispatched `pages.yml` run on `develop` is green with NO Node-20 deprecation
-  annotation. (Also re-check `ci.yml` for the same pinned actions while there.)
-- **Spec:** CLAUDE.md "Building the Surface-C verifier site" (`.github/workflows/pages.yml` is the publish
-  workflow); `learnings/ci.md`.
+- **Source:** [review] (Codex P2, reviewer-confirmed via `gh api .../action.yml?ref=v3|v6`)
+- **What / where / how to verify:** The Node-20 action bump (advance `4909dd2`) fixed every `actions/*`
+  pin in all three workflows (the `pages.yml`/`ci.yml` deprecation-annotation set — `checkout@v4`→`@v7`,
+  `setup-go@v5`→`@v6`, `configure-pages@v5`→`@v6`, `upload-pages-artifact@v3`→`@v5`,
+  `deploy-pages@v4`→`@v5` — all CLOSED) but LEFT `docker/login-action@v3` (`publish.yml:49`) and
+  `docker/build-push-action@v6` (`publish.yml:61`) on Node 20. The advance/next claimed these are
+  "container actions, not in the Node-20 list" — that is FALSE: reviewer-confirmed `gh api
+  repos/docker/login-action/contents/action.yml?ref=v3` and `...build-push-action/...?ref=v6` both report
+  `runs.using: 'node20'` (they are node20 JavaScript actions). So `publish.yml` is NOT fully off the
+  deprecated runtime — a `publish` run still hits the Node-20 deprecation path. NOT a current breakage:
+  the job runs green today because GitHub force-runs node20 actions on node24; it becomes a hard failure
+  only once GitHub removes the node20 shim (github.blog/changelog/2025-09-19-deprecation-of-node-20). Does
+  NOT block progress — same `low` class as the original Node-20 issue, and `publish.yml` only runs on
+  push-to-develop / maintainer dispatch. Fix when `publish.yml` is next touched: bump
+  `docker/login-action@v3`→`@v4` and `docker/build-push-action@v6`→`@v7` (their current majors, both
+  node24); reviewer-confirmed the `@v4`/`@v7` inputs are unchanged — `login-action@v4` keeps
+  `registry`/`username`/`password`, `build-push-action@v7` keeps `context`/`file`/`push`/`tags`/`build-args`,
+  so the existing usage stays valid. Verify fixed: `! grep -RqE "docker/login-action@v3|docker/build-push-action@v6"
+  .github/workflows/` AND a dispatched `publish.yml` run is green with NO Node-20 deprecation annotation.
+- **Spec:** ADR-0013 server packaging (GHCR publish); CLAUDE.md "Building the Surface-C verifier site"
+  (workflow maintenance); `learnings/ci.md` §publish (docker actions ARE node20).
 
 ## `cmd/verifier-site` `generate` writes non-atomically — a mid-run error leaves a partial deploy tree
 - **Priority:** low
@@ -402,27 +410,6 @@ filed it and does **not** affect priority.
   them, or `docker build --progress=plain` shows them excluded).
 - **Spec:** repo `.gitignore` "Local secrets / state — never commit"; ADR-0013 server packaging;
   `learnings/ci.md` (`.dockerignore` matching is not `.gitignore` matching).
-
-## `publish.yml` `workflow_dispatch` can push the floating `:develop` tag from a non-develop ref
-- **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed against the workflow)
-- **What / where / how to verify:** `.github/workflows/publish.yml` (advance `a15a9f4`) triggers on
-  `push: [develop]` AND `workflow_dispatch`, but the `publish` job has NO ref guard — it pushes the
-  floating `ghcr.io/iscc/iscc-monitor:develop` tag unconditionally. A maintainer can dispatch
-  `workflow_dispatch` against ANY ref (a feature branch, an old commit), and that run would publish the
-  selected ref's code as `:develop` — so infra pulling `:develop` could receive non-develop code (the
-  immutable `:sha-<short>` tag is unaffected, since it is keyed on the actual SHA). This mirrors the
-  in-repo `pages.yml` precedent (intentionally — `next.md` told advance to mirror its shape), so it is a
-  pre-existing repo convention, NOT a regression introduced here, and `workflow_dispatch` is
-  maintainer-only (not exposed to outside contributors). All gates green; does NOT block progress. Fix
-  when the publish/pages workflows are next touched: guard the publish job (or just the `:develop` tag
-  step) on `if: github.ref == 'refs/heads/develop'`, so a manual dispatch from a non-develop ref does NOT
-  move `:develop` (it could still push only the immutable `:sha-<short>`). Apply the same guard to
-  `pages.yml` for consistency (it has the identical unguarded `workflow_dispatch`). Verify fixed: the
-  publish job is gated on the develop ref; a `workflow_dispatch` from a feature branch does not update
-  `:develop`.
-- **Spec:** ADR-0013 server packaging (GHCR publish); the GHCR issue's "`develop` (floating) AND
-  `sha-<short>` (immutable)" tag contract — the floating tag must track develop only.
 
 ---
 

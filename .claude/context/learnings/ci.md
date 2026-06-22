@@ -88,21 +88,31 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   class entirely on the CI path). Docker is absent on the dev host, so verify this workflow locally by
   YAML validity + static inspection only (trigger/tags/permissions/build-arg) — the Verify bar asks for
   exactly that.
-- **`workflow_dispatch` has no ref guard** (Codex P2, reviewer-confirmed): the job pushes the floating
-  `:develop` tag unconditionally, so a manual dispatch from a non-develop ref would publish that branch's
-  code as `:develop`. Same pattern as `pages.yml` (intentionally mirrored) — a pre-existing repo
-  convention, not a regression, and `workflow_dispatch` is maintainer-only. Hardening opportunity tracked
-  as a `normal` issue: guard the publish job/`:develop` tag on `github.ref == 'refs/heads/develop'` (best
-  applied to `pages.yml` too for consistency).
+- **The `publish` job IS now ref-guarded on `github.ref == 'refs/heads/develop'`** (advance `4909dd2`,
+  job-level `if:` above `runs-on`) so a `workflow_dispatch` from a non-develop ref cannot move the floating
+  `:develop` tag (the immutable `:sha-<short>` is SHA-keyed, unaffected). `push:[develop]` already satisfies
+  the guard, so it is a no-op on the normal path. `pages.yml`'s `build` carries the identical guard;
+  `ci.yml` does NOT (its `push`/`pull_request` triggers must stay unguarded or PR CI stops).
+- **`docker/login-action@v3` and `docker/build-push-action@v6` ARE node20 JavaScript actions, NOT
+  container actions** (reviewer-confirmed via `gh api .../action.yml?ref=v3|v6` → `runs.using: 'node20'`;
+  Codex P2). The earlier "container actions, not in the Node-20 list" framing was wrong. Their current
+  majors `@v4`/`@v7` move to node24 with the SAME inputs (`registry`/`username`/`password`;
+  `context`/`file`/`push`/`tags`/`build-args`), so a bump is input-compatible. The `actions/*` bump
+  (advance `4909dd2`) left these two on node20, so `publish.yml` still trips the Node-20 deprecation path —
+  tracked as a `low` issue (warning today, future hard-fail; the job runs green now because GitHub
+  force-runs node20 on node24).
 
 ## Pages publish workflow (`.github/workflows/pages.yml`)
 
 - **`pages.yml` is the modern Actions Pages build→deploy of the Surface-C verifier-site** (separate
   file from `ci.yml` so triggers stay independent): `push: [develop]` + `workflow_dispatch`, top-level
   `permissions: {contents:read, pages:write, id-token:write}`, `concurrency: {group:pages,
-  cancel-in-progress:false}`; `build` job runs `go run ./cmd/verifier-site -out dist` → `cp
-  .github/pages/CNAME dist/CNAME` → configure-pages@v5 → upload-pages-artifact@v3 (`path: dist`);
-  `deploy` job (`needs: build`, `environment: github-pages`) → deploy-pages@v4. NO `mise run build:wasm`
+  cancel-in-progress:false}`; `build` job (now `if: github.ref == 'refs/heads/develop'`-guarded) runs
+  `go run ./cmd/verifier-site -out dist` → `cp .github/pages/CNAME dist/CNAME` → configure-pages@v6 →
+  upload-pages-artifact@v5 (`path: dist`); `deploy` job (`needs: build`, `environment: github-pages`) →
+  deploy-pages@v5. Action majors come from `gh api .../releases/latest` (pin the MAJOR, not the patch),
+  not a hardcoded guess — as of advance `4909dd2` the live majors are checkout@v7, setup-go@v6,
+  configure-pages@v6, upload-pages-artifact@v5, deploy-pages@v5. NO `mise run build:wasm`
   step — the generator COPIES the byte-pinned `verify.wasm` (deployed hash == `web.WasmVerifyHash`,
   re-verified `7d57ab1b…`), so the published artifact is reproducible-from-commit, not a rebuild.
 - **The artifact `CNAME` is a NO-OP for the custom domain under Actions-based Pages — the binding lives
