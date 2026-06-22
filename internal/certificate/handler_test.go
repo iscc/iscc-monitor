@@ -857,6 +857,23 @@ func TestCertificateRendersWasmVerifier(t *testing.T) {
 				t.Errorf("no-JS baseline: %q renders AFTER the loader <script> (script-gated)\n%s", marker, body)
 			}
 		}
+
+		// No-JS honesty: the static HasBundle header must NOT assert a present-tense
+		// browser re-verification that does not run with JavaScript disabled — the
+		// tier-2 verdict is progressive enhancement. The header may only OFFER the
+		// always-true offline path plus a CONDITIONAL ("with JavaScript enabled")
+		// browser re-check; the #tier2-result script stays the sole asserter of an
+		// actual verdict. Non-vacuous: a negative (the old overstatement is gone) +
+		// a positive (the conditional phrasing the panel default also uses).
+		if strings.Contains(body, "This browser re-verifies the proof below") {
+			t.Errorf("no-JS baseline: HasBundle header still asserts a present-tense browser re-verification\n%s", body)
+		}
+		// The header-specific conditional phrasing (distinct from the #tier2-result
+		// panel's "above" wording at :501), so this positive assertion fails if the
+		// header sentence reverts to the unconditional claim.
+		if !strings.Contains(body, "with JavaScript enabled, this browser also re-checks the proof below") {
+			t.Errorf("no-JS baseline: HasBundle header missing the conditional re-check phrasing\n%s", body)
+		}
 	})
 
 	t.Run("uncertifiable id wires no verifier", func(t *testing.T) {

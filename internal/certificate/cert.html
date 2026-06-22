@@ -481,7 +481,7 @@
 
       <div class="honesty">
         <svg class="honesty-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"></path></svg>
-        <span class="honesty-text">This certificate is <span class="honesty-tier">the monitor's account</span> (Tier 1). It does not ask for your trust: the authoritative version is the proof bundle, which <span class="honesty-tier-2">you verify yourself</span> (Tier 2). {{if .HasBundle}}This browser re-verifies the proof below for you, and you can download the bundle and re-verify it offline.{{else}}The downloadable bundle and in-browser re-verification land in a later release.{{end}}</span>
+        <span class="honesty-text">This certificate is <span class="honesty-tier">the monitor's account</span> (Tier 1). It does not ask for your trust: the authoritative version is the proof bundle, which <span class="honesty-tier-2">you verify yourself</span> (Tier 2). {{if .HasBundle}}You can download the bundle and re-verify it offline; with JavaScript enabled, this browser also re-checks the proof below for you.{{else}}The downloadable bundle and in-browser re-verification land in a later release.{{end}}</span>
       </div>
 
       <div class="actions">
