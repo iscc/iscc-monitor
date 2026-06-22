@@ -1,105 +1,112 @@
 # Next Work Package
 
-## Step: Serve `wasm_exec.js` from the `/_ds/` static-asset leaf (WASM loader skeleton)
+## Step: Close the CDN-free gate hole — narrow `stripLineComments` so protocol-relative `//cdn.` URLs still trip `noExternalCDN`
 
 ## Advances
-WASM verifier upgrade milestone (target.md): "`internal/proof/verify` → `GOOS=js GOARCH=wasm`,
-lazy-loaded progressive enhancement that elevates the Evidence Ledger's **tier-2** result … plus the
-standalone Independent Verification verifier app … reproducible build + published hash + SRI pin."
-**Verify:** "identical vectors yield identical verdicts (WASM vs server)…"
+This step does **not** advance a new milestone Verify criterion; it **closes the open `normal` issue
+that is holding the loop at NEEDS_WORK** and re-greens the WASM-loader sub-step so its review can
+return to PASS. HEAD is a `cid(review): NEEDS_WORK` (state.md "Quality gates: AMBER … the latest
+review verdict is NEEDS_WORK"), and DONE requires a PASS verdict — so this preempts new milestone
+work. The issue (issues.md "`noExternalCDN`'s `stripLineComments` over-strips protocol-relative CDN
+URLs, holing the CDN-free gate") is a confirmed weakening of the **M-UI hard CDN-free constraint**:
 
-This is the first **skeleton sub-step** of the tier-2 progressive enhancement the handoff names as
-`**Next:**` (review verdict at HEAD): "embed `wasm_exec.js` from `$(go env GOROOT)/lib/wasm/wasm_exec.js`,
-a `<script>` that loads the `.wasm` and calls `isccVerifyInclusion`…". The full enhancement is far larger
-than 3 files (it touches `internal/web` to serve both the loader script AND the `.wasm` artifact,
-`internal/certificate` handler + `cert.html` to emit record bytes and the `<script>`, the `cmd/wasm`
-shim hardening, and a `mise run build:wasm` task). Per the skeleton-first rule, this step lands the one
-foundational, fully offline-provable piece: the Go runtime loader script every `<script>` enhancement
-must load, served from the existing static-asset leaf at a stable `/_ds/` path.
+> "every SSR surface … embeds the DS tokens + self-hosted fonts with **no external CDN URL in the
+> body**" — target.md M-UI Verify.
+
+The handoff `**Next:**` from review names this exactly: "Fix the confirmed CDN-free gate hole FIRST
+(small, well-scoped test-helper change in `internal/web/web_test.go`): narrow `stripLineComments` to
+real comment contexts and add a regression test."
 
 ## Goal
-Make the Go WASM runtime glue (`wasm_exec.js`) fetchable at a stable, CDN-free `/_ds/` path so the later
-tier-2 `<script>` loader has a same-origin runtime to load before instantiating the verifier `.wasm`.
-This is the first real on-ramp from the callable `cmd/wasm` entrypoint toward an in-browser caller.
+Restrict the `//`-comment strip in the load-bearing `noExternalCDN` test helper to *actual comment
+contexts* so a protocol-relative loadable CDN URL (`src="//cdn.jsdelivr.net/x.js"`) still trips the
+ban, while the vendored `wasm_exec.js`'s genuine `// `-prefixed comment URL stays suppressed. This
+restores the M-UI no-CDN quality gate to full strictness and returns the WASM-loader sub-step to a
+PASS-able state.
 
 ## Scope
-- **Create**: `internal/web/wasm_exec.js` — a verbatim copy of
-  `$(go env GOROOT)/lib/wasm/wasm_exec.js` (the Go 1.26.1 toolchain's WASM runtime loader; plain JS, Go
-  BSD-licensed, a committed build-pinned asset exactly like the woff2 fonts already are).
-- **Modify**: `internal/web/web.go` — add a `WasmExecPath` const (`/_ds/wasm_exec.js`), a `//go:embed
-  wasm_exec.js` var, a `contentTypeJS` const (`text/javascript; charset=utf-8`), and one `case` in
-  `Handler`'s path switch that `writeAsset`s it (reusing the existing no-cache + strong-ETag + 304 +
-  CORS-via-outer-wrap policy unchanged). (1 non-test/doc file.)
-- **Modify**: `internal/web/web_test.go` — add a golden test that `GET /_ds/wasm_exec.js` returns
-  `200`, `Content-Type: text/javascript…`, a strong ETag, `Cache-Control: no-cache`, a non-empty body,
-  AND is CDN-free via the existing `noExternalCDN` helper; extend the existing `TestIfNoneMatch304` and
-  `TestMethodNotAllowed` path lists to cover the new path. (test file — does not count toward the cap.)
+- **Modify**: `internal/web/web_test.go` (test-only file — narrow `stripLineComments`, update the
+  helper docstring to describe the current state, and add the regression test; does not count against
+  the 3-file non-test budget).
 - **Reference**:
-  - `.claude/context/learnings/web.md` — the `internal/web` `/_ds/` subtree mechanics: the in-handler
-    path switch (do NOT add a competing mux pattern), the `writeAsset` no-cache+strong-ETag+304 shape,
-    the `serveFont` traversal guard, and `noExternalCDN` (it bans only third-party origins; a
-    same-origin path is fine).
-  - `.claude/context/learnings/cmd-wasm.md` — the WASM entrypoint this loader will eventually drive
-    (`globalThis.isccVerifyInclusion`, the 5-arg JS contract, the `js.Value.Int()` truncation gotcha
-    that the LATER caller step fixes — not this one).
-  - `internal/web/web.go` (TokensPath/FontsCSSPath/serveFont/writeAsset pattern to mirror exactly).
-  - `internal/web/web_test.go` (`TestTokensServedAsCSS` / `TestFontBinaryServed` to model the new test
-    on, and the `get`/`noExternalCDN` helpers + the `TestIfNoneMatch304`/`TestMethodNotAllowed` lists).
+  - `.claude/context/learnings/web.md` — the `internal/web` detail file; bullets at lines 30–60
+    describe `noExternalCDN`'s ban list (third-party-origin only) and the current over-strip hole, and
+    say to "narrow the strip to actual comment contexts so a protocol-relative `//cdn.` still trips the
+    ban" when the helper is next touched.
+  - `internal/web/web_test.go:28–61` — the `noExternalCDN` helper + the flawed `stripLineComments`
+    (the `:`-only guard at line 54).
+  - issues.md "`noExternalCDN`'s `stripLineComments` over-strips protocol-relative CDN URLs" — the
+    confirmed defect, with the exact fix and verification it prescribes.
 
 ## Not In Scope
-- The verifier `.wasm` artifact itself — building it, committing/embedding it, serving it, the
-  `mise run build:wasm` task, and the reproducible-build/published-hash/SRI pin (the next sub-step;
-  the `.wasm` is a large build output with an ADR-0003 reproducibility question of its own).
-- The `<script>` loader in `cert.html` and emitting the subject record bytes (base64) into `certData`
-  (a later sub-step — the page does NOT yet emit the leaf record bytes the 5-arg call needs).
-- The `cmd/wasm/main.go` `js.Value.Int()` integer/safe-integer hardening (the open `normal` issue) —
-  fix it at the FIRST real caller (the `<script>` step), where the JS→Go arg contract is exercised, per
-  the issue's own "fix when the first real caller is wired" note and the handoff.
-- The standalone `monitor.iscc.codes` Independent Verification app (Surface C).
-- Touching `cmd/iscc-monitor/main.go`'s mount — it already routes the whole `web.Prefix` (`/_ds/`)
-  subtree to `web.Handler`, so a new path inside the handler's switch needs no binary change.
+- **Do NOT build or serve the verifier `.wasm`, add a `mise run build:wasm` task, or wire any SSR
+  `<script>` caller** — that is the *next* WASM step after this gate is re-greened (handoff "THEN
+  resume the WASM tier-2 progression: build + serve the verifier `.wasm` … then the `cert.html`
+  `<script>` loader").
+- Do NOT touch `web.go` or the byte-verbatim `wasm_exec.js` — the asset-serving path is correct; only
+  the test helper is wrong (review: "keep the byte-verbatim copy … tighten the comment detection, not
+  revert").
+- Do NOT widen or change the ban list itself (`jsdelivr`/`http://`/`https://`/`cdn.`) — same-origin
+  `/_ds/` paths must still pass; you are tightening the *strip*, not the *ban*.
+- Do NOT touch the other open `normal` issues (`js.Value.Int()` truncation, OTS `safeStamp`, §5
+  digest-bind, `hubDomain` ForceQuery, §4 `host:port` DID, §6 timestamp) — each waits for a step that
+  edits its own lines.
 
 ## Implementation Notes
-- **Copy, don't transform.** `cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" internal/web/wasm_exec.js`
-  — keep it byte-verbatim so it stays a faithful, version-pinned copy of the 1.26.1 runtime (the same
-  posture as the committed woff2 binaries). Do not hand-edit it.
-- **Mirror the existing leaf exactly.** Add `WasmExecPath = "/_ds/wasm_exec.js"` next to `TokensPath`
-  / `FontsCSSPath`; add `//go:embed wasm_exec.js` next to the other embeds (a `var wasmExecJS []byte`);
-  add `contentTypeJS = "text/javascript; charset=utf-8"`; add
-  `case WasmExecPath: writeAsset(w, r, wasmExecJS, contentTypeJS)` in `Handler`'s switch BEFORE the
-  `default: serveFont(...)` fall-through. Reuse `writeAsset` verbatim — it already sets the strong
-  content-ETag, `Cache-Control: no-cache`, and the `If-None-Match`→304 short-circuit (web.md: stable,
-  overwrite-in-place `/_ds/` assets must NOT carry `immutable`; revalidate via the strong ETag).
-- **Do NOT route it through `serveFont`** — that guard rejects non-`.woff2` names. The explicit `case`
-  is the right placement, exactly as `tokens.css`/`fonts.css` are explicit cases above the font
-  fall-through (web.md: extend the in-handler path switch, never add a second `/_ds/...` mux pattern).
-- **Update `web.go`'s package docstring** lightly so it states the loader is now also served (evergreen
-  comment describing current state) — and keep the "pure stdlib leaf" claim accurate (the new embed adds
-  no import; `embed` is already imported).
-- **CDN-free invariant (target.md M-UI hard constraint, inherited here).** The Go loader script is
-  same-origin and references no third-party origin; assert it with the existing `noExternalCDN` helper
-  (web.md: it bans `jsdelivr`/`cdn.`/cross-origin `http(s)://`, not same-origin paths). This keeps the
-  no-CDN baseline true for the asset the tier-2 enhancement will load.
-- **Oracle/conformance gate: N/A** — this is pure static-asset transport (no signature, RFC-6962,
-  Merkle, did:web, fsck, or proof path), the same N/A `internal/web` already carries.
-- This is the only un-started-to-DONE v1 milestone with offline-provable Verify criteria, and serving
-  the runtime loader is its smallest forward, fully testable on linux with no WASM toolchain in the
-  test path.
+The bug is the comment-detection predicate at `web_test.go:54`:
+`if line[j] == '/' && line[j+1] == '/' && (j == 0 || line[j-1] != ':')`. It treats `//` as a comment
+start unless the preceding byte is `:`. A protocol-relative loadable URL puts the `//` after a
+**URL-authority delimiter** (`"`, `'`, or `(`), so it is wrongly treated as a comment and the line is
+truncated before the ban can see `cdn.`/`jsdelivr`.
+
+Fix the root cause as the issue prescribes: treat `//` as a comment **only in an actual comment
+context** — i.e. NOT when it is a URL authority delimiter. The robust predicate is "`//` is a comment
+only when it is at line-start OR the preceding byte is whitespace (space/tab)" — and never when the
+preceding byte is `:` `"` `'` `(`. This both (a) keeps suppressing the vendored `wasm_exec.js`
+comments (they sit after `// `, i.e. whitespace) and (b) re-arms the ban for a protocol-relative
+`src="//cdn…"` / `url("//cdn…")` (preceded by `"` — not whitespace, so not stripped). The
+whitespace-or-line-start rule is the simplest form that satisfies the issue's "require the byte before
+`//` to be whitespace or line-start" wording; you do not also need the explicit `:"'(` exclusion list
+once you require whitespace, but stating it in the docstring is fine.
+
+Sanity-anchor on the real bytes before changing the predicate: the existing `TestWasmExecServed`
+already proves `noExternalCDN` passes on the verbatim 1.26.1 `wasm_exec.js`, so keep that test green —
+the file's comment URLs are all of the genuine `// …` whitespace form, which the narrowed rule still
+strips.
+
+Add a focused regression unit test (e.g. `TestNoExternalCDNProtocolRelative`) that drives
+`stripLineComments` **directly** on small literal bodies (no HTTP round-trip; avoids `t.Errorf`-capture
+gymnastics since `noExternalCDN` itself only calls `t.Errorf`). Assert in both directions:
+1. `<script src="//cdn.jsdelivr.net/npm/x.js"></script>` →
+   `bytes.Contains(stripLineComments(body), []byte("cdn."))` is **true** (the host now survives the
+   strip, so `noExternalCDN`'s ban would fire). Also assert `bytes.Contains(..., []byte("jsdelivr"))`
+   is true.
+2. The CSS protocol-relative form `url("//cdn.example/x.woff2")` → `cdn.` survives the strip too.
+3. A genuine comment line `// see https://github.com/golang/go/issues/12345` →
+   `bytes.Contains(stripLineComments(line), []byte("https://"))` is **false** (still suppressed).
+
+Relevant always-loaded rule: **"Never weaken a gate to pass" / fix the root cause** (target.md
+Quality bar; CLAUDE.md). Per `learnings/web.md`, the ban list stays third-party-origin only and
+same-origin `/_ds/` paths must still pass — preserve that; you are tightening the *strip*, not the
+*ban*. Update the `stripLineComments` docstring to describe the current (narrowed) behavior — an
+evergreen comment, not a changelog note.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -count=1 -run TestWasmExec ./internal/web` passes.
-- `GET /_ds/wasm_exec.js` returns `200` with `Content-Type: text/javascript; charset=utf-8`, a strong
-  (non-`W/`) quoted-hex ETag, `Cache-Control: no-cache`, and a non-empty body (assert in the new test).
-- A second request echoing that exact ETag in `If-None-Match` returns `304` with no body (extend the
-  existing `TestIfNoneMatch304` path list to include `/_ds/wasm_exec.js`).
-- `noExternalCDN(t, "served wasm_exec.js", get(t, WasmExecPath).Body.Bytes())` does not fail (the
-  served body references no third-party origin).
-- `GET /_ds/wasm_exec.js` with a non-GET method returns `405` (extend the existing
-  `TestMethodNotAllowed` path list).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` all pass; `gofmt -l .`
+  empty).
+- `go test -count=1 -run TestWasmExec ./internal/web` passes (the byte-verbatim `wasm_exec.js` still
+  passes `noExternalCDN` — its genuine `// ` comment URLs stay suppressed).
+- `go test -count=1 -run TestNoExternalCDN ./internal/web` passes (the new regression test).
+- Assertion: `bytes.Contains(stripLineComments([]byte(`<script src="//cdn.jsdelivr.net/x.js">`)),
+  []byte("cdn."))` is **true** (the protocol-relative CDN host now survives the strip, re-arming the
+  ban).
+- Assertion: `bytes.Contains(stripLineComments([]byte("// see https://example/x")), []byte("https://"))`
+  is **false** (a genuine comment URL is still stripped).
+- Mutation check: reverting the narrowed predicate back to the `:`-only guard makes the new
+  `TestNoExternalCDN…` test FAIL (proves the gate hole is genuinely closed by this change).
 
 ## Done When
-`mise run check` is green and `go test -run TestWasmExec ./internal/web` proves the Go WASM runtime
-loader is served byte-for-byte at `/_ds/wasm_exec.js` with the leaf's no-cache+strong-ETag+304+CDN-free
-policy — the on-ramp the tier-2 `<script>` enhancement will load before instantiating the verifier
-`.wasm` in the next sub-step.
+`mise run check` is green, the new `TestNoExternalCDN…` regression test passes (and fails when the
+narrowed strip is reverted), and `TestWasmExecServed` stays green — proving a protocol-relative
+`//cdn.` URL now trips `noExternalCDN` while the vendored `wasm_exec.js` comment URL still does not,
+re-greening the WASM-loader sub-step for a PASS verdict.
