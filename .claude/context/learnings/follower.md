@@ -105,6 +105,30 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   is justified inline. Verify `time.Now()` never appears in `loop.go` (the ticker delivers `t` via
   `ticker.C`) — the only wall-clock source is `time.NewTicker(l.Normal)`.
 
+## OTS upgrade-loop control core (`internal/follower/otsloop.go`)
+
+- **`OTSTick(ctx, st, up, now, logger)` is the pure injected-`now` analogue of `loop.go`'s `Tick`, a
+  SEPARATE driver off the poll path — OTS NEVER blocks the follower (ADR-0004).** It reads
+  `st.PendingOTS(ctx, now)` (back-off-filtered), and per row: `Confirmed` → `MarkOTSUpgraded`+`continue`;
+  declined or errored → `MarkOTSAttempted(Attempts+1, now+backoff)`. Mirrors `Tick`'s error discipline
+  exactly: a per-row Upgrader transport fault OR store-write fault is logged with `hub_id`/`tree_size`,
+  folded into `firstErr`, and the pass CONTINUES (a flaky row never aborts the pass, never freezes a hub).
+  `firstErr` is returned for observability only. No wall-clock in `OTSTick`; a `Run`-style ticker wrapper
+  is deferred to the wiring sub-step (no `main.go` wiring yet — a no-op loop would be dead code).
+- **`Upgrader` is a func seam, not an interface (YAGNI, matches `AlertFunc`)** —
+  `func(ctx, store.OTSRecord) (UpgradeResult, error)` returning `{Confirmed, OTSBytes, BTCHeight}`. Keeps
+  `internal/follower` import-free of any anchoring package; the real calendar-HTTP client becomes a
+  closure of this type + the first `go.mod`/`go.sum` change (the NEXT sub-step). Oracle gate correctly
+  N/A this slice (opaque `pending`→`confirmed`/back-off over an already-fsck-verified root; no
+  signature/RFC-6962/Merkle/did:web/proof code; the `Upgrader` is injected so no `ots verify` crypto
+  runs — that gate first applies at the real-`Upgrader` step).
+- **`backoff(attempts)` is a pure capped-exponential helper** (base 1h, doubling, shift cap 5 = 32h
+  pre-clamp, max 24h); `attempts` is the post-increment count so `attempts==1` waits one base, non-
+  positive → 1. Exact cadence is not safety-critical (OTS best-effort); golden-tabled by `TestOTSBackoff`.
+  Tests drive the public store seam (`RecordOTS` seed → `OTSTick` with fake confirming/declining/erroring
+  `Upgrader`s → `OTSForRoot`/`PendingOTS` read-back), never loop internals; reviewer reproduced the
+  next_retry-filter + no-op-`MarkOTSAttempted` mutations (both reverted) — non-vacuous.
+
 ## Structured logging (`log/slog`) at the loop + binary boundary
 
 - **`log/slog` lives ONLY in `loop.go` (composition) and `main.go` (binary) — never a leaf.** A nil-safe
@@ -133,17 +157,13 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## Equivocation trigger wiring (`internal/follower/checkConsistency`)
 
-- **RELOCATED (a90d884): the shrink→fork→equivocation `switch` + proof build + missing-tile swallow
-  now live in `logclient.CheckConsistency`** — see the "Self-consistency verdict" section below. The
-  bullets here describe the original in-follower wiring; the branch order, guards, and error-discipline
-  are byte-identical after the move, so they still document the *logic*, just at its new home.
-- **The third trigger lands in `checkConsistency`'s `switch` default (the growing-pair case).** Order
-  is shrink (`next<prev`) → fork (`next==prev`) → equivocation (`next>prev`); the default-branch guard
-  `if !prevFound || info.TreeSize <= prevSize` is load-bearing, NOT redundant: fork is `prevFound`-guarded,
-  so a `next==prev && !prevFound` observation reaches default and must not be misread as a growing pair.
-  Proof is built from the LOCAL mirror only — `store.SQLiteFetcher{Store,HubID}.ReadTile` straight into
-  `ConsistencyProofFromTiles(ctx, …, prevSize, info.TreeSize)` — never re-hitting the hub. Production
-  follower imports stay `{context,fmt,logclient,store,time}`; merkle/testonly/tessera are test-only.
+- **settled (RELOCATED a90d884; full detail in git history):** the shrink→fork→equivocation `switch` +
+  proof build + missing-tile swallow now live in `logclient.CheckConsistency`. Branch order is shrink
+  (`next<prev`) → fork (`next==prev`) → equivocation (`next>prev`); the default-branch guard
+  `if !prevFound || info.TreeSize <= prevSize` is load-bearing (a `next==prev && !prevFound` observation
+  must not be misread as a growing pair). Proof is built from the LOCAL mirror only
+  (`SQLiteFetcher.ReadTile` → `ConsistencyProofFromTiles`), never re-hitting the hub. The durable
+  error-discipline + p↔width traps below still apply at its new home.
 - **Error-vs-violation discipline is the load-bearing subtlety and is correct.** A proof-BUILD error
   from `ConsistencyProofFromTiles` (most often a missing tile = wrapped `os.ErrNotExist`, since prod
   doesn't mirror tiles until M2) is swallowed narrowly → branch skipped, no freeze (false-positive
@@ -165,164 +185,59 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## hub_keys cache wiring (`internal/follower` + `internal/logclient/keyid.go`)
 
-- **`cacheHubKey` is wired ONLY on the verified, non-violation `PollHub` path** (after
-  `AdvanceFollowState`, mirroring coverage placement), never inside `freeze` and never on a
-  non-verified verdict — the fork/shrink/unverified tests assert `countRows(…, "hub_keys")==0`, the
-  verified test asserts exactly 1 row with `key_id==0x40b74463` + 32-byte `pubkey_raw` + refresh-in-place.
-  A `ResolveVerifierKey` failure here is wrapped (`cache hub key: %w`) and surfaced, never swallowed.
-- **`KeyIDFromVerifier` recovers the key id from the vkey STRING, it does not re-derive crypto.**
-  `SplitN(vkey, "+", 3)` (n=3 load-bearing: sb0's base64 tail `AaV+ivnly67…` itself has a `+`, so a
-  plain `Split` over-splits), require 3 fields, `ParseUint(parts[1], 16, 32)`. The middle `+<hex>+`
-  field IS the signed-note keyhash — reviewer independently decoded the sb0 checkpoint sig line
-  (`base64→ raw[:4]`) to `40b74463` with a 64-byte sig, matching the golden vector, so the trust-root
-  value is confirmed from the fixture, not the author. Oracle gate correctly N/A (string parse, not a
-  derivation; `go.mod`/`go.sum`/`schema.sql` byte-identical), but the golden still pins it to
-  `VerifierKey`'s `"%s+%08x+%s"` output so it cannot silently diverge.
-- **The cache-hit fast path now skips the SECOND did.json fetch (`cacheHubKeyFast`).** On a warm cache
-  `cacheHubKey` recovers `(name, keyID)` from raw (`KeyIDFromCheckpoint`), asserts `name ==
-  Origin(baseURL)` (`sb0.iscc.id/log`, verified against fixture line 1), hits `LookupHubKey`, and
-  `RecordHubKey`-refreshes in place — no `ResolveVerifierKey`. The first verified poll still resolves
-  twice (cold cache → miss → `cacheHubKeyResolve` fallback). The `+1` fetch-count assertion is
-  non-vacuous: a broken name-guard/lookup would fall through to +2 and fail the test. Fall-through
-  cases (key-id miss, name mismatch, cache miss) return `(false, nil)`; genuine faults
-  (origin/query/RecordHubKey) wrap a non-nil error and are never swallowed. The remaining FIRST resolve
-  (inside `AcceptCheckpoint`, drives the `ValidAt` window check) is the next, larger efficiency slice.
-- **The fast path reuses the *cached* `Revoked`/`PubkeyRaw` on a hit, NOT a re-resolve — and that is
-  safe.** A same-`key_id` pubkey edit is cryptographically near-impossible (`key_id =
-  SHA-256(name||0x0A||0x01||pub)[:4]` → different pubkey ⇒ different key_id ⇒ cache miss ⇒ full
-  resolve), and a `revoked_at`/window edit is still caught by `AcceptCheckpoint`'s first resolve every
-  poll (which gates `StatusVerified` before `cacheHubKey` ever runs). The `hub_keys` row is an
-  identity/availability cache, never the verification authority. A fully cache-only window-honoring
-  path would first need a `valid_from`/`valid_until` schema column (explicitly Not In Scope here).
-- **`LookupHubKey(ctx, hubID, keyID)` is the read side of the cache and is now landed** — the exact
-  column-by-column inverse of `RecordHubKey` (`pubkey_raw`→`[]byte`, `pubkey_z`/`revoked_at`/
-  `resolved_at` via `sql.NullString`/`sql.NullInt64`→`""`/zero-time), `HubID`/`KeyID` reconstructed
-  from the in-args (never re-scanned), absent row → `(HubKey{}, false, nil)` per `FollowState`/
-  `Coverage`. **The `uint32` key id never has to be recovered from the signed `int64` column on read**
-  (it comes from the lookup arg), so high-bit ids like `0xdeadbeef` round-trip losslessly —
-  independently verified with a throwaway high-bit test (PASS, then removed). `LIMIT 1` (no `ORDER BY`)
-  is sound because `RecordHubKey`'s UPDATE-then-INSERT keeps ≤1 row per `(hub_id, key_id)`. Still
-  unwired into `PollHub`/verification (deliberate next slice). Oracle gate correctly N/A — pure CRUD,
-  `go.mod`/`go.sum`/`schema.sql` byte-identical (`git diff --quiet HEAD~1..HEAD` exit 0).
+- **settled (landed; full detail in git history pre-2026-06-22):** `cacheHubKey` is wired ONLY on the
+  verified non-violation `PollHub` path (after `AdvanceFollowState`); fork/shrink/unverified tests assert
+  `hub_keys`==0 rows, verified asserts 1 row `key_id==0x40b74463`. Cold cache resolves twice; the warm
+  fast path (`cacheHubKeyFast` via `LookupHubKey`) skips the second did.json fetch (`+1` fetch assertion).
+  `LookupHubKey` is the column-by-column inverse of `RecordHubKey`, absent → `(HubKey{},false,nil)`, key
+  id round-trips losslessly from the in-arg (never re-scanned from the signed int64 column). Oracle N/A.
+  Two durable traps below.
+- **`KeyIDFromVerifier` recovers the key id from the vkey STRING — `SplitN(vkey, "+", 3)`, n=3 is
+  load-bearing:** sb0's base64 tail `AaV+ivnly67…` itself contains a `+`, so a plain `Split` over-splits.
+  Require 3 fields, `ParseUint(parts[1], 16, 32)`; the middle `+<hex>+` field IS the signed-note keyhash.
+  It is a string parse, NOT a crypto re-derivation (oracle N/A), but the golden pins it to `VerifierKey`'s
+  `"%s+%08x+%s"` output so it cannot silently diverge.
+- **The `hub_keys` row is an identity/availability cache, NEVER the verification authority.** The fast
+  path reuses the cached `Revoked`/`PubkeyRaw` safely: a same-`key_id` pubkey edit is cryptographically
+  near-impossible (different pubkey ⇒ different `key_id` ⇒ cache miss ⇒ full resolve), and a
+  `revoked_at`/window edit is still caught by `AcceptCheckpoint`'s first resolve every poll (gates
+  `StatusVerified` before `cacheHubKey` runs). A cache-only window-honoring path would need a
+  `valid_from`/`valid_until` schema column (Not In Scope).
 
 ## Live tile/bundle ingestion writer (`internal/follower/ingest.go`)
 
-- **`ingestTiles` is the first production caller binding the four M2 seams** (`tiles.TileCoords`/
-  `BundleCoords` → `logclient.FetchTile`/`FetchEntryBundle` → `store.RecordTile`/`RecordEntryBundle`),
-  wired into `PollHub` AFTER `cacheHubKey`, BEFORE the final `recordVerdict` — on the verified,
-  non-violation path only (not in `freeze`, not on non-verified verdicts). A fetch/store fault is a
-  genuine transport error wrapped `follower.PollHub: hub %d: ingest tiles: %w` and surfaced (NOT a
-  violation, NOT a freeze) — the checkpoint is already recorded/advanced above, so the next poll
-  re-completes the mirror via the idempotent upsert (ADR-0005/0006). Follower prod imports stay
-  `{context, fmt, logclient, metrics, store, tiles, log/slog}`; store stays a leaf (no `net/http`, no
-  reverse dep). go.mod/go.sum byte-identical (`tessera/api/layout` already in closure via `tiles`).
-- **The `widthForP` p↔width translation is the load-bearing bug surface and is triple-pinned.** The
-  follower re-derives the store's unexported one-liner (`p==0 → tiles.TileWidth (256)`, else `int(p)`) —
-  store's copy stays private, store package byte-untouched. Reviewer mutation-proved it: breaking the
-  `p==0 → 256` mapping (return `int(p)` always) FAILS `TestWidthForP` + `TestIngestTilesWidthMapping`
-  (full tile invisible at width 256, *readable* at width 0) + `TestPollHubMirrorsTiles`
-  (`SQLiteFetcher.ReadTile(0,0,p0)` round-trip fails). A green-but-wrong width map cannot ship.
-- **Both ingestion tests are non-vacuous (mutation-verified).** Neutering `ingestTiles` to a no-op FAILS
-  `TestIngestTilesWidthMapping` and `TestPollHubMirrorsTiles` (no mirrored rows, full-tile round-trip
-  fails) — so the green is real, not existence-vacuous. Tests assert only on observable store outputs
-  (`ReadTileBlob`/`ReadEntryBundleBlob` `found==true` + exact synthetic bytes), never follower internals.
-  Tree 300 enumerates exactly 5 coords (tiles `{0,0,full}`,`{0,1,p44}`,`{1,0,p1}` + bundles
-  `{0,full}`,`{1,p44}`), independently re-derived against `tiles.TileCoords/BundleCoords` — the table is
-  ground truth, and the `len(urls)==5` assert pins the enumeration count.
-- **Oracle gate correctly N/A for this slice** — transport + CRUD only, no signature/RFC-6962/Merkle/
-  did:web/fsck path; the equivocation branch it un-dormants is already golden-tested and unchanged.
-  `derive_vkey.py` still reproduces `40b74463`/`22b08f3e` (the did:web cache path through `PollHub` is
-  composed, not modified). Trust root re-arms at the `fsck`-over-`SQLiteFetcher` slice (next), which is
-  where the mirrored tiles first face the RFC-6962 root-rebuild oracle.
-- **`projectEntryBundle` wires the `iscc_index` fold into `ingestEntryBundles`, right after each
-  `RecordEntryBundle`, reusing the already-fetched `raw` (no re-fetch).** `baseSeq = bundleIndex *
-  tiles.TileWidth` is the load-bearing math — reviewer independently mutation-proved it two ways
-  (reverted): (1) `BundleProjections(raw, 0)` → bundle-1 leaves (seq 256-299) collide onto bundle-0
-  seqs (0-43) under `ON CONFLICT(seq) DO UPDATE`, `TestPollHubRecordsProjections` FAILS (read-back
-  `[]`/wrong seq); (2) dropping the `RecordProjections` call → read-back empty. `tiles.TileWidth` is an
-  untyped const so `uint64 * TileWidth` types cleanly as `uint64`. Store stays a leaf — `logclient.
-  Projection → store.ProjectionRecord` is copied field-by-field at the call site (verified `go list`
-  shows no `internal/logclient`/`net/http` in store's closure). A malformed/non-JSON record or store
-  fault is wrapped `project entry bundle index %d: %w` and aborts the poll before accepted state
-  advances (decode/store fault, NOT a self-consistency violation — never freezes, ADR-0008+0006).
-- **The verified-path fixture `leafPreimages` had to become valid JSON envelopes (test-only, load-bearing),
-  not just an additive test.** Once `ingestEntryBundles` folds every bundle, the old `leaf-%d` plaintext
-  is a genuine `BundleProjections` JSON-parse fault on every verified poll → the poll aborts. The fix
-  emits `{"$schema":"log-entry","iscc_id":<distinct>,"note":{"$schema":<declSchema>}}` per leaf; because
-  `buildVerifiedMirror` rebuilds the tree AND frames the SAME preimages into the bundles, the signed root
-  stays self-consistent and fsck still rebuilds it (confirmed: `TestPollHubFsck` green, "Successfully
-  fsck'd log with size 300"). Distinct per-leaf `iscc_id` (`ISCC:LEAF%08d`) makes the read-back a clean
-  one-seq-per-id lookup; `SeqsForISCCID(leafISCCID(i)) == [i]` because leaf `i` sits in bundle `i/256` at
-  local index `i%256`, so `baseSeq + local == i`. `equivocation_test.go` is unaffected (own inline tree,
-  never calls `BundleProjections`). `TestIngestTilesWidthMapping`'s `recordingFetcher` likewise had to
-  frame a valid one-record bundle for `/tile/entries/` URLs only (hash-tile URLs are `tile/<digit>/`,
-  no collision) — the width-mapping assertions themselves are unchanged.
+- **settled (landed; full detail in git history):** `ingestTiles` binds the four M2 seams
+  (`tiles.TileCoords`/`BundleCoords` → `logclient.FetchTile`/`FetchEntryBundle` →
+  `store.RecordTile`/`RecordEntryBundle`) on the verified non-violation path AFTER `cacheHubKey`; a
+  fetch/store fault is wrapped `ingest tiles: %w` and surfaced (NOT a violation/freeze), so the next poll
+  re-completes the mirror via idempotent upsert. `projectEntryBundle` folds `iscc_index` after each
+  `RecordEntryBundle` (reuses `raw`); store stays a leaf (`logclient.Projection → store.ProjectionRecord`
+  copied field-by-field). Two durable traps below.
+- **The `widthForP` p↔width translation is the load-bearing bug surface (triple-pinned).** The follower
+  re-derives store's unexported `p==0 → tiles.TileWidth (256)`, else `int(p)` — store's copy stays
+  private. Mutation-proved: breaking `p==0 → 256` FAILS `TestWidthForP`/`TestIngestTilesWidthMapping`
+  (full tile invisible at width 256, readable at width 0)/`TestPollHubMirrorsTiles`.
+- **`baseSeq = bundleIndex * tiles.TileWidth` is load-bearing.** Mutation-proved (reverted)
+  `BundleProjections(raw, 0)` collides bundle-1 leaves (seq 256-299) onto bundle-0 seqs (0-43) under
+  `ON CONFLICT(seq) DO UPDATE` → `TestPollHubRecordsProjections` FAILS. A malformed-record/store fault is
+  wrapped `project entry bundle index %d: %w` and aborts the poll BEFORE accepted state advances
+  (decode/store fault, NOT a self-consistency violation — never freezes, ADR-0008+0006).
 
-## fsck root-rebuild wired into PollHub (`fsckMirror`) + the real-sb0-fixture retirement
+## fsck root-rebuild wired into PollHub (`fsckMirror`) + inclusion cross-check
 
-- **Wiring `fsckMirror` into the verified `PollHub` path makes a byte-accurate mirror MANDATORY for
-  every completing verified poll — this is why the 6 real-sb0-checkpoint follower tests had to convert
-  to the in-process `testonly.Tree` mirror (`buildVerifiedMirror`), and the conversion is a sound
-  equivalent, NOT a coverage loss.** The real sb0 log's leaf preimages were never captured (live
-  capture is Not In Scope), so its mirror can't rebuild the signed root → fsck would always fail. The
-  `testonly.Tree` fixture is byte-accurate to its OWN signed root (the same standard `fsck_test.go` and
-  the equivocation tests use). Reviewer independently confirmed real-sb0 signature/key parity is fully
-  retained at the correct (verification) layer: `internal/logclient/accept_test.go::TestAcceptCheckpoint/
-  "verified"` verifies the real sb0 checkpoint (size 10183, real sig) against the real captured
-  `sb0.iscc.id_did.json` key → `StatusVerified`/`Origin=sb0.iscc.id/log`/`TreeSize=10183`; the
-  `notecheck` external oracle accepts it (`OK sb0.iscc.id/log`, exit 0); `derive_vkey.py` reproduces
-  `40b74463`/`22b08f3e`. The follower tests' job is *composition/wiring*, not re-asserting the raw
-  signature — moving the literal `10183`/`0x40b74463` asserts to fixture-relative `m.size`/`m.keyID`
-  is architecturally right (net assertions went UP 32:16, not down). The HUMAN REVIEW REQUESTED was
-  honest but over-cautious: no plan/ADR deviation, no public-API change, no gate weakening.
-- **The required mutation is non-vacuous and reviewer-reproduced:** forcing `fsckMirror` to early-
-  `return nil` makes `TestPollHubFsck/RejectsCorruptedMirror` FAIL (corrupted tile no longer caught),
-  reverting restores green — so the rebuild genuinely compares the re-derived RFC-6962 root against the
-  signed root. The corrupt-mirror subtest must call `fsckMirror` DIRECTLY (not via `PollHub`, whose
-  `ingestTiles` re-fetches and overwrites the flipped BLOB first). `RunFsck` is an in-process
-  STRUCTURAL self-check (shares the monitor's own `LeafHashes`/RFC-6962 code) — the docstring correctly
-  does NOT over-claim it is the independent oracle (`notecheck` is); a non-nil return is a mirror/rebuild
-  fault, NOT a self-consistency violation → surfaced to the caller, never `freeze` (ADR-0006).
-- **`fsckMirror` placement is correct: AFTER `ingestTiles`, BEFORE the final `recordVerdict`, on the
-  verified non-violation path only.** Prod follower imports unchanged (`{context, fmt, logclient,
-  metrics, store, tiles, log/slog}`), store stays a leaf, go.mod/go.sum byte-identical (`tessera/fsck`
-  already in the closure via `internal/logclient/fsck.go`), didweb WASM build green. Scope was clean:
-  exactly 1 production file (`follower.go`) + 4 test files.
-- **`buildVerifiedMirror(t, leaves)` is the reusable follower verified-path fixture now** — generates a
-  per-run `note.GenerateKey` keypair (so key-id is NEVER a literal; assert `m.keyID`), signs the C2SP
-  checkpoint body `"<origin>\n<size>\n<base64(root)>\n"`, advertises the key's `z6Mk` multibase via
-  `multibaseFromVKey`+`b58encode` (the exact inverse of `didweb.b58decode`), and serves byte-accurate
-  level-0 tiles + framed entry bundles for every `TileCoords`/`BundleCoords` coord (reusing
-  `equivNodeHash` for level ≥ 1). `mirrorLeaves = 300` crosses the 256-leaf boundary. `mirrorBundleFetcher`
-  routes by `strings.HasSuffix` over a `byPath` map — verified the size-300 tlog-tiles paths have no
-  suffix collisions, so it is unambiguous for this fixture (a future colliding-path fixture would want
-  exact/longest-suffix matching).
-- **Wiring fsck onto the live path SURFACED a pre-existing `store.CheckpointAt` fragility (filed
-  `normal`): an unordered `LIMIT 1` means fork re-detection compares against an undefined row when two
-  same-size checkpoints exist post-freeze.** This forced `TestPollHubFork` to drive fork *re-detection*
-  through `freeze` directly (first detection still via `PollHub`); shrink re-detection via `Tick` stays
-  covered by `TestTickFrozenUnaffected` (size-only, immune). The fix (`ORDER BY rowid` / pick the prior
-  accepted root explicitly) belongs to the store-touching equivocation/serving slice, not this one.
-
-## Inclusion cross-check over the real follower mirror (`internal/follower/inclusion_test.go`)
-
-- **M2's second Verify bar is closed test-only, and that is the honest scope — verified, not asserted.**
-  `VerifyInclusionEvidence` is the *consumer* of a hub-supplied proof; there is no inbound hub-evidence
-  transport on the follow path yet (no `FetchInclusionEvidence`; proof-serving is a later M2/M3 slice). A
-  `PollHub` step recomputing the monitor's OWN proof and checking it against itself would be circular and
-  is forbidden by `next.md`/target.md. The follower already mirrors tiles (`ingestTiles`) + indexes leaves
-  (`projectEntryBundle`), so `TestPollHubInclusion` drives a verified `PollHub` over `buildVerifiedMirror(300)`,
-  resolves `iscc_id→leafIndex` via the production `SeqsForISCCID` (sampled leaf 5 in bundle 0 + leaf 260
-  past the 256-leaf boundary → `[5]`/`[260]`), builds the hub's `IsccLogInclusionProof` from `m.tree`, and
-  asserts `VerifyInclusionEvidence(ctx, SQLiteFetcher.ReadTile, ev) == nil`. Zero production lines added,
-  scope-clean (1 test file + handoff), no `schema.sql`/`go.mod`/`go.sum` touch — exactly as `next.md` scoped.
-- **Oracle gate APPLIES (RFC-6962 inclusion crypto) and is reviewer-mutation-proven NON-VACUOUS over the
-  real verified-poll mirror.** Reviewer short-circuited `VerifyInclusionEvidence` to `return nil` before the
-  proof compare → BOTH negatives FAIL (`inclusion_test.go:125` wrong-leaf, `:145` corrupted-proof); reverted
-  → green, tree clean. The wrong-leaf negative is the sharp one: a *valid* leaf-5 proof re-labelled leaf 6
-  still fails because the monitor recomputes leaf 6's distinct proof from the mirror written by `ingestTiles`
-  — three independent paths (`m.tree.InclusionProof` prover, `InclusionProofFromTiles` recompute, base64
-  round-trip), not a tautology. `notecheck` accepts real sb0 / rejects corrupted (exit 0/1); `derive_vkey.py`
-  reproduces `40b74463`/`22b08f3e`; CI `notecheck` parity job present + unchanged. `SQLiteFetcher.ReadTile`'s
-  `(ctx, l, i uint64, p uint8)` is assignment-compatible with `logclient.TileFetcher` and passes straight in,
-  as the inclusioncheck learnings predicted.
+- **settled (landed; full detail in git history):** `fsckMirror` runs on the verified non-violation path
+  AFTER `ingestTiles`, BEFORE `recordVerdict`, re-deriving the RFC-6962 root from the mirror and comparing
+  it to the signed root; a mismatch is a mirror/rebuild fault surfaced to the caller, NEVER a freeze
+  (ADR-0006). The 6 real-sb0 follower tests converted to the in-process `buildVerifiedMirror` fixture
+  (byte-accurate to its OWN signed root, per-run `note.GenerateKey` so key-id is never a literal — assert
+  `m.keyID`); real-sb0 signature/key parity stays covered at the verification layer
+  (`logclient/accept_test.go` + `notecheck` + `derive_vkey.py`). `RunFsck` is an in-process STRUCTURAL
+  self-check (the independent oracle is `notecheck`). M2's inclusion cross-check (`TestPollHubInclusion`)
+  is closed test-only: build the hub's `IsccLogInclusionProof` from `m.tree`, assert
+  `VerifyInclusionEvidence(SQLiteFetcher.ReadTile, ev) == nil`. Both mutation-proven non-vacuous (early
+  `return nil` FAILS the corrupt-mirror / wrong-leaf negatives, reverted).
+- **Durable trap — corrupt-mirror tests must call `fsckMirror` DIRECTLY, not via `PollHub`**, whose
+  `ingestTiles` re-fetches and overwrites the flipped BLOB first.
+- **Durable trap — `store.CheckpointAt` fork re-detection** must compare against the prior ACCEPTED root,
+  not the contradicting evidence row; the explicit `ORDER BY rowid LIMIT 1` (checkpoints.go:159) is what
+  makes a post-freeze two-same-size-rows lookup deterministic. Keep it on any prior-root-selection change.

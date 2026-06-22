@@ -100,6 +100,29 @@ filed it and does **not** affect priority.
 - **Spec:** target.md M-UI single-record Verify criterion; CLAUDE.md Testing ("tests covering
   implemented functionality" + use ground-truth data, not fixtures matched to the code).
 
+## `-run TestOTS` does not catch the OTS store tests (`TestMarkOTSAttempted*`, `TestPendingOTS` back-off)
+- **Priority:** low
+- **Source:** [review] (reviewer-confirmed against next.md Verification line)
+- **What / where / how to verify:** `next.md`'s Verification explicitly required naming the new tests so
+  `go test -count=1 -run TestOTS ./internal/store ./internal/follower` catches them all ("name the new
+  tests `TestOTS…` / `TestMarkOTSAttempted` / `TestPendingOTSBackoff` so this filter catches them all —
+  the filter caveat the prior OTS review flagged"). The advance instead named the store tests
+  `TestMarkOTSAttempted`, `TestMarkOTSAttemptedAbsent`, `TestMarkOTSAttemptedZeroNextRetryNull` and put
+  the back-off assertions inside the existing `TestPendingOTS` — none of which match the `TestOTS` prefix.
+  Reviewer-confirmed: `go test -v -run TestOTS ./internal/store` runs ONLY `TestOTSForRootAbsent`; the
+  three `TestMarkOTSAttempted*` and the `TestPendingOTS` back-off path are silently skipped by that
+  filter. The tests DO exist, are non-vacuous (reviewer reproduced the next_retry-filter + no-op-
+  `MarkOTSAttempted` mutations), and run+pass under `mise run check` and the broader
+  `-run 'TestOTS|TestMarkOTSAttempted|TestPendingOTS'` union — so this is a developer-convenience /
+  spec-literal gap, NOT a coverage hole and NOT a gate weakening. The follower tests (`TestOTSTick*`,
+  `TestOTSBackoff`) DO match the prefix. Fix when the OTS store tests are next touched: rename
+  `TestMarkOTSAttempted*` → `TestOTSMarkAttempted*` (or add a `TestOTSPendingBackoff` wrapper) so the
+  documented `-run TestOTS` shorthand catches the whole suite. Verify fixed: `go test -v -run TestOTS
+  ./internal/store` lists every OTS store test. Low — the suite is green and complete under `mise run
+  check`; only the shorthand filter under-selects.
+- **Spec:** next.md Verification "name the new tests … so this filter catches them all"; CLAUDE.md
+  Testing (clean, discoverable test output).
+
 ## `cmd/notecheck`'s `run` has a vestigial `out io.Writer` parameter
 - **Priority:** low
 - **Source:** [review]

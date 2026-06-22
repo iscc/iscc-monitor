@@ -146,5 +146,13 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   import. Reviewer mutation-proved non-vacuous (sed, all reverted): `DO NOTHING`→plain insert FAILS
   `TestRecordOTSDedupes`; `ASC`→`DESC` FAILS `TestPendingOTS` order; dropping `WHERE status=?` FAILS
   `TestPendingOTS`+`TestMarkOTSUpgraded`. Oracle gate N/A (opaque-BLOB round-trip; no merkle/proof path).
-  Trap for the next slice: `Attempts`/`NextRetry` are persisted+round-tripped but no method increments
-  `Attempts` or sets a back-off `NextRetry` yet — that retry policy belongs to the upgrade loop.
+- **`MarkOTSAttempted` + `PendingOTS(now)` back-off filter landed (closes the prior `Attempts`/
+  `NextRetry` trap).** `MarkOTSAttempted` ports `MarkOTSUpgraded` minus status/btc — plain
+  `UPDATE ots SET attempts=?, next_retry=?`, `unixOrNil(nextRetry)` (zero→NULL), `RowsAffected`-ignored
+  (absent = no-op), and **deliberately leaves `status` untouched** so a backed-off row stays `pending`
+  and `PendingOTS` re-serves it once `next_retry` elapses. `PendingOTS` gained a `now` arg +
+  `AND (next_retry IS NULL OR next_retry <= ?)`, bound `now.Unix()` DIRECTLY (not `unixOrNil` — `now` is
+  never zero; a freshly-stamped NULL-`next_retry` row is immediately due via the `IS NULL` leg).
+  Reviewer mutation-proved both load-bearing (reverted): dropping the `next_retry` WHERE leg → back-off-
+  exclusion FAILS in BOTH store `TestMarkOTSAttempted` and follower `TestOTSTickDeclinesBacksOff`;
+  no-op'ing the UPDATE → `Attempts`/`NextRetry` stay zero. Store stays leaf-pure, oracle N/A.
