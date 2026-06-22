@@ -1,109 +1,114 @@
 # Next Work Package
 
-## Step: GitHub-Pages publish workflow for the Surface-C verifier (`monitor.iscc.codes`)
+## Step: Move the WASM `safeIndex` integer guard into the untagged `verifyadapter` and table-test its reject branches
 
 ## Advances
-WASM verifier milestone — target.md: *"plus the standalone **Independent Verification** verifier app
-(… Surface C) at `monitor.iscc.codes` (monitor-agnostic via `?monitor=<url>`); reproducible build +
-published hash + SRI pin (ADR-0003, ADR-0010). **Verify:** … the verifier artifact hash matches the
-published value …"*
+WASM milestone Verify criterion (target.md): *"identical vectors yield identical verdicts (WASM vs
+server)."* A truncated / non-integer / out-of-safe-range JS Number is **not** an identical vector —
+the `safeIndex` guard is what rejects those before the `float64→uint64` narrowing silently truncates
+(`js.Value.Int()` is `int(v.Float())`). Today that guard lives in the build-tagged `cmd/wasm/main.go`,
+so **no linux `go test` exercises it** — the WASM build gate proves only that it compiles, and the one
+SSR caller's test feeds valid integers only. This step makes the guard's branch behavior an ordinary
+linux-tested, golden-gated unit, closing the open `normal` issue **"The WASM `safeIndex` integer guard
+is trapped in the tagged `main.go` and has NO executable test"** (issues.md). The issue's own "Verify
+fixed" criterion (a test feeding `index=1.9` asserting `verified=false, error!=""`) was never met.
 
-This is the **front-of-queue open Verify** and the explicit `review` handoff `**Next:**`: "Build the
-GitHub-Pages publish workflow (`.github/workflows/*`) that runs `go run ./cmd/verifier-site -out <dir>`
-and deploys the tree to `monitor.iscc.codes` — this generator is its build command." state.md's
-DRIFT WATCH (amber) says the next increment must **close** a Verify criterion, not add more build
-plumbing around the still-unpublished artifact — this is that closer: the reproducible build command
-(`cmd/verifier-site`) exists; this step is the missing PUBLISH half that makes the artifact actually
-deployed (the only remaining step to a live, hash-published Surface-C artifact).
+Why this over the other two WASM fronts in the handoff Next: (1) the **dossier WASM island** would
+contradict a settled review decision — the dossier's tier-2 affordance is *deliberately* the
+cross-surface link to Surface C because it has no single ISCC-ID subject to re-verify
+(`learnings/dashboard.md`); (2) the **verifier-scope signature/id-binding** gap is the most
+trust-meaningful WASM `normal` but is too large for one ≤3-file step (browser did:web resolution +
+signature verify + id-decode, needs its own design pass). The "published" half of the milestone is
+blocked on a one-time human repo-Settings step and cannot close autonomously. This `safeIndex` step is
+the code-closable WASM increment the state.md DRIFT-WATCH asks for.
 
 ## Goal
-Add a GitHub Actions workflow that runs the existing `cmd/verifier-site` generator and publishes the
-rendered static tree to GitHub Pages at `monitor.iscc.codes`, so the verifier app is a *deployed*,
-public, reproducible-from-commit artifact (ADR-0003 "Pages-from-repo ties the deployed WASM to a public
-commit") — closing the "published" half of the WASM milestone's Verify bar.
+Relocate `safeIndex` + `maxSafeInteger` from the build-tagged `cmd/wasm/main.go` into the untagged,
+non-main `cmd/wasm/verifyadapter` package and add a table-driven test for its reject branches, so the
+JS→Go integer contract that protects the WASM-vs-server vector parity is regression-gated on every
+`mise run check` instead of only compile-checked behind the WASM build tag.
 
 ## Scope
-- **Create**: `.github/workflows/pages.yml` — the Pages build+deploy workflow (the publish half).
-- **Create**: `.github/pages/CNAME` — a tracked file containing exactly `monitor.iscc.codes` (+ newline)
-  that the workflow copies into the published tree so Pages serves the custom domain (ADR-0003 `.codes` =
-  code). Keep it under `.github/pages/`, NOT a bare repo-root `CNAME` where tooling might trip on it.
-- **Modify**: `CLAUDE.md` — the WASM/surfaces section documents the surfaces; add a one-line note that
-  `monitor.iscc.codes` is published by `.github/workflows/pages.yml` (with `cmd/verifier-site` as its
-  build command). Minimum needed to keep docs in sync (this is the only non-test/doc file; well within 3).
+- **Create**: (none — extend the existing test file)
+- **Modify** (2 non-test/doc production files):
+  - `cmd/wasm/verifyadapter/verify_adapter.go` — add the exported `SafeIndex(v float64, name string)
+    (uint64, string)` + `maxSafeInteger` const, ported verbatim from `main.go` (logic byte-for-byte
+    unchanged; only the package home + exported name change).
+  - `cmd/wasm/main.go` — delete the now-moved `safeIndex` func + `maxSafeInteger` const and the
+    `"math"` import; call `verifyadapter.SafeIndex(...)` at the two call sites (lines 52, 56). No
+    behavior change.
+  - `cmd/wasm/verifyadapter/verify_adapter_test.go` (test file — does NOT count toward the ≤3 limit) —
+    add `TestSafeIndex` table covering the reject + accept branches.
 - **Reference**:
-  - `cmd/verifier-site/main.go` — the build command this workflow invokes (`go run ./cmd/verifier-site
-    -out <dir>`, exits 0, writes the 14-file tree; default out dir is `dist`; fails closed on any non-200).
-  - `.github/workflows/ci.yml` — the existing workflow's shape to mirror: `runs-on: ubuntu-latest`,
-    `actions/checkout@v4`, `actions/setup-go@v5` with `go-version: "1.26"`, `env: CGO_ENABLED: "0"`.
-  - `.claude/adr/0003-client-verification-and-in-browser-verifier.md` (lines 51–74) — verifier hosting:
-    independent origin `monitor.iscc.codes`, GitHub-Pages-from-repo, reproducible-build + published-hash.
-  - `.claude/context/learnings/verifier-site.md` — the generator's contract (fail-closed on a non-200,
-    copies the byte-pinned `verify.wasm` whose SHA-256 == `web.WasmVerifyHash`, non-atomic-output `low`).
-  - `.claude/context/learnings/ci.md` — CI workflow conventions (one `ubuntu-latest` job,
-    `CGO_ENABLED: "0"`; PyYAML is absent locally so validate YAML via the cached `gopkg.in/yaml.v3`).
+  - `.claude/context/learnings/cmd-wasm.md` — the layout rule (tagged glue vs untagged adapter; WHY an
+    untagged file in `package main` breaks `go build ./...`) and the `safeIndex`-is-trapped forward rule.
+  - `.claude/context/learnings/proof-verify.md` — the three-way verdict contract `VerifyJSON` preserves
+    (don't disturb it; this step is upstream of it).
+  - `cmd/wasm/main.go` (lines 20-24, 47-83) — the source `safeIndex` + `maxSafeInteger` to port verbatim.
+  - `cmd/wasm/verifyadapter/verify_adapter.go` + `verify_adapter_test.go` — the destination package and
+    its existing test conventions (table-driven, `package verifyadapter` white-box, golden-vector reuse).
 
 ## Not In Scope
-- Do **not** modify `cmd/verifier-site/main.go` — it is the finished build command; this step only
-  *invokes* it from CI. (Its non-atomic-output `low`, the Surface-C `readTarget`, and the WASM-scope
-  `normal`s are separate later steps; folding them in here would blur the publish-workflow change.)
-- Do **not** add the dossier tier-2 WASM caller — that is the *other* WASM sub-step, a separate ≤3-file
-  increment; pick one front. This step lands the publish workflow.
-- Do **not** touch `.github/workflows/ci.yml`; the publish workflow is a new, separate file so CI and
-  Pages have independent triggers and the existing gate stays unchanged.
-- Do **not** add the missing `safeStamp` OTS guard, the §5 digest binding, or any `host:port`-DID work —
-  those are unrelated `normal` issues touched only when their exact lines are next edited.
+- **Do NOT** widen the WASM verifier's trust scope (checkpoint-signature / did:web-key / id-binding).
+  That is the separate, larger open `normal` (issues.md "The WASM verifier proves only inclusion math")
+  and needs its own design pass — not this step.
+- **Do NOT** wire a WASM proof island into the hub dossier. The dossier's tier-2 affordance is
+  *deliberately* the cross-surface link to Surface C (`learnings/dashboard.md`: "no single ISCC-ID
+  subject to re-verify") — adding an island there contradicts a settled review decision.
+- **Do NOT** touch `internal/proof/verify`, `VerifyJSON`'s signature, the golden vector, or the
+  `isccVerifyInclusion` arg-count / arg-order contract — this is a pure relocation + test, no behavior
+  change to verification.
+- **Do NOT** change the `safeIndex` logic (the `>= 2^53` strictness, the NaN/Inf/fractional/negative
+  branches) — port it byte-for-byte; only its package and exported casing change.
+- **Do NOT** address the Surface-C `readTarget` `u.href` normalization or the Pages custom-domain doc
+  note here — separate filed issues, different files.
 
 ## Implementation Notes
-- **Workflow shape** — use the modern GitHub-Pages Actions deploy (no `gh-pages` branch). One job that
-  builds the artifact + uploads it, and a second that deploys it, gated to the default branch:
-  - `name`, `on: push: branches: [develop]` (Pages publishes from the active branch — the repo's default
-    here is `develop` per the git state) plus `workflow_dispatch` for manual runs. Do NOT trigger on PRs.
-  - Top-level `permissions: { contents: read, pages: write, id-token: write }` and
-    `concurrency: { group: "pages", cancel-in-progress: false }` (the canonical Pages concurrency).
-  - **build job** (`runs-on: ubuntu-latest`, `env: CGO_ENABLED: "0"`): `actions/checkout@v4` →
-    `actions/setup-go@v5` (`go-version: "1.26"`) → `go run ./cmd/verifier-site -out dist` (the generator
-    fails closed → a non-zero exit aborts the deploy, so a broken render is never published — the
-    fail-closed contract from `verifier-site.md`) → `cp .github/pages/CNAME dist/CNAME` →
-    `actions/configure-pages@v5` → `actions/upload-pages-artifact@v3` with `path: dist`.
-  - **deploy job** (`needs: build`, `environment: { name: github-pages, url: ${{
-    steps.deployment.outputs.page_url }}}`): `actions/deploy-pages@v4` (`id: deployment`).
-  - Pin action **major** tags as above (matches the project's `@v4`/`@v5` style in `ci.yml`). These
-    `actions/*-pages` versions are the current canonical set; keep the four-action build→deploy shape.
-- **CNAME** — content is exactly `monitor.iscc.codes` + a trailing newline, nothing else (ADR-0003 the
-  custom domain). It must land at the *root* of the published artifact (`dist/CNAME`) so Pages applies the
-  custom domain. Keep `CNAME` as a tracked repo file (`.github/pages/CNAME`) the workflow `cp`s into
-  `dist` after `go run` — do NOT make `cmd/verifier-site` write it (keep the generator a pure renderer of
-  handler output, per `verifier-site.md`'s one-source-of-truth rule).
-- **Reproducibility / published hash (ADR-0003).** The published `verify.wasm` inherits its byte-pinned
-  hash from the generator (it *copies* the embedded blob whose SHA-256 == `web.WasmVerifyHash`, per
-  `verifier-site.md`); the workflow must NOT rebuild the WASM (no `mise run build:wasm` step) — it only
-  renders + uploads, so the deployed artifact hash equals the committed, golden-tested value. This is what
-  "the verifier artifact hash matches the published value" means: build-from-commit, copy-not-rebuild.
-- **Relevant learnings rule:** `ci.md` — the existing CI job uses `CGO_ENABLED: "0"` and pins
-  `actions/checkout@v4` / `actions/setup-go@v5` / `go-version: "1.26"`; mirror these. PyYAML is absent
-  locally, so validate the new YAML with the cached `gopkg.in/yaml.v3` (see Verification), not `python3 -c
-  "import yaml"`. `verifier-site.md` — the generator is fail-closed (non-200 → abort), so a `go run` that
-  exits 0 guarantees the complete 14-file tree; the workflow needs no extra completeness assertion.
+- **Port verbatim, only relocate.** Lift `maxSafeInteger` (`= float64(1<<53 - 1)`) and the `safeIndex`
+  body unchanged into `verify_adapter.go`. Export it as `SafeIndex` (capital S) because it now crosses
+  the package boundary — same reason the adapter's `VerifyJSON` is exported (`learnings/cmd-wasm.md`:
+  "its exported fn is `VerifyJSON` (capitalized), not the same-package lowercase a single-package layout
+  would use"). Keep the evergreen docstring (update it to drop the `main.go`-local framing — it is now a
+  reusable adapter helper, not a shim-local one).
+- **`verifyadapter` stays WASM-pure.** `SafeIndex` needs `math` (`IsNaN`/`IsInf`/`Trunc`) — `math` is
+  pure stdlib and WASM-safe, so the package's load-bearing purity (no `net`/`os`/`syscall/js`) is
+  preserved. Confirm with `GOOS=js GOARCH=wasm go build ./cmd/wasm/verifyadapter` (the real proof; do
+  NOT grep the dep list — `os` appears transitively via `fmt`, per `learnings/cmd-wasm.md`).
+- **`main.go` must keep building under the WASM tag.** After moving the func + const out, `main.go` no
+  longer uses `math` directly — remove the `"math"` import or `gofmt`/the WASM build will fail on the
+  unused import. Re-point the two call sites (lines 52, 56) to
+  `verifyadapter.SafeIndex(args[3].Float(), "index")` / `(args[4].Float(), "size")`. The error-result
+  folding at the call sites stays in `main.go` (it returns the JS `map[string]any{"verified":false,
+  "error":errMsg}`).
+- **Test the branches the issue named.** Add `TestSafeIndex` (table-driven, in the existing
+  `verify_adapter_test.go`, `package verifyadapter`): reject cases `1.9` (fractional), `NaN`
+  (`math.NaN()`), `+Inf` (`math.Inf(1)`), `-1` (negative), and `2^53` (`float64(1<<53)`, just above the
+  cap) — each asserts `errMsg != ""` and `got == 0`; accept cases `0` and `5` — each asserts
+  `errMsg == ""` and `got == uint64(v)`. Assert the boundary precisely: `maxSafeInteger`
+  (`2^53 - 1`, `float64(1<<53-1)`) is ACCEPTED, `2^53` is REJECTED (the guard is `> maxSafeInteger`).
+- **Correctness rule (learnings.md, always-loaded):** *"a built proof is not a verified proof / fail
+  closed."* A truncated index would verify against the wrong-but-truncated leaf — `SafeIndex` is the
+  fail-closed gate that prevents that, so its reject branches MUST be executable-tested, not merely
+  compiled. Keep every branch fail-closed (return `0, <msg>`); do not relax any bound.
+- **Non-vacuity check (do this before declaring done):** reverting any single branch in `SafeIndex`
+  (e.g. dropping the `v != math.Trunc(v)` fractional check, or the `> maxSafeInteger` upper bound)
+  must make `TestSafeIndex` FAIL. If a revert leaves the test green, the table is vacuous — strengthen
+  it. This is the regression-gate the issue requires.
 
 ## Verification
-- `mise run check` is green (the workflow file does not touch the Go build, but confirm nothing else
-  regressed): `go build ./... && go vet ./... && go test ./...` all pass, `gofmt -l .` empty.
-- The new workflow is valid YAML — parse it with the cached `gopkg.in/yaml.v3` (PyYAML is absent
-  locally): a tiny throwaway `go run` of a `yaml.Unmarshal([]byte(read .github/workflows/pages.yml),
-  &map[string]any{})` exits 0 with no error.
-- `go run ./cmd/verifier-site -out /tmp/pages-verify` exits 0 and writes the full **14-file** tree
-  (`index.html` + `_ds/{tokens.css,fonts.css,wasm_exec.js,verify.wasm,iscc-logo-black.png}` + 8 woff2) —
-  the workflow's build step reproduced locally: `find /tmp/pages-verify -type f | wc -l` prints `14`.
-- The deployed-tree `verify.wasm` is the byte-pinned artifact, not a rebuild: `sha256sum
-  /tmp/pages-verify/_ds/verify.wasm` matches `web.WasmVerifyHash` (the generator copies it; the existing
-  `TestGenerate` already pins this — re-confirm it still passes).
-- The `CNAME` content is exactly `monitor.iscc.codes`: `grep -qx "monitor.iscc.codes"
-  .github/pages/CNAME` exits 0, and the workflow `cp`s it to `dist/CNAME`.
-- The workflow declares the Pages permissions and the build→deploy job pair: `grep -q "pages: write"
-  .github/workflows/pages.yml` and `grep -q "deploy-pages" .github/workflows/pages.yml` both exit 0.
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
+- `GOOS=js GOARCH=wasm go build ./cmd/wasm` exits 0 (the WASM entrypoint still compiles after the move).
+- `GOOS=js GOARCH=wasm go build ./cmd/wasm/verifyadapter` exits 0 (`verifyadapter` stays WASM-pure).
+- `go test -count=1 -run TestSafeIndex ./cmd/wasm/verifyadapter` passes.
+- `go test -count=1 ./cmd/wasm/verifyadapter` passes (the existing `TestVerifyJSON` golden parity still
+  green — relocation introduced no behavior change).
+- Assertion: `SafeIndex(1.9, "index")` returns `(0, errMsg)` with `errMsg != ""`; `SafeIndex(5, "index")`
+  returns `(5, "")`; `SafeIndex(float64(1<<53-1), "size")` returns `(1<<53-1, "")`; `SafeIndex(float64(1<<53),
+  "size")` returns `(0, errMsg)` with `errMsg != ""`.
+- Mutation: reverting any one `SafeIndex` reject branch makes `go test -run TestSafeIndex
+  ./cmd/wasm/verifyadapter` FAIL.
 
 ## Done When
-`mise run check` is green, `.github/workflows/pages.yml` parses as valid YAML and declares the Pages
-build→deploy job pair (`pages: write` + `deploy-pages`) running `go run ./cmd/verifier-site`, the
-generator reproduces the 14-file tree locally with `verify.wasm`'s SHA-256 == `web.WasmVerifyHash`, and
-a tracked `CNAME` containing exactly `monitor.iscc.codes` is copied into the published artifact.
+`mise run check` and both WASM builds are green, `TestSafeIndex` passes and is mutation-proven
+non-vacuous, and `safeIndex`/`maxSafeInteger` no longer live in the build-tagged `cmd/wasm/main.go` —
+the guard is now an untagged, linux-tested `verifyadapter.SafeIndex`, closing the `normal` issue.
