@@ -1,16 +1,20 @@
-<!-- assessed-at: 381764d2c884f06ef0b7250360d1bd6b8bada3c5 -->
+<!-- assessed-at: 3b8db9f3ea5423dfadb32c5291a4d2e80dbe2462 -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: M-UI tail + OTS milestone. The OTS store CRUD seam (`internal/store/ots.go`) landed and was reviewed PASS, the first concrete step toward Bitcoin anchoring. Remaining v1 work: the OTS stamp pass + upgrade loop + `.ots` route (which then unblocks certificate §5 BITCOIN ANCHOR), the WASM verifier, the anchor panels, and the mandatory M-UI visual-exit gate.
+## Phase: M-UI tail + OTS milestone. The OTS path now has its first production wiring: PollHub stamps each distinct accepted root as a `pending` OTS row (`stampRoot` -> `store.RecordOTS`). Remaining v1 work: the OTS upgrade loop + `.ots` route (which unblock certificate §5 BITCOIN ANCHOR), the WASM verifier, the anchor panels, and the mandatory M-UI visual-exit gate.
 
-The OTS store seam is the active increment: `internal/store/ots.go` adds typed CRUD
-(`RecordOTS`/`OTSForRoot`/`PendingOTS`/`MarkOTSUpgraded`) over the already-present `ots` schema table,
-porting the checkpoint family's exact idioms. It is store-only — not yet wired into the follower, no
-HTTP route, no `opentimestamps` dependency — so certificate §5 stays deliberately unrendered. M1/M2/M3
-remain fully met; the ADR-0011 Go 1.26 + iscc-lib v0.5.0 stack increment is closed and CI-confirmed.
+The OTS daily stamp pass is the active increment (HEAD `3b8db9f`, a `cid(advance)` commit). It adds
+`stampRoot(ctx, st, hubID, info, observedAt)` to `internal/follower`, called on the verified
+non-violation advance path between `fsckMirror` and `recordVerdict`, writing the accepted root as a
+`pending` `ots` row via the existing `RecordOTS` seam — a local SQLite insert with no calendar/Bitcoin
+I/O (never blocks the follower), idempotent via `UNIQUE(hub, tree_size, root)`. No new dependency, no
+HTTP route, no `opentimestamps` code: certificate §5 stays deliberately unrendered. M1/M2/M3 remain
+fully met. **HEAD is not yet reviewed** (no `cid(review)` for the stamp pass) and the branch is **3
+commits ahead of `origin/develop`** — so the last confirmed-green gate (review PASS + CI success) is at
+`381764d`, the prior OTS store-seam commit, not at HEAD.
 
 ## Convergence
 - **Remaining Verify criteria:**
@@ -18,54 +22,54 @@ remain fully met; the ADR-0011 Go 1.26 + iscc-lib v0.5.0 stack increment is clos
   - **M-UI (Evidence Ledger frontend): partially met.** Met: five-status `HubStatusBadge`
     (`internal/badge`); DS v2 shared shell (`/_ds/` tokens + self-hosted webfonts, CDN-free); `/`
     realm-index grid; `/<domain>/log/` browser; hub dossier (`GET /<domain>`, `internal/dossier`);
-    frozen Exhibit; paginated record list (`GET /<domain>/log/records`); single-record page
-    (`GET /<domain>/log/record?index=<seq>`); ISCC-IDv1 decoder (`internal/index.Decode`);
-    `(realm, hub_id) → domain` Hub-List resolver (`internal/registry`); certificate **§1 SUBJECT +
-    §2 CHECKPOINT + §3 INCLUSION PROOF + §4 SIGNING KEY + §6 RECORD HISTORY** (all sound); the
-    proof-bundle **endpoint** (`.bundle`, gated on §3 re-verification, oracle-cross-checked) **and its
-    download LINK** (canonical path-rooted `BundleHref`, both id forms). **Open:** certificate **§5
-    BITCOIN ANCHOR** (`HasClause5` deliberately false until the OTS path is wired end-to-end); the
+    frozen Exhibit; paginated record list; single-record page; ISCC-IDv1 decoder
+    (`internal/index.Decode`); `(realm, hub_id) -> domain` Hub-List resolver (`internal/registry`);
+    certificate **§1 SUBJECT + §2 CHECKPOINT + §3 INCLUSION PROOF + §4 SIGNING KEY + §6 RECORD
+    HISTORY**; the proof-bundle endpoint (`.bundle`) + download link. **Open:** certificate **§5 BITCOIN
+    ANCHOR** (`HasClause5` still hard-false — verified at `internal/certificate/handler.go:286`); the
     separate **Bitcoin-anchor vs comparison-anchor** panels; and the mandatory **M-UI exit visual-pass +
     human sign-off** (ADR-0012 agent-browser).
   - **WASM verifier: 1/1 open** (not started — no `internal/proof` package, no `syscall/js` in any
-    source file).
-  - **OTS anchoring: 1/1 open — first sub-step landed.** The `ots`-table CRUD store seam exists and is
-    reviewed PASS, but the milestone's Verify ("a stamped root upgrades to Bitcoin-confirmed and the
-    served `.ots` verifies with the standard `ots` client") needs the stamp pass + upgrade loop + `.ots`
-    route + the `nbd-wtf/opentimestamps` dependency, none of which exist yet. Still 1/1 open; the seam is
-    necessary plumbing, not a closed criterion. §5 of the certificate is its downstream consumer.
-- **Last ~10 iterations: ~6 milestone-Verify-advancing / ~4 refactor·foundational·plumbing.** Recent
-  arc: cert §3 fail-close → §6 → proof-bundle endpoint → #ZgotmplZ link fix → ADR-0011 stack bump →
-  **OTS store CRUD seam**. The last two increments (stack bump, OTS store seam) are foundational/plumbing
-  rather than direct Verify-closures, but both are target-mandated prerequisites (the stack gap was a
-  filed `normal` issue; the OTS table is the only path to §5 + the OTS milestone), not avoidable polish.
-  No drift — the remaining tail (OTS stamp/upgrade/route → §5, WASM, anchor panels, visual exit) is the
-  genuinely large, partly-blocked remainder.
+    source file; both re-verified empty this iteration).
+  - **OTS anchoring: 1/1 open — second sub-step landed.** The `ots`-table CRUD seam (`internal/store/ots.go`)
+    plus now the **daily stamp pass** (`stampRoot` in PollHub) exist and are tested, but the milestone's
+    Verify ("a stamped root upgrades to Bitcoin-confirmed and the served `.ots` verifies with the standard
+    `ots` client") needs the **upgrade loop + `.ots` route + the `nbd-wtf/opentimestamps` dependency**,
+    none of which exist (no `opentimestamps` import in any source or in `go.mod`/`go.sum` — the one grep
+    hit is a literal calendar-URL string in `ots_test.go`). Still 1/1 open: stamping is necessary plumbing,
+    not the closed criterion. §5 of the certificate is its downstream consumer.
+- **Last ~10 iterations: ~6 milestone-Verify-advancing / ~4 foundational·plumbing.** Recent arc: cert §3
+  fail-close -> §6 -> proof-bundle endpoint -> #ZgotmplZ link fix -> ADR-0011 stack bump -> OTS store CRUD
+  seam -> **OTS stamp pass**. The last three increments (stack bump, OTS store seam, OTS stamp pass) are
+  foundational/plumbing rather than direct Verify-closures, but all are target-mandated prerequisites on
+  the only path to the still-open OTS milestone + certificate §5 — not avoidable polish. No drift; the
+  remaining tail (OTS upgrade/route -> §5, WASM, anchor panels, visual exit) is the genuine large
+  remainder. Watch: a fourth consecutive non-closing increment would start to read as drift if it isn't
+  the upgrade loop that actually reaches toward the OTS Verify bar.
 
 ## M1 — Read-only Monitor
-**Status**: **met** — carried forward. The `2bf66a8..HEAD` diff touched ONLY `internal/store/ots.go` +
-`internal/store/ots_test.go` and `.claude/*` context — **no M1 source touched** (`schema.sql`, `go.mod`,
-`go.sum` byte-unchanged, verified empty diff). All M1 Verify criteria remain satisfied: `origin`/`vkey`
-golden; all three triggers (fork/shrink/equivocation) golden-tested end-to-end with freeze + alert-once
-+ restart survival; coverage tracked; structured logs; `/metrics` over HTTP.
-- **Packages present (re-verified)**: `cmd/{iscc-monitor,notecheck}`; **20 internal packages** —
+**Status**: **met** — carried forward, re-verified at the seam touched this iteration. The
+`381764d..HEAD` diff touched ONLY `internal/follower/follower.go` (+`_test.go`) and `.claude/*` context;
+`go.mod`/`go.sum`/`internal/store/*`/`schema.sql` byte-unchanged. The follower change adds the `stampRoot`
+call on the verified-advance path and zero-`ots`-row assertions on the fork/shrink/unverified/frozen-clean
+paths — it does not alter the three-trigger consistency logic, the freeze/alert path, or coverage
+tracking. All M1 Verify criteria remain satisfied: `origin`/`vkey` golden; fork/shrink/equivocation
+golden-tested end-to-end with freeze + alert-once + restart survival; structured logs; `/metrics`.
+- **Packages present (re-verified)**: `cmd/{iscc-monitor,notecheck}`; **19 internal packages** —
   `badge, certificate, config, corsmw, dashboard, didweb, dossier, follower, healthz, index, logclient,
-  metrics, metricshttp, proofserve, registry, store, tiles, tilesserve, web` (unchanged — no new package
-  this iteration). Module `github.com/iscc/iscc-monitor`, `go 1.26.1`.
+  metrics, metricshttp, proofserve, registry, store, tiles, tilesserve, web` (no new package this
+  iteration; the prior state.md's "20" was a miscount — `ls -d internal/*/` returns 19). Module
+  `github.com/iscc/iscc-monitor`, `go 1.26.1`.
 - **Reuse imports wired** (carried forward): `golang.org/x/mod/sumdb/note`, `modernc.org/sqlite`,
-  `transparency-dev/merkle` (`rfc6962`, `proof.Inclusion`+`Consistency`+`VerifyInclusion`),
-  `transparency-dev/tessera` (`api`, `api/layout`, both proof builders, `leafhasher`, `fsck`, `client`),
-  `transparency-dev/formats` (`cmd/notecheck`), `gopkg.in/yaml.v3` (Hub-List parser),
-  `github.com/iscc/iscc-lib/packages/go v0.5.0` (test-only in the build closure; production
-  `internal/index` leaf stays iscc-lib-free under the ADR-0011 carve-out + tripwire test). **Not
-  wired:** `nbd-wtf/opentimestamps` (the OTS store seam stores opaque `ots_bytes` BLOBs only — no
-  calendar/Bitcoin code yet).
+  `transparency-dev/{merkle,tessera,formats}`, `gopkg.in/yaml.v3`, `github.com/iscc/iscc-lib/packages/go`
+  v0.5.0 (test-only in the build closure; production `internal/index` leaf stays iscc-lib-free under the
+  ADR-0011 carve-out). **Not wired:** `nbd-wtf/opentimestamps` (not in `go.mod`/`go.sum`; the stamp pass
+  writes opaque `pending` rows only, no calendar/Bitcoin code).
 
 ## M2 — Aggregator
-**Status**: **met** — carried forward; no M2 source touched. Both Verify criteria remain exercised:
-fsck root-rebuild on every verified non-frozen poll; inclusion cross-check conformance-tested over the
-real verified mirror. All three computed proofs — `inclusion`, `consistency`, `entries` — served from
-the local mirror, never re-hitting the hub.
+**Status**: **met** — carried forward; no M2 source touched. fsck root-rebuild on every verified
+non-frozen poll; inclusion cross-check conformance-tested over the real verified mirror; `inclusion`,
+`consistency`, `entries` all served from the local mirror.
 
 ## M3 — Trust API + dashboard
 **Status**: **met (4/4 Verify criteria)** — carried forward; no M3 source touched. CORS on every public
@@ -78,13 +82,14 @@ strong ETag + 304).
 
 ## M-UI — Evidence Ledger frontend
 **Status**: **in progress — carried forward (no M-UI source in the diff).** §1 SUBJECT, §2 CHECKPOINT,
-§3 INCLUSION PROOF, §4 SIGNING KEY, and §6 RECORD HISTORY are all sound. Badge, DS shell, `/` index,
-`/<domain>/log/` browser, hub dossier, frozen Exhibit, record list, single-record page, the ISCC-IDv1
-decoder, the Hub-List resolver, and the proof-bundle endpoint + download link are all built and verified.
-- **Still open on the M-UI Verify bar:** clause **§5 BITCOIN ANCHOR** (`HasClause5` deliberately false —
-  now has its store backing via the OTS seam but no live anchor data path: stamp pass + upgrade loop +
-  `.ots` route + the `opentimestamps` dependency are all absent); the separate **Bitcoin-anchor vs
-  comparison-anchor** panels; and the **mandatory M-UI exit visual-pass + human sign-off** (ADR-0012).
+§3 INCLUSION PROOF, §4 SIGNING KEY, §6 RECORD HISTORY all sound. Badge, DS shell, `/` index,
+`/<domain>/log/` browser, hub dossier, frozen Exhibit, record list, single-record page, ISCC-IDv1
+decoder, Hub-List resolver, proof-bundle endpoint + download link all built and verified.
+- **Still open on the M-UI Verify bar:** clause **§5 BITCOIN ANCHOR** (`HasClause5` hard-false at
+  `handler.go:286`; the stamp pass now writes the `pending` OTS rows §5 will eventually read via
+  `OTSForRoot`, but no anchor data path: upgrade loop + `.ots` route + the `opentimestamps` dependency
+  all absent); the separate **Bitcoin-anchor vs comparison-anchor** panels; the **mandatory M-UI exit
+  visual-pass + human sign-off** (ADR-0012).
 - **Residual notes (filed `normal`, NOT fixed):**
   - `did:web:` + raw `data.Domain` rides TWO surfaces (§4 AND the bundle), mis-rendering a `host:port`
     hub's DID. Not exploitable on the clean testnet realm. Fix BOTH sites together (`%3A`-encode the
@@ -95,58 +100,53 @@ decoder, the Hub-List resolver, and the proof-bundle endpoint + download link ar
     timestamp column; a store/projection schema change, larger than the clause. Cosmetic.
 
 ## WASM verifier · OTS anchoring
-**Status**: **OTS — first sub-step landed (store CRUD seam, reviewed PASS); WASM — not started.**
-- **OTS:** `internal/store/ots.go` adds the typed `ots`-table CRUD seam —
-  `RecordOTS` (DO-NOTHING dedupe on `(hub, tree_size, root)`), `OTSForRoot` (ErrNoRows→miss read),
-  `PendingOTS` (oldest-first pending list), `MarkOTSUpgraded` (pending → confirmed) — over the
-  pre-existing `ots` schema table, with 7 tests (`internal/store/ots_test.go`), all mutation-proven
-  per the review verdict. The store stays a `net/http`-free leaf (verified: empty `net/http` in
-  `go list -deps ./internal/store`). The `Attempts`/`NextRetry` columns are persisted + round-tripped
-  but no method increments them yet (correctly deferred to the upgrade loop's retry policy). **Not yet
-  built:** the daily stamp pass (write through `RecordOTS` for each distinct accepted root, never
-  blocking the follower), the background upgrade loop (`PendingOTS` → `nbd-wtf/opentimestamps` calendar
-  → `MarkOTSUpgraded`), the `.ots` HTTP route, and certificate §5. The milestone Verify (stamped root
-  upgrades to Bitcoin-confirmed + served `.ots` verifies with the standard `ots` client) is still 1/1
-  open.
-- **WASM:** not started. No `internal/proof` package; no WASM build target (`syscall/js` not in any
-  source file). The `internal/badge`, `internal/web`, `internal/metrics`, `internal/index`, and
-  `internal/registry` leaves are WASM-shareable primitives the verifier app will reuse, but the verifier
-  itself does not exist.
+**Status**: **OTS — store seam + stamp pass landed; WASM — not started.**
+- **OTS:** two sub-steps now exist. (1) `internal/store/ots.go` — typed `ots`-table CRUD
+  (`RecordOTS`/`OTSForRoot`/`PendingOTS`/`MarkOTSUpgraded`), reviewed PASS at `381764d`. (2) **The daily
+  stamp pass** — `stampRoot` in `internal/follower/follower.go` writes the accepted root as a `pending`
+  row on the verified non-violation advance path (after `fsckMirror`, before `recordVerdict`), idempotent
+  via `RecordOTS`'s `UNIQUE(hub, tree_size, root)`. Tests (`follower_test.go`): one `ots` row after the
+  first verified poll, still one after a second (dedupe), `pending` with empty `OTSBytes`, and zero rows
+  on the fork/shrink/unverified/frozen-clean paths. The advance reports `mise run check` green and the
+  stamp neutered-to-no-op mutation failing — **but this is the advance's self-report; `review` has not
+  yet confirmed it (HEAD is an unreviewed `cid(advance)`).** **Not yet built:** the background upgrade
+  loop (`PendingOTS` -> `opentimestamps` calendar -> `MarkOTSUpgraded`, exercising `Attempts`/`NextRetry`),
+  the `.ots` HTTP route, certificate §5. The milestone Verify is still 1/1 open.
+- **WASM:** not started. No `internal/proof` package; no `syscall/js` in any source file (re-verified
+  empty). The verifier app does not exist.
 
 ## Quality gates
-**Status**: **GREEN at HEAD — review PASS + CI confirmed success.** HEAD (`381764d`) is the OTS-seam
-review commit, in sync with `origin/develop` (0 ahead, 0 behind).
-- `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.26.1` + the iscc-lib v0.5.0 require);
-  `mise run check` runnable.
-- The latest `review` verdict (`381764d`) is **PASS / CONTINUE**: `mise run check` green (all 21
-  packages `ok`), 3 mutations proven non-vacuous, store leaf preserved, oracle gate correctly N/A
-  (opaque-BLOB round-trip + plain CRUD, no crypto path), Codex clean.
+**Status**: **NOT YET CONFIRMED AT HEAD — last confirmed-green at `381764d`, not HEAD.** HEAD (`3b8db9f`)
+is an unreviewed `cid(advance)`; the branch is **3 commits ahead of `origin/develop`**, so CI has not run
+on HEAD.
+- `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.26.1`); `mise run check` runnable. The
+  advance self-reports it green (all 21 packages `ok`), but `review` owns gate confirmation and has not
+  run on this commit.
+- The latest **`review` PASS verdict is `381764d`** (the OTS store seam), NOT HEAD. The stamp pass at
+  `3b8db9f` is unreviewed.
 - **CI**: `.github/workflows/ci.yml` runs the inlined `mise run check` gate + the `cmd/notecheck` oracle
   shell-out on push/PR, pinned to `go-version: "1.26"`. Remote `origin` =
-  `github.com/iscc/iscc-monitor.git`, branch `develop`. **Latest CI run on HEAD (`381764d`) concluded
-  `success`** (run 27922172138) — this also confirms the Go 1.26 toolchain provisioning + the iscc-lib
-  transitive deps build clean under `CGO_ENABLED=0`, resolving the prior iteration's in-progress
-  uncertainty. The prior run at `2bf66a8` also concluded `success`.
+  `github.com/iscc/iscc-monitor.git`, branch `develop`. **Latest CI run is at `381764d` = `success`** (run
+  27922172138); `2bf66a8` also `success`. **No CI run exists for HEAD `3b8db9f`** — it is unpushed.
 - **Open issues: 0 `critical`, 3 `normal`, 6 `low`.** The 3 `normal`: (a) Hub-List `hubDomain`
   `ForceQuery` fail-open; (b) §4 AND bundle `did:web:` + raw domain mis-render a `host:port` hub's DID
-  (2 surfaces); (c) §6 RECORD HISTORY omits the per-record `· at` timestamp. The 6 `low` are
-  loop-skipped.
+  (2 surfaces); (c) §6 RECORD HISTORY omits the per-record `· at` timestamp. The 6 `low` are loop-skipped.
 
 ## Next Milestone
-**M1/M2/M3 met; M-UI + OTS are the active milestones. The OTS store seam is in place — the next
-increment builds on it.** Per the review's stated roadmap, pick from:
+**M1/M2/M3 met; M-UI + OTS are the active milestones.** Immediate gate hygiene: the stamp pass at HEAD is
+unreviewed and unpushed — `review` must confirm `mise run check` green (the advance self-reported it) and
+push so CI runs on HEAD before more feature work stacks on an unverified commit. Then, per the roadmap:
 
-1. **OTS daily stamp pass** — write through `RecordOTS` for each distinct accepted root without blocking
-   the follower poll ("OTS never blocks the follower"). This is the immediate next sub-step and needs no
-   new external dependency.
-2. **OTS upgrade loop** — read `PendingOTS`, pull in `nbd-wtf/opentimestamps` + calendar HTTP, mark via
-   `MarkOTSUpgraded` once Bitcoin-confirmed, exercising the `Attempts`/`NextRetry` retry policy. Then the
-   `.ots` HTTP route and certificate **§5 BITCOIN ANCHOR** (`HasClause5`, reading `OTSForRoot`) — which
-   unblocks the last open certificate clause and the Bitcoin-anchor panel.
-3. **WASM verifier** (1/1 Verify open) — `internal/proof/verify` → `GOOS=js GOARCH=wasm` plus the
+1. **OTS upgrade loop** — read `PendingOTS`, pull in `nbd-wtf/opentimestamps` + calendar HTTP (the first
+   real `go.mod`/`go.sum` change for this milestone), mark via `MarkOTSUpgraded` once Bitcoin-confirmed,
+   exercising the `Attempts`/`NextRetry` retry policy; runs in its own goroutine off the poll path (OTS
+   never blocks the follower). Then the `.ots` HTTP route and certificate **§5 BITCOIN ANCHOR**
+   (`HasClause5`, reading `OTSForRoot`) — closing the last open certificate clause + the Bitcoin-anchor
+   panel. This is the increment that actually reaches the OTS Verify bar.
+2. **WASM verifier** (1/1 Verify open) — `internal/proof/verify` -> `GOOS=js GOARCH=wasm` plus the
    `monitor.iscc.codes` Independent Verification app.
-4. **M-UI exit gate (ADR-0012):** before M-UI is DONE, every SSR surface must pass the agent-browser
+3. **M-UI exit gate (ADR-0012):** before M-UI is DONE, every SSR surface must pass the agent-browser
    visual pass with deviations filed and a human sign-off.
 
 Fold in the deferred `host:port` DID-encoding fix (both §4 and bundle sites) when handler.go is next
-touched. CI is confirmed green, so feature work proceeds.
+touched.
