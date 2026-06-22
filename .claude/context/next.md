@@ -1,149 +1,136 @@
 # Next Work Package
 
-## Step: Render config-driven instance identity on the `/` realm-index masthead (skeleton)
+## Step: Thread config-driven instance identity into the hub-dossier masthead
 
 ## Advances
 target.md **M-UI — Evidence Ledger frontend**, the design-parity "Document chrome + instance identity"
-cross-cutting requirement and the `/` realm-index named-region:
+cross-cutting requirement (held on EVERY surface):
 
-> **Document chrome + instance identity.** Every surface carries the shared handoff header: the ISCC logo
-> + "Trust & Transparency Monitor" mark, the **instance-identity** block (this instance's domain +
+> **Document chrome + instance identity.** Every surface carries the shared handoff header: the ISCC
+> logo + "Trust & Transparency Monitor" mark, the **instance-identity** block (this instance's domain +
 > operator + realm), and the **`verify ↗ monitor.iscc.codes`** tier-2 link — legible instance identity
-> (handoff invariant 9) …
+> (handoff invariant 9) and the tier-1/tier-2 split present on the page itself.
 
-and closes sub-item (2) of the open `normal` issue **"`/` realm-index sub-region deltas vs the mockup …
-Static instance identity + realm name"** (#214 sub-2) for the `/` surface specifically. The handoff
-`**Next:**` and state.md "Next Milestone" #1 both name this as the strongest next candidate: it is the
-last cheap **code-only** slice (the remaining backlog is design-first or human-blocked), it unblocks
-honest per-deployment chrome, and the identity type it introduces is reused by the five other SSR
-mastheads in follow-on sub-steps.
-
-This is a **skeleton-first** slice: the full criterion ("Every surface carries … the instance-identity
-block") spans 7 templates + their handler constructors + the binary wiring — far more than one ≤3-file
-step. This step lays the verifiable skeleton on the single most-referenced surface (`/`) and lists the
-remaining surfaces under `## Not In Scope` so later iterations continue the same arc.
+The `/` realm-index masthead already renders config-driven identity (`b30b84e`). This step continues the
+SAME identity arc onto the next SSR surface — the **hub dossier** — exactly as the review handoff
+`**Next:**` directs: "Continue the same identity arc to the OTHER five SSR mastheads with the SAME
+`dashboard.Identity` value, one ≤3-file sub-step each … `internal/dossier` (`dossier.html:358`) … first".
+It also chips at the open `normal` issue (the dossier masthead still renders the static `monitor
+instance` placeholder while the rest of the network chrome is honest per-deployment).
 
 ## Goal
-Replace the dashboard masthead's hard-coded `monitor instance` / "independent Trust & Transparency
-service" placeholder copy with three operator-supplied values (instance domain, operator/realm line,
-realm name) flowing from environment → the live binary → the rendered `/` page, and render the realm
-name in the ledger subtitle ("Realm register · <realm>"), so the served `/` masthead is honest
-per-deployment instead of generic.
+Make the hub-dossier masthead render this deployment's configured instance identity (instance domain +
+operator/realm line) — the same `dashboard.Identity` value already built in `main.go` for the `/`
+dashboard — instead of the hard-coded `monitor instance` placeholder, so the dossier chrome is honest
+per-deployment and stays in lockstep with the `/` masthead it was ported from.
 
 ## Scope
 - **Create**: (none)
 - **Modify** (3 production files):
-  - `internal/dashboard/handler.go` — add an exported `Identity struct { Instance, Operator, Realm string }`
-    view value; change `Handler(st *store.Store, statuses StatusSource)` →
-    `Handler(st *store.Store, statuses StatusSource, id Identity)`; carry the three resolved strings on
-    `pageData` (e.g. `Instance`, `Operator`, `Realm`). Apply zero-value fallbacks INSIDE the handler (a
-    blank field falls back to the current static copy / a generic realm label) so an unconfigured binary
-    renders exactly today's masthead — no behavioral regression, fail-safe defaults.
-  - `internal/dashboard/dashboard.html` — render `{{.Instance}}` in `.chrome-instance`, `{{.Operator}}`
-    in `.chrome-operator`, and the realm name in the `.ledger-title` ("Realm register · {{.Realm}}" — the
-    mockup's "Realm register · ISCC mainnet"). Keep the masthead structure, classes, logo `<img>`, and
-    the `verify ↗ monitor.iscc.codes` tier-2 link byte-unchanged; only the text nodes become templated.
-  - `cmd/iscc-monitor/main.go` — at the dashboard mount (line 271), build an `Identity` from three NEW
-    optional env vars read via `os.LookupEnv` with mockup-faithful defaults
-    (`ISCC_MONITOR_INSTANCE`, `ISCC_MONITOR_OPERATOR`, `ISCC_MONITOR_REALM`) and pass it to
-    `dashboard.Handler(st, m, id)`. Use a tiny local `envOr(key, fallback string) string` helper (or
-    inline `os.LookupEnv`) — do NOT add these keys to `internal/config` this step (see Not In Scope).
+  - `internal/dossier/handler.go` — add a `dashboard.Identity` argument to `Handler(st, hubID,
+    statuses)` (→ `Handler(st, hubID, statuses, id)`); carry the resolved `Instance`/`Operator` strings
+    on `dossierData`; apply the SAME fail-safe defaults the dashboard uses so an unconfigured binary (or a
+    nil/zero `Identity`) renders today's exact static masthead copy.
+  - `internal/dossier/dossier.html` — replace the static `<span class="chrome-instance">monitor
+    instance</span>` (line 358) with the two-line `chrome-identity` block ported VERBATIM from
+    `dashboard.html` (`<div class="chrome-identity"><div class="chrome-instance">{{.Instance}}</div><div
+    class="chrome-operator">{{.Operator}}</div></div>`), porting the `.chrome-identity`/`.chrome-operator`
+    CSS too so the dossier and dashboard mastheads stay byte-identical (the byte-identical-chrome rule).
+  - `cmd/iscc-monitor/main.go` — forward the already-constructed `identity()` value into the per-hub
+    `dossier.Handler(...)` mount (`main.go:367`, currently `dossier.Handler(st, r.HubID, m)`). The value
+    is the SAME `dashboard.Identity` already threaded to `dashboard.Handler`; thread it through to the
+    dossier mount (via `serveMetrics`/`buildMux`, which already receive `id`, or build it once and pass
+    it — pick the smaller diff, do NOT broaden unrelated handler signatures).
+- **Test files (not counted against the ≤3 budget):** add `TestDossierRendersInstanceIdentity` mirroring
+  `TestDashboardRendersInstanceIdentity` (populated path + zero-value fallback path), and update any
+  existing dossier test that calls `Handler(st, hubID, statuses)` for the new 4th arg.
 - **Reference**:
-  - `.claude/context/learnings/dashboard.md` — the masthead/no-CDN bullets: the no-CDN ban is NARROWED
-    to third-party hosts (so `monitor.iscc.codes` must still pass and is positively asserted); the page
-    is a CSS-grid `<ul>` not a `<table>`; render into a `bytes.Buffer` first (500-before-200);
-    `html/template` auto-escapes; oracle gate N/A (pure HTML of persisted rows + masthead strings).
-  - `.claude/context/learnings/config.md` — why env-parsing belongs in the `internal/config` leaf (the
-    `optional(get, key, fallback)` helper pattern); the reason it is DEFERRED here is the ≤3-file budget,
-    not a design disagreement — the follow-on sub-step moves these keys into config.
-  - `internal/dashboard/handler.go` lines 67-88 (`row` + `pageData`), 99-138 (`Handler`), 147-172
-    (`buildRows`) — the existing wiring to extend.
-  - `internal/dashboard/dashboard.html` lines 354-389 (the `<header class="chrome">` masthead +
-    `.chrome-identity` block + the `.ledger-head`/`.ledger-title` "Realm register" heading).
-  - `internal/dashboard/handler_test.go` lines 24-29 (`fakeStatusSource`), 89-115
-    (`TestDashboardRendersEveryHub` fixture pattern), 259-308 (`TestDashboardRendersHeroAndNavigation` —
-    the masthead-region assertion that currently checks the literal `"monitor instance"`; this test MUST
-    be updated to the new call signature + new copy).
-  - `.claude/design/ISCC Monitor - Realm Index.dc.html` line 37 (the authoritative identity copy:
-    `monitor.iscc.id` / `instance operated by ISCC Foundation · ISCC mainnet`) and line 61 (the ledger
-    subtitle `Realm register · ISCC mainnet`).
-  - `cmd/iscc-monitor/main.go` lines 113-116 (`config.Load`), 269-277 (`buildMux` where `dashboard.Handler`
-    is mounted) — note `buildMux` does NOT currently receive any identity; the cleanest seam is to build
-    the `Identity` in `run()` (where `os.LookupEnv` already lives) and thread it through `serveMetrics` →
-    `buildMux` → the mount, OR build it directly at the mount. Pick the smaller diff; do NOT broaden
-    other handler signatures.
+  - `.claude/context/learnings/dashboard.md` — the **config-driven masthead identity** bullet (the
+    `dashboard.Identity` value, the `Identity.resolve()` fail-safe that lives INSIDE the package and is
+    what makes the fallback seam-testable, the `ISCC_MONITOR_REALM_NAME`-not-`ISCC_MONITOR_REALM` key
+    rule, and the explicit "**dossier masthead chrome is a VERBATIM port of cert.html — keep the two
+    byte-identical**" rule); also the no-CDN-ban-narrowed-to-third-party-hosts bullet.
+  - `internal/dashboard/handler.go:84-130, 175-181` — the `Identity` struct, `resolve()` fail-safe +
+    fallback consts, and how the dashboard threads `Instance`/`Operator` onto its view-model (the port
+    source).
+  - `internal/dashboard/dashboard.html:73-90, 360-368` — the `.chrome-identity`/`.chrome-instance`/
+    `.chrome-operator` CSS + the masthead `chrome-identity` block to port verbatim.
+  - `internal/dossier/handler.go:63-74, 114-155, 177-179` — `dossierData`, `Handler`, and `buildData`,
+    the existing wiring to extend.
+  - `internal/dossier/dossier.html:66-90, 355-372` — the dossier chrome region this step edits.
 
 ## Not In Scope
-- Do NOT thread instance identity into the OTHER five SSR mastheads this step — `internal/dossier`
-  (`dossier.html:358`), `internal/certificate` (`cert.html:391`), and the proofserve surfaces
-  (`browser.html`, `records.html`, `record.html`). They keep their static `monitor instance` copy for now;
-  wiring each is its own ≤3-file follow-on sub-step (same `Identity` value, reused). `internal/verifier`
-  is EXCLUDED entirely — its chrome is correctly the `.codes` verifier-app identity, not an instance
-  (see `learnings/verifier.md`), and must stay static.
-- Do NOT add the three env keys to `internal/config` this step (it would push the diff to 4 production
-  files). Reading them inline in `main.go` with defaults is the skeleton; the follow-on sub-step that
-  threads identity to the remaining surfaces SHOULD move parsing into `internal/config` (the
-  `optional(get, key, fallback)` leaf) so all six surfaces draw from one validated source.
-- Do NOT touch the "recent declarers checked" hero footer (#214 sub-4 — needs a store lookup history that
-  does not exist), the Checkpoint/Anchor columns (already closed), the per-hub-vs-per-checkpoint Anchor
-  design question (issue:326), the logo, the hero form, the badge partial, pagination, or any proof/crypto
-  path. This is a masthead-text render + one env-wiring slice only (oracle gate N/A).
-- Do NOT change the masthead's logo `<img>`, the tier-2 `verify ↗ monitor.iscc.codes` link, or any CSS —
-  only the three identity text nodes + the ledger subtitle text become templated.
+- **Do NOT thread identity into `internal/certificate` / `cert.html` this step.** Cert is the lockstep
+  twin (cert.html:391 carries the same static placeholder) and is the very NEXT sub-step, but adding it
+  here would touch 5 production files. Flag in the handoff that certificate is the next surface and the two
+  mastheads must end up byte-identical.
+- **Do NOT move the three identity env keys into `internal/config` this step.** The handoff schedules the
+  config-leaf move for the SECOND surface in this arc; this dossier step is the FIRST. Keep `identity()`
+  reading `os.Getenv`/`os.LookupEnv` inline in `main.go` exactly as today (the open config-move `normal`
+  stays filed; do not also touch CLAUDE.md's env table yet — that lands with the config move).
+- Do NOT touch the proofserve surfaces (`browser.html`, `records.html`, `record.html`) — later sub-steps.
+- Do NOT touch `internal/verifier` (its `.codes` chrome is correctly the verifier-app identity, EXCLUDED).
+- Do NOT change the dossier's `← Realm index` back-link, the badge partial, the Exhibit, any store read,
+  or the `monitor.iscc.codes` tier-2 `chrome-verify` link.
+- Do NOT invent a dossier "Realm register · <realm>" subtitle — the dossier's title is "Hub dossier",
+  which has no realm-subtitle slot; thread only `Instance`/`Operator` here, leave `Realm` to surfaces that
+  have a realm subtitle.
 
 ## Implementation Notes
-- **Fail-safe defaults, mockup-faithful.** The mockup copy is the default so an unconfigured dev binary
-  still renders a sensible masthead. Suggested defaults (apply in the handler when the field is empty, so
-  the fallback is centralized and golden-testable independent of `main.go`):
-  `Instance` → today's `"monitor instance"` (keep the existing placeholder so an unset deploy is honest,
-  NOT a false `monitor.iscc.id` claim); `Operator` → today's
-  `"independent Trust & Transparency service · ISCC-Hub network"`; `Realm` → `""` → render the bare
-  "Realm register" subtitle (no `· <realm>` suffix) when empty. main.go's defaults can be the same
-  strings, OR main.go can pass the mockup values for the live testnet — but the HANDLER's empty-field
-  fallback is what the HTTP-seam test pins, so behavior is deterministic regardless of env.
-- **Conditional realm suffix.** Render the ledger title as `Realm register{{if .Realm}} · {{.Realm}}{{end}}`
-  so an empty realm renders exactly today's "Realm register" (no trailing separator) — a coverage-honesty
-  /no-empty-affordance discipline, and it keeps the existing `TestDashboardRendersHeroAndNavigation`
-  "Realm register"-adjacent assertions stable.
-- **Signature change is contained.** `dashboard.Handler` has exactly ONE production call site
-  (`main.go:271`) and SIX test call sites (`handler_test.go` lines 94, 201, 231, 262, 313, 322). Update
-  all of them: the existing tests pass a zero-value `Identity{}` (proving the fallback path); the new
-  test passes a populated `Identity`. Tests are not counted against the ≤3-file budget.
-- **html/template auto-escaping holds.** `Instance`/`Operator`/`Realm` are plain strings rendered as text
-  nodes — `html/template` escapes them, so an operator who sets `&`/`<` cannot break the page. Do NOT use
-  `template.HTML`. The mockup's operator line contains `·` (U+00B7) — render it as a literal UTF-8
-  middot in the default string (the file is UTF-8), matching the existing `&middot`-free copy.
-- **No-CDN ban unaffected.** The identity strings are scheme-less text; the only `https://` in the body
-  stays the masthead's `monitor.iscc.codes` tier-2 link, which the narrowed ban positively allows.
-  `TestDashboardLinksTokensNoCDN` must still pass — do not let a default value introduce an `http(s)://`
-  / `cdn.` / `jsdelivr` substring.
+- **Reuse `dashboard.Identity`; do not redefine it.** Import `internal/dashboard` in the dossier handler
+  and accept a `dashboard.Identity` argument — the dashboard already owns the type, its fail-safe
+  defaults, and the fallback consts, so this avoids a second copy of the struct/defaults.
+- **Keep the fail-safe seam-testable while staying ≤3 prod files.** `dashboard.resolve()` is unexported.
+  Exporting it (`resolve`→`Resolve`, updating dashboard's own call site) would make `internal/dashboard/
+  handler.go` a FOURTH edited prod file — over budget. So apply the fallback on the dossier side instead:
+  add a tiny private dossier helper (e.g. `resolveIdentity(dashboard.Identity) (instance, operator
+  string)`) that mirrors `resolve()` semantics — blank `Instance`/`Operator` → the dashboard's static
+  fallback strings (reference them as literals copied from `dashboard.instanceFallback`/`operatorFallback`,
+  with a one-line comment that they MUST match the dashboard's, since both can't import the other's
+  unexported consts). This keeps the fallback testable at the dossier HTTP seam (a zero-value `Identity{}`
+  must render today's static copy) without touching `internal/dashboard`. Document the chosen variant in
+  the advance commit. (If exporting `Resolve` turns out to keep the dossier diff smaller AND the dashboard
+  edit is genuinely trivial — a pure rename — the advance MAY take that route and note it pushed to a 4th
+  prod file with justification; default is the dossier-local helper.)
+- **Byte-identical chrome rule (dashboard.md):** port the `.chrome-identity` CSS + the two-line
+  `chrome-instance`/`chrome-operator` block from `dashboard.html` EXACTLY (same class names, same nesting
+  inside `chrome-actions` BEFORE `chrome-verify`). When certificate is wired next, all three mastheads
+  must match.
+- **No-CDN ban (web.md / dashboard.md):** the identity strings are scheme-less text — do not introduce any
+  `http(s)://`/`cdn.`/`jsdelivr` token. The existing `https://monitor.iscc.codes/` tier-2 link is the only
+  allowed external URL and must stay (the dossier ban is the narrowed third-party-host form, NOT a blanket
+  `https://` ban; keep `monitor.iscc.codes` positively asserted).
+- **html/template auto-escaping holds** — `Instance`/`Operator` are plain strings rendered as text nodes;
+  do NOT use `template.HTML`. The operator line's `·` (U+00B7) is a literal UTF-8 middot in the default.
 - **Render-into-buffer + 500-before-200** stays exactly as today; you are only adding fields to the
-  template context, not changing the error path.
-- **Mutation-proof the render.** The new test must FAIL if the identity text node is dropped from
-  `dashboard.html` AND if the handler stops threading the value — assert the EXACT operator-supplied
-  strings appear in the body (not the static default), driven from a populated `Identity{}` in the test,
-  so reverting the template binding makes it fail.
+  template context, not changing the error path or any store read.
+- **Oracle gate is N/A** (dashboard.md): pure HTML render of masthead strings — no signature / RFC-6962 /
+  Merkle / did:web / fsck / proof / store path; `go.mod`/`go.sum`/`schema.sql` stay byte-identical. Do not
+  touch any trust-root glob.
+- **Correctness rule from the learnings index:** no crypto rule applies (pure render); the load-bearing
+  rules are dashboard.md's "fail-safe lives where it is seam-testable" + "keep dossier/cert mastheads
+  byte-identical".
 
 ## Verification
-- `mise run check` is green (build + vet + `go test ./...` all pass; `gofmt -l .` empty outside
+- `mise run check` is green (build + vet + `go test ./...`, all packages ok; `gofmt -l .` empty outside
   `cauldron/`).
-- `go test -count=1 -run TestDashboard ./internal/dashboard` passes (all existing dashboard tests under
-  the new `Handler(st, statuses, Identity{})` signature + the new identity-render test).
-- New test (e.g. `TestDashboardRendersInstanceIdentity`): `Handler(st, nil, Identity{Instance:
-  "monitor.example.test", Operator: "operated by Example Org · example net", Realm: "example net"})`
-  renders a `/` body containing all three literals AND `Realm register · example net`; a zero-value
-  `Identity{}` renders the fallback `monitor instance` + the bare `Realm register` (no trailing `·`).
-- Mutation check (run + revert, leave tree byte-clean): deleting the `{{.Instance}}` binding (or the
-  `.chrome-instance` text node) from `dashboard.html` makes the new test FAIL; restore byte-clean
-  (`git diff` clean, HEAD unchanged).
-- `go list -deps ./internal/store | grep -E 'net/http|internal/dashboard'` is empty (store stays a leaf
-  — no store change).
-- The body adds no `http://` / `https://` (other than the existing `monitor.iscc.codes`) / `cdn.` /
-  `jsdelivr` and no `<table>` (`TestDashboardLinksTokensNoCDN` + `TestDashboardRendersEveryHub` still
-  pass).
+- `go test -count=1 -run TestDossier ./internal/dossier` passes (existing dossier tests under the new
+  4-arg `Handler` signature + the new identity test).
+- New `TestDossierRendersInstanceIdentity`: a populated `Identity{Instance:"monitor.example.test",
+  Operator:"operated by Example Org · example net"}` renders BOTH literals in the dossier masthead AND the
+  static placeholder `monitor instance` is ABSENT; a zero-value `Identity{}` renders the fallback `monitor
+  instance` + today's generic operator line.
+- Mutation check (advance runs + reverts, leaves tree byte-clean): deleting the `{{.Instance}}` binding
+  (or the `.chrome-instance` text node) from `dossier.html` makes `TestDossierRendersInstanceIdentity`
+  FAIL; restore byte-clean (`git diff` clean, HEAD unchanged).
+- The dossier no-CDN test still passes (no new `cdn.`/`jsdelivr`/`http(s)://`; `monitor.iscc.codes` still
+  positively present).
+- `go list -deps ./internal/store | grep -E 'net/http|internal/dossier|internal/dashboard'` is empty
+  (store stays a leaf; no store change this slice).
 
 ## Done When
-`mise run check` is green and `go test -count=1 -run TestDashboard ./internal/dashboard` passes with a
-mutation-proven `TestDashboardRendersInstanceIdentity`, so the served `/` masthead renders the
-operator-supplied instance / operator / realm identity (from `ISCC_MONITOR_INSTANCE` /
-`ISCC_MONITOR_OPERATOR` / `ISCC_MONITOR_REALM`) and falls back to today's static copy when unset.
+`mise run check` is green and `go test -count=1 -run TestDossier ./internal/dossier` passes with a
+mutation-proven `TestDossierRendersInstanceIdentity`, so the served hub-dossier masthead renders the
+configured `dashboard.Identity` instance + operator strings exactly as the `/` masthead does (falling
+back to today's static copy when unset), with certificate and the remaining surfaces left for the next
+sub-steps.
