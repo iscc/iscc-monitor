@@ -280,31 +280,27 @@ filed it and does **not** affect priority.
   Cosmetic locality only.
 - **Spec:** `internal/tilesserve` `writeReadError` pattern; no spec contract.
 
-## `noExternalCDN`'s `stripLineComments` over-strips protocol-relative CDN URLs, holing the CDN-free gate
-- **Priority:** normal
+## `noExternalCDN`'s `stripLineComments` still strips whitespace-prefixed protocol-relative CDN URLs
+- **Priority:** low
 - **Source:** [review] (Codex P2, reviewer-confirmed by probe)
-- **What / where / how to verify:** The advance refined the load-bearing `noExternalCDN` helper
-  (`internal/web/web_test.go`) to strip each line's `//` comment tail before scanning, so the vendored
-  `wasm_exec.js`'s one Go-issue-tracker comment URL stops false-positiving. The strip treats `//` as a
-  comment whenever the preceding byte is not `:`. But a **protocol-relative loadable CDN URL** —
-  `src="//cdn.jsdelivr.net/x.js"` (HTML) or `url("//cdn.example/x.woff2")` (CSS) — has its `//`
-  preceded by `"` (not `:`), so `stripLineComments` treats it as a comment-start and truncates the line
-  to `<script src="`, deleting `cdn.`/`jsdelivr` BEFORE the ban can see it. Reviewer-confirmed by probe:
-  `stripLineComments(<script src="//cdn.jsdelivr.net/npm/x.js">)` → `<script src="` and the ban does NOT
-  fire (`fires=false`) for all three protocol-relative forms (jsdelivr, bare `cdn.`, generic). Protocol-
-  relative `//host/...` is a standard CDN URL form, so this weakens the M-UI CDN-free invariant the
-  helper exists to enforce. NOT currently exploitable: the only served asset passed through the helper
-  with a comment is the byte-verbatim `wasm_exec.js` (no protocol-relative URL); tokens.css/fonts.css use
-  `/* */` blocks, not `//`. So the hole is **latent** — a FUTURE asset (e.g. a hand-authored `<script>`
-  or a CSS `@import`) carrying a protocol-relative CDN reference would silently pass the gate. Does NOT
-  block this increment's stated goal (`wasm_exec.js` serves byte-verbatim + CDN-free; all named checks
-  pass), but it is a genuine quality-gate weakening on the M-UI no-CDN constraint. Fix when the helper is
-  next touched: restrict the strip to ACTUAL comment contexts — only treat `//` as a comment when it is
-  NOT a URL authority delimiter (e.g. require the byte before `//` to be whitespace or line-start, OR
-  exclude when preceded by `:`/`"`/`'`/`(`), so a protocol-relative `//cdn.` URL still trips the ban
-  while the pure-comment URL is still suppressed. Verify fixed: a test feeds `noExternalCDN` a body with
-  `src="//cdn.jsdelivr.net/x.js"` and asserts the ban FIRES, while the `wasm_exec.js` comment URL still
-  does NOT; reverting the narrowed strip makes the protocol-relative case pass (regress).
+- **What / where / how to verify:** The quoted-delimiter over-strip (`src="//cdn..."`, `url("//cdn...")`)
+  is now CLOSED — `stripLineComments` (`internal/web/web_test.go:57`) treats `//` as a comment only at
+  line-start or when preceded by whitespace, so a `"`-preceded protocol-relative URL survives and trips
+  the ban (`TestNoExternalCDNProtocolRelative`, mutation-proven). Codex flags the residual narrower case:
+  a `//` preceded by **whitespace** is still stripped, so the (rare, mostly-invalid HTML / valid-but-odd
+  CSS) whitespace-before-URL forms `<script src = //cdn.jsdelivr.net/x.js>` and `url( //cdn.example/x.woff2)`
+  are truncated before `cdn.`/`jsdelivr` and the ban misses them. Reviewer-confirmed by probe (both forms
+  → `cdn.present=false`). This is **not a regression**: the prior `:`-only guard stripped these same forms
+  too (reviewer-verified), and NO served asset (tokens.css/fonts.css/byte-verbatim `wasm_exec.js`) uses a
+  whitespace-prefixed protocol-relative URL — the hole is latent, same class as before, and strictly
+  narrower than what this advance fixed. Does NOT block progress: the increment's stated goal (the
+  quoted-delimiter `//cdn.` trips the ban) is fully met, all gates green, and the gate is strictly
+  stronger than its prior state. Low because the form is not realistic in a hand-authored asset and the
+  loop skips lows; promote only if a real asset needs a whitespace-tolerant URL. Fix when the helper is
+  next touched: a tokenizer-grade check (treat `//` as a comment only OUTSIDE a quoted string / `url(...)`
+  token), not another preceding-byte blocklist — a per-delimiter list will keep losing edge forms. Verify
+  fixed: a test feeds `noExternalCDN` `<script src = //cdn.jsdelivr.net/x.js>` and `url( //cdn.example/x)`
+  and asserts the ban FIRES for both; reverting the tokenizer makes them pass (regress).
 - **Spec:** target.md M-UI hard CDN-free constraint; `learnings/web.md` `noExternalCDN` bans third-party
   origins; CLAUDE.md "Never weaken a quality gate to pass" (the fix is the root cause, not the gate).
 

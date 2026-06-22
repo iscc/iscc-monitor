@@ -49,12 +49,17 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `$(go env GOROOT)/lib/wasm/wasm_exec.js` (Go 1.26.1, `cmp`-identical), via the same in-handler `case`
   + `writeAsset` + no-cache/strong-ETag/304 leaf (`contentTypeJS = text/javascript; charset=utf-8`).
   Never hand-edit it; re-`cp` it on a toolchain bump.**
-- **The `noExternalCDN` helper now strips each line's `//` comment tail before scanning (so the vendored
-  `wasm_exec.js`'s one Go-issue-tracker comment URL stops false-positiving), BUT the current strip
-  over-strips: it treats `//` as a comment whenever the previous byte is not `:`, which ALSO truncates a
-  protocol-relative loadable CDN URL (`src="//cdn.jsdelivr.net/..."`, `url("//cdn...")`) — preceded by
-  `"`, not `:` — so the ban silently misses it (open `normal` issue).** The hole is latent (no current
-  asset has a protocol-relative URL; tokens/fonts use `/* */` blocks). When you next touch the helper,
-  narrow the strip to actual comment contexts so a protocol-relative `//cdn.` still trips the ban. The
-  ban list is third-party-origin only (`jsdelivr`/`http://`/`https://`/`cdn.`); same-origin `/_ds/`
-  paths pass.
+- **The `noExternalCDN` helper strips each line's `//` comment tail before scanning (so the vendored
+  `wasm_exec.js`'s one Go-issue-tracker comment URL stops false-positiving). The predicate is now
+  comment-context only: `//` is a comment ONLY at line-start or when preceded by whitespace (space/tab)
+  — `web_test.go:57`.** This closed the quoted-delimiter over-strip: a `src="//cdn..."` / `url("//cdn...")`
+  is preceded by `"` (not whitespace) so it survives and trips the ban (`TestNoExternalCDNProtocolRelative`
+  pins it, mutation-proven against the old `:`-only guard). The ban list is third-party-origin only
+  (`jsdelivr`/`http://`/`https://`/`cdn.`); same-origin `/_ds/` paths pass.
+- **Residual whitespace-prefixed hole (open `low` issue, Codex P2):** the same predicate still treats a
+  `//` preceded by whitespace as a comment, so the (rare, mostly-invalid) whitespace-before-URL forms
+  `<script src = //cdn...>` and CSS `url( //cdn...)` are stripped and the ban misses them. This is NOT a
+  regression — the old `:`-only guard stripped these too (verified), and no served asset uses the form.
+  The robust fix when next touched is a tokenizer-grade check (only treat `//` as a comment outside a
+  quoted string / `url(...)` token), not another delimiter blocklist. Until then, do not add an asset
+  with a whitespace-prefixed protocol-relative URL.
