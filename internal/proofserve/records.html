@@ -128,11 +128,11 @@
       color: var(--text-muted);
     }
 
-    /* The record list itself: each row is a seq + id/schema + logged-time triple,
-       newest first, linking to the record's per-record view. Laid out as a CSS grid
-       (no <table>) so the whole page renders complete with JavaScript disabled. The
-       Type column the mockup heads waits for a per-row kind precomputation; until
-       then the head lists only the columns that have a data cell. */
+    /* The record list itself: each row is a seq + type badge + id/schema + logged-time
+       quadruple, newest first, linking to the record's per-record view. Laid out as a
+       CSS grid (no <table>) so the whole page renders complete with JavaScript disabled.
+       The head and row grids share the same 4-column template so the column headers stay
+       aligned with their data cells (Seq · Type · ISCC-ID · Logged). */
     .records {
       list-style: none;
       margin: 0;
@@ -140,7 +140,7 @@
     }
     .records-head {
       display: grid;
-      grid-template-columns: 120px 1fr 160px;
+      grid-template-columns: 120px 130px 1fr 160px;
       gap: var(--space-4);
       align-items: baseline;
       padding: var(--space-3) var(--space-5);
@@ -155,7 +155,7 @@
     }
     .record-row {
       display: grid;
-      grid-template-columns: 120px 1fr 160px;
+      grid-template-columns: 120px 130px 1fr 160px;
       gap: var(--space-4);
       align-items: baseline;
       padding: var(--space-3) var(--space-5);
@@ -168,6 +168,30 @@
       font-family: var(--font-mono);
       font-size: var(--text-xs);
       color: var(--text-link);
+    }
+    /* The Type badge: the verbatim note.$schema mapped to a human label
+       (Declaration / Deletion / Unknown record type, ADR-0008 — the only
+       interpretation). The text label is the load-bearing, grayscale-safe status
+       signal; the per-kind hue is decorative only and keyed on data-kind. The
+       attribute selectors are intentionally unquoted (valid CSS for identifier
+       values) so the rendered <style> carries no `data-kind="..."` literal that a
+       negative body assert could trip (the cross-cutting CSS-literal trap). */
+    .record-type {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: var(--text-2xs);
+      font-weight: var(--weight-bold);
+      letter-spacing: var(--tracking-wide);
+      padding: var(--space-1) var(--space-2);
+      border: var(--border-width) solid var(--border-subtle);
+      border-radius: var(--radius-xs);
+      color: var(--text-muted);
+    }
+    .record-type[data-kind=declaration] {
+      color: var(--status-success-text);
+    }
+    .record-type[data-kind=deletion] {
+      color: var(--status-warning-text);
     }
     /* The record cell must be allowed to shrink below the id's min-content width
        (grid items default to min-width:auto) so a long id wraps in the cell
@@ -288,6 +312,7 @@
       {{- if .Records}}
       <div class="records-head">
         <span>Seq</span>
+        <span>Type</span>
         <span>ISCC-ID</span>
         <span>Logged</span>
       </div>
@@ -295,6 +320,7 @@
         {{- range .Records}}
         <li class="record-row">
           <a class="record-seq" href="record?index={{.Seq}}">seq {{.Seq}}</a>
+          <span><span class="record-type" data-kind="{{.KindKey}}">{{.Kind}}</span></span>
           <span class="record-cell">
             <code class="record-id">{{if .IsccID}}{{.IsccID}}{{else}}(no iscc_id){{end}}</code>
             <span class="record-schema">{{if .NoteSchema}}{{.NoteSchema}}{{else}}(no schema){{end}}</span>

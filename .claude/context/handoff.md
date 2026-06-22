@@ -1,44 +1,58 @@
-## 2026-06-22 — Review of: Log-browser record list — render the mockup's `Logged` column from `RecordRow.NoteTimestamp`
+## 2026-06-22 — Render the record-list `Type` column (per-row declaration/deletion/unknown badge)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added the deferred `Type` column to the `/records` log-browser record list, completing the
+mockup's full 4-column `Seq · Type · ISCC-ID · Logged` head. Each row now carries a per-kind badge
+(Declaration / Deletion / Unknown record type) mapped from the verbatim `note.$schema` via the existing
+`recordKind` single mapping site, precomputed in `serveRecords` into a small handler-local row VM (the
+store's `RecordRow` has no `Kind` field). Template-only render slice — no store/struct/schema change.
 
-**Summary:** A clean, template-only M-UI slice that wires the already-landed `store.RecordRow.NoteTimestamp`
-into the `/records` log-browser record list as the mockup's `Logged` column — verbatim RFC-3339 render
-(ADR-0008, never re-formatted) with an honest `&mdash;` fallback for the NULL-timestamp common case, plus a
-`Seq · ISCC-ID · Logged` column-header row. No handler/struct/store change; scope is exactly 1 production
-file + 1 test file. All gates green, the new test is mutation-proven non-vacuous, Codex clean, and the
-visual pass confirms the `Logged` column lands matching the mockup's named region with no new delta.
+**Files changed:**
+- `internal/proofserve/handler.go`: added `recordRowVM` (embeds `store.RecordRow`, adds `Kind` +
+  `KindKey`); added `recordKindKey` (mirrors `recordKind`'s switch for the stable lowercase CSS key);
+  changed `recordsData.Records` from `[]store.RecordRow` to `[]recordRowVM`; `serveRecords` now maps each
+  store row through `recordKind`/`recordKindKey` into the VM (cursor arithmetic still reads the store
+  slice).
+- `internal/proofserve/records.html`: 3→4-column grid template on both `.records-head` and `.record-row`
+  (`120px 130px 1fr 160px`, `.ledger-status` untouched); added the `<span>Type</span>` header and the
+  per-row `.record-type` badge cell; added DS-token-only `.record-type` CSS with unquoted
+  `[data-kind=declaration]`/`[data-kind=deletion]` decorative-hue selectors.
+- `internal/proofserve/records_test.go`: new `TestRecordsRendersTypeColumn` — seeds three accepted leaves
+  with HARDCODED literal `note.$schema` URIs (declaration / deletion / garbage-unknown), asserts the
+  `<span>Type</span>` header + all three labels + the additive verbatim schema render.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green, all 28 packages ok.
-- [x] `go test -count=1 -run TestRecords ./internal/proofserve` — PASS (existing record-list tests + new `TestRecordsRendersLoggedColumn`).
-- [x] New test asserts the literal `2026-06-21T12:34:56Z`, the `&mdash;` empty fallback, and `<span>Logged</span>` — all present (verbatim verified by re-run).
-- [x] Mutation (reviewer-run, restored via `git checkout`): deleting the `.record-logged` cell from `records.html` makes `TestRecordsRendersLoggedColumn` FAIL; restore byte-clean (`git diff`-clean).
-- [x] `gofmt -l .` — empty outside `cauldron/`.
-- [x] Store leaf invariant: `go list -deps ./internal/store | grep -E 'net/http|internal/proofserve'` empty (store untouched).
-- [x] Oracle/trust-path: name-only diff over `internal/proof/`, `logclient/verify`, `didweb`, `index`, `notecheck`, `go.mod`, `go.sum`, `schema.sql`, consistency/equivocation is empty — oracle gate correctly N/A (pure HTML render of a persisted leaf read).
-- [x] No-CDN body ban + `<table>` ban + unquoted-`[data-status=]` trap: `TestRecordsLinksTokensNoCDN` + `TestRecordsRendersInMemoryStatus` PASS; diff adds no `http://`/`https://`/`cdn.`/`jsdelivr`/`<table>`/quoted-`data-status="…"`.
-- [x] All 9 DS tokens used in the new CSS (`--space-3/4/5`, `--border-width`, `--border-default`, `--font-mono`, `--text-2xs`, `--tracking-wide`, `--text-muted`) resolve in `internal/web/tokens.css`.
-- [x] Gate-circumvention scan over unpushed diff: no `nolint`/`t.Skip`/build-tag/swallowed-error in added code (the lone `//go:build` match is prose inside an earlier handoff).
-- [x] Header columns align with data cells: head grid `120px 1fr 160px` (`Seq`/`ISCC-ID`/`Logged`) maps to the row's `.record-seq`/`.record-cell`/`.record-logged` cells.
+**Verification:** `mise run check` → green (build + vet + `go test ./...`, all 28 packages ok).
+- `go test -count=1 -run TestRecords ./internal/proofserve` → PASS (existing record-list tests + new test).
+- New test asserts `<span>Type</span>` header + `Declaration`/`Deletion`/`Unknown record type` labels +
+  the additive verbatim `http://...iscc-note-0.8.0.json` schema, each driven from a HARDCODED literal URI.
+- Mutation (run + restored byte-clean): deleting the `.record-type` badge cell → `TestRecordsRendersTypeColumn`
+  FAILS. Extra non-vacuity check: reverting the `schemaDeclaration` constant → test FAILS (hardcoded-literal
+  grounding works, avoiding the constant-vs-constant vacuity trap).
+- `go list -deps ./internal/store | grep -E 'net/http|proofserve'` → empty (store stays a leaf).
+- `gofmt -l .` empty outside `cauldron/`. No oracle/crypto/proof path touched (oracle gate N/A).
 
-**Issues found:** (none) — the deferred `Type` column is correctly Not-In-Scope and already named as the next step (next.md + handoff), not a defect; the head honestly lists only columns with a data cell.
-
-**Codex second opinion:** Clean. Codex: "The change cleanly renders the existing NoteTimestamp field in the records template with appropriate escaping and fallback behavior, and the added test covers the new column. Existing tests pass and no blocking regressions were found." No findings to triage. Matches my own assessment.
-
-**Visual check:** Performed (agent-browser 0.29.0 available). Built the binary, launched against a populated DB, and screenshotted `GET /sb0.iscc.id/log/records` vs `.claude/design/ISCC Monitor - Log Browser.dc.html`. The live page renders the `SEQ · ISCC-ID · LOGGED` header and per-row verbatim RFC-3339 timestamps in the rightmost column, matching the mockup's `LOGGED` named region — the increment's target. Deltas observed are all pre-existing cross-cutting M-UI gaps (the deferred `TYPE` column = next step; generic instance-identity masthead copy = tracked `normal` issue #214 sub-2; the `← <hub> dossier` back-link / styled pager buttons / JUMP-TO-SEQUENCE box). No NEW delta from this slice; nothing filed.
-
-**Next:** The deferred sibling slice on this same surface — the **`Type` column / per-row type badge** (`declaration`/`deletion`/`unknown`) that completes the mockup's full 4-column `Seq · Type · ISCC-ID · Logged` head. Needs a per-row `recordKind(NoteSchema)` precompute: `recordsData` carries no per-row kind and `RecordRow` is a plain store value, so map each `RecordRow` to a small row VM in `serveRecords` (`handler.go`) carrying the kind label — reuse `recordKind` + the full-URI `schemaDeclaration`/`schemaDeletion` constants from `record.go`. Per the http-surface non-vacuous rule, seed the test with a HARDCODED literal schema URI (constant-vs-constant goes vacuous — see the open `low` issue on `record_test.go`). Stays code-only; store stays a leaf.
+**Next:** This is the last pure-code M-UI named-region slice on the log-browser surface. Per the prior
+handoff + state.md, the remaining log-browser deltas are design-first or human-blocked: the `← <hub>
+dossier` back-link, the styled pager buttons, and the "Jump to sequence" input (a JS control — the no-JS
+constraint defers it). The generic-instance-identity masthead copy is tracked `normal` issue #214 sub-2.
+The next cheapest slice likely shifts to another surface or to one of the open `normal` issues (DB
+migration #40, WASM verifier signature half).
 
 **Notes:**
-- Visual-pass observation: the running monitor polled the live testnet `sb0.iscc.id` and overwrote the
-  seeded fixture DB with REAL records — so the screenshot's timestamps are honest live `note.timestamp`
-  values, an even stronger confirmation than synthetic fixtures. (Watch: a stale dev monitor can hold the
-  configured port; bind a fresh exotic port and `pkill` cleanly before relaunch.)
-- The `&mdash;` fallback is emitted as the HTML ENTITY (html/template passes the literal through), so the
-  test asserts the entity string, not a rendered em-dash glyph — correct.
-- No oracle/conformance path touched; `notecheck`/`derive_vkey.py` correctly N/A this iteration.
-- Open `normal` issues remain (DB migration story #40; `/` realm-index instance-identity copy #214 sub-2;
-  WASM verifier signature half; Pages custom-domain binding; realm-index Anchor design-honesty) — none
-  preempt the cheapest M-UI code slice and none are touched here.
+- The `Type` badge is purely additive: the verbatim `note.$schema` still renders in the ISCC-ID cell's
+  `.record-schema` line (ADR-0008), so nothing was replaced — the new test pins this so a future "replace
+  the schema with the badge" refactor would FAIL.
+- Kept `recordKind` as the single label-mapping site (`serveRecord` already calls it; reused, not
+  duplicated). `recordKindKey` is a separate CSS-token mapping deliberately switching on the SAME schema
+  constants, so the label and the `data-kind` key can never drift; it derives the key from the schema, never
+  by parsing the display label.
+- Used the UNQUOTED attribute-selector form (`[data-kind=declaration]`) to keep the cross-cutting
+  CSS-literal trap closed — no `data-kind="..."` literal leaks into the `<style>`. All `.record-type` CSS
+  properties resolve to existing tokens in `internal/web/tokens.css` (`--font-mono`, `--text-2xs`,
+  `--weight-bold`, `--tracking-wide`, `--space-1`, `--space-2`, `--border-width`, `--border-subtle`,
+  `--radius-xs`, `--text-muted`, `--status-success-text`, `--status-warning-text`).
+- The hue maps only declaration→success and deletion→warning; unknown keeps the neutral `--text-muted`
+  base (decorative only — the text label is the grayscale-safe load-bearing signal, ADR-0010 invariant 4).
+- The mockup's third label is "Unknown type"; kept the existing in-repo `kindUnknown = "Unknown record
+  type"` constant rather than introducing a new literal (next.md directive). `buildMirror` seeds empty
+  schemas, so existing record-list tests now render the neutral "Unknown record type" badge — confirmed it
+  carries no URL, so `TestRecordsLinksTokensNoCDN` still passes.

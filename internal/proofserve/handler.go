@@ -774,24 +774,55 @@ func serveBrowser(w http.ResponseWriter, r *http.Request, st *store.Store, hubID
 	_, _ = buf.WriteTo(w)
 }
 
+// recordRowVM is the per-row record-list view-model: it embeds the verbatim
+// store.RecordRow (Seq / IsccID / NoteSchema / NoteTimestamp, all rendered as-is,
+// ADR-0008) and adds the render-time Type projection the template cannot compute
+// itself. Kind is the human-readable label (Declaration / Deletion / Unknown record
+// type) and KindKey is a stable lowercase token (declaration / deletion / unknown)
+// the badge keys its decorative hue on via data-kind. Both come from recordKind, the
+// single note.$schema → label mapping site; the kind is a render-time projection of
+// the persisted note.$schema, never a stored column.
+type recordRowVM struct {
+	store.RecordRow
+	Kind    string
+	KindKey string
+}
+
 // recordsData is the record-list template view-model: the overlaid hub status and
 // its fixed-table badge label (rendered through the hubStatusBadge partial, the same
-// way browserData does), the newest-first page of indexed records, the hub's total
-// indexed-record count for the honest "showing N of TOTAL" line, the page size echoed
-// into the pagination links, and the precomputed older/newer cursors plus their
-// liveness flags so the template renders plain no-JS pagination links without doing
-// any arithmetic itself. Records carry the verbatim id / schema (ADR-0008: nothing is
-// interpreted). When Records is empty the page renders the informative empty state.
+// way browserData does), the newest-first page of indexed records each carrying its
+// precomputed Type kind/label, the hub's total indexed-record count for the honest
+// "showing N of TOTAL" line, the page size echoed into the pagination links, and the
+// precomputed older/newer cursors plus their liveness flags so the template renders
+// plain no-JS pagination links without doing any arithmetic itself. Records carry the
+// verbatim id / schema (ADR-0008: nothing is interpreted beyond the Type label). When
+// Records is empty the page renders the informative empty state.
 type recordsData struct {
 	Status    string
 	Label     string
-	Records   []store.RecordRow
+	Records   []recordRowVM
 	Total     int
 	PageSize  int
 	HasNewer  bool
 	NewerFrom uint64
 	HasOlder  bool
 	OlderFrom uint64
+}
+
+// recordKindKey maps the verbatim note.$schema to a stable lowercase kind token
+// (declaration / deletion / unknown) the record-list Type badge keys its decorative
+// data-kind hue on. It mirrors recordKind's switch on the SAME schema constants — the
+// single mapping site — so the key and the human label can never drift apart; the key
+// is a separate short CSS token, never parsed back out of the display label.
+func recordKindKey(noteSchema string) string {
+	switch noteSchema {
+	case schemaDeclaration:
+		return "declaration"
+	case schemaDeletion:
+		return "deletion"
+	default:
+		return "unknown"
+	}
 }
 
 // serveRecords renders the HTML record list for the hub-log /records route: a
@@ -868,10 +899,20 @@ func serveRecords(w http.ResponseWriter, r *http.Request, st *store.Store, hubID
 		return
 	}
 
+	// Project each verbatim store row into a row VM carrying its precomputed Type kind:
+	// the human label (via recordKind, the single mapping site serveRecord also reuses)
+	// and a stable lowercase key for the badge's data-kind hue. The kind is render-time
+	// only, never persisted (ADR-0008: note.$schema is stored verbatim).
+	rows := make([]recordRowVM, len(records))
+	for i, row := range records {
+		kind, _ := recordKind(row.NoteSchema)
+		rows[i] = recordRowVM{RecordRow: row, Kind: kind, KindKey: recordKindKey(row.NoteSchema)}
+	}
+
 	data := recordsData{
 		Status:   status,
 		Label:    label,
-		Records:  records,
+		Records:  rows,
 		Total:    total,
 		PageSize: pageSize,
 	}

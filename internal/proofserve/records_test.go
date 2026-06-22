@@ -228,6 +228,68 @@ func TestRecordsRendersLoggedColumn(t *testing.T) {
 	}
 }
 
+// TestRecordsRendersTypeColumn asserts the record list renders the mockup's Type
+// column: each row carries a per-kind badge (Declaration / Deletion / Unknown record
+// type) mapped from the verbatim note.$schema (ADR-0008 — the only interpretation), and
+// the list heads a Type column completing the 4-column Seq · Type · ISCC-ID · Logged
+// head. The schema URIs are HARDCODED literals, NOT the package constants, so reverting
+// schemaDeclaration / schemaDeletion makes this test FAIL (the constant-vs-constant
+// vacuity trap the single-record test fell into). The verbatim schema still renders in
+// the ISCC-ID cell — the Type badge is additive, never a replacement.
+func TestRecordsRendersTypeColumn(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "type.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	hubID, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	// Seq 0 is a declaration, seq 1 a deletion, seq 2 an unknown schema. The schema URIs
+	// are hardcoded literals (not schemaDeclaration / schemaDeletion) so a constant
+	// regression breaks the kind mapping and FAILS this test. All three are accepted
+	// (LastSize advanced to 3).
+	const (
+		declSchema    = "http://purl.org/iscc/schema/iscc-note-0.8.0.json"
+		delSchema     = "http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json"
+		unknownSchema = "iscc-note-future-9.9.9"
+	)
+	recs := []store.ProjectionRecord{
+		{HubID: hubID, Seq: 0, IsccID: leafISCCID(0), NoteSchema: declSchema},
+		{HubID: hubID, Seq: 1, IsccID: leafISCCID(1), NoteSchema: delSchema},
+		{HubID: hubID, Seq: 2, IsccID: leafISCCID(2), NoteSchema: unknownSchema},
+	}
+	if err := st.RecordProjections(ctx, recs); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+	if err := st.AdvanceFollowState(ctx, hubID, 3); err != nil {
+		t.Fatalf("AdvanceFollowState: %v", err)
+	}
+
+	h := Handler(st, hubID, nil)
+	code, body := getRecords(t, h, "")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	// The named region heads its columns including Type, completing the 4-column head.
+	if !strings.Contains(body, "<span>Type</span>") {
+		t.Errorf("body missing the Type column header\n%s", body)
+	}
+	// Each kind's human label renders, mapped from the hardcoded schema URI.
+	for _, want := range []string{"Declaration", "Deletion", "Unknown record type"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing Type label %q\n%s", want, body)
+		}
+	}
+	// The Type badge is additive: the verbatim schema still renders alongside it.
+	if !strings.Contains(body, declSchema) {
+		t.Errorf("body no longer renders the verbatim note.$schema %q (Type badge wrongly replaced it)\n%s", declSchema, body)
+	}
+}
+
 // countRecordLinks counts the per-record rows rendered in a /records body by counting
 // the single-record-page links each row emits (one record?index= link per row).
 func countRecordLinks(body string) int {
