@@ -357,24 +357,32 @@ filed it and does **not** affect priority.
   `.claude/design/ISCC Monitor - Realm Index.dc.html` per-hub anchorState model; `learnings/dashboard.md`
   per-hub-vs-per-checkpoint Anchor note; `internal/certificate/handler.go` §5 authoritative per-root surface.
 
-## Instance-identity env keys read inline in main.go, not validated via internal/config; CLAUDE.md env docs lack the three new keys
+## Certificate renders coverage + §5-confirmation timestamps in LOCAL time, not UTC — TZ-dependent test failures (red on any non-UTC machine)
 - **Priority:** normal
-- **Source:** [review] (filed alongside the `/` masthead-identity slice `b30b84e`)
-- **What / where / how to verify:** The `/` masthead-identity slice reads `ISCC_MONITOR_INSTANCE` /
-  `ISCC_MONITOR_OPERATOR` / `ISCC_MONITOR_REALM_NAME` inline in `cmd/iscc-monitor/main.go` `identity()`
-  (the three keys are `const`s there), deliberately DEFERRING the move into the `internal/config`
-  `optional(get, key, fallback)` leaf to stay within the ≤3-file budget (next.md Not-In-Scope). Two
-  follow-ups remain: (a) when identity is threaded into a SECOND SSR masthead, move parsing into
-  `internal/config` so all six surfaces draw from one validated source (and FINALIZE the realm-name key —
-  the slice chose `ISCC_MONITOR_REALM_NAME` because `ISCC_MONITOR_REALM` is the already-required
-  realm-document filesystem PATH; that name decision should be ratified in config, not left in main.go);
-  (b) CLAUDE.md's "Running a local dev instance" env-var list does NOT yet document the three new keys.
-  Does NOT block progress — the keys are optional, the handler fail-safe defaults, all gates green, and the
-  config move is explicitly the follow-on sub-step's job. Verify fixed: the three identity keys are parsed
-  through `internal/config` (not `os.Getenv` in main.go) with the realm-name key name ratified, AND
-  CLAUDE.md lists `ISCC_MONITOR_INSTANCE` / `ISCC_MONITOR_OPERATOR` / `<realm-name key>` in its env table.
-- **Spec:** `learnings/config.md` (env parsing belongs in the config leaf); CLAUDE.md "Running a local dev
-  instance" env-var documentation; next.md Not-In-Scope (config move deferred to the follow-on sub-step).
+- **Source:** [review] (reviewer-found while running `mise run check`; root-caused this iteration)
+- **What / where / how to verify:** `mise run check` is RED on a non-UTC host:
+  `TestCertificateComparisonAnchor` (handler_test.go:1474) and `TestCertificateBitcoinAnchorConfirmed`
+  (handler_test.go:1684) fail because the rendered certificate formats a stored UTC timestamp in the
+  SERVER's LOCAL timezone instead of UTC. The tests expect the coverage-since chip `2026-01-05T09:00:00Z`
+  and the §5 confirmation chip `2026-02-14T18:40:00Z` (UTC, `Z`), but the body renders the SAME instants
+  as `2026-01-05T10:00:00+01:00` and `2026-02-14T19:40:00+01:00` (this box is CET = UTC+1). Reviewer
+  root-caused by extracting the rendered strings from both failure bodies — the offset, not the instant,
+  differs. NOT wall-clock-dependent (the prior advance handoff guessed "stale fixed timestamps vs today"
+  — that was wrong; the instants are correct, only the rendered zone is local). NOT introduced by the
+  config-leaf increment (`fb5ac18` touches zero cert code) — reviewer PROVED it pre-existing by running
+  the two tests on the parent commit `d7e1fdc` in a throwaway worktree (identical 2 failures). CI is
+  green because GitHub Actions runners run in UTC, where local == UTC; the prior cert review (`7a32458`,
+  "27 packages ok") similarly ran where local was UTC. Every other monitor surface renders RFC-3339 in
+  UTC `Z` (dashboard/dossier/log-browser), so this is the cert handler diverging, not the tests being
+  wrong. Fix when `internal/certificate/handler.go` is next touched: render every timestamp via
+  `.UTC().Format(time.RFC3339)` (the coverage-since chip + the §5 `BTCConfirmTime`/`upgraded_at` chip;
+  grep the handler for `.Format(time.RFC3339)` and ensure each value is `.UTC()`-normalized first) so the
+  output is locale-independent and matches the rest of the federation. Verify fixed: `go test -count=1
+  ./internal/certificate` passes regardless of `TZ` (e.g. `TZ=America/New_York go test ./internal/certificate`
+  is green); reverting the `.UTC()` normalization makes both tests FAIL again on a non-UTC host.
+- **Spec:** CLAUDE.md "Coverage" (RFC-3339 time honesty) + cross-platform requirement (tests must pass
+  regardless of host TZ); ADR-0010 Evidence-Ledger honesty; CLAUDE.md Testing ("ensure the test output
+  is clean and all tests pass").
 
 ## Masthead identity fallback consts are now duplicated across dashboard + dossier + certificate (3x) instead of one shared resolve leaf
 - **Priority:** low
@@ -411,4 +419,158 @@ filed it and does **not** affect priority.
   fixed: the comment no longer says "static copy in this skeleton". Low — cosmetic; the rendered output is
   already correct.
 - **Spec:** CLAUDE.md "Write evergreen comments that describe the current state, not historical changes".
+
+## No public-facing root `README.md` — the project has no human-facing front door
+- **Priority:** normal
+- **Source:** [human]
+- **What / where / how to verify:** The repository root has **no `README.md`** — the only README is the
+  CID context pack's `.claude/context/README.md` (loop-internal), and `CLAUDE.md` is agent-facing project
+  instructions, not a human overview. So a person landing on the repo (GitHub, a fresh clone, the future
+  GHCR image's "source" link) gets no front-door explanation of what iscc-monitor is, how to build it, or
+  how to run an instance. Add a tracked root `README.md` that states (1) **what it is** — the independent
+  Trust & Transparency service for the ISCC-Hub network: follows every hub's tlog-tiles transparency log,
+  verifies Ed25519 signatures + RFC-6962 consistency, mirrors the logs, and publishes verifiable evidence,
+  framed honestly as a *verifiable cache*, not a trusted oracle; (2) **the stack** (Go 1.26,
+  `CGO_ENABLED=0`, single binary `cmd/iscc-monitor`); (3) **build + run** — a copy-pasteable snippet that
+  builds the binary and starts it against the testnet realm (the `ISCC_MONITOR_DB` / `ISCC_MONITOR_REALM` /
+  `ISCC_MONITOR_ADDR` / cadence env config), plus the quality gate `mise run check`; (4) **pointers to the
+  specs** (`.claude/prd`, `.claude/adr`, the glossary in `CLAUDE.md`). Keep it human-facing and evergreen;
+  do **not** duplicate the full env-var table — link `CLAUDE.md` "Running a local dev instance" as the
+  authoritative source so the two never drift. Verify fixed: `README.md` exists at the repo root, renders a
+  project overview + a build/run snippet that actually starts the binary, and links the spec dirs;
+  `target.md` "Done When" requires it, so DONE is not reachable until it exists.
+- **Spec:** target.md "Done When" (now requires a root README); CLAUDE.md project overview + "Running a
+  local dev instance"; memory `docs-layout-convention` (`.claude/` = agentic docs, public docs elsewhere).
+
+---
+
+<!-- The entries below are pre-deployment asks from the iscc-infra ops side, raised
+     while preparing a testnet TEST INSTANCE at https://monitor-test.iscc.io on an
+     existing DigitalOcean box (Docker Compose + caddy-docker-proxy). They are framed
+     as what the deploy needs FROM this repo, not loop-internal defects. Filed 2026-06-22.
+     Durable target: these are the work items of milestone **M-Deploy** in target.md
+     (ratified in ADR-0013). issues.md is ephemeral; M-Deploy / ADR-0013 are the
+     standing spec the loop verifies against — re-derive these if this list is pruned. -->
+
+## Publish a deployable container image to GHCR (Dockerfile + push workflow)
+- **Priority:** normal
+- **Source:** [human] (iscc-infra ops, pre-deploy blocker)
+- **What / where / how to verify:** There is no production Dockerfile (only
+  `.devcontainer/Dockerfile`) and no image-publish workflow — `.github/workflows/ci.yml`
+  only builds+vets+tests, and `pages.yml` deploys the SEPARATE `.codes` verifier site, not
+  the server. iscc-infra deploys via Docker Compose + caddy-docker-proxy and needs a
+  *pullable image*, not a source build on the box. Ask: add a multi-stage `Dockerfile` that
+  builds the `cmd/iscc-monitor` static binary (Go 1.26, `CGO_ENABLED=0`; it is already
+  pure-Go incl. `modernc.org/sqlite`, so a `scratch`/distroless final stage with no libc
+  works) running as a NON-root uid, plus a workflow that builds and pushes to
+  `ghcr.io/iscc/iscc-monitor` on push to `develop`, tagged BOTH `develop` (floating) and
+  `sha-<short>` (immutable, so infra can pin a known-good build and roll back). Make the
+  GHCR package public, or hand infra a `read:packages` token. The server image is
+  self-contained: it embeds and serves its own `/_ds/` assets incl. `verify.wasm`
+  (`internal/web`), so it needs NEITHER the Pages site NOR any CDN at runtime. Fold in a
+  build stamp — pass the git SHA via `-ldflags` and surface it (on `/healthz` JSON or a tiny
+  `GET /version`) so infra can confirm exactly which build is live. Verify fixed:
+  `docker run ghcr.io/iscc/iscc-monitor:develop` with the required env starts and serves
+  `/healthz` = 200; `docker image inspect` shows a non-root user and a small (<~30 MB)
+  image; the running git SHA is reported by the binary.
+- **Spec:** ADR-0003 `CGO_ENABLED=0` static build; CLAUDE.md "single binary configured
+  entirely through environment variables".
+
+## Trap SIGTERM so the container shuts down gracefully (run() handles SIGINT only)
+- **Priority:** normal
+- **Source:** [human] (iscc-infra ops, container-lifecycle defect)
+- **What / where / how to verify:** `run()` binds shutdown to
+  `signal.NotifyContext(context.Background(), os.Interrupt)` (`cmd/iscc-monitor/main.go:133`)
+  — SIGINT only. Docker / Compose `stop` (and Kubernetes, systemd) send **SIGTERM**, not
+  SIGINT. With no SIGTERM handler the Go runtime takes SIGTERM's default disposition and
+  terminates the process immediately: the context never cancels, `Loop.Run` never returns
+  cleanly, the deferred `st.Close()` (`main.go:131`) never runs, and any in-flight poll /
+  store commit / OTS tick is cut mid-flight instead of draining. For a store this project
+  itself calls "irreplaceable evidence", an unclean stop on *every* redeploy is the wrong
+  default. Fix: add SIGTERM to the call —
+  `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)` — and state a
+  recommended Compose `stop_grace_period` (how long a clean shutdown of the current poll +
+  store flush may take). Verify fixed: sending SIGTERM to the running binary cancels the
+  context, `Loop.Run` returns, `st.Close()` runs, and the process exits 0 within the grace
+  window (a `docker stop` shows graceful exit, no SIGKILL).
+- **Spec:** ADR-0007 evidence durability; CLAUDE.md cross-platform/ops reality (containers
+  and orchestrators terminate via SIGTERM).
+
+## Provide a canonical, mountable testnet realm file (not testdata) + the instance identity env values
+- **Priority:** normal
+- **Source:** [human] (iscc-infra ops, required config)
+- **What / where / how to verify:** `ISCC_MONITOR_REALM` is a REQUIRED path to the realm
+  document, but the only realm file in the repo is `internal/registry/testdata/realm.txt`
+  (`sb0.iscc.id`, `sb1.amlet.id`) — a Go *testdata* path inside the source tree, not
+  something a container exposes at a stable, documented location. Ask: ship a canonical
+  testnet realm document at a non-testdata path (e.g. `deploy/realm-testnet.txt`) that infra
+  can bake into the image at a fixed path OR mount read-only, AND confirm whether infra
+  should own/version it in iscc-infra instead. Confirm the current membership is what we
+  want monitored today and that both hubs are actually reachable now (an unreachable hub
+  renders `unresolvable` on the dashboard — acceptable, but we want to know that's expected,
+  not a misconfig). Also give the values to set for the optional masthead identity on THIS
+  instance so the served page is honest per ADR-0010 rather than the static placeholder:
+  `ISCC_MONITOR_INSTANCE` (e.g. `monitor-test.iscc.io`), `ISCC_MONITOR_OPERATOR`,
+  `ISCC_MONITOR_REALM_NAME` (e.g. "ISCC testnet"). Verify fixed: the deploy mounts/bakes a
+  realm file at a documented path, the binary registers exactly the intended hubs at
+  startup, and `GET /` renders the configured instance/operator/realm strings.
+- **Spec:** `internal/config` required `ISCC_MONITOR_REALM`; CLAUDE.md instance-identity env
+  keys (`ISCC_MONITOR_INSTANCE`/`OPERATOR`/`REALM_NAME`); ADR-0009 domains-only realm.
+
+## Persistence contract for the SQLite DB volume + acknowledge the in-place migration hazard
+- **Priority:** normal
+- **Source:** [human] (iscc-infra ops, stateful deploy)
+- **What / where / how to verify:** `ISCC_MONITOR_DB` is the single SQLite file holding the
+  whole network's state, including what the glossary calls *irreplaceable evidence*
+  (observed checkpoints, split-view pairs, OTS proofs). For a persistent deploy infra needs,
+  documented: (a) the recommended in-container path to back a named Docker volume with (the
+  `.db` plus its `-wal`/`-shm` siblings if WAL is on); (b) confirmation that consistently
+  backing up that one file captures all durable state; (c) the uid/permissions the non-root
+  container user needs on the volume dir. Separately, this repo's own backlog already carries
+  **"No on-disk DB migration story"** (normal) — `store.Open` is `CREATE TABLE IF NOT EXISTS`
+  only, so a column added in a later image silently never reaches a pre-existing DB and the
+  new code path fails with `no such column`. For a *throwaway testnet* instance we can accept
+  "recreate the volume on schema change", but I want that acknowledged as the operating
+  assumption until the migration mechanism lands — otherwise the first `:develop` image bump
+  over a populated volume breaks the instance. Verify fixed: docs state the DB path + volume
+  + "back up this one file" contract and the non-root uid, and link the migration issue as
+  the known constraint with "recreate volume on schema change" as the interim policy.
+- **Spec:** ADR-0007 per-network DB + evidence retention; ADR-0005 single SQLite store;
+  existing issue "No on-disk DB migration story".
+
+## Decide which routes are safe to publish at the public vhost (especially /metrics)
+- **Priority:** normal
+- **Source:** [human] (iscc-infra ops, exposure/security)
+- **What / where / how to verify:** Behind caddy-docker-proxy at `monitor-test.iscc.io`,
+  every route on the single `:9464` mux is internet-facing: the dashboard / dossier / mirror
+  / proof surfaces (public *by design* — the monitor is a "verifiable cache"), `/healthz`,
+  AND `/metrics` (Prometheus, exposing operational internals — poll failures, violation
+  counts, per-hub status). Because `/metrics` and the mirror share ONE listener
+  (`serveMetrics` builds one `http.Server` over one mux, `main.go:179-180`), infra cannot
+  separate them by port — only deny a path at the proxy. Decide: is a public `/metrics`
+  intended (common and fine for this class of service), or should infra deny `/metrics` (and
+  anything else) at Caddy and scrape it only on the internal network? Confirm no route needs
+  auth and none is unsafe to expose (the monitor holds no signing key today — consistent with
+  the cosigning milestone being deferred — so there is no secret to leak; please confirm).
+  Verify fixed: a documented allow/deny list of public paths for the vhost, which infra then
+  enforces in the Caddy labels.
+- **Spec:** CLAUDE.md "Verifiable cache" (public by design); iscc-infra gotcha "only the
+  reverse proxy may publish 80/443; bind debug ports to 127.0.0.1".
+
+## Document egress + resource footprint for box sizing
+- **Priority:** low
+- **Source:** [human] (iscc-infra ops, sizing)
+- **What / where / how to verify:** The candidate box (DO `iscc.ai`, 206.189.52.39) already
+  runs search-test (cap 1.5 GB) + the status page, so this instance must be sized to fit.
+  Document the outbound egress the monitor needs — HTTPS to each hub's `/log` tiles and
+  `/.well-known/did.json` (did:web key resolution, ADR-0009) and to the OTS calendar
+  `https://alice.btc.calendar.opentimestamps.org` (`internal/otsclient/client.go:40`) — so
+  egress policy is a conscious choice (DO default-allows egress; it just needs stating). And
+  give rough steady-state numbers for the testnet realm (2 hubs): resident memory, CPU, and
+  especially the **disk-growth rate** of the mirror BLOBs per hub over time, so infra can
+  size the volume and set a DO disk-usage alert before it bites. Verify fixed: a short
+  "deployment footprint" note lists the egress endpoints and ballpark RAM / CPU /
+  disk-growth for an N-hub realm.
+- **Spec:** ADR-0004 OTS calendar transport; ADR-0009 did:web resolution; ADR-0007 mirror
+  growth / per-network DB sizing.
 

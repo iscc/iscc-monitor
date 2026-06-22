@@ -26,3 +26,11 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `required` does NOT trim whitespace, so a whitespace-only path (`" "`) passes config and would fail
   later at `os.ReadFile`/`store.Open` — acceptable (config validates presence, the binary owns I/O),
   but the binary should surface that fs error clearly.
+- **Masthead-identity keys (`ISCC_MONITOR_{INSTANCE,OPERATOR,REALM_NAME}`) are free-form display
+  strings read through `optional(get, key, "")`** — no validation, empty default; each masthead handler
+  applies its own static fail-safe on an empty field, so config must NOT carry a fallback copy (that
+  would duplicate the handlers' placeholder). `RealmName` is deliberately the human realm NAME, distinct
+  from the required `RealmPath` (`ISCC_MONITOR_REALM`, the realm-document filesystem path) — overloading
+  the path var would leak a filename into the ledger subtitle. `main.go`'s `identity(cfg)` (not config)
+  builds `dashboard.Identity` from these fields; config stays a `{fmt time}`-only leaf with no
+  `dashboard` import (would invert the dep / risk a cycle).
