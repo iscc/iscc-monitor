@@ -42,3 +42,12 @@ touching OTS upgrade/stamp code.
   same external ground truth (`hello-world`→358391, `empty`→129405); a wrong height fails the assertion.
   Tests inject a fake `seqUpgrade` so the parse/upgrade-seam/serialize/classify path runs fully offline —
   never call a live calendar in `go test`.
+- **`Stamp` is now LIVE on the production path but is UNGUARDED — open `normal` issue, asymmetric with the
+  hardened upgrade path.** `stampFunc()` in main.go wires `otsclient.Stamp` into `runOTSLoop`'s goroutine,
+  so the prior "exposed but not yet called" comment is stale. Unlike the upgrade path, `Stamp` has NO
+  panic-recover and NO per-request timeout: `opentimestamps.Stamp` parses the calendar response through
+  the same panic-prone `parseCalendarServerResponse`/`parseTimestamp` family `recoverRead` guards, and
+  uses `http.DefaultClient` (no deadline) — so a malformed response CRASHES the monitor and a stalled one
+  HANGS the OTS goroutine. The fix is a `safeStamp` mirroring `safeUpgrade` (`context.WithTimeout` +
+  `recover()`-to-error). Durable rule: any new live OTS calendar call MUST go through such an FFI-boundary
+  guard (the always-loaded "OTS never blocks/crashes the follower" invariant), exactly like `safeUpgrade`.

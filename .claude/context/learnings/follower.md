@@ -8,126 +8,75 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## Follower composition (`internal/follower`)
 
-- **`PollHub` is the first real caller composing the M1 chain + store CRUD** (`follower.go`):
-  `FetchCheckpoint → AcceptCheckpoint → (only on StatusVerified) RecordCheckpoint → AdvanceFollowState`.
-  Verified independently: `go list -deps ./internal/store` stays a single self-only line (store is a
-  leaf), `./internal/follower` pulls in `logclient`+`store`(+transitive `didweb`) — direction
-  follower → {logclient, store}, never the reverse, so `net/http` never enters the store closure.
-- **The verified-path assertion `FollowState.LastSize == 10183` is non-vacuous** — `10183` is line 2
-  of the `testdata/live/sb0.iscc.id_checkpoint` fixture (the signed tree size), so it proves the value
-  flowed `info.TreeSize → AdvanceFollowState → persisted cursor`. The complementary non-advancing test
-  asserts `== 0` after a mismatching-key `StatusUnverified`, so neither case is vacuously satisfied by
-  the fresh-store zero.
-- **Garbled-body fault returns `(status, wrapped-err)` where status is `AcceptCheckpoint`'s
-  `StatusUnverified` zero** — meaningless when err != nil. `PollHub` honors the err-before-status
-  contract (returns the wrapped err and persists nothing); callers of `PollHub` must do the same.
-- **Freeze wiring composes the two pure verdicts in `PollHub` via `checkConsistency` + `freeze`
-  helpers** (`follower.go`). Order is load-bearing: on `StatusVerified`, read `FollowState`, run
-  shrink-then-fork BEFORE `RecordCheckpoint`/`AdvanceFollowState`; on a true verdict
-  `RecordViolation` + `RecordCheckpoint`(evidence, no advance) + `Freeze`, then alert iff
-  `!wasFrozen`. A violation returns `(StatusVerified, nil)` — freezes, never crashes (ADR-0006).
-  The `AlertFunc func(int64,string)` is a func seam (YAGNI, not an interface); the `modernc.org/sqlite`
-  blank import is added to the follower *test only* (production imports stay `{context,fmt,logclient,
-  store,time}`, store stays a leaf, go.mod/go.sum byte-identical).
-- **`ingestTiles` MUST run before `checkConsistency` in `PollHub` — this is the load-bearing order, and
-  the closed `critical` gap.** The equivocation trigger builds its RFC-6962 consistency proof from the
-  LOCAL mirror (`ConsistencyProofFromTiles` over `SQLiteFetcher`), so the candidate-size tiles must be
-  mirrored first or the proof hits a missing-tile error that `checkConsistency` swallows as a clean pass
-  → the hub silently advances to the inconsistent root. The fix was a pure reorder (move the single
-  `ingestTiles` call up to right after `FollowState`, before `checkConsistency`); the missing-tile
-  swallow at `checkConsistency`'s equivocation branch stays as a robustness guard for the genuine
-  no-mirror case (a hub that advanced before tiles existed). Verify the order with `grep -n`: `FollowState`
-  → `ingestTiles` → `checkConsistency` → `freeze`/`RecordCheckpoint`+`AdvanceFollowState`. An `ingestTiles`
-  fault now aborts the poll BEFORE accepted state advances (missing proof tile → error, not clean pass).
-- **The growing-split-view freeze test (`TestPollHubGrowingSplitViewFreezes`) is non-vacuous because the
-  SAME `buildVerifiedMirror(mirrorLeaves=300)` fixture is polled clean by `TestPollHubVerifiedAdvances`
-  (`prevSize==0`, advances, `Frozen==false`).** So an "always freezes" wiring breaks Advances and a "never
-  freezes" wiring breaks GrowingSplitView. The freeze case seeds a prior accepted checkpoint at size 5
-  whose root is `flipByte(m.tree.HashAt(5))` (the real root with one byte flipped) — the candidate
-  checkpoint the fetcher signs is internally valid at 300, so the inconsistency is purely between the
-  fabricated prior accepted root and the candidate root = a growing split view against THIS monitor.
-- **Fork re-detection on an already-frozen hub is now driven through a real second `PollHub`, and the
-  determinism it relies on is `CheckpointAt`'s EXPLICIT `ORDER BY rowid LIMIT 1` (no longer implicit).**
-  The freeze path records the contradicting checkpoint as evidence (a higher rowid), so after the first
-  detection two rows share the same `tree_size` (lowest-rowid seed/prior accepted root + the new
-  contradicting root). On the second `PollHub`, `checkConsistency` runs BEFORE the `fs.Frozen`
-  short-circuit and reads the prior root via `CheckpointAt(hubID, m.size)`, which deterministically
-  returns the seed root → `CheckFork(seed != new)` re-fires → `freeze(wasFrozen=true)` records a 2nd
-  `violations` row (re-detection = evidence; `RecordViolation` has no `ON CONFLICT`) WITHOUT re-alerting.
-  `LastSize` stays `m.size` (a frozen hub never advances). Reviewer independently mutation-proved
-  `TestPollHubFork` non-vacuous on the production path two ways (both reverted): asserting `alerts == 2`
-  FAILS (alert fires once), and removing the second `PollHub` FAILS three assertions (violations count,
-  the cumulative `kind="fork"} 2` metric, and reopen-survival). The earlier "no ORDER BY / implicit
-  insert-order dependency" note is now obsolete: the ordering is explicit in `checkpoints.go:159` and
-  pinned by `TestCheckpointAtDeterministicOnFork`. Any future change to prior-root selection must keep
-  "compare against the prior accepted root, never the contradicting evidence row" (ADR-0006).
-- **Fork-test non-vacuousness comes from the `kind == "fork"` (not "shrink") assertion at equal size,
-  NOT the `sb0FixtureRootB64` guard.** That guard compares raw seed bytes to a base64 *string*, so it
-  can never trip (and the seed is 33 bytes — `copy` into `[32]byte` truncates harmlessly). The real
-  proof the fork branch fired is: verified observation at size 10183 with the real decoded root vs a
-  seeded distinct root, asserting kind `"fork"` distinctly from the size-only shrink path.
-- **The poll loop (`loop.go`) is pure cadence over `PollHub` — `due()` is the only testable unit, and
-  the back-off works *because a freeze returns `(StatusVerified, nil)`*.** `Tick` marks `lastPoll[hub]
-  = now` only on a nil-error `PollHub`, and a freeze is a nil error, so a just-frozen hub *does* get
-  its `lastPoll` recorded → the next due decision correctly uses the longer `Frozen` interval. If a
-  later change ever made freeze return a non-nil error, the frozen hub would be left unmarked and
-  re-polled every `Normal` tick (no back-off) — keep freeze on the nil-error path. `due()` uses `>=`
-  (exactly-at-interval is due); zero `lastPoll` is always due (fresh hub polled on tick 1, restart
-  re-polls all — harmless, `PollHub` is idempotent on an unchanged checkpoint).
-- **The ADR-0006 already-frozen evidence-only short-circuit is `if fs.Frozen { recordVerdict(m,
-  hubID, status, true, observedAt); return status, nil }`, placed AFTER `checkConsistency` + the
-  `violated` branch and BEFORE `RecordCheckpoint`.** Placement is the whole correctness story: a frozen
-  hub that re-serves a *fresh* contradiction still flows through the `violated` branch above (records
-  the re-detection as evidence, re-fires the violations counter); the short-circuit catches only the
-  *clean* re-poll (no fresh violation) and suppresses `RecordCheckpoint`/`SetCoverage`/
-  `AdvanceFollowState`/`cacheHubKey`/`fsckMirror`. `ingestTiles` (run earlier) is deliberately NOT
-  skipped — tiles are rebuildable evidence, not accepted state. `frozen=true` maps to the glossary
-  `"frozen"` label (not the `StatusVerified` enum), and the return stays `(status, nil)` because the
-  signature was valid (freezing is a separate axis). Reviewer mutation-proved non-vacuous: deleting the
-  block makes `TestPollHubFrozenCleanRepollIsEvidenceOnly` FAIL on `status="verified"` (the hub would
-  re-advance the cursor, coverage, key cache). Oracle gate correctly N/A — pure freeze-decision wiring,
-  no signature/RFC-6962/Merkle/did:web/fsck path touched; go.mod/go.sum/schema byte-unchanged.
-- **The frozen-clean re-poll test seeds the freeze via `store.Freeze` directly, then re-polls the SAME
-  300-leaf `buildVerifiedMirror` at the same size/root.** This is the deterministic way to reach the
-  short-circuit: with `prevSize==info.TreeSize==300` and identical root, `CheckShrink`/`CheckFork` are
-  both false and the equivocation branch short-circuits on `info.TreeSize <= prevSize`, so
-  `violated==false` and `fs.Frozen==true` → the new branch fires. The direct `store.Freeze` seed is the
-  clean isolation for THIS test (a clean re-poll, no fresh contradiction); the complementary fresh-
-  contradiction-on-a-frozen-hub re-detection path is now exercised end-to-end by `TestPollHubFork`'s
-  second `PollHub` (the prior "re-detection fragility" deferral is resolved). The metric assertion uses a
-  *fresh* `metrics.New()` on the re-poll only (seed poll passes `m=nil`), so `status="frozen" 1` present
-  + `status="verified"` absent is a clean single-verdict assert.
-- **`Run` is deliberately untested and that is correct here** — it is a 12-line `select` over
-  `ctx.Done()`/`ticker.C` with `defer ticker.Stop()` and one documented `_ = l.Tick(ctx, t)` (a flaky
-  hub must not abort the network loop; `Tick` already surfaces the error to its caller, so this is not
-  gate-dodging). All branching logic lives in the injected-`now` `Tick` + pure `due()`, both covered;
-  the spec forbids wall-clock sleeps so testing `Run` would mean sleeping. The single swallowed error
-  is justified inline. Verify `time.Now()` never appears in `loop.go` (the ticker delivers `t` via
-  `ticker.C`) — the only wall-clock source is `time.NewTicker(l.Normal)`.
+- **`PollHub` composes the M1 chain + store CRUD** (`follower.go`):
+  `FetchCheckpoint → AcceptCheckpoint → [StatusVerified] FollowState → ingestTiles → checkConsistency →
+  freeze | (RecordCheckpoint + AdvanceFollowState + cacheHubKey + fsckMirror)`. Direction is
+  follower → {logclient, store}, never the reverse (store stays a leaf, `net/http` never in its closure).
+  `PollHub` honors err-before-status (a garbled-body fault returns the wrapped err + persists nothing —
+  the `StatusUnverified` zero is meaningless when err != nil); callers must do the same.
+- **LOAD-BEARING ORDER — `ingestTiles` MUST run before `checkConsistency` (closed `critical` gap).** The
+  equivocation trigger builds its RFC-6962 consistency proof from the LOCAL mirror
+  (`ConsistencyProofFromTiles` over `SQLiteFetcher`), so candidate-size tiles must be mirrored first or
+  the proof hits a missing-tile error `checkConsistency` swallows as a clean pass → silent advance to the
+  inconsistent root. Verify with `grep -n`: `FollowState → ingestTiles → checkConsistency → freeze`. The
+  missing-tile swallow stays as a robustness guard for the genuine no-mirror case.
+- **Freeze on a true verdict returns `(StatusVerified, nil)` — freezes, never crashes (ADR-0006)** —
+  `RecordViolation` + `RecordCheckpoint`(evidence, no advance) + `Freeze`, alert iff `!wasFrozen`. The
+  nil-error return is what makes `loop.go`'s back-off work: `Tick` marks `lastPoll[hub]=now` only on a
+  nil-error `PollHub`, so a just-frozen hub gets the longer `Frozen` interval. Keep freeze on the
+  nil-error path (a non-nil return would leave it unmarked → re-polled every `Normal` tick, no back-off).
+- **settled (landed; full detail in git history):** the freeze/fork/shrink-wiring tests
+  (`TestPollHubVerifiedAdvances`/`GrowingSplitViewFreezes`/`Fork`/`FrozenCleanRepollIsEvidenceOnly`) are
+  all mutation-proven non-vacuous off the SAME `buildVerifiedMirror` fixture (an always/never-freezes
+  wiring breaks a complementary case). Durable rules surviving them: (1) the already-frozen evidence-only
+  short-circuit `if fs.Frozen { recordVerdict(...,true); return status,nil }` sits AFTER `checkConsistency`
+  + the `violated` branch, BEFORE `RecordCheckpoint` — a fresh contradiction on a frozen hub still records
+  re-detection evidence; only a clean re-poll short-circuits; `ingestTiles` is NOT skipped (rebuildable
+  evidence). (2) Fork re-detection compares against the prior ACCEPTED root via `CheckpointAt`'s explicit
+  `ORDER BY rowid LIMIT 1`, never the contradicting evidence row — keep on any prior-root-selection change.
+  (3) `due()` uses `>=`; zero `lastPoll` is always due (restart re-polls all, idempotent). (4) `Run` is
+  deliberately untested (a 12-line `select` over `ctx.Done()`/`ticker.C`, all logic in injected-`now`
+  `Tick`+pure `due()`); verify `time.Now()` never appears in `loop.go`.
 
-## OTS upgrade-loop control core (`internal/follower/otsloop.go`)
+## OTS stamp-then-upgrade loop control core (`internal/follower/otsloop.go`)
 
-- **`OTSTick(ctx, st, up, now, logger)` is the pure injected-`now` analogue of `loop.go`'s `Tick`, a
-  SEPARATE driver off the poll path — OTS NEVER blocks the follower (ADR-0004).** It reads
-  `st.PendingOTS(ctx, now)` (back-off-filtered), and per row: `Confirmed` → `MarkOTSUpgraded`+`continue`;
-  declined or errored → `MarkOTSAttempted(Attempts+1, now+backoff)`. Mirrors `Tick`'s error discipline
-  exactly: a per-row Upgrader transport fault OR store-write fault is logged with `hub_id`/`tree_size`,
-  folded into `firstErr`, and the pass CONTINUES (a flaky row never aborts the pass, never freezes a hub).
-  `firstErr` is returned for observability only. No wall-clock in `OTSTick`; a `Run`-style ticker wrapper
-  is deferred to the wiring sub-step (no `main.go` wiring yet — a no-op loop would be dead code).
-- **`Upgrader` is a func seam, not an interface (YAGNI, matches `AlertFunc`)** —
-  `func(ctx, store.OTSRecord) (UpgradeResult, error)` returning `{Confirmed, OTSBytes, BTCHeight}`. Keeps
-  `internal/follower` import-free of any anchoring package; the real calendar-HTTP client becomes a
-  closure of this type + the first `go.mod`/`go.sum` change (the NEXT sub-step). Oracle gate correctly
-  N/A this slice (opaque `pending`→`confirmed`/back-off over an already-fsck-verified root; no
-  signature/RFC-6962/Merkle/did:web/proof code; the `Upgrader` is injected so no `ots verify` crypto
-  runs — that gate first applies at the real-`Upgrader` step).
+- **`OTSTick(ctx, st, stamper, up, now, logger)` is the pure injected-`now` analogue of `loop.go`'s
+  `Tick`, a SEPARATE driver off the poll path — OTS NEVER blocks/crashes the follower (ADR-0004).** Per
+  back-off-filtered `PendingOTS` row: if not-yet-stamped (`stamper != nil && len(r.OTSBytes) == 0`, the
+  empty sentinel the poll path writes) → call `Stamper`, persist via `MarkOTSStamped`, `continue` (next
+  tick upgrades it); else `Confirmed` → `MarkOTSUpgraded`; declined/errored → `MarkOTSAttempted(Attempts+1,
+  now+backoff)`. Any per-row Stamper/Upgrader transport fault OR store-write fault is logged with
+  `hub_id`/`tree_size`, folded into `firstErr`, and the pass CONTINUES; `firstErr` is observability-only.
+  `Stamper`/`Upgrader` are func seams (not interfaces, YAGNI/matches `AlertFunc`) so `internal/follower`
+  imports no anchoring package (verify deps == 0: `internal/otsclient`/`internal/ots`/`nbd-wtf/opentimestamps`).
+  Stamping is placed HERE off the poll path, NOT in `stampRoot`/`PollHub` — a synchronous calendar
+  round-trip on the poll path violates "OTS never blocks"; `follower.go` stays byte-unchanged.
+- **DURABLE TRAP — the production `Stamp` path lacks the panic-recover AND per-request-timeout the upgrade
+  path has (open `normal` issue).** When the real `otsclient.Stamp` closure is wired (it now is, via
+  `stampFunc()` in main.go), it runs `opentimestamps.Stamp`'s panic-prone `parseCalendarServerResponse`
+  parser and `http.DefaultClient` with NO recover and NO deadline — so a malformed calendar response
+  CRASHES the monitor and a stalled one HANGS the OTS goroutine. The upgrade path solved exactly this with
+  `safeUpgrade`/`recoverRead`; the stamp path needs the symmetric `safeStamp` guard. Any future stamp-path
+  touch must route through such a guard (same FFI-boundary rule as `safeUpgrade` — do not strip it).
+- **DURABLE TRAP — the nil-Stamper guard order is wrong for empty rows (open `low` issue).** The guard
+  `if stamper != nil && len(r.OTSBytes) == 0` falls THROUGH to the Upgrader on a nil Stamper + empty row
+  (bogus back-off), contradicting the docstring's "nil skips, leaves empty". The nil-tolerant contract
+  only holds when there are no empty rows; a clean fix tests `len(r.OTSBytes) == 0` first and `continue`s
+  when `stamper == nil`. Production wires a non-nil Stamper so this is test-only, but keep docstring==code.
+- **`MarkOTSStamped` is a status-untouching UPDATE seam (NOT riding `RecordOTS`).** `RecordOTS` is
+  `ON CONFLICT DO NOTHING` (cannot update an existing row's bytes); `MarkOTSUpgraded` flips status to
+  confirmed; `MarkOTSAttempted` only touches attempts/next_retry. So persisting stamp bytes onto an
+  existing pending row genuinely needed a 3rd store mutator that leaves status `pending` (the row must
+  stay in `PendingOTS` for the next-tick upgrade). The stamp branch's `continue`-after-stamp (upgrade next
+  tick) is deliberate — a fresh-stamped sequence is never Bitcoin-confirmed immediately, so falling
+  through would just back it off. Oracle gate correctly N/A (opaque `pending`→`confirmed` over an
+  already-fsck-verified root; no signature/RFC-6962/Merkle/did:web/proof code).
 - **`backoff(attempts)` is a pure capped-exponential helper** (base 1h, doubling, shift cap 5 = 32h
   pre-clamp, max 24h); `attempts` is the post-increment count so `attempts==1` waits one base, non-
-  positive → 1. Exact cadence is not safety-critical (OTS best-effort); golden-tabled by `TestOTSBackoff`.
-  Tests drive the public store seam (`RecordOTS` seed → `OTSTick` with fake confirming/declining/erroring
-  `Upgrader`s → `OTSForRoot`/`PendingOTS` read-back), never loop internals; reviewer reproduced the
-  next_retry-filter + no-op-`MarkOTSAttempted` mutations (both reverted) — non-vacuous.
+  positive → 1. Tests drive the public store seam (`RecordOTS`/`seedNotStampedOTS` seed → `OTSTick` with
+  fake `Stamper`+`Upgrader` → `OTSForRoot`/`PendingOTS` read-back), never loop internals. New tests
+  (`TestOTSStampThenUpgrade` full transit, `TestOTSStampBacksOff` fault) are mutation-proven (disabling
+  the stamp branch → both FAIL; no-op `MarkOTSStamped` → store AND follower stamp tests FAIL), reverted.
 
 ## Structured logging (`log/slog`) at the loop + binary boundary
 

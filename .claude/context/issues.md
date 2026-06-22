@@ -18,6 +18,56 @@ filed it and does **not** affect priority.
 
 ---
 
+## The production OTS stamp path has neither a panic-recover nor a per-request timeout (the upgrade path has both)
+- **Priority:** normal
+- **Source:** [review] (Codex P1+P2, reviewer-confirmed against the library source)
+- **What / where / how to verify:** This advance newly wired `otsclient.Stamp` onto the live background
+  goroutine (`cmd/iscc-monitor/main.go` `stampFunc()` → `runOTSLoop` → `OTSTick`'s Stamper call), but
+  `Stamp` (`internal/otsclient/client.go:121`) has NONE of the two guards the sibling upgrade path got in
+  the prior hardening slice (`safeUpgrade`/`recoverRead`). TWO defects on the same call:
+  (1) **panic → process crash.** `Stamp` calls `opentimestamps.Stamp`, which parses the calendar
+  response via `parseCalendarServerResponse` → `parseTimestamp`/`readInstruction`
+  (`opentimestamps@v0.4.0/parsers.go`) — the IDENTICAL panic-prone parser family `recoverRead`
+  (`client.go:136`) was created to guard (the otsclient learning: "the library over-reads its buffer on
+  truncated / non-.ots bytes → a slice-bounds panic"). A malformed/truncated calendar stamp response
+  therefore panics, and because the Stamper runs inside `runOTSLoop`'s goroutine with no recover, the
+  panic crashes the WHOLE monitor (violates the always-loaded "OTS never crashes the follower", ADR-0004).
+  (2) **stall → goroutine hang.** `opentimestamps.Stamp` uses `http.DefaultClient.Do` with no deadline
+  (`stamp.go:21`) and `stampFunc` passes the process ctx (no timeout), so a calendar that accepts the POST
+  but never finishes the body hangs the OTS goroutine forever, starving all later pending rows + future
+  ticks. The upgrade path already solved exactly this with `safeUpgrade`'s
+  `context.WithTimeout(ctx, upgradeTimeout=30s)` (`client.go:158`). Not currently exploitable in tests
+  (the Stamper is injected/faked offline) and best-effort by design, but a live calendar can now trigger
+  both. Does NOT block this increment's stated goal (the stamp→upgrade transit works); it is a latent
+  production-correctness defect on a freshly-live path. Fix when the stamp path is next touched: add a
+  `safeStamp` wrapper mirroring `safeUpgrade` — derive `context.WithTimeout(ctx, stampTimeout)` AND a
+  `recover()`-to-error guard around `opentimestamps.Stamp`/the response parse, and route `Stamp` through it
+  (the same FFI-boundary pattern as `recoverRead`/`safeUpgrade`). Verify fixed: a unit test feeds `Stamp`
+  (or `safeStamp`) a malformed calendar response and asserts a wrapped error (no panic), and a stalled
+  request returns a deadline-exceeded error rather than hanging; reverting the guard makes that test panic/hang.
+- **Spec:** ADR-0004 "OTS never blocks / never crashes the follower"; learnings.md always-loaded OTS rule;
+  `learnings/otsclient.md` `safeUpgrade`/`recoverRead` precedent ("keep ALL upgrade calls routed through
+  safeUpgrade … do not strip it" — the stamp path needs the symmetric guard).
+
+## Nil-Stamper + an empty-OTSBytes row falls through to the Upgrader instead of being left untouched
+- **Priority:** low
+- **Source:** [review] (Codex P3, reviewer-confirmed by probe)
+- **What / where / how to verify:** `OTSTick`'s stamp guard is `if stamper != nil && len(r.OTSBytes) == 0`
+  (`internal/follower/otsloop.go:144`). When `stamper == nil` AND a pending row has the empty-OTSBytes
+  sentinel, the guard is false, so execution falls through to `up(ctx, r)` with empty bytes — the real
+  Upgrader (`recoverRead`) parses empty bytes → error → a bogus back-off (`MarkOTSAttempted`,
+  Attempts++), rather than leaving the row untouched. This contradicts the `OTSTick` docstring's
+  nil-tolerant claim ("A nil Stamper skips stamping, leaving the row empty"). Reviewer-confirmed by a
+  throwaway probe: nil Stamper + empty row → `upCalled == true`, `Attempts == 1` after the tick. NOT a
+  production hazard — `stampFunc()` always wires a non-nil Stamper, so the live loop never hits this; it
+  is a docstring-vs-code contract mismatch on the test-only nil path. Fix when `otsloop.go` is next
+  touched: handle `len(r.OTSBytes) == 0` FIRST and `continue` when `stamper == nil` (skip the row), so the
+  nil-tolerant contract the docstring states actually holds. Verify fixed: a test with a nil Stamper + an
+  empty-OTSBytes row asserts the Upgrader is NOT invoked and the row's Attempts stays 0; reverting the
+  guard reorder makes it FAIL. Low — production wires a non-nil Stamper, the suite is green.
+- **Spec:** CLAUDE.md "Write evergreen comments that describe the current state" (docstring must match
+  behavior); next.md Implementation Note "Prefer nil-tolerant, mirroring the Loop's nil-Logger discipline".
+
 ## Hub-List `hubDomain` accepts a trailing `?` (ForceQuery fail-open against the bare-host contract)
 - **Priority:** normal
 - **Source:** [review] (Codex P2, reviewer-confirmed)
