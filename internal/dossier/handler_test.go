@@ -230,10 +230,48 @@ func TestDossierRendersCoveredHub(t *testing.T) {
 	if strings.Contains(body, "<table") {
 		t.Errorf("body contains a <table> element; the ledger card layout is incomplete\n%s", body)
 	}
-	// No external CDN URL may appear in the body — same-origin/relative hrefs only.
-	for _, banned := range []string{"jsdelivr", "http://", "https://", "cdn."} {
+	// No third-party CDN URL may appear in the body. The chrome/verify link to
+	// monitor.iscc.codes is the one intentional external https origin (the verifier
+	// app, per the certificate baseline), so ban only third-party CDN hosts plus
+	// bare http://, not every https:// substring.
+	for _, banned := range []string{"jsdelivr", "cdn.", "unpkg", "googleapis", "http://"} {
 		if strings.Contains(body, banned) {
 			t.Errorf("body contains external CDN reference %q\n%s", banned, body)
+		}
+	}
+}
+
+// TestDossierChromeTierTwoAndBackLink asserts the dossier carries the shared-chrome
+// tier-2 affordance and navigation closure: the "monitor instance" identity label,
+// the static "verify ↗ monitor.iscc.codes" tier-2 link to the monitor-agnostic
+// verifier app (Surface C, the .codes app — never an instance), and the "← Realm
+// index" back-link up to the dashboard at "/". The DS shell stays same-origin.
+func TestDossierChromeTierTwoAndBackLink(t *testing.T) {
+	st, id := coveredHub(t)
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		"← Realm index",                      // the back-link copy
+		`href="/"`,                           // the back-link target (realm index)
+		"monitor instance",                   // the instance-identity label
+		"monitor.iscc.codes",                 // the tier-2 verify link copy
+		`href="https://monitor.iscc.codes/"`, // the tier-2 verify link target
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing chrome/back-link marker %q\n%s", want, body)
+		}
+	}
+	// The DS shell links stay same-origin: the verifier app link is the only
+	// external https origin, never a CDN-hosted stylesheet or font.
+	for _, want := range []string{`href="/_ds/tokens.css"`, `href="/_ds/fonts.css"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing same-origin DS-shell link %q\n%s", want, body)
 		}
 	}
 }

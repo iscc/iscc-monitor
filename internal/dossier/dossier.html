@@ -24,7 +24,8 @@
       background: var(--surface-page);
     }
 
-    /* Document chrome: the masthead identifying this monitor instance. */
+    /* Document chrome: the masthead identifying this monitor instance, with the
+       tier-2 "verify in your browser" link to the monitor-agnostic verifier app. */
     .chrome {
       display: flex;
       align-items: center;
@@ -62,11 +63,45 @@
       color: var(--text-muted);
       font-weight: var(--weight-light);
     }
+    .chrome-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: var(--space-5);
+      flex-wrap: wrap;
+    }
+    .chrome-instance {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-body);
+    }
+    /* The tier-2 link to the monitor-agnostic verifier app (monitor.iscc.codes).
+       The dossier has no single ISCC-ID subject to re-verify in-browser, so its
+       tier-2 affordance is this cross-surface link, not a baked-in WASM proof
+       island (unlike the certificate). */
+    .chrome-verify {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-link);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-xs);
+      padding: var(--space-2) var(--space-3);
+    }
 
     .page {
       max-width: 1000px;
       margin: 0 auto;
       padding: var(--space-10) var(--space-8) var(--space-14);
+    }
+
+    /* The back-link row up to the realm index (the dashboard at "/"). */
+    .backlink-row {
+      margin-bottom: var(--space-4);
+    }
+    .backlink {
+      color: var(--text-link);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-semibold);
     }
 
     /* Dossier heading row. */
@@ -319,9 +354,17 @@
         <div class="chrome-sub">Evidence of record · ISCC-Hub network</div>
       </div>
     </div>
+    <div class="chrome-actions">
+      <span class="chrome-instance">monitor instance</span>
+      <a class="chrome-verify" href="https://monitor.iscc.codes/">verify ↗ monitor.iscc.codes</a>
+    </div>
   </header>
 
   <main class="page">
+    <div class="backlink-row">
+      <a class="backlink" href="/">← Realm index</a>
+    </div>
+
     <div class="ledger-head">
       <h1 class="ledger-title">Hub dossier</h1>
       <span class="ledger-count">This hub's store-provable status and coverage window, with a link into its mirrored log.</span>
