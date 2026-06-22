@@ -1,141 +1,135 @@
 # Next Work Package
 
-## Step: Extract the pure `internal/proof/verify` inclusion-verifier core (WASM-shareable skeleton)
+## Step: WASM verifier entrypoint — `cmd/wasm` exporting `verify.VerifyInclusion` to JS
 
 ## Advances
-The **WASM verifier upgrade** milestone (target.md, `[not started]`, **1/1 Verify open — the
-longest-standing untouched criterion**, re-confirmed by `state.md`: no `internal/proof` package, no
-`syscall/js`, no `GOOS=js` target). Its Verify criterion:
+Milestone **WASM verifier upgrade** (target.md) — the only un-started v1 milestone with offline-provable
+Verify criteria, continuing the arc the prior iteration began (the pure `internal/proof/verify` core
+landed and compiles under `GOOS=js GOARCH=wasm`). The handoff `**Next:**` from review names exactly this:
+
+> the natural next WASM sub-step is the `GOOS=js`/`syscall/js` entrypoint (`cmd/wasm`) that exports
+> `verify.VerifyInclusion` to JS.
+
+Its Verify criterion:
 
 > **Verify:** identical vectors yield identical verdicts (WASM vs server); the verifier artifact hash
-> matches the published value; a `(size, root)` mismatch renders the guided split-view alert, not a
-> dead error.
+> matches the published value; a `(size, root)` mismatch renders the guided split-view alert, not a dead
+> error.
 
-This is the **skeleton-first** opening move toward that milestone: the "identical verdicts (WASM vs
-server)" half is only achievable once the server and the future `GOOS=js` build share **one** pure
-verification core. This step creates that core (`internal/proof/verify`), golden-tests it, proves it
-builds under `GOOS=js GOARCH=wasm`, and routes the two existing server call sites through it — so the
-WASM build later imports the *same* function the server already uses. Remaining WASM sub-steps are
-listed under `## Not In Scope`.
+This step closes the **first half** of "identical verdicts (WASM vs server)": it makes the WASM side
+*callable* — a `GOOS=js GOARCH=wasm` `package main` that exports the shared `verify.VerifyInclusion` core
+to JavaScript, marshaling the same base64-Std proof-bundle inputs the server already emits. It is a
+**verifiable skeleton**: the lazy tier-2 enhancement on the certificate/dossier and the standalone
+`monitor.iscc.codes` app (published hash + SRI + split-view alert) are the remaining sub-steps, listed
+under Not In Scope so later iterations continue this same arc.
 
 ## Goal
-Create a pure, WASM-shareable `internal/proof/verify` package wrapping the RFC-6962 inclusion-verify
-primitive (`HashLeaf(record)` → `proof.VerifyInclusion`), and route the two production call sites
-(`proofserve` verify-for-me and `certificate` §3) through it. This establishes the single verifier
-core the WASM milestone needs and removes the verbatim-duplicated primitive (with its identical
-"arg-order gotcha" comment) that currently lives in both handlers.
+Lay the WASM verifier entrypoint: a thin `syscall/js` glue that registers a JS-callable function, plus a
+**pure, linux-testable** decode adapter (`verifyJSON`) that turns the base64-Std proof-bundle fields the
+monitor emits (record, proof hashes, root) into `verify.VerifyInclusion` args and folds the three-way
+verdict into a JS-friendly result. This makes the WASM side callable so a later step can wire it as
+progressive enhancement, and proves WASM-vs-server verdict parity at the marshaling boundary.
 
 ## Scope
-- **Create**: `internal/proof/verify/verify.go` (the pure package) and
-  `internal/proof/verify/verify_test.go` (golden-vector + parity test — does not count toward the
-  3-file limit).
-- **Modify** (≤3 non-test files):
-  1. `internal/proofserve/handler.go` — replace the inline `leafHash := …; included := proof.VerifyInclusion(…) == nil`
-     pair at lines ~680-681 (`serveVerify`) with a call to the new package.
-  2. `internal/certificate/handler.go` — replace the inline pair at lines ~805-806 (`buildData` §3)
-     with the same call.
+- **Create**:
+  - `cmd/wasm/verify_adapter.go` — the pure (no `syscall/js`) decode-and-verify adapter:
+    `verifyJSON(record, root string, proofB64 []string, index, size uint64) (verified bool, errMsg string)`
+    (or a small result struct). base64-Std-decodes the inputs, calls
+    `github.com/iscc/iscc-monitor/internal/proof/verify`.`VerifyInclusion`, and maps the three-way verdict
+    to a flat `(verified, errMsg)` JS-shaped result. **No build tag** — this file compiles + tests on
+    linux. Start the file with a docstring naming it the pure WASM-marshaling adapter.
+  - `cmd/wasm/main.go` — the `//go:build js && wasm` entrypoint: imports `syscall/js`, wraps `verifyJSON`
+    in a `js.FuncOf` exposing it as a global JS function (e.g. `globalThis.isccVerifyInclusion`), and
+    blocks (`select{}`) so the runtime stays alive. **This file is excluded from `go build ./...` on
+    linux** by the build tag (verified during scoping). Start it with a docstring stating it is the
+    WASM-only entrypoint and the marshaling lives in the untagged adapter.
+  - `cmd/wasm/verify_adapter_test.go` — table-driven golden test for `verifyJSON` using the SAME 4-leaf
+    base64-Std vector already pinned in `internal/proof/verify/verify_test.go`
+    (`goldenRoot = "vdHF/1WxnLaw58dhv5psyqJ/u/wHt08fq7bpEaC9KrM="`, the two `goldenProof` hashes, record
+    `"leaf-1"`, index 1, size 4 → `verified=true`). Cases: positive; wrong record → `verified=false,
+    errMsg==""` (negative verdict, NOT an error); tampered root → same; malformed base64 → `errMsg!=""`;
+    `index>=size` → `errMsg!=""`.
+- **Modify**: (none — all new files)
 - **Reference**:
-  - `.claude/context/learnings.md` — the always-loaded rules: "`proof/verify` is pure (no
-    `net`/`os`/`sqlite` imports) … shared by the server, `verify-for-me`, and the WASM build. Keep it
-    import-clean or the WASM build breaks." AND "gate a rendered ✓ on a re-VERIFICATION, not a status
-    flag" (this core IS the re-verification).
-  - `.claude/context/learnings/certificate.md` — §3 gate mechanics (the re-verify rule, the
-    `HasClause3`-only-on-nil contract) so the certificate edit preserves exact behavior.
-  - `.claude/context/learnings/http-surface.md` — proofserve `serveVerify` semantics (the
-    `Verified`/`Included`/`Reason` verdict shape the call must not change).
-  - `internal/proofserve/handler.go:666-696` and `internal/certificate/handler.go:799-819` — the two
-    verbatim call sites to replace.
-  - `github.com/transparency-dev/merkle/proof.VerifyInclusion` (signature:
-    `(hasher merkle.LogHasher, index, size uint64, leafHash []byte, proof [][]byte, root []byte) error`)
-    and `github.com/transparency-dev/merkle/rfc6962.DefaultHasher` (`HashLeaf`). Both build under
-    `GOOS=js GOARCH=wasm` (verified during scoping).
+  - `.claude/context/learnings/proof-verify.md` — the three-way verdict contract, the arg-order gotcha
+    (already hidden inside `VerifyInclusion`), the purity rule, and the golden 4-leaf vector to reuse.
+  - `internal/proof/verify/verify.go` + `internal/proof/verify/verify_test.go` — the function being
+    exported and the exact golden literals (`goldenRoot`, `goldenProof`) to copy into the adapter test.
+  - `.claude/adr/0003-client-verification-and-in-browser-verifier.md` — WASM is a progressive enhancement
+    on the shared `internal/proof/verify`; one verifier codebase to native + WASM; reproducible build /
+    published-hash / SRI are the LATER sub-steps (Not In Scope here).
+  - `.claude/design/ISCC Monitor - Independent Verification.dc.html` — Surface C, the eventual consumer of
+    this export (skim only; not built here).
 
 ## Not In Scope
-- **No `GOOS=js GOARCH=wasm` main / `syscall/js` glue, no `cmd/wasm`, no JS shim.** This step only
-  creates the *pure Go* core and proves it *compiles* under the WASM target via `go build`; the actual
-  WASM entrypoint, the lazy-loaded tier-2 enhancement on the certificate/dossier, and the standalone
-  `monitor.iscc.codes` Independent Verification app are later sub-steps of this same arc.
-- **No consistency-proof verifier in the new package yet.** Inclusion only (the verify-for-me + §3
-  primitive). A `VerifyConsistency` sibling can join in a later step when a caller needs it.
-- **No change to the verdict shapes, error mapping, or HTTP status** of `serveVerify` or the
-  certificate — this is a behavior-preserving extraction; the observable outputs must be byte-identical.
-- **Do NOT touch the proof-*builder*** (`logclient.InclusionProofFromTiles`) — it stays in
-  `logclient` (it reads tiles; it is not pure). Only the final hash-leaf-and-verify step moves.
-- Dossier §4 Bitcoin-anchor named region (the handoff's alternative suggestion) — deferred; this step
-  prioritizes the longest-standing untouched milestone Verify criterion per the state's #1 ranking.
-- The standing `normal` hardening defects (§5 digest-binding, `host:port` DID `%3A`-encode,
-  `safeStamp`, `hubDomain` ForceQuery, §6 timestamp) — none are on the lines this step edits.
+- **No in-browser app, no HTML, no DS shell, no `?monitor=<url>` fetch.** Surface C
+  (`monitor.iscc.codes` Independent Verification) is a later sub-step.
+- **No tier-2 progressive enhancement** on the certificate/dossier (no JS `<script>`, no `wasm_exec.js`
+  embedding, no `internal/web` change). That is the next sub-step after this entrypoint exists.
+- **No reproducible-build / published-hash / SRI pin** and **no `.wasm` artifact committed** to the repo
+  or served by the monitor. Those land with the hosting sub-step.
+- **No `mise.toml` task for the WASM build.** Keep the WASM compile a documented manual gate this step;
+  a `mise run build:wasm` task can be added when the artifact is actually served.
+- **No `VerifyConsistency` export** — the WASM tier-2 result is inclusion-only; a consistency wrapper
+  waits for a caller (and needs its own arg-order wrapper per the learning).
+- **Do not add a build tag to `verify_adapter.go`** — keeping the marshaling logic untagged is what makes
+  it linux-testable; only `main.go` (which imports `syscall/js`) carries `//go:build js && wasm`.
+- The standing `normal` hardening defects (§5 digest-binding, `host:port` DID `%3A`-encode, `safeStamp`,
+  `hubDomain` ForceQuery, §6 timestamp) — none are on the files this step touches; do not fold them in.
 
 ## Implementation Notes
-- **Purity is the load-bearing constraint.** `internal/proof/verify` must import ONLY
-  `github.com/transparency-dev/merkle/proof` and `github.com/transparency-dev/merkle/rfc6962` (plus
-  `fmt`/`errors` for the precondition error). NO `net`, `net/http`, `os`, `database/sql`, `embed`,
-  `html/template`. Per the didweb learning, `os` may appear transitively via `fmt`; that is fine — the
-  load-bearing test is `GOOS=js GOARCH=wasm go build ./internal/proof/verify` succeeding, NOT grepping
-  the dep list.
-- **API shape (pure, minimal-arg, KISS):**
-  ```go
-  // VerifyInclusion re-verifies that record is the leaf at index in a tree of the
-  // given size whose root is root, using the supplied RFC-6962 inclusion proof.
-  // It hashes record into its leaf hash (rfc6962.DefaultHasher.HashLeaf) and runs
-  // proof.VerifyInclusion. Returns (true, nil) when the proof rebuilds root,
-  // (false, nil) when the proof is well-formed but does NOT rebuild root (a genuine
-  // negative verdict — not an error), and (false, err) only on a precondition the
-  // library rejects (e.g. index >= size). Pure: shared verbatim by the server,
-  // verify-for-me, and the GOOS=js WASM build, so it must stay import-clean.
-  func VerifyInclusion(record []byte, index, size uint64, proof [][]byte, root []byte) (bool, error)
-  ```
-  The package dir is `proof/verify` and is named `verify`; alias the merkle proof import to avoid the
-  `proof` package-name collision (e.g. `import merkleproof "github.com/transparency-dev/merkle/proof"`),
-  matching how the existing handlers alias as needed.
-- **The (false, nil) vs (false, err) split is the whole point.** Both call sites today treat a non-nil
-  library `VerifyInclusion` result as a *silent negative*, never a 500 — proofserve sets
-  `Verified:false, Reason:"inclusion proof did not verify"`; certificate silently omits §3. The library
-  returns an error for BOTH a real mismatch AND a precondition violation (`index >= size`). To preserve
-  exact behavior: check `index >= size` up front and return `(false, fmt.Errorf(...))`; otherwise
-  `return merkleproof.VerifyInclusion(rfc6962.DefaultHasher, index, size, rfc6962.DefaultHasher.HashLeaf(record), proof, root) == nil, nil`.
-  Both call sites pre-gate the leaf against the accepted tree (`leafIndex < size` /
-  `seqs[0] < hub.LastSize`), so the precondition branch is unreachable on the happy path — note that in
-  a comment. At the call sites, route the returned `ok` boolean exactly where the old
-  `included`/`== nil` boolean went; treating a non-nil error as a non-verified verdict keeps both sites
-  strictly fail-closed (the certificate already silently declines §3; proofserve already reports
-  "did not verify") — do NOT introduce a new 5xx branch.
-- **Arg order is the classic bug (always-loaded learning, repeated verbatim in both call sites):**
-  `VerifyInclusion(hasher, index, size, leafHash, proof, root)` — `leafHash` precedes `proof`. The new
-  wrapper hides this; keep the gotcha comment on the wrapper, and trim the now-redundant duplicate
-  comments at the two call sites to a one-liner ("// re-verify via proof/verify").
-- **This wrapper IS the "re-verify, not a flag" rule (always-loaded).** Both surfaces render a ✓ a
-  reader trusts; they must keep gating on this re-verification. The extraction must not regress that —
-  the boolean the wrapper returns is the same `proof.VerifyInclusion(...) == nil` gate, just centralized.
-- **Golden vector for the test (computed with the library during scoping, reproducible).** A 4-leaf
-  tree of records `"leaf-0".."leaf-3"`: `root = vdHF/1WxnLaw58dhv5psyqJ/u/wHt08fq7bpEaC9KrM=`
-  (base64-Std); the inclusion proof for index 1 in size 4 is
-  `["MF31n5WQw8msY9KydDw4jjeSRJB4zr9/s9vmRxZDsrc=", "vUX/KHlnBNiL2sUbHfVT/aWYN7YW1tHLIRTbw7CH/2k="]`.
-  Decode these (base64-Std) in the test and assert `VerifyInclusion([]byte("leaf-1"), 1, 4, proof,
-  root)` returns `(true, nil)`. Negative cases: a wrong record (`"WRONG"`) → `(false, nil)`; a tampered
-  root → `(false, nil)`; `index >= size` (e.g. `4, 4`) → `(false, err)`. Prefer building the proof
-  in-test from `rfc6962.DefaultHasher` (HashLeaf + HashChildren) so a library bump can't silently rot
-  the vector; the base64 literals above are the cross-check.
+- **Split the testable logic from the untestable glue.** `syscall/js` only compiles under
+  `GOOS=js GOARCH=wasm`, and js/wasm tests need a browser/node harness this loop does not have. So put ALL
+  the marshaling (base64 decode, verdict folding) in the untagged `verify_adapter.go` `verifyJSON`, and
+  keep `main.go` a small `js.FuncOf` shim that pulls args off the `[]js.Value` (`.String()`, `.Int()`, and
+  ranging a JS array of strings) and calls `verifyJSON`. The shim is exercised only by the WASM compile
+  gate; the logic is exercised by the linux golden test.
+- **Verdict mapping (preserve the three-way contract — proof-verify learning).** `verify.VerifyInclusion`
+  returns `(true,nil)` verified / `(false,nil)` genuine negative / `(false,err)` precondition error. Map:
+  a base64 decode error OR a non-nil verify error → `verified=false` + non-empty `errMsg`; otherwise
+  return the boolean with `errMsg==""`. **A wrong record / tampered root must surface as `verified=false,
+  errMsg==""` — a negative VERDICT, not an error** — or the eventual split-view alert can't distinguish
+  "mismatch" from "broken input". This mirrors how the server call sites fold the verdict (both discard
+  the `, _` err and route the boolean).
+- **Inputs are base64-Std** (always-loaded + proof-verify learning): the monitor emits root, record, and
+  every proof hash base64-Std (`internal/proofserve` + `internal/certificate` use `base64.StdEncoding`
+  throughout). The adapter base64-Std-decodes each before calling the core — do NOT change the core's
+  `[]byte` signature.
+- **Reuse the golden vector verbatim.** Copy the `goldenRoot` / `goldenProof` literals + `leaf-1` / index
+  1 / size 4 from `internal/proof/verify/verify_test.go` so the adapter test proves WASM-side parity
+  against the SAME vector the core test pins — that IS the "identical vectors → identical verdicts" check
+  at the marshaling boundary.
+- **Keep the adapter pure** (always-loaded rule + ADR-0003): `verify_adapter.go` imports only
+  `encoding/base64` + the `verify` package (+ `fmt` if a wrapped errMsg is built). No `net`/`os`/
+  `syscall/js`. The whole point is that the SAME core+marshaling runs identically on server and WASM.
+- **Verified build-tag behavior (scoping):** a `//go:build js && wasm` file whose import (`syscall/js`) is
+  unavailable on linux is silently skipped by `go build ./...`, `go vet ./...`, and `go test ./...` on
+  linux when the module has other packages (reproduced in a scratch module: all three exit 0, `cmd/wasm`'s
+  untagged adapter + test still compile and run). So `mise run check` stays green; `cmd/wasm/main.go` is
+  compiled only by the explicit `GOOS=js GOARCH=wasm` gate. Use the canonical `js && wasm` constraint
+  (matches `wasm_exec.js` shipped at `$(go env GOROOT)/lib/wasm/wasm_exec.js`).
+- **`js.FuncOf` signature:** `func(this js.Value, args []js.Value) any`. Return a JS object literal via
+  `map[string]any{"verified": v, "error": msg}` (a `js.ValueOf`-able map), keeping the shim trivial. Guard
+  `len(args)` defensively and treat a wrong arg count as an error result, not a panic.
 
 ## Verification
-- `mise run check` is green (build + vet + test all packages; `gofmt -l .` excl. `cauldron/` empty;
-  `go mod tidy -diff` clean — no new prod dep).
-- `GOOS=js GOARCH=wasm go build ./internal/proof/verify` succeeds (the WASM-shareability gate — the
-  load-bearing proof the core can compile into the future WASM build).
-- `go test -count=1 -run TestVerifyInclusion ./internal/proof/verify` passes.
-- Golden assertion: `verify.VerifyInclusion([]byte("leaf-1"), 1, 4, proof, root)` returns `(true, nil)`
-  for the 4-leaf vector above (`root == vdHF/1WxnLaw58dhv5psyqJ/u/wHt08fq7bpEaC9KrM=`).
-- Negative assertions: a wrong record and a tampered root each return `(false, nil)` (not an error);
-  `index >= size` returns a non-nil error.
-- Behavior-preserving: `go test -count=1 -run TestVerify ./internal/proofserve` and
-  `go test -count=1 -run TestCertificate ./internal/certificate` both still pass unchanged (the
-  verify-for-me verdict shape and the §3 gate behavior are byte-identical after routing through the
-  new core).
-- DRY: the inline `proof.VerifyInclusion(rfc6962.DefaultHasher, …leafHash…, builtProof, root) == nil`
-  pair no longer appears in either `internal/proofserve/handler.go` or `internal/certificate/handler.go`
-  (each now calls `verify.VerifyInclusion`).
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...` pass and `gofmt -l .` excl.
+  `cauldron/` is empty) — the tagged `cmd/wasm/main.go` is excluded on linux, so the linux gate is
+  unaffected.
+- `GOOS=js GOARCH=wasm go build -o /tmp/iscc-verify.wasm ./cmd/wasm` exits 0 (the WASM entrypoint
+  compiles, importing `syscall/js` + `internal/proof/verify`).
+- `go vet ./cmd/wasm` on linux does NOT error on the `syscall/js` import (assert: the linux build of the
+  package never tries to compile `main.go` — only the untagged adapter + test are built).
+- `go test -count=1 -run TestVerifyJSON ./cmd/wasm` passes: positive 4-leaf vector → `verified=true,
+  errMsg==""`; wrong record + tampered root → `verified=false, errMsg==""`; malformed base64 and
+  `index>=size` → `errMsg!=""`.
+- Assertion: `verifyJSON("leaf-1", "vdHF/1WxnLaw58dhv5psyqJ/u/wHt08fq7bpEaC9KrM=", goldenProof, 1, 4)`
+  returns `verified=true, errMsg==""` (the same verdict the server core returns for the same vector —
+  WASM-vs-server parity at the marshaling boundary).
+- `go mod tidy -diff` clean (no new prod dependency — `syscall/js` is stdlib; the adapter reuses the
+  existing `internal/proof/verify`).
 
 ## Done When
-`internal/proof/verify` exists as a pure, WASM-buildable package whose golden + negative tests pass,
-both server call sites route through it with byte-identical observable behavior, and `mise run check`
-plus the `GOOS=js GOARCH=wasm go build ./internal/proof/verify` gate are green.
+`mise run check` is green, `GOOS=js GOARCH=wasm go build ./cmd/wasm` succeeds, and
+`go test -run TestVerifyJSON ./cmd/wasm` proves `verifyJSON` returns the same three-way verdict as the
+server core for the shared golden vector (positive, both negatives, and both error cases).
