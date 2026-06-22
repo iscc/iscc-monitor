@@ -27,10 +27,12 @@ package proofserve
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"math"
 	"net/http"
@@ -150,6 +152,10 @@ type StatusSource interface {
 // single accepted leaf from the hub's mirrored entry bundles and serving them
 // verbatim as application/octet-stream.
 //
+// It also handles GET /checkpoint.ots — serving the mirrored OpenTimestamps proof
+// for the hub's accepted (size, root) verbatim as application/octet-stream, so a
+// client can fetch it and run the standard ots toolchain against it.
+//
 // It handles GET /verify?iscc_id=<id> — the weaker verify-for-me path that
 // returns a single self-contained JSON verdict (the caller trusts the verdict
 // rather than verifying a proof bundle itself): the hub's persisted status, the
@@ -173,9 +179,9 @@ type StatusSource interface {
 //
 // Status mapping: non-GET → 405; an unmatched path → 404. The per-route flow
 // owns the rest (serveBrowser / serveRecords / serveRecord / serveInclusion /
-// serveConsistency / serveEntries / serveVerify); see each for its 400/404/500
-// mapping. CORS, caching, and conditional GET are intentionally out of scope for
-// this slice.
+// serveConsistency / serveEntries / serveOTS / serveVerify); see each for its
+// 400/404/500 mapping. CORS, caching, and conditional GET are intentionally out of
+// scope for this slice.
 //
 // statuses is the in-memory status overlay (the metrics registry) the log browser
 // uses to render the richer unresolvable / unverified verdicts the store cannot
@@ -203,6 +209,8 @@ func Handler(st *store.Store, hubID int64, statuses StatusSource) http.Handler {
 			serveConsistency(w, r, st, f, hubID)
 		case "/entries":
 			serveEntries(w, r, st, f, hubID)
+		case "/checkpoint.ots":
+			serveOTS(w, r, st, hubID)
 		case "/verify":
 			serveVerify(w, r, st, f, hubID)
 		default:
@@ -440,6 +448,102 @@ func serveEntries(w http.ResponseWriter, r *http.Request, st *store.Store, f sto
 	}
 
 	writeRecord(w, record)
+}
+
+// serveOTS serves the mirrored OpenTimestamps proof for the hub's accepted
+// (size, root) verbatim as application/octet-stream — the canonical Bitcoin-anchor
+// artifact a client fetches to run the standard ots toolchain against. It resolves
+// the accepted (size, root) the same way serveVerify does (FollowState.LastSize →
+// CheckpointAt), reads the stored proof via store.OTSForRoot, and writes the opaque
+// OTSBytes through the conditional-GET block below. The proof bytes are opaque here:
+// this route never parses or classifies them, so proofserve stays off the
+// non-WASM-pure internal/ots / internal/otsclient closure (learnings/otsclient.md).
+//
+// Status mapping: a FollowState DB error → 500; no accepted checkpoint yet
+// (LastSize == 0) → 404 "no accepted checkpoint" (there is no root to anchor —
+// coverage honesty, ADR-0001); a CheckpointAt read error → 500, and a
+// CheckpointAt found==false at the accepted size is the same real store
+// inconsistency serveVerify maps to 500; an OTSForRoot read error → 500. An
+// un-anchored root — OTSForRoot miss OR a row carrying the empty-OTSBytes sentinel
+// (stamped but not yet calendar-submitted, so no servable proof exists) — is a 404
+// "root not yet anchored" (the honest pending state, NOT a 5xx). Serving zero bytes
+// would hand the client an unparseable .ots, so the empty-sentinel row is treated
+// exactly as an absent row.
+func serveOTS(w http.ResponseWriter, r *http.Request, st *store.Store, hubID int64) {
+	ctx := r.Context()
+
+	// LastSize is the accepted tree size — the root the monitor anchors. A hub with
+	// no accepted checkpoint yet has no root to anchor.
+	fs, err := st.FollowState(ctx, hubID)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	size := fs.LastSize
+	if size == 0 {
+		http.Error(w, "no accepted checkpoint", http.StatusNotFound)
+		return
+	}
+
+	// The accepted root is the RFC-6962 tree head the monitor vouches for at the
+	// accepted size; it is the digest the OpenTimestamps proof is keyed on. A missing
+	// checkpoint row at the accepted size is a real store inconsistency (the same fault
+	// serveVerify maps to 500), never a 404.
+	root, _, found, err := st.CheckpointAt(ctx, hubID, size)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// OTSForRoot returns a plain miss (found==false) for an un-anchored root, not an
+	// error, so a not-yet-stamped root is an honest 404 rather than a 5xx.
+	rec, found, err := st.OTSForRoot(ctx, hubID, size, root)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	// The empty-OTSBytes sentinel (a pending row stamped at observation time but not
+	// yet calendar-submitted) carries no servable proof — serving zero bytes would be
+	// an unparseable .ots — so it is the same honest "not yet anchored" 404 as an
+	// absent row.
+	if !found || len(rec.OTSBytes) == 0 {
+		http.Error(w, "root not yet anchored", http.StatusNotFound)
+		return
+	}
+
+	writeOTS(w, r, rec.OTSBytes)
+}
+
+// writeOTS serves the OpenTimestamps proof bytes verbatim as
+// application/octet-stream with a strong content ETag and conditional-GET support,
+// mirroring tilesserve.writeBlob (proofserve is a separate package, so the small
+// block is inlined rather than exported across the boundary). The ETag is the quoted
+// hex of the proof's SHA-256 — a STRONG validator derived from the exact bytes — and
+// an If-None-Match wildcard "*" or exact-token match short-circuits to 304 Not
+// Modified with no body (RFC 7232 §4.1: the 304 still carries the validating ETag).
+// Cache-Control is no-cache (revalidating, never immutable): the served proof is
+// overwritten in place on the pending → Bitcoin-confirmed upgrade, so a client must
+// revalidate. All headers are set BEFORE the conditional branch because the 200/304
+// status is sent on the first write and freezes the header map. The post-200
+// write-drop matches writeRecord / tilesserve.writeBlob: a mid-write fault on an
+// opaque BLOB cannot un-send the status, so it signals only a broken client
+// connection.
+func writeOTS(w http.ResponseWriter, r *http.Request, data []byte) {
+	w.Header().Set("Content-Type", octetStreamType)
+	w.Header().Set("Cache-Control", "no-cache")
+	etag := fmt.Sprintf("\"%x\"", sha256.Sum256(data))
+	w.Header().Set("ETag", etag)
+
+	if inm := r.Header.Get("If-None-Match"); inm == "*" || inm == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	_, _ = w.Write(data)
 }
 
 // VerifyVerdict is the JSON response shape for the verify-for-me route: a single

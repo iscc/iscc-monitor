@@ -372,6 +372,12 @@ func mirrorHandler(st *store.Store, routes []hubRoute, m *metrics.Registry) *htt
 // record page each list row links to) are exact mounts like the other proof routes so
 // they beat the "/" subtree dispatch; an unmounted /record would fall through to
 // tilesserve and 404.
+//
+// /checkpoint.ots (the mirrored OpenTimestamps proof for the accepted root) is also an
+// exact mount so it beats the "/" subtree dispatch — without it the path falls through
+// to tilesserve, which 404s the unknown path. It is a DIFFERENT artifact from the raw
+// /checkpoint signed-note BLOB tilesserve serves under "/": the .ots is the timestamp
+// proof, read by proofserve from the ots table, not a tilesserve mirror BLOB.
 func hubHandler(st *store.Store, hubID int64, m *metrics.Registry) http.Handler {
 	mux := http.NewServeMux()
 	proofs := proofserve.Handler(st, hubID, m)
@@ -388,6 +394,7 @@ func hubHandler(st *store.Store, hubID int64, m *metrics.Registry) http.Handler 
 	mux.Handle("/inclusion", proofs)
 	mux.Handle("/consistency", proofs)
 	mux.Handle("/entries", proofs)
+	mux.Handle("/checkpoint.ots", proofs)
 	mux.Handle("/verify", proofs)
 	return mux
 }

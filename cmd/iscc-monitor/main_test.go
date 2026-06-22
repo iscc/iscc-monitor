@@ -430,6 +430,79 @@ func TestMirrorEntriesRoute(t *testing.T) {
 	})
 }
 
+// TestMirrorOTSRoute proves the /checkpoint.ots OpenTimestamps-proof route is mounted
+// per hub on the same combined mux as the static mirror and the other proof routes
+// (the load-bearing Mux-mount trap: the exact /checkpoint.ots mount must beat the "/"
+// subtree dispatch, else it falls through to tilesserve and 404s). It seeds a verified
+// mirror with an accepted checkpoint and an ots row holding a real .ots fixture, then
+// asserts GET /<origin>/log/checkpoint.ots routes through the shared mux and returns
+// the stored proof bytes verbatim, while the raw /<origin>/log/checkpoint signed note
+// (a DIFFERENT artifact) still reaches the static mirror.
+func TestMirrorOTSRoute(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "ots.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	hub, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	const leaves = 5
+	root := []byte("root")
+	at := time.Unix(1700000000, 0)
+	if _, _, err := st.RecordCheckpoint(ctx, store.CheckpointRecord{
+		HubID: hub, TreeSize: leaves, Root: root, Raw: []byte("checkpoint"), ObservedAt: at,
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint: %v", err)
+	}
+	if err := st.AdvanceFollowState(ctx, hub, leaves); err != nil {
+		t.Fatalf("AdvanceFollowState: %v", err)
+	}
+
+	// A real .ots proof stored against the accepted (size, root) — the same fixture
+	// internal/ots/testdata copies verbatim.
+	otsBytes, err := os.ReadFile(filepath.Join("..", "..", "internal", "ots", "testdata", "hello-world.txt.ots"))
+	if err != nil {
+		t.Fatalf("read ots fixture: %v", err)
+	}
+	if _, _, err := st.RecordOTS(ctx, store.OTSRecord{
+		HubID: hub, TreeSize: leaves, Root: root, Status: store.OTSStatusPending,
+		OTSBytes: otsBytes, StampedAt: at,
+	}); err != nil {
+		t.Fatalf("RecordOTS: %v", err)
+	}
+
+	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
+	mux := buildMux(st, routes, nil, metrics.New())
+
+	// GET /sb0.iscc.id/log/checkpoint.ots -> 200 byte-equal to the stored proof,
+	// proving the exact mount beats the "/" subtree dispatch.
+	t.Run("checkpoint.ots at origin prefix returns the stored proof verbatim", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id/log/checkpoint.ots", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+		}
+		if !bytes.Equal(rec.Body.Bytes(), otsBytes) {
+			t.Errorf("body = %d bytes, want byte-equal to the stored %d-byte proof", rec.Body.Len(), len(otsBytes))
+		}
+	})
+
+	// GET /sb0.iscc.id/log/checkpoint -> still the static mirror's raw signed note (a
+	// different artifact from the .ots proof), proving the new mount did not shadow it.
+	t.Run("checkpoint still reaches the static mirror", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id/log/checkpoint", nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200", rec.Code)
+		}
+	})
+}
+
 // TestMirrorRecordsRoute proves the /records HTML record-list route is mounted per hub
 // on the same combined mux as the static mirror and the other proof routes: it seeds a
 // verified mirror with indexed projections and an accepted checkpoint, then asserts GET
