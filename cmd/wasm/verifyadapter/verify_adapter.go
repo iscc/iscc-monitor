@@ -14,8 +14,10 @@ package verifyadapter
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/iscc/iscc-monitor/internal/proof/verify"
 )
@@ -85,4 +87,52 @@ func VerifyJSON(record, root string, proofB64 []string, index, size uint64) (ver
 		return false, err.Error()
 	}
 	return ok, ""
+}
+
+// idEnvelope is the minimal view of the canonical log-entry envelope the id-binding
+// reads: only the top-level committed iscc_id. It mirrors the iscc_id field of
+// logclient.recordEnvelope (Projection's source), so RecordCommitsID binds against
+// the SAME committed id the monitor's iscc_index keys on. Unknown members (note,
+// the envelope $schema) are dropped by the standard unmarshal.
+type idEnvelope struct {
+	IsccID string `json:"iscc_id"`
+}
+
+// RecordCommitsID reports whether the proof-bundle record actually commits the
+// requested ISCC-ID — the id-binding half of a full re-verification. Without it a
+// monitor could return a valid-but-unrelated declaration's internally-consistent
+// bundle and the browser would render a false green; binding the record's own
+// committed iscc_id to the requested id closes that gap.
+//
+// recordB64 is the base64-Std-encoded canonical record bytes (the same record
+// VerifyJSON hashes into the leaf); wantID is the requested ISCC-ID from the
+// verifier's ?id= target. Both the committed iscc_id and wantID are canonicalized
+// to the "ISCC:"-prefixed form before an exact-bytes compare, so a bare and a
+// prefixed request bind identically (the certificate §1 lookup-key idiom).
+//
+// The three-way verdict contract is preserved so the eventual split-view alert can
+// tell a mismatch apart from broken input:
+//   - a base64 decode error OR a JSON parse error → ok=false with a non-empty errMsg
+//     (broken input is an ERROR).
+//   - a well-formed record whose committed iscc_id does NOT match the requested id
+//     (including an empty/absent committed iscc_id) → ok=false, errMsg=="" (a negative
+//     VERDICT, the same class as a wrong record or a tampered root).
+//   - a match → ok=true, errMsg=="".
+func RecordCommitsID(recordB64, wantID string) (ok bool, errMsg string) {
+	recordBytes, err := base64.StdEncoding.DecodeString(recordB64)
+	if err != nil {
+		return false, fmt.Sprintf("decode record: %v", err)
+	}
+	var env idEnvelope
+	if err := json.Unmarshal(recordBytes, &env); err != nil {
+		return false, fmt.Sprintf("decode record envelope: %v", err)
+	}
+	return canonicalID(env.IsccID) == canonicalID(wantID), ""
+}
+
+// canonicalID normalizes an ISCC-ID to its single "ISCC:"-prefixed form so a bare
+// and a prefixed string compare equal. It is the certificate §1 lookup-key idiom:
+// trim any leading "ISCC:" then re-prefix exactly once.
+func canonicalID(id string) string {
+	return "ISCC:" + strings.TrimPrefix(id, "ISCC:")
 }

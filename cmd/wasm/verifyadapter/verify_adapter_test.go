@@ -9,6 +9,7 @@
 package verifyadapter
 
 import (
+	"encoding/base64"
 	"math"
 	"strings"
 	"testing"
@@ -146,6 +147,91 @@ func TestSafeIndex(t *testing.T) {
 			}
 			if tc.wantMsg != "" && !strings.Contains(errMsg, tc.wantMsg) {
 				t.Errorf("errMsg = %q, want it to contain %q", errMsg, tc.wantMsg)
+			}
+		})
+	}
+}
+
+// envelopeB64 base64-Std-encodes a minimal canonical log-entry envelope committing
+// isccID, mirroring the {iscc_id, note.$schema} shape logclient.recordEnvelope reads
+// (the same record VerifyJSON would hash into the leaf).
+func envelopeB64(isccID string) string {
+	json := `{"iscc_id":"` + isccID + `","note":{"$schema":"https://schema.iscc.codes/iscc-note-0.8.0.json"}}`
+	return base64.StdEncoding.EncodeToString([]byte(json))
+}
+
+// TestRecordCommitsID exercises the id-binding half of a full re-verification: the
+// record's own committed iscc_id must match the requested id before verified renders.
+// The table pins the three-way contract — a prefixed and a bare request both bind a
+// matching envelope (canonicalization), a different id is a negative VERDICT (not an
+// error, the wrong-record class the split-view alert keys on), and broken base64 / a
+// non-JSON record are ERRORs. A record with no iscc_id field is a non-match negative
+// verdict, never a pass. Non-vacuity (review): dropping the strings.TrimPrefix
+// canonicalization fails the bare-request match; collapsing the mismatch branch to
+// always-true fails the different-id case; collapsing the parse-error branch to a
+// bare false fails the broken-input cases.
+func TestRecordCommitsID(t *testing.T) {
+	const committed = "ISCC:MAIAGISETI7MJ4EAB"
+
+	cases := []struct {
+		name      string
+		recordB64 string
+		wantID    string
+		wantOK    bool
+		wantErr   bool // true => errMsg must be non-empty; false => errMsg must be ""
+	}{
+		{
+			name:      "prefixed request matches the committed id",
+			recordB64: envelopeB64(committed),
+			wantID:    "ISCC:MAIAGISETI7MJ4EAB",
+			wantOK:    true,
+			wantErr:   false,
+		},
+		{
+			name:      "bare request canonicalizes to a match",
+			recordB64: envelopeB64(committed),
+			wantID:    "MAIAGISETI7MJ4EAB",
+			wantOK:    true,
+			wantErr:   false,
+		},
+		{
+			name:      "different id is a negative verdict not an error",
+			recordB64: envelopeB64(committed),
+			wantID:    "ISCC:MAIBOTHERIDXXXXXX",
+			wantOK:    false,
+			wantErr:   false,
+		},
+		{
+			name:      "envelope with no iscc_id is a non-match negative verdict",
+			recordB64: base64.StdEncoding.EncodeToString([]byte(`{"note":{"$schema":"x"}}`)),
+			wantID:    "ISCC:MAIAGISETI7MJ4EAB",
+			wantOK:    false,
+			wantErr:   false,
+		},
+		{
+			name:      "malformed base64 record is an error",
+			recordB64: "not!base64",
+			wantID:    "ISCC:MAIAGISETI7MJ4EAB",
+			wantOK:    false,
+			wantErr:   true,
+		},
+		{
+			name:      "well-formed base64 of non-JSON is an error",
+			recordB64: base64.StdEncoding.EncodeToString([]byte("not json")),
+			wantID:    "ISCC:MAIAGISETI7MJ4EAB",
+			wantOK:    false,
+			wantErr:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, errMsg := RecordCommitsID(tc.recordB64, tc.wantID)
+			if ok != tc.wantOK {
+				t.Errorf("ok = %v, want %v (errMsg=%q)", ok, tc.wantOK, errMsg)
+			}
+			if gotErr := errMsg != ""; gotErr != tc.wantErr {
+				t.Errorf("errMsg = %q, want non-empty=%v", errMsg, tc.wantErr)
 			}
 		})
 	}

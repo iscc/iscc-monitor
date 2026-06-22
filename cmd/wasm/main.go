@@ -17,17 +17,25 @@ import (
 )
 
 // isccVerifyInclusion is the js.FuncOf shim bridging the JS call into the pure
-// verifyadapter.VerifyJSON adapter. JS arg order: (record, root, proofArray,
-// index, size) — record and root are base64-Std strings, proofArray is a JS array
-// of base64-Std proof-hash strings, index and size are numbers. It returns a JS
-// object {verified: bool, error: string}. A wrong arg count, or a non-integral /
-// out-of-safe-range index or size, is folded into an error result rather than
+// verifyadapter adapter. JS arg order: (record, root, proofArray, index, size[, id])
+// — record and root are base64-Std strings, proofArray is a JS array of base64-Std
+// proof-hash strings, index and size are numbers, and the optional 6th id is the
+// requested ISCC-ID string. It returns a JS object {verified: bool, error: string}.
+//
+// With the 6th id arg present (the cross-origin Surface-C verifier), verified gates
+// on BOTH the inclusion math (VerifyJSON) AND the id-binding (RecordCommitsID), so a
+// monitor returning a valid-but-unrelated declaration's bundle yields a negative
+// verdict, not a false green. The 6th arg is OPTIONAL so the same-origin certificate
+// caller's 5-arg call (cert.html — id-binding is harmless there, the monitor already
+// baked the bundle) keeps working against this shared verify.wasm; a 5-arg call gates
+// on inclusion math alone. A wrong arg count, a non-integral / out-of-safe-range
+// index or size, or broken record input is folded into an error result rather than
 // panicking or silently truncating.
 func isccVerifyInclusion(this js.Value, args []js.Value) any {
-	if len(args) != 5 {
+	if len(args) != 5 && len(args) != 6 {
 		return map[string]any{
 			"verified": false,
-			"error":    "isccVerifyInclusion: expected 5 args (record, root, proof, index, size)",
+			"error":    "isccVerifyInclusion: expected 5 or 6 args (record, root, proof, index, size[, id])",
 		}
 	}
 	record := args[0].String()
@@ -51,8 +59,21 @@ func isccVerifyInclusion(this js.Value, args []js.Value) any {
 		return map[string]any{"verified": false, "error": errMsg}
 	}
 
-	verified, errMsg := verifyadapter.VerifyJSON(record, root, proof, index, size)
-	return map[string]any{"verified": verified, "error": errMsg}
+	inclusionOK, inclusionErr := verifyadapter.VerifyJSON(record, root, proof, index, size)
+
+	// The id-binding gates verified ONLY when the requested id is supplied (the 6th
+	// arg). An error on EITHER side (broken input) beats a bare false: prefer the
+	// first non-empty errMsg so a decode/parse fault renders as an error, not a
+	// mismatch.
+	idOK, idErr := true, ""
+	if len(args) == 6 {
+		idOK, idErr = verifyadapter.RecordCommitsID(record, args[5].String())
+	}
+	errMsg = inclusionErr
+	if errMsg == "" {
+		errMsg = idErr
+	}
+	return map[string]any{"verified": inclusionOK && idOK, "error": errMsg}
 }
 
 // main registers isccVerifyInclusion on globalThis and blocks so the Go runtime

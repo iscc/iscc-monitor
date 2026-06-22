@@ -619,10 +619,13 @@
           inst = (await WebAssembly.instantiate(buf2, go.importObject)).instance;
         }
         go.run(inst);
-        // isccVerifyInclusion(record, root, proofArray, index, size): record/root are
-        // base64-Std strings, proof is an array of base64-Std sibling hashes, index is
-        // the zero-based leaf index, size the committed tree size.
-        var out = globalThis.isccVerifyInclusion(bundle.record, root, ev.inclusionProof, ev.leafIndex, ev.treeSize);
+        // isccVerifyInclusion(record, root, proofArray, index, size, id): record/root
+        // are base64-Std strings, proof is an array of base64-Std sibling hashes, index
+        // is the zero-based leaf index, size the committed tree size, id the requested
+        // ISCC-ID. verified gates on BOTH the inclusion math AND the record committing
+        // the requested id, so a valid-but-unrelated bundle yields a mismatch (not a
+        // false green) — the id-binding half of a full re-verification.
+        var out = globalThis.isccVerifyInclusion(bundle.record, root, ev.inclusionProof, ev.leafIndex, ev.treeSize, target.id);
         if (out.error) {
           // An error means broken input, not a mismatch — keep it distinct from the
           // negative verdict so it never trips the split-view alert.

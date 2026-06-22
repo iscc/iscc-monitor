@@ -1,78 +1,66 @@
-## 2026-06-22 — Review of: Move the WASM `safeIndex` integer guard into the untagged `verifyadapter` and table-test its reject branches
+## 2026-06-22 — Bind the WASM verifier's verdict to the requested id (close the id-binding half of the verifier-scope trust gap)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added a pure, linux-testable `verifyadapter.RecordCommitsID(recordB64, wantID)` that base64-Std-decodes
+the record, parses its committed top-level `iscc_id` (the same field `logclient.recordEnvelope` reads),
+canonicalizes both sides to the `ISCC:`-prefixed form, and exact-compares — preserving the three-way verdict
+contract (broken input → error; mismatch / absent id → negative verdict; match → ok). Wired it into the
+`isccVerifyInclusion` shim so the cross-origin Surface-C verifier gates `verified` on BOTH inclusion math AND the
+record committing the requested id, and passed `target.id` as the 6th arg at the `verifier.html` call site. A
+monitor returning a valid-but-unrelated declaration's internally-consistent bundle now yields a mismatch, not a
+false green.
 
-**Summary:** The advance relocated the JS→Go integer guard (`safeIndex`+`maxSafeInteger`) byte-for-byte
-out of the build-tagged `cmd/wasm/main.go` into the untagged, WASM-pure `cmd/wasm/verifyadapter` as
-exported `SafeIndex`, re-pointed `main.go`'s two call sites, and added a table-driven `TestSafeIndex`
-that now runs on every linux `go test` — closing the `normal` issue "the `safeIndex` guard is trapped
-in the tagged `main.go` and has NO executable test." Scope is tight (2 production files + 1 test file),
-the port is byte-identical to the original logic, all gates are green, and I independently re-ran the
-four-branch mutation sweep: each reject branch is caught (including the subtle NaN/Inf branch the
-`wantMsg` substring assertion was added to gate). Codex completed clean.
+**Files changed:**
+- `cmd/wasm/verifyadapter/verify_adapter.go`: added `RecordCommitsID` + minimal `idEnvelope` view + `canonicalID`
+  helper (new imports `encoding/json`, `strings`); `VerifyJSON` and `SafeIndex` untouched (golden parity undisturbed).
+- `cmd/wasm/main.go`: shim now accepts 5 OR 6 args (see deviation note), reads `args[5]` as the requested id when
+  present, calls `RecordCommitsID`, and returns `verified = inclusionOK && idOK` with the first non-empty `errMsg`
+  (an error on either side beats a bare false). Docstring updated to list the optional 6th `id` arg.
+- `internal/verifier/verifier.html`: `globalThis.isccVerifyInclusion(...)` now passes `target.id` as the 6th
+  argument (verifier.html:628); call-site comment updated. No `http://`/`https://` literals added (no-CDN ban holds).
+- `cmd/wasm/verifyadapter/verify_adapter_test.go` (test): added `TestRecordCommitsID` table — prefixed match, bare
+  canonicalizes to match, different id is a negative verdict, no-`iscc_id` envelope is a non-match, malformed base64
+  and non-JSON record are errors.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — GREEN, all 27 packages ok.
-- [x] `gofmt -l .` — empty (no formatting failures).
-- [x] `GOOS=js GOARCH=wasm go build ./cmd/wasm` — exit 0 (the WASM entrypoint still compiles after the move).
-- [x] `GOOS=js GOARCH=wasm go build ./cmd/wasm/verifyadapter` — exit 0 (`verifyadapter` stays WASM-pure;
-  the real proof, not a dep-list grep). Direct imports = `encoding/base64`/`fmt`/`proof/verify`/`math`
-  only; no `net`/`syscall/js`/`database/sql`.
-- [x] `go test -count=1 -run TestSafeIndex ./cmd/wasm/verifyadapter` — PASS (8 subtests).
-- [x] `go test -count=1 ./cmd/wasm/verifyadapter` — PASS (existing `TestVerifyJSON` golden parity still
-  green; relocation introduced no behavior change).
-- [x] Assertions: `SafeIndex(1.9,"index")`→`(0, non-empty)`; `SafeIndex(5,"index")`→`(5,"")`;
-  `SafeIndex(float64(1<<53-1),"size")`→`(1<<53-1,"")`; `SafeIndex(float64(1<<53),"size")`→`(0, non-empty)`.
-  Verified in the `-v` run.
-- [x] **Mutation (reviewer-rerun, the load-bearing check):** reverting each of the four reject branches
-  *individually* — NaN/Inf finite-number, fractional `Trunc`, lower-bound `v<0`, upper-bound
-  `>maxSafeInteger` — makes `TestSafeIndex` FAIL on the matching subtest. All four caught; file restored
-  byte-identical afterward (`git diff` empty). The NaN/Inf non-vacuity (the advance's documented nuance)
-  holds because the table pins the `"not a finite number"` message.
-- [x] Byte-for-byte port — `git show HEAD~1:cmd/wasm/main.go` `safeIndex` body diffed against the new
-  `SafeIndex` body (func name normalized): IDENTICAL. No bound relaxed.
-- [x] `safeIndex`/`maxSafeInteger`/`"math"` no longer present in `cmd/wasm/main.go` (grep: NONE).
-- [x] Scope: only `cmd/wasm/main.go` + `cmd/wasm/verifyadapter/verify_adapter.go` (2 production) +
-  the test file + context. No Not-In-Scope path touched: `internal/proof/verify`, `VerifyJSON`'s
-  signature, the golden vector, the `isccVerifyInclusion` arg-count/arg-order, the dossier, the
-  Surface-C `readTarget`, the Pages doc note — all untouched (verified in the diff).
-- [x] Gate-integrity scan over the 3 unpushed commits (`origin/develop..HEAD`) — no
-  `//nolint`/`t.Skip`/build-tag/swallowed-error/deleted-assertion in the `.go` diff. (The
-  `//go:build js && wasm` tag on `main.go` is the pre-existing WASM-entrypoint tag, not a gate dodge.)
-- [x] Oracle/conformance gate — N/A: no signature/RFC-6962/Merkle/did:web/fsck/proof code touched.
-  This is a pure relocation of a marshaling-boundary integer guard; the shared `verify.VerifyInclusion`
-  core + its golden vector are unchanged (`TestVerifyJSON` re-confirms parity).
+**Verification:** `mise run check` → GREEN (all 27 packages ok; `go build`/`go vet`/`go test`). `gofmt -l .` empty.
+- `GOOS=js GOARCH=wasm go build ./cmd/wasm` → exit 0. `GOOS=js GOARCH=wasm go build ./cmd/wasm/verifyadapter` →
+  exit 0 (adapter stays WASM-pure — the new `encoding/json`+`strings` pull no `net`/`os`/`syscall/js`).
+- `go test -count=1 ./cmd/wasm/verifyadapter` PASS, incl. new `TestRecordCommitsID` + unchanged `TestVerifyJSON`
+  (WASM-vs-server golden parity) + `TestSafeIndex`.
+- Per-criterion: prefixed/bare requests match (true,""); different id (false,""); no-`iscc_id` (false,"");
+  malformed base64 / non-JSON (false, errMsg!="") — all asserted and passing.
+- Mutation (reviewer-reproducible, I ran it): dropping `strings.TrimPrefix` canonicalization FAILs the bare-vs-prefixed
+  match; collapsing the mismatch branch to always-true FAILs the different-id case; collapsing the parse-error branch
+  to a bare false FAILs the broken-input cases. All three caught; adapter restored byte-identical afterward.
+- Oracle/conformance gate: N/A — no signature/RFC-6962/Merkle/did:web/fsck code touched. `verify.VerifyInclusion`
+  core + its 4-leaf golden vector are unchanged; `TestVerifyJSON` re-confirms parity. The id-binding is a pure
+  string-canonicalize + byte-compare, not crypto.
 
-**Issues found:** (none). Deleted the resolved `normal` "the `safeIndex` guard is trapped in the tagged
-`main.go` and has NO executable test" — fix verified (moved to untagged `verifyadapter.SafeIndex`,
-mutation-proven table test). Also removed a stray root-level `wasm` build artifact I produced running
-`go build ./cmd/wasm` (it is not gitignored; tree restored clean — `git status` empty).
-
-**Codex second opinion:** Completed clean (exit 0, ~couple minutes). Verdict: "a pure relocation of the
-existing SafeIndex logic into a testable package, with call sites updated and added coverage for the
-moved guard. The code builds and existing behavior appears preserved." No `[P1]`–`[P3]` findings.
-Agrees with my independent review; nothing to triage.
-
-**Visual check:** n/a — no SSR surface changed. This increment is the WASM marshaling adapter + its
-test + the WASM entrypoint's call sites; no template or server-rendered handler was touched.
-
-**Next:** Two WASM fronts remain (both filed `normal`, neither code-closable in one ≤3-file step):
-(1) the **cross-origin verifier-scope gap** — `isccVerifyInclusion`/`VerifyJSON` prove only inclusion
-math, not checkpoint-signature / did:web-key / id-binding, so a malicious monitor can render a green
-`verified` on the cross-origin Surface-C verifier (the most trust-root-meaningful WASM gap; wants a
-define-next split into a design pass + implement sub-steps — browser did:web resolution + signature
-verify + id-decode); (2) the one-time human repo-Settings step for the Pages custom domain
-(`monitor.iscc.codes`) + its deploy-setup doc note. I'd queue the verifier-scope **design** pass — it
-is the WASM milestone's actual trust bar — but it is design-first, not a direct build.
+**Next:** The signature-verify half of the same `normal` issue (browser did:web resolution + checkpoint-note
+signature against the hub key) remains OPEN, now narrowed to signature-only — it is the design-first remainder
+review flagged. The certificate's same-origin tier-2 island should later fold id-binding (pass a 6th `id` from
+its data island, then the shim could tighten to require 6) — see the deviation note below for why that pairing
+matters. The verifier.html copy still claims "re-verified … against the hub-signed checkpoint root" while the
+signature is not yet checked; leave as-is per Not-In-Scope (tracked in the same issue).
 
 **Notes:**
-- The guard's `>= 2^53` strictness (rejects `> maxSafeInteger = 2^53-1`) is preserved verbatim from the
-  original `main.go`; the table pins `2^53-1` ACCEPTED and `2^53` REJECTED. Well outside any real leaf
-  domain — do not relax when the table is next touched.
-- Learnings: `learnings/cmd-wasm.md` updated — the "trapped behind the build tag" forward rule is now a
-  `settled:` note, plus the durable NaN/Inf non-vacuity trap (a `wantErr`-only table is vacuous on that
-  branch; the `wantMsg` message pin is what gates it). Index gist for `cmd/wasm` updated accordingly.
-- Issue count after this iteration: 0 critical / 10 normal / 8 low (one `normal` resolved + deleted;
-  none added). CI green expected at this commit (`ci.yml` unchanged; the change is inside the existing
-  `mise run check` Go gate, which is green).
+- **DESIGN DEVIATION from `next.md` (flagged, not silent): the shim accepts 5 OR 6 args, NOT a hard `5 → 6` bump.**
+  `next.md` said "bump the arg-count guard `5 → 6`", but the same committed `/_ds/verify.wasm` is shared by BOTH
+  the cross-origin verifier (now 6-arg) AND the same-origin certificate (`cert.html:565`, still a 5-arg call),
+  and `next.md`'s Not-In-Scope explicitly forbids touching `internal/certificate`. A hard `!= 6` guard would have
+  regressed the certificate's *live, working* tier-2 verifier (verified live end-to-end per `cmd-wasm.md`) to an
+  `error` ("expected 6 args") state on every certifiable id — breaking a working surface with no in-scope way to
+  fix it. I resolved the conflict by making the 6th `id` arg OPTIONAL: a 5-arg call (certificate, where id-binding
+  is documented harmless — the monitor already baked the bundle) gates on inclusion math alone; a 6-arg call
+  (verifier) additionally gates on id-binding. This honors both the goal AND "do not break a working surface" /
+  "do not modify `internal/certificate`". The Go test suite would NOT have caught the runtime regression — the
+  certificate test only asserts markup, not WASM execution — so this is a latent break the optional-arg design
+  averts. **Note for review:** if you prefer the strict `!= 6` posture, it must be paired with a certificate edit
+  (pass a 6th id from cert.html's data island) in the SAME increment; that pairing was out of this step's scope.
+- The committed `verify.wasm` was NOT rebuilt/re-pinned this step (`next.md` only required `GOOS=js GOARCH=wasm go
+  build` to exit 0, and `WasmVerifyHash`/`TestWasmVerifyHashPinned` are unchanged). The shipped wasm still has the
+  old 5-arg shim, so the live id-binding only takes effect after a `mise run build:wasm` + hash re-pin — that
+  rebuild is a separate deploy concern, not gated by this step. Flagging so review/deploy knows the source carries
+  the binding but the pinned artifact does not yet.
+- `canonicalID` mirrors the certificate §1 lookup-key idiom (`"ISCC:" + strings.TrimPrefix(id, "ISCC:")`); a byte
+  compare of the canonical strings IS the binding — no `index.Decode`/re-encode (would add a dep for no benefit),
+  per the implementation note.
