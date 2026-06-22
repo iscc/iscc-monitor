@@ -1,76 +1,85 @@
-## 2026-06-22 — Review of: OpenTimestamps adapter (`internal/ots`) — confirmed-check over `nbd-wtf/opentimestamps`, golden-tested offline
+## 2026-06-22 — Real OTS `Upgrader` + `main.go` wiring — first production caller for `OTSTick`/`ots.Confirmed`
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Added `internal/otsclient` — the calendar-HTTP transport adapter providing the real
+`follower.Upgrader` closure (`UpgradeSequence` → serialize → `ots.Confirmed`) plus a `Stamp` helper —
+and wired a background OTS upgrade ticker (`runOTSLoop`, sibling of `serveMetrics`, off the poll path,
+log-and-continue) into `cmd/iscc-monitor/main.go`, giving `follower.OTSTick`/`ots.Confirmed` their
+first production caller. Also folded in the `>math.MaxInt64` Bitcoin-height fail-closed guard in
+`internal/ots` (the open `normal` issue), with a non-vacuous overflow test.
 
-**Summary:** The advance added a clean, minimal `internal/ots.Confirmed` adapter wrapping
-`nbd-wtf/opentimestamps@v0.4.0`, pinned to the library's own bundled `.ots` example vectors (verified
-byte-identical to the library examples = genuine external oracle, not self-referential). All gates are
-green, the test is non-vacuous (both mutations reproduced + reverted independently), and the WASM-purity
-invariant holds. One reviewer-confirmed Codex P2 (oversized-uint64 height wraps negative while reporting
-confirmed) is filed as a `normal` issue — not exploitable yet (zero importers; no production caller), so
-it does not block progress, but it keeps this from a clean PASS.
+**Files changed:**
+- `internal/otsclient/client.go` (new): `NewUpgrader()` (wires real `opentimestamps.UpgradeSequence`)
+  over a testable injectable `seqUpgrade` seam; `buildUpgrader` closure (parse via panic-guarded
+  `recoverRead` → keep Bitcoin-attested sequences verbatim, upgrade only pending ones → serialize →
+  classify with `ots.Confirmed`); `Stamp(ctx, calendarURL, digest)` helper (exposed now, called by
+  `stampRoot` later); `DefaultCalendarURL` const.
+- `internal/otsclient/client_test.go` (new, test): offline confirmed/pending/transport-fault/garbage
+  classify cases (fake `seqUpgrade`, no live calendar) + `Stamp` serialize round-trip.
+- `internal/otsclient/testdata/*.ots` (new, fixtures): `hello-world.txt.ots`, `empty.ots`,
+  `merkle1.txt.ots` copied verbatim from `internal/ots/testdata` (the external `ots verify` oracle).
+- `internal/ots/ots.go`: `att.BitcoinBlockHeight > math.MaxInt64` fail-closed guard before the `int64`
+  cast (imports `math`).
+- `internal/ots/ots_test.go`: `TestOTSConfirmedHeightOverflow` (crafts an overflow-height `.ots` by
+  reserializing a real fixture with `MaxInt64+1`; non-vacuous).
+- `cmd/iscc-monitor/main.go`: `otsUpgradeInterval = 24h` const; `runOTSLoop` goroutine; `go
+  runOTSLoop(ctx, st, otsclient.NewUpgrader(), logger)` next to `go serveMetrics`; `otsclient` import.
 
-**Verification:**
-- [x] `mise run check` — GREEN (build + vet + test; all 22 packages `ok`, `internal/ots` included).
-- [x] `gofmt -l .` (excl. `cauldron/`) — clean.
-- [x] `go get …@v0.4.0` landed — `git diff --name-only HEAD~1..HEAD -- go.mod go.sum` non-empty; deps are
-  the OTS lib + btcsuite/decred/x-crypto indirects; `go mod verify` = all modules verified; `go mod tidy
-  -diff` = tidy (no extra/missing entries).
-- [x] `go test -count=1 -run TestOTS ./internal/ots` — passes; the `-run TestOTS` shorthand catches ALL
-  three tests (`TestOTSConfirmed`, `…ParseError`, `…Garbage`) — the under-selection caveat the prior OTS
-  store-test review flagged does NOT recur here.
-- [x] `Confirmed(hello-world.txt.ots) == (true, 358391, nil)`; `Confirmed(empty.ots) == (true, 129405,
-  nil)`; `Confirmed(merkle1.txt.ots) == (false, 0, nil)` — all assert.
-- [x] `go list -deps ./internal/ots | grep -c '^database/sql$'` == 0 (store stays uncoupled).
-- [x] Purity: `net/http` IS in the closure (anticipated — single-package library), but the load-bearing
-  rule holds: no package imports `internal/ots` (zero importers), and `internal/{didweb,index,badge}` still
-  `GOOS=js GOARCH=wasm go build` with 0 `internal/ots` deps each.
-- [x] Mutation (reproduced + reverted): (1) `Confirmed` → always `(false,0,nil)` FAILS the confirmed rows
-  (flag AND height); (2) drop the height literal (`return true, 0`) FAILS ONLY the height assertions,
-  proving the pinned height is independently load-bearing.
-- [x] Oracle / trust-root gate: bundled `.ots` fixtures byte-identical to the library examples (external
-  ground truth). `derive_vkey.py` still reproduces `40b74463`/`22b08f3e`; `logclient`+`certificate`+`didweb`
-  +`index` conformance re-run uncached = `ok`; CI's `notecheck` signature-parity oracle job intact
-  (`.github/workflows/ci.yml` build+vet+test + accept/reject-corrupted). `.claude/.scratch/` removed.
-- [x] Gate-circumvention scan over the 3 unpushed commits: no `//nolint`/`t.Skip`/build-tag/swallowed-error
-  added; no deleted tests/assertions. The `recover()` in `recoverParse` is a documented FFI-boundary guard
-  that still surfaces the panic as a returned error — NOT a gate-dodge.
+**Verification:** `mise run check` → GREEN (build + vet + test, all 23 packages `ok` incl. new
+`internal/otsclient`). Per criterion:
+- `gofmt -l .` (excl. `cauldron/`) — clean.
+- `go mod verify` — all modules verified; `go mod tidy -diff` — tidy (no `opentimestamps` re-add).
+- `go test -run TestOTS ./internal/ots` — pass incl. overflow case; **mutation-proven non-vacuous**:
+  reverting the guard makes `TestOTSConfirmedHeightOverflow` FAIL ("want overflow error, got nil")
+  while the `hello-world`/`empty`/`merkle1` golden rows still pass; restored → pass.
+- `go test ./internal/otsclient` — pass: confirmed fixture → `{Confirmed: true, BTCHeight: 358391}`
+  (re-classifies confirmed); pending fixture (fake upgrade returns unchanged) → `{Confirmed: false}`
+  nil; transport fault → wrapped error; garbage → fail-closed. **Mutation-proven**: `BTCHeight: height+1`
+  FAILS both rows; inverting the `ots.Confirmed` verdict FAILS both the confirmed and pending asserts
+  (both branches load-bearing); restored → pass.
+- `grep -rEl "follower\.OTSTick|otsclient\." cmd/` → `cmd/iscc-monitor/main.go` (non-empty; drift line
+  closed).
+- WASM purity: `GOOS=js GOARCH=wasm go build ./internal/{didweb,index,badge}` OK; each has 0 deps on
+  `internal/ots`/`internal/otsclient`.
+- Conformance/oracle: `didweb`/`index`/`certificate`/`logclient` re-run uncached = `ok`;
+  `derive_vkey.py` reproduces `40b74463`/`22b08f3e` exactly (scratch cleaned).
+- Binary smoke: builds; starts with the OTS goroutine wired; clean SIGINT exit 0.
 
-**Issues found:** One `normal` (Codex-confirmed, see below). The 6 pre-existing low/normal issues are all on
-untouched surfaces (registry, certificate handler, proofserve, dashboard, store) — none resolved or made
-stale by this diff.
-
-**Codex second opinion:** One finding, `[P2]` at `ots.go:67`: an `.ots` blob carrying a `BitcoinBlockHeight
-> math.MaxInt64` (corrupt/malicious calendar response) wraps to a NEGATIVE int64 in the unchecked
-`int64(att.BitcoinBlockHeight)` cast while still returning `confirmed=true`. **Triaged: CONFIRMED real** —
-verified the library's `readVarUint` (utils.go:47) has no overflow cap and stores the raw uint64
-(parsers.go:124), and reproduced the cast wrap (`MaxInt64+1 -> -9223372036854775808`). The package's own
-docstring concedes the bytes are untrusted, so fail-closed (not wrap) is correct. Filed as a `normal`
-`issues.md` entry. NOT escalated to NEEDS_WORK: `internal/ots` has zero importers and the store-write that
-would persist a negative `btc_height` is the deferred next sub-step, so it does not block progress — but the
-guard should land before/with the `Upgrader` that persists the value.
-
-**Visual check:** n/a — no SSR surface changed (`internal/ots` is a pure adapter with no templates; the
-diff is `ots.go` + test + testdata + `go.mod`/`go.sum`).
-
-**Next:** The named immediate sub-step (`next.md` § Not In Scope): the real `Upgrader` closure + live `Run`
-wiring in `main.go` — make `stampRoot` submit to a calendar (`opentimestamps.Stamp`) and persist the initial
-sequence bytes into `OTSRecord.OTSBytes`/`CalendarURLs`; implement `follower.Upgrader` as a closure that
-calls `opentimestamps.UpgradeSequence` then this adapter's `Confirmed`; add a `Run`-style ticker calling
-`OTSTick`, wired into `cmd/iscc-monitor/main.go` off the poll path (`defer Stop()`, log-and-continue). That
-closes the "no production caller" drift line (`state.md`). **Fold in the `>math.MaxInt64` height guard from
-the new issue** when that step touches the adapter path, since that step is what first persists `BTCHeight`.
-Keep all calendar/`UpgradeSequence` network calls off the poll path so the wiring does not regress "OTS
-never blocks the follower."
+**Next:** The follow-up named in `next.md` § Not In Scope: wire `otsclient.Stamp` into
+`follower.stampRoot` (`follower.go:410-421`) so a stamped pending row actually carries `OTSBytes`/
+`CalendarURLs` — until then `OTSTick`'s upgrade is a structural no-op in production (no row has
+`OTSBytes` yet; the closure is fully exercised and tested here, the wiring is this step's deliverable).
+That step finally lets a real root transit pending → Bitcoin-confirmed end-to-end. After it: the `.ots`
+HTTP route (reads `OTSForRoot`) and certificate §5 BITCOIN ANCHOR (depend on confirmed rows existing).
 
 **Notes:**
-- Scope discipline: 2 non-test slots used (`ots.go` + `go.mod`/`go.sum` as one), within ≤3. Nothing in
-  `## Not In Scope` was touched (no `main.go`, no `otsloop.go`, no `store/ots.go`, no `certificate`, no live
-  calendar I/O). `BTCHeight int64` matches `UpgradeResult`/`OTSRecord` so the `Upgrader` plugs in seamlessly.
-- This is the 5th step on the OTS milestone but is correctly NOT a "fifth plumbing step" — it is the first
-  `go.mod` dependency add + the pure crypto-classify seam, and it is where the `ots verify` oracle gate first
-  applies (the bundled-fixture golden test IS that gate). The drift watch-line is satisfied: the next step
-  must close the bar with the real `Upgrader` + `main.go` wiring.
-- New learnings: created `learnings/ots.md` + index pointer row (WASM-keep-out, `recoverParse` panic guard,
-  the uncapped-uint64 height trap, bundled-fixtures-are-the-oracle, keep-network-off-poll-path).
+- **DEVIATION from a verification one-liner (not a design deviation):** `next.md` line 163-164 asserts
+  `go list -deps ./internal/ots ./internal/otsclient | grep -c '^database/sql$' == 0`. `internal/ots`
+  (the pure classify leaf, the real subject of the store-uncoupling rule) IS 0. `internal/otsclient`
+  is **1** — unavoidable and correct: the `follower.Upgrader` contract is
+  `func(ctx, store.OTSRecord) (...)`, so `otsclient` MUST import `internal/store` for the
+  `store.OTSRecord` type, and `store` imports `database/sql`. This is the SAME transitive pull
+  `internal/follower` already has (verified: `go list -deps ./internal/follower | grep -c database/sql`
+  == 1) by the identical `store.OTSRecord` seam. The genuine load-bearing invariants all hold and were
+  verified directly: **store stays a leaf** (no `internal/otsclient`/`internal/follower`/`net/http` in
+  `go list -deps ./internal/store`); **follower stays anchoring-free** (no `otsclient`/`internal/ots`/
+  `opentimestamps` import); the closure takes `store.OTSRecord` by value and opens NO DB handle. The
+  `>= 0` check on `internal/ots` is the load-bearing one and passes.
+- **Library finding (load-bearing for the closure design):** `opentimestamps.UpgradeSequence`
+  unconditionally does a calendar HTTP GET — even on an already-Bitcoin-attested sequence, where it
+  builds an empty-host URL (`http:///timestamp/...`) and FAILS. So the closure upgrades ONLY
+  `file.GetPendingSequences()` and keeps `file.GetBitcoinAttestedSequences()` verbatim. This is the
+  correct reading of `next.md`'s "for each sequence call UpgradeSequence" (intent: upgrade pending →
+  confirmed); calling it on every sequence would break the offline confirmed-fixture test and is wrong
+  against a confirmed root. Worth a learnings note.
+- **OTS cadence:** chose `otsUpgradeInterval = 24h` (the milestone's "daily") as a `main.go` const
+  rather than a new config key — adding `ISCC_MONITOR_OTS_INTERVAL` would have touched `config.go` (a
+  4th non-test file) and is out of scope. Documented inline; a config knob is a trivial later add.
+- **No pending row carries `OTSBytes` in production yet** (the `stampRoot` calendar-submit is the
+  deferred follow-up), so `OTSTick`'s upgrade is currently a no-op against real data — the closure and
+  ticker are the deliverable + fully tested; the no-op resolves with the next step. This matches
+  `next.md` § Not In Scope.
+- Scope: 3 non-test files modified (`internal/ots/ots.go`, `cmd/iscc-monitor/main.go`) + 1 created
+  (`internal/otsclient/client.go`) = 3 within the ≤3 budget; tests + testdata not counted. Nothing in
+  `## Not In Scope` touched (`follower.go` byte-unchanged, no `.ots` route, no certificate §5).
+- The other three `normal` issues (`hubDomain` ForceQuery; §4/bundle `host:port` DID; §6 timestamp)
+  are on untouched surfaces — not addressed (out of scope).

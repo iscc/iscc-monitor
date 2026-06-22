@@ -25,6 +25,7 @@ package ots
 
 import (
 	"fmt"
+	"math"
 
 	opentimestamps "github.com/nbd-wtf/opentimestamps"
 )
@@ -64,6 +65,15 @@ func Confirmed(otsBytes []byte) (confirmed bool, height int64, err error) {
 		return false, 0, nil
 	}
 	att := attested[0].GetAttestation()
+	// The library's readVarUint has no overflow cap, so a corrupt/malicious .ots
+	// blob can carry a height above math.MaxInt64 that the raw int64() cast would
+	// wrap to a NEGATIVE height while still reporting confirmed. Fail closed (these
+	// bytes are untrusted, see the package docstring) before the cast; a real
+	// Bitcoin height never overflows int64, so the bundled golden vectors are
+	// unaffected.
+	if att.BitcoinBlockHeight > math.MaxInt64 {
+		return false, 0, fmt.Errorf("ots.Confirmed: bitcoin height %d overflows int64", att.BitcoinBlockHeight)
+	}
 	return true, int64(att.BitcoinBlockHeight), nil
 }
 

@@ -11,9 +11,12 @@
 package ots
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
+
+	opentimestamps "github.com/nbd-wtf/opentimestamps"
 )
 
 // readFixture loads one bundled .ots vector from testdata, failing the test if it
@@ -87,4 +90,52 @@ func TestOTSConfirmedGarbage(t *testing.T) {
 	if confirmed || height != 0 {
 		t.Errorf("Confirmed(garbage): got (%v, %d), want (false, 0) on parse error", confirmed, height)
 	}
+}
+
+// TestOTSConfirmedHeightOverflow confirms the adapter fails closed on a Bitcoin
+// height above math.MaxInt64: the library's varint reader has no overflow cap, so
+// a corrupt/malicious .ots blob can carry such a height that the raw int64() cast
+// would wrap NEGATIVE while still reporting confirmed. The fixture is built by
+// taking a real confirmed vector, swapping its height to math.MaxInt64+1, and
+// reserializing — so the height round-trips through readVarUint exactly. Confirmed
+// must return (false, 0, err). This case is non-vacuous: reverting the guard makes
+// the cast wrap and the assertion FAILS (confirmed=true, a negative height).
+func TestOTSConfirmedHeightOverflow(t *testing.T) {
+	overflow := overflowHeightOTS(t, "hello-world.txt.ots")
+	confirmed, height, err := Confirmed(overflow)
+	if err == nil {
+		t.Fatalf("Confirmed(overflow height): want overflow error, got nil")
+	}
+	if confirmed {
+		t.Errorf("Confirmed(overflow height): confirmed = true on overflow, want false (fail-closed)")
+	}
+	if height != 0 {
+		t.Errorf("Confirmed(overflow height): height = %d on overflow, want 0", height)
+	}
+}
+
+// overflowHeightOTS builds an .ots blob whose Bitcoin attestation height is
+// math.MaxInt64+1 by parsing a real confirmed fixture, swapping the height on its
+// Bitcoin attestation, and reserializing. The serialized bytes are valid .ots
+// (they reparse) but carry an int64-overflowing height, exercising the guard.
+func overflowHeightOTS(t *testing.T, name string) []byte {
+	t.Helper()
+	file, err := opentimestamps.ReadFromFile(readFixture(t, name))
+	if err != nil {
+		t.Fatalf("parse fixture %s: %v", name, err)
+	}
+	swapped := false
+	for si := range file.Sequences {
+		for ii := range file.Sequences[si] {
+			att := file.Sequences[si][ii].Attestation
+			if att != nil && att.CalendarServerURL == "" {
+				att.BitcoinBlockHeight = uint64(math.MaxInt64) + 1
+				swapped = true
+			}
+		}
+	}
+	if !swapped {
+		t.Fatalf("fixture %s carries no Bitcoin attestation to overflow", name)
+	}
+	return file.SerializeToFile()
 }

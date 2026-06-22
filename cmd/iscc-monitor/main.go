@@ -35,6 +35,7 @@ import (
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/metrics"
 	"github.com/iscc/iscc-monitor/internal/metricshttp"
+	"github.com/iscc/iscc-monitor/internal/otsclient"
 	"github.com/iscc/iscc-monitor/internal/proofserve"
 	"github.com/iscc/iscc-monitor/internal/registry"
 	"github.com/iscc/iscc-monitor/internal/store"
@@ -67,6 +68,16 @@ var reservedMountNames = map[string]struct{}{
 	"healthz":                     {},
 	strings.Trim(web.Prefix, "/"): {},
 }
+
+// otsUpgradeInterval is the cadence of the background OpenTimestamps upgrade loop:
+// how often runOTSLoop asks the calendar whether each pending stamped root has been
+// Bitcoin-confirmed yet. Daily matches the milestone ("upgrade loop … pending ->
+// Bitcoin-confirmed") and the reality of Bitcoin confirmation latency — a root takes
+// hours to confirm, so polling a calendar more often only spams it (OTSTick's own
+// per-row back-off further spaces retries). It is deliberately decoupled from the
+// follower's poll intervals: OTS is best-effort and NEVER blocks the follower
+// (ADR-0004), so it runs on its own goroutine off the poll path at its own cadence.
+const otsUpgradeInterval = 24 * time.Hour
 
 // reservedDomain reports whether a realm domain cannot be safely mounted: it is
 // empty/whitespace (the dossier would mount the exact "/", colliding with the
@@ -137,6 +148,7 @@ func run() error {
 
 	m := metrics.New()
 	go serveMetrics(ctx, cfg.Addr, st, routes, hubList, m, logger)
+	go runOTSLoop(ctx, st, otsclient.NewUpgrader(), logger)
 
 	loop := &follower.Loop{
 		Store:   st,
@@ -178,6 +190,33 @@ func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hu
 
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.ErrorContext(ctx, "metrics server failed", "addr", addr, "err", err)
+	}
+}
+
+// runOTSLoop drives the background OpenTimestamps upgrade loop until ctx is
+// cancelled: on every otsUpgradeInterval tick it calls follower.OTSTick(ctx, st,
+// upgrader, t, logger), which asks the calendar (through the real otsclient
+// Upgrader) whether each pending stamped root has been Bitcoin-confirmed and either
+// records the confirmation or backs the row off. It is the first production caller
+// of follower.OTSTick, the sibling of serveMetrics: started in its own background
+// goroutine off the follower's poll path so OTS is best-effort and NEVER blocks the
+// follower (ADR-0004). A non-nil OTSTick result is logged and the loop continues —
+// the documented never-block / log-and-continue discipline (identical to loop.go's
+// Run), so a flaky calendar pass never aborts the loop or freezes a hub. The ticker
+// is defer-stopped and the loop exits cleanly on ctx cancellation (SIGINT). The
+// ticker's t is the injected now, so OTSTick stays wall-clock-free and testable.
+func runOTSLoop(ctx context.Context, st *store.Store, upgrader follower.Upgrader, logger *slog.Logger) {
+	ticker := time.NewTicker(otsUpgradeInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case t := <-ticker.C:
+			if err := follower.OTSTick(ctx, st, upgrader, t, logger); err != nil {
+				logger.ErrorContext(ctx, "ots upgrade tick failed", "err", err)
+			}
+		}
 	}
 }
 
