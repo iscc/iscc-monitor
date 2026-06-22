@@ -385,30 +385,36 @@ filed it and does **not** affect priority.
 - **Spec:** target.md M-UI design-parity "named-region" bar (the `/` realm-index region) + "Document chrome
   + instance identity"; ADR-0010 Evidence-Ledger handoff; ADR-0012 visual-pass.
 
-## Surface-C live wiring is gated on SERVER-side `.HasTarget`, but the documented deployment is a STATIC GitHub-Pages artifact
+## Surface-C `readTarget` accepts opaque-scheme monitor forms (`https:example.com`) the Go `parseTarget` rejected — JS port is more permissive
 - **Priority:** normal
-- **Source:** [review] (Codex P1, reviewer-confirmed against the deployment posture)
-- **What / where / how to verify:** `internal/verifier/verifier.html` keys the live data-island + WASM
-  loader behind `{{if .HasTarget}}`, which `handler.go` `parseTarget` computes server-side from the
-  request's `?monitor=&id=` query. This works through the `Handler()` HTTP seam (what `go test` + the
-  review visual-pass harness exercise), but Surface C is documented to ship as a STATIC site on
-  `monitor.iscc.codes` via GitHub Pages (CLAUDE.md "Verifier app"; `next.md` Not-In-Scope "static site on
-  a DIFFERENT origin … deployed via GitHub Pages"; `learnings/verifier.md`). GitHub Pages serves a
-  pre-generated `index.html` byte-for-byte for every path — it never re-runs Go's `html/template` per
-  request — so `.HasTarget` is FROZEN at generation time. If the artifact is generated with no target,
-  `/?monitor=…&id=…` serves the pre-rendered NO-target body and the data-island/loader block is ABSENT:
-  the live verifier is unreachable in production from query params. The feature as built activates only
-  when the page is served dynamically, which contradicts the static-site posture. Does NOT block this
-  increment (its Verify criteria are met through `Handler()`; the deploy workflow is explicitly deferred),
-  but the gating mechanism must be reconciled with the static deployment before the verifier functions
-  live. Fix when the deploy/wiring step lands: read the target CLIENT-side (`location.search` /
-  `URLSearchParams` in the loader script, always emit the data-island skeleton + loader, let JS decide
-  HasTarget), OR commit to serving Surface C dynamically (and update the docs). Verify fixed: a statically
-  generated artifact (no server per request) loaded at `?monitor=…&id=…` runs the WASM verdict; loaded
-  with no query it shows the honest baseline.
-- **Spec:** CLAUDE.md "Verifier app" (static GitHub-Pages artifact, `?monitor=<url>`); `next.md` Surface-C
-  Not-In-Scope (static site / GitHub Pages); `learnings/verifier.md` cross-origin static posture;
-  target.md WASM milestone Surface-C ("a `(size, root)` mismatch renders the guided split-view alert").
+- **Source:** [review] (Codex P2, reviewer-confirmed against both URL parsers)
+- **What / where / how to verify:** `internal/verifier/verifier.html:550-553` (`readTarget`) ports the
+  former Go `parseTarget` rules to the browser's WHATWG `new URL()`, but the two parsers disagree on the
+  opaque-path / scheme-relative form. `new URL("https:example.com")` yields `protocol="https:"` +
+  `host="example.com"`, so the JS guard PASSES it and returns the RAW string `"https:example.com"` (not
+  the normalized `u.href`); the later fetch concatenates the raw value, so the loader leaves the honest
+  baseline and runs a live attempt instead of declining. Go's `net/url.Parse("https:example.com")` (the
+  original `parseTarget`) instead yields `Host=""`, so the server-side guard REJECTED it — the JS port is
+  strictly MORE permissive on this edge form (reviewer-reproduced in node + Go: `https:example.com`,
+  `http:foo.bar/x`, `https:example.com:8443` all pass the JS guard but fail the Go one). NOT a
+  trust/security defect and NOT exploitable: the browser RESOLVES the raw fetch URL to exactly the same
+  host the parser reported (`https:example.com` → `https://example.com/inclusion/…` — never a "wrong host"
+  / SSRF), the returned bundle is RE-VERIFIED by WASM against the hub-signed root (the monitor is never in
+  the trust path), and an unreachable host yields the documented honest `error` render — never a false
+  `verified`/`failed`. So Codex's "fetch the wrong URL" framing is overstated; the only real delta is the
+  guard is sloppier than its Go original on a malformed input that still resolves correctly. Does NOT block
+  this increment (the static artifact works; well-formed targets run; all gates green; `readTarget` is a
+  documented usability guard, NOT a trust boundary — `learnings/verifier.md`). A byte-for-byte port is not
+  achievable here because WHATWG `new URL` and Go `net/url` genuinely differ on opaque paths. Fix when
+  `readTarget` is next touched: return the PARSED `u.href` (or `u.toString()`) instead of the raw
+  `monitor` so the normalized URL is what flows downstream — and/or reject when `u.href`'s origin/path
+  prefix does not match the raw input, so the guard's own normalization is the single source of truth.
+  Verify fixed: a JS-level test (or the deploy harness) feeds `monitor=https:example.com` and asserts the
+  fetch URL begins `https://example.com/` (normalized), or that the raw opaque form is declined; reverting
+  the normalization makes it FAIL.
+- **Spec:** next.md Surface-C Implementation Note "Port the validation verbatim, in JS" / "Mirror
+  `parseTarget`'s rules"; `learnings/verifier.md` "`parseTarget`/`readTarget` is a usability guard, NOT a
+  trust boundary"; CLAUDE.md "Verifiable cache" (the client re-verifies; the monitor is not trusted).
 
 ## The WASM verifier proves only inclusion math — it never checks the checkpoint signature or binds the record to the requested id (monitor stays in the trust path)
 - **Priority:** normal

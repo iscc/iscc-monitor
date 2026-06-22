@@ -48,12 +48,21 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## Live-wiring (the cross-origin tier-2 caller — DIFFERS from the certificate's same-origin one)
 
-- **The data-island carries only the TARGET `{monitor, id}`, not the proof** — Surface C is cross-origin,
-  so the browser FETCHES `<monitor>/inclusion/<id>.bundle` itself, then reads `record` / `inclusion.{inclusionProof,leafIndex,treeSize}` / `checkpoint` out of the returned bundle JSON. Field names
-  are the `proofBundle` + `logclient.InclusionEvidence` JSON tags verbatim (`inclusionProof`/`leafIndex`/
-  `treeSize`, not Go field names) — a rename there silently breaks this loader (no go-test gate: the JS
-  is only golden-tested as markup). The certificate, by contrast, bakes the bundle into the island
-  server-side (`{record,root,proof,index,size}`) — do not copy its island shape here.
+- **settled (static-deploy gating CLOSED):** the target is read CLIENT-side — the handler now renders ONE
+  static artifact (`tmpl.Execute(&buf, nil)`, no `pageData`/`HasTarget`/`net/url`), and the ALWAYS-emitted
+  end-of-body loader reads `new URLSearchParams(location.search)` for `{monitor, id}`. This is what lets
+  the single pre-generated `index.html` (GitHub Pages serves it byte-for-byte for every path) serve both
+  the no-target baseline AND a live `?monitor=…&id=…` run. `TestVerifierStaticBodyAlwaysCarriesLoader` +
+  `TestVerifierNoServerSideTarget` (query-bearing render is byte-identical to baseline, no reflected
+  value, no `verify-target` island) mutation-prove it. There is NO server-side `.HasTarget` data-island
+  anymore — do not reintroduce one.
+- **The browser FETCHES `<monitor>/inclusion/<id>.bundle` itself** (Surface C is cross-origin), then reads
+  `record` / `inclusion.{inclusionProof,leafIndex,treeSize}` / `checkpoint` out of the returned bundle
+  JSON. Field names are the `proofBundle` + `logclient.InclusionEvidence` JSON tags verbatim
+  (`inclusionProof`/`leafIndex`/`treeSize`, not Go field names) — a rename there silently breaks this
+  loader (no go-test gate: the JS is only golden-tested as markup). The certificate, by contrast, bakes
+  the bundle into a server-side island (`{record,root,proof,index,size}`) — do not copy its island shape
+  here.
 - **The root is re-derived in JS, not handed over.** The bundle carries the verbatim signed-note
   `checkpoint`, so the loader takes `lines[2]` (third line) of the checkpoint body as the base64-Std
   root (matches `logclient.parseCheckpointBody`: `<origin>\n<size>\n<base64(root)>\n…`; signature lines
@@ -62,9 +71,17 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   broken input / JS exception) stays in the `#verdict` region and NEVER reveals the mismatch alert; only
   `failed` (proof did not rebuild the root) sets `data-live="1"`. A network/parse fault is `error`, not a
   mismatch — never let a transport fault masquerade as a split-view signal.
-- **`parseTarget` is a usability guard, NOT a trust boundary** (stdlib `net/url`: require non-empty id +
-  http/https scheme + non-empty host + no fragment; fail closed to the baseline). The browser re-fetches
-  and re-validates the bundle, so the monitor URL is reflected ONLY inside the JSON data-island (never the
-  static body) — that is what keeps the user `https://` target from tripping the no-CDN body ban (the
-  ban-test runs the no-target baseline). It does NOT reject `u.ForceQuery` (a trailing `?`); harmless
-  here (worst case an honest `error` render), unlike the registry resolver where ForceQuery is a filed gap.
+- **`readTarget` (JS, the former Go `parseTarget`) is a usability guard, NOT a trust boundary** (require
+  non-empty id + http/https `protocol` + non-empty `host` + no `hash`, `new URL` in try/catch, fail closed
+  to the baseline — never an `error` render on an invalid/absent target). The browser re-fetches AND
+  WASM-re-verifies the bundle, so the monitor URL never touches the static body (only `location.search` at
+  runtime) — that keeps a user `https://` target from tripping the no-CDN body ban (the ban-test runs the
+  no-target baseline). The body DOES carry the JS literals `"http:"`/`"https:"` (protocol comparisons) but
+  NOT `http://`/`https://`, so the ban holds.
+- **The JS port is MORE permissive than the Go original on opaque-scheme URLs (filed `normal`).** WHATWG
+  `new URL("https:example.com")` yields `protocol="https:"` + `host="example.com"` (guard PASSES), whereas
+  Go `net/url.Parse` yields `Host=""` (the old `parseTarget` REJECTED it). Harmless — the browser resolves
+  the raw fetch to the SAME host the parser reported (no wrong-host/SSRF) and WASM re-verifies regardless,
+  so the worst case is an honest `error` render. The fix (return parsed `u.href`, not the raw string) is a
+  filed `normal` issue. A byte-for-byte port is impossible: the two URL parsers genuinely differ on opaque
+  paths. Also does NOT reject `u.hash`-less trailing `?` (`ForceQuery`); same harmless class.
