@@ -57,13 +57,16 @@ marshaling adapter). Durable cross-cutting rules live in the index
   (NaN/Inf/fractional/negative/`>= 2^53` → `{verified:false, error:…}`) BEFORE the `uint64` narrowing.
   `maxSafeInteger = 2^53 - 1`; the guard rejects `> maxSafeInteger` (i.e. `>= 2^53`), slightly stricter
   than the issue's "`> 2^53`" — fine, well outside any real leaf-index domain.
-- **`safeIndex` is pure `float64 → (uint64, string)` with NO `syscall/js` dep — but it lives in
-  `main.go` (`//go:build js && wasm`), so it is NOT unit-tested on linux** and the build gate only
-  proves it compiles, not its branch behavior. The certificate caller's test feeds only valid
-  integers, so the truncation/NaN/range branches have ZERO executable coverage. Forward rule: when the
-  guard is next touched, MOVE `safeIndex`+`maxSafeInteger` into the untagged `verifyadapter` (or a new
-  untagged helper) and table-test it (`1.9`/`NaN`/`-1`/`2^53` → error; `0`/`5` → ok) so the JS→Go
-  integer contract is regression-gated. Filed `normal` (open issue).
+- **settled: the integer guard now lives in the untagged adapter as `verifyadapter.SafeIndex` and is
+  linux table-tested** (`TestSafeIndex`, mutation-proven non-vacuous). It moved out of the tagged
+  `main.go` (which now only call-sites it), closing the "trapped behind the build tag, ZERO executable
+  coverage" issue. **Non-vacuity trap to keep:** a boolean `wantErr`-only table is VACUOUS for the
+  NaN/Inf branch — `math.NaN() != math.Trunc(NaN)` is true (the fractional check also catches NaN) and
+  `+Inf > maxSafeInteger` is true (the range check also catches Inf), so dropping the finite-number
+  branch leaves a `wantErr`-only test green. The test must pin the specific `"not a finite number"`
+  message (`wantMsg` substring) on the NaN/Inf cases to gate that branch; do not relax this when the
+  table is next touched. The guard rejects `>= 2^53` (i.e. `> maxSafeInteger = 2^53-1`), slightly
+  stricter than the issue's "`> 2^53`" framing — preserve verbatim, it is well outside any leaf domain.
 - The shim guards `len(args) != 5` → an error result (never a panic) and returns a `map[string]any`
   JS object `{verified, error}`; keep that defensive arg-count guard.
 

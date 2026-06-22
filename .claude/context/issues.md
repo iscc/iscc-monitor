@@ -304,31 +304,6 @@ filed it and does **not** affect priority.
 - **Spec:** target.md M-UI hard CDN-free constraint; `learnings/web.md` `noExternalCDN` bans third-party
   origins; CLAUDE.md "Never weaken a quality gate to pass" (the fix is the root cause, not the gate).
 
-## The WASM `safeIndex` integer guard is trapped in the tagged `main.go` and has NO executable test
-- **Priority:** normal
-- **Source:** [review] (the original `js.Value.Int()` truncation issue — production fix landed, test gap remains)
-- **What / where / how to verify:** The `js.Value.Int()` truncation is now CLOSED in production code:
-  `cmd/wasm/main.go:52-83` reads `index`/`size` via `args[i].Float()` and routes each through
-  `safeIndex(v, name) (uint64, string)`, which fails closed on NaN/Inf/fractional/negative/`>= 2^53`
-  (`maxSafeInteger = 2^53 - 1`) BEFORE the `uint64` narrowing — reviewer-verified live end-to-end on the
-  testnet (the certificate tier-2 WASM ran headlessly and produced the correct `verified` verdict). BUT
-  the guard's branch behavior has ZERO test coverage: `safeIndex` is a pure `float64 → (uint64, string)`
-  function with NO `syscall/js` dependency, yet it lives in `main.go` (`//go:build js && wasm`), so no
-  linux `go test` exercises it — the WASM build gate only proves it COMPILES, and the certificate
-  caller's test (`TestCertificateRendersWasmVerifier`) feeds only valid integers, so the
-  truncation/NaN/negative/range branches are never run. The original issue's "Verify fixed" criterion (a
-  test feeding `index=1.9` asserting `verified=false, error!=""`) was therefore NOT met. NOT a production
-  hazard (the guard is correct by inspection and the real callers emit server-computed integers), so it
-  does not block progress; it is a regression-gate hole on a trust-root-adjacent guard. Fix when the
-  guard is next touched: MOVE `safeIndex` + `maxSafeInteger` into the untagged `cmd/wasm/verifyadapter`
-  (or a new untagged helper `main.go` imports) and table-test it — `1.9`/`NaN`/`Inf`/`-1`/`2^53` → a
-  non-empty errMsg, `0`/`5` → ok. Verify fixed: `go test ./cmd/wasm/verifyadapter` covers the guard's
-  reject branches, and reverting any branch (e.g. dropping the `math.Trunc` check) makes a test FAIL.
-- **Spec:** target.md WASM milestone "identical vectors yield identical verdicts (WASM vs server)" — a
-  truncated input is NOT an identical vector; learnings.md always-loaded "a built proof is not a verified
-  proof / fail closed"; CLAUDE.md Testing ("comprehensive tests covering implemented functionality");
-  `learnings/cmd-wasm.md` (`safeIndex` is testable but trapped behind the build tag).
-
 ## Certificate tier-2 honesty header overstates "This browser re-verifies" on the no-JS baseline
 - **Priority:** normal
 - **Source:** [review] (Codex P2, partially confirmed — the no-JS-overstatement half)
