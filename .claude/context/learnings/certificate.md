@@ -60,6 +60,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   loader calling `globalThis.isccVerifyInclusion`. Two independent re-verifications (server §3 + browser
   tier-2) must AGREE — gate both on the same re-verify, never a flag. Verified live end-to-end on the
   testnet (`verified` rendered). Mutation: blanking `RecordB64` fails `TestCertificateRendersWasmVerifier`.
+  - **No-JS honesty (two regions, one rule): the static `HasBundle` honesty HEADER (`:484`) may only
+    OFFER paths — the always-true offline bundle path unconditionally + a CONDITIONAL ("with JavaScript
+    enabled") browser re-check; it must NEVER assert a present-tense verdict, because tier-2 is
+    progressive enhancement that does not run with JS disabled. The `#tier2-result` panel (`:501`,
+    "...the proof ABOVE...") stays the SOLE asserter of an actual browser verdict. Header says "below",
+    panel says "above" — keep them distinct so a header assertion is non-vacuous. Pinned by the no-JS
+    block in `TestCertificateRendersWasmVerifier` (negative: the old "This browser re-verifies the proof
+    below" is gone; positive: the conditional header phrasing renders); reverting the copy FAILs it.
 
 - **§4 SIGNING KEY derives the key id from the accepted checkpoint's OWN raw bytes, not synthetically.**
   `buildData` captures `CheckpointAt`'s `raw`, recovers the key id via `logclient.KeyIDFromCheckpoint(raw)`
@@ -104,13 +112,10 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   a parseable, digest-bound proof → `HasClause5=true` (confirmed shows `block <height>` + `UpgradedAt`
   RFC-3339; pending shows "awaiting Bitcoin confirmation"). `internal/ots` is NOT WASM-pure but certificate
   is server-side only.
-  - settled: the digest-binding gap is CLOSED — `TestCertificateBitcoinAnchorDigestMismatch` pins it
-    (reverting §5 to `ots.Confirmed` renders §5 for the mismatched row → FAIL, mutation-proven). The
-    confirmed/pending render tests drive `acceptedRoot == fixture digest` via `seedOTSAtRoot` +
-    `fixtureStoreTiled`'s override, which forces `acceptedRoot != tree.Hash()` so §3 declines and is NOT
-    asserted in those two; §3 stays covered by the clean-tree tests + the mismatch test. Five state
-    mutations pinned (height tied to oracle literal 358391); fixtures byte-identical from
-    `internal/ots/testdata` (git history).
+  - settled: digest-binding gap CLOSED + pinned (`TestCertificateBitcoinAnchorDigestMismatch`; the
+    confirmed/pending render tests force `acceptedRoot != tree.Hash()` so §3 declines there but stays
+    covered elsewhere; five states + oracle height 358391 mutation-proven, `internal/ots/testdata`
+    fixtures byte-identical — git history).
 
 - **COMPARISON ANCHOR is §2's `(size, root)` reframed as the monitor's own observation — a SEPARATE,
   distinctly-labelled element from §5, NOT Bitcoin.** Set `data.HasComparisonAnchor = true` inside the

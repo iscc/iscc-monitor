@@ -206,34 +206,6 @@ filed it and does **not** affect priority.
 - **Spec:** target.md M-UI hard CDN-free constraint; `learnings/web.md` `noExternalCDN` bans third-party
   origins; CLAUDE.md "Never weaken a quality gate to pass" (the fix is the root cause, not the gate).
 
-## Certificate tier-2 honesty header overstates "This browser re-verifies" on the no-JS baseline
-- **Priority:** normal
-- **Source:** [review] (Codex P2, partially confirmed — the no-JS-overstatement half)
-- **What / where / how to verify:** `internal/certificate/cert.html:465` — the `{{if .HasBundle}}` honesty
-  header reads, unconditionally and present-tense, "This browser re-verifies the proof below for you, and
-  you can download the bundle and re-verify it offline." The tier-2 verifier is progressive enhancement,
-  so with JavaScript disabled (or on a WASM load/parse failure) NO browser verdict runs — yet this
-  server-rendered copy still asserts the browser re-verifies. The actual verdict panel below
-  (`cert.html:480-483`, `id="tier2-result"`) IS honest and conditional ("Re-verify the downloadable
-  bundle yourself — or, with JavaScript enabled, this browser re-checks…"), so the two regions disagree
-  on the no-JS baseline: the header promises active re-verification while the panel hedges it. On a Tier-1
-  self-verifiable surface, honesty copy is load-bearing (target.md M-UI). Reviewer-confirmed by serving a
-  certifiable id with JS disabled (the header text renders verbatim, no verdict appears). Does NOT block
-  progress (the feature works; the verdict panel itself is honest; the no-JS baseline renders every
-  clause). Fix when the honesty copy is next touched: make the `HasBundle` header describe only the
-  available bundle/offline path (e.g. "you can download the bundle and re-verify it offline; with
-  JavaScript enabled, this browser also re-checks the proof below") so the static copy never claims a
-  verdict that may not have run — let the script's panel be the sole asserter of an actual re-verification.
-  Verify fixed: the served `HasBundle` header copy does not state in the present tense that the browser
-  re-verifies, and a test asserts the no-JS header is consistent with the conditional panel default.
-  NOTE: Codex's companion claim — that the `!HasBundle` branch shows stale "lands in a later release"
-  copy — is a FALSE POSITIVE and was dismissed: that copy renders ONLY when there is no bundle (no
-  verifier wired), which is accurate (`grep "land in a later release" /tmp/cert-fresh.html` → 0 on a
-  certifiable page).
-- **Spec:** target.md M-UI two-tier honesty (the certificate is the monitor's account; the user verifies);
-  CLAUDE.md "Write evergreen comments/copy that describe the current state"; `learnings/certificate.md`
-  two-tier-honesty copy rules.
-
 ## `/` realm-index sub-region deltas vs the mockup (logo, instance-identity copy, Checkpoint/Anchor columns)
 - **Priority:** normal
 - **Source:** [review] (visual pass vs the Realm-Index mockup, after the named-region parity landed)
