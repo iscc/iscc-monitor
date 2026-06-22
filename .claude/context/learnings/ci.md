@@ -1,7 +1,7 @@
-<!-- area: .github/workflows/ci.yml -->
+<!-- area: .github/workflows/ci.yml + .github/workflows/pages.yml -->
 <!-- indexed-as: ci.md · owner: review · rotate at ~40 bullets / ~150 lines -->
 
-# CI workflow (`.github/workflows/ci.yml`)
+# CI + Pages workflows (`.github/workflows/`)
 
 Read this when a step touches the area above. Durable cross-cutting rules live in
 the index (`.claude/context/learnings.md`); the package-local mechanics are here.
@@ -29,3 +29,24 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   can exhibit (it must read the checkpoint to verify it), so the gate is sound for the trust root — but
   if a future CI guard ever pipes into a tool that may short-circuit before draining, prefer a temp-file
   + explicit `$?` check over `sed | tool` under `pipefail` to avoid the SIGPIPE masking.
+
+## Pages publish workflow (`.github/workflows/pages.yml`)
+
+- **`pages.yml` is the modern Actions Pages build→deploy of the Surface-C verifier-site** (separate
+  file from `ci.yml` so triggers stay independent): `push: [develop]` + `workflow_dispatch`, top-level
+  `permissions: {contents:read, pages:write, id-token:write}`, `concurrency: {group:pages,
+  cancel-in-progress:false}`; `build` job runs `go run ./cmd/verifier-site -out dist` → `cp
+  .github/pages/CNAME dist/CNAME` → configure-pages@v5 → upload-pages-artifact@v3 (`path: dist`);
+  `deploy` job (`needs: build`, `environment: github-pages`) → deploy-pages@v4. NO `mise run build:wasm`
+  step — the generator COPIES the byte-pinned `verify.wasm` (deployed hash == `web.WasmVerifyHash`,
+  re-verified `7d57ab1b…`), so the published artifact is reproducible-from-commit, not a rebuild.
+- **The artifact `CNAME` is a NO-OP for the custom domain under Actions-based Pages — the binding lives
+  in repo Settings, not in code (Codex P2, reviewer-confirmed mechanism).** With `actions/deploy-pages`
+  GitHub ignores a `CNAME` in the uploaded artifact; the custom domain `monitor.iscc.codes` must be set
+  in Settings → Pages (or via API) once, AND the Pages source must be switched to "GitHub Actions" — both
+  are one-time repo-config steps a workflow file cannot assert. Consequence: until the custom domain is
+  configured, the site lands at the default project URL `iscc.github.io/iscc-monitor/` where the page's
+  root-absolute `/_ds/...` asset paths break (they resolve against the apex, not the project base path).
+  The site is correct ONLY on the apex custom domain. Tracked as a `normal` issue + flagged for the human
+  in the handoff; keep the `cp CNAME` step (harmless, documents intent, and is the correct mechanism if
+  Pages source is ever switched back to branch-based).

@@ -446,6 +446,34 @@ filed it and does **not** affect priority.
   learnings.md always-loaded "gate a rendered ✓ on a re-VERIFICATION" (a full re-verification includes
   the signature + id binding, not inclusion math alone); `learnings/cmd-wasm.md` `isccVerifyInclusion` scope.
 
+## Pages custom domain is not bound by the artifact CNAME under Actions-based deploy — needs a one-time repo-settings step (else `/_ds/` asset paths break on the project URL)
+- **Priority:** normal
+- **Source:** [review] (Codex P2, reviewer-confirmed against the GitHub Pages Actions mechanism)
+- **What / where / how to verify:** `.github/workflows/pages.yml:49-50` copies the tracked
+  `.github/pages/CNAME` to `dist/CNAME` to set the `monitor.iscc.codes` custom domain — but with the
+  modern Actions-based Pages deploy (`actions/deploy-pages@v4`), GitHub IGNORES a `CNAME` in the uploaded
+  artifact; the custom domain comes from the repository **Settings → Pages** (or the API), and the Pages
+  source must additionally be switched to "GitHub Actions". Both are one-time repo-config steps a workflow
+  file cannot assert. Consequence: on a fresh setup, until the custom domain is configured in Settings,
+  the deploy lands at the default project URL `iscc.github.io/iscc-monitor/`, where the verifier page's
+  root-absolute asset references (`href="/_ds/tokens.css"`, `src="/_ds/wasm_exec.js"`, etc.,
+  reviewer-confirmed in the generated `index.html`) resolve against the apex (`iscc.github.io/_ds/...`)
+  and 404 — the page renders chrome-less and the WASM never loads. On the apex custom domain
+  `monitor.iscc.codes` the same root-absolute paths resolve correctly, so the artifact is right; only the
+  domain binding is the gap. NOT a code defect and does NOT block this increment (the workflow correctly
+  builds + uploads the byte-pinned tree; the handoff already flags the human settings step; ADR-0003 +
+  next.md explicitly chose the tracked-CNAME approach, which is the correct mechanism for a branch-based
+  source and a harmless intent-documenting no-op under Actions). Codex's "broken absolute asset paths"
+  framing is REAL but contingent on the custom domain not being configured. Fix when `pages.yml` (or the
+  deploy docs) is next touched: either (a) add a short `## GitHub Pages setup` doc note (in CLAUDE.md or a
+  README) that the human must set the custom domain + "GitHub Actions" source once in repo Settings, OR
+  (b) keep the artifact CNAME AND document that it is a no-op under Actions, so the binding mechanism is
+  not silently assumed. Verify fixed: the deploy docs name the one-time Settings/API custom-domain step,
+  or the workflow/docs make the Actions-CNAME no-op explicit. (Operationally: a human confirms Pages
+  source = "GitHub Actions" and custom domain = `monitor.iscc.codes` + the DNS CNAME on first deploy.)
+- **Spec:** ADR-0003 "Pages-from-repo ties the deployed WASM to a public commit" + `.codes` custom domain;
+  target.md WASM "the verifier artifact … published value"; `learnings/ci.md` Pages-CNAME-no-op nuance.
+
 ## `cmd/verifier-site` `generate` writes non-atomically — a mid-run error leaves a partial deploy tree
 - **Priority:** low
 - **Source:** [review] (Codex P3, reviewer-confirmed against the code)
