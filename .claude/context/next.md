@@ -1,103 +1,112 @@
 # Next Work Package
 
-## Step: Add a public-facing root `README.md`
+## Step: Pin the Compose volume name so the OPERATING.md volume-prep `chown` matches what Compose mounts
 
 ## Advances
-The `target.md` **Done When** gate, which now reads:
+This step settles the open `normal` issue **"`deploy/OPERATING.md` Compose volume-prep `chown` targets the
+wrong volume (project-prefix mismatch)"** (`issues.md`), which is the last doc-correctness caveat on the
+`critical` iscc-infra issue **"Persistence contract for the SQLite DB volume + acknowledge the in-place
+migration hazard"**.
 
-> Every v1 milestone … meets its **Verify** criteria with `mise run check` green and no open
-> `critical` or `normal` issue in `issues.md`, **and a public-facing root `README.md` exists** — a
-> human-facing project overview + build/run instructions + pointers to the specs, distinct from the
-> agent-facing `CLAUDE.md` and the CID context pack's `.claude/context/README.md`.
+That `critical`'s own "Verify fixed" bar is:
 
-It also closes the `normal` issue **"No public-facing root `README.md` — the project has no human-facing
-front door"** (`issues.md`). This is the last code/doc-closable "Done When" requirement and `state.md`
-names it as the immediate next work. DONE is unreachable while it is absent, so this is the correct
-milestone-advancing step — a doc artifact the target explicitly mandates, not a self-filed polish detour.
+> docs state the DB path + volume + "back up this one file" contract and the non-root uid, and link the
+> migration issue as the known constraint with "recreate volume on schema change" as the interim policy.
+
+and the accompanying `normal`'s bar is:
+
+> following the Compose quick-start verbatim (prep + `docker compose up`) boots to `/healthz` 200 without
+> a permission-denied at `store.Open`; the chowned volume is the SAME one Compose mounts.
+
+`deploy/OPERATING.md` already answers the persistence `critical` in substance (State/volume/backup,
+migration policy, non-root uid) — but the headline Compose quick-start is **not runnable as written**: the
+`chown` prep on line 214 names the volume `monitor-data` literally, while the Compose `volumes:` block
+(lines 204-205) declares `monitor-data:` with no `name:`, so `docker compose up` mounts a project-prefixed
+volume (`<project>_monitor-data`) the `chown` never touched → the non-root container fails permission-denied
+at `store.Open`. Fixing this makes the persistence-contract docs correct end-to-end, which is the precondition
+for `review` to confirm/close that `critical` (per `state.md`: the three iscc-infra `critical`s are now the
+SOLE DONE blockers, and this is the one residual doc gap on the persistence ask).
+
+This is a doc-only step (zero Go source). It is justified over milestone work because every code/doc-closable
+`target.md` Verify criterion is already met and DONE turns entirely on confirming/pruning these three
+`critical`s — `state.md` and the latest `review` handoff both name the persistence-contract doc as the
+immediate next work.
 
 ## Goal
-Create a tracked root `README.md` so a human landing on the repo (GitHub, a fresh clone, the GHCR
-image's "source" link) gets an honest project overview + a copy-pasteable build/run snippet + pointers
-to the specs — closing the final `target.md` "Done When" gate.
+Make the headline Compose quick-start in `deploy/OPERATING.md` runnable verbatim by pinning the Compose
+volume to the literal name `monitor-data`, so the documented `chown` prep operates on the SAME volume
+`docker compose up` mounts — closing the persistence `critical`'s last doc caveat.
 
 ## Scope
-- **Create**: `README.md` (repo root) — the only file this step creates.
-- **Modify**: none (no Go source; the ≤3 non-test/doc budget is untouched).
+- **Create**: none.
+- **Modify**: `deploy/OPERATING.md` (doc only; the ≤3 non-test/doc Go-source budget is untouched).
 - **Reference**:
-  - `/workspace/iscc-monitor/CLAUDE.md` — the project-overview prose + the authoritative "Running a
-    local dev instance" env table and run snippet to LINK (do **not** copy the full table).
-  - `/workspace/iscc-monitor/deploy/OPERATING.md` — the operator/deploy doc to point at for production
-    (GHCR image, volumes, reverse proxy); the README is the front door, OPERATING.md is the deep dive.
-  - `/workspace/iscc-monitor/mise.toml` — confirm the exact gate command (`mise run check`,
-    `tasks.check` = `go build ./... && go vet ./... && go test ./...`) and `mise run fmt`.
-  - `.claude/context/learnings/config.md` — the config contract: `ISCC_MONITOR_DB` + `ISCC_MONITOR_REALM`
-    are BOTH required (no safe image/Go default for `DB`); intervals default `NORMAL=5m`/`FROZEN=1h`; the
-    masthead identity keys are optional display strings. Use this to keep the snippet honest.
+  - `/workspace/iscc-monitor/deploy/OPERATING.md` — the doc to fix; the Compose fragment (lines ~187-206),
+    the volume-ownership note (~208-220), and the bare `docker run` snippet (~226-231).
+  - `issues.md` entry **"`deploy/OPERATING.md` Compose volume-prep `chown` targets the wrong volume"** —
+    the precise diagnosis + the two suggested fixes (pin `name: monitor-data`, OR a Compose-native prep).
+  - `issues.md` `critical` **"Persistence contract for the SQLite DB volume …"** — the ask this unblocks.
+  - `.claude/context/learnings/config.md` — confirms `ISCC_MONITOR_REALM` is baked via `ENV` (the
+    snippet correctly omits it) and `ISCC_MONITOR_DB` has no default — keep these claims intact when editing.
 
 ## Not In Scope
-- Do **not** duplicate the full `ISCC_MONITOR_*` env-var table — link `CLAUDE.md` "Running a local dev
-  instance" as the single authoritative source so the two never drift (the issue mandates this).
-- Do **not** touch `CLAUDE.md`, `deploy/OPERATING.md`, `mise.toml`, or any Go source — README only.
-- Do **not** fix the open `normal`/`low` issues in passing (Compose volume-prep chown, `publish.yml`
-  ref-guard, Node-20 action bumps, the proofserve masthead slice, the shared `Resolve` leaf) — each is
+- Do **not** touch any Go source, `Dockerfile`, `mise.toml`, `CLAUDE.md`, or `README.md` — `OPERATING.md`
+  only. (No code defect exists here; this is a doc-correctness fix.)
+- Do **not** introduce a `docker-compose.yml` / `compose.yaml` file — the doc carries an illustrative
+  fragment, not a tracked stack (the real Compose stack lives in iscc-infra, out of the loop's scope per
+  `target.md` M-Deploy). Fix the fragment in place.
+- Do **not** rewrite unaffected sections (State/volume/backup, migration policy, egress, footprint,
+  `/metrics` decision, graceful shutdown) — they already satisfy their asks; touch only the volume-name +
+  prep wording.
+- Do **not** also fix the other open `normal`s in passing (the `publish.yml`/`pages.yml` `workflow_dispatch`
+  ref-guard, the Node-20 action bumps, the proofserve masthead slice, the shared `Resolve` leaf) — each is
   its own later step.
-- Do **not** add CI/Markdown-lint tooling, or badges that reference infra not yet public (e.g. a GHCR
-  pull badge while the package's visibility is still an iscc-infra step). Plain prose + working links.
 
 ## Implementation Notes
-Keep it human-facing and evergreen (no "new/improved", no changelog-style wording — CLAUDE.md comment
-discipline). Suggested sections, all grounded in the references above:
+The fix the issue prefers (smallest, makes the literal-name `chown` correct for BOTH the Compose path and
+the bare `docker run` path) is to **pin the Compose volume name**:
 
-1. **What it is** — the independent **Trust & Transparency** service for the ISCC-Hub network: follows
-   every hub's tlog-tiles transparency log, verifies Ed25519 signed-note signatures + RFC-6962
-   consistency, mirrors the logs as SQLite BLOBs, and publishes verifiable evidence. Frame it honestly
-   as a **verifiable cache**, *not* a trusted oracle (CLAUDE.md glossary: clients re-verify what the
-   monitor serves against the hub's signature + Merkle math). One tight sentence distinguishing **split
-   view** (detected by comparison) from a **self-consistency violation** (detected autonomously → freeze)
-   is welcome but optional — keep it short.
-2. **Stack** — Go 1.26, `CGO_ENABLED=0`, a single static binary `cmd/iscc-monitor`, configured entirely
-   through environment variables. Mention the reuse posture briefly (the transparency-dev stack +
-   `iscc-lib` Go codec) but link the ADRs rather than re-explaining.
-3. **Build & run** — a copy-pasteable fenced `sh` block that actually starts the binary against the
-   **testnet realm**. Mirror CLAUDE.md's known-good snippet; the canonical form is:
-   ```sh
-   go build -o /tmp/iscc-monitor ./cmd/iscc-monitor
-   ISCC_MONITOR_DB=/tmp/monitor-dev.db \
-   ISCC_MONITOR_REALM=internal/registry/testdata/realm.txt \
-   ISCC_MONITOR_NORMAL=30s \
-   ISCC_MONITOR_ADDR=0.0.0.0:41464 \
-   /tmp/iscc-monitor
-   ```
-   After the first poll the HTTP surface is live (`GET /` dashboard, `/healthz`, `/metrics`). Note the
-   two **required** vars (`ISCC_MONITOR_DB`, `ISCC_MONITOR_REALM`); do not imply a default DB path —
-   there is none (`config.md`). For the full var list, link CLAUDE.md "Running a local dev instance".
-4. **Quality gate** — `mise run check` (build + vet + test) must stay green; formatting via
-   `mise run fmt` / `gofmt -l .`. Use the exact task names from `mise.toml`.
-5. **Deployment** — one line: a container image is published to GHCR; point to `deploy/OPERATING.md`
-   for the operator contract (volume path, backups, non-root uid, reverse-proxy, `/metrics` exposure).
-   Do not restate that doc's substance.
-6. **Specs / pointers** — link `.claude/prd/` and `.claude/adr/` (ADR-0001..0013) and the glossary in
-   `CLAUDE.md`. State plainly that `CLAUDE.md` is **agent-facing** project instructions and
-   `.claude/context/README.md` is the **CID-loop-internal** context pack — so THIS README is the human
-   front door (the "distinct from" the target requires).
+```yaml
+volumes:
+  monitor-data:
+    name: monitor-data
+```
 
-Relative links in the README must resolve from the repo root (e.g. `./CLAUDE.md`,
-`./deploy/OPERATING.md`, `.claude/adr/`). Every linked path is confirmed present: `CLAUDE.md`,
-`deploy/OPERATING.md`, `.claude/prd/0001-iscc-monitor-v1.md`, `.claude/adr/0001…0013`,
-`internal/registry/testdata/realm.txt`.
+With an explicit `name:`, Compose uses the literal engine-volume name `monitor-data` instead of the
+project-prefixed default, so the documented prep `docker run --rm -v monitor-data:/data alpine chown -R
+65532:65532 /data` chowns the exact volume `docker compose up` then mounts. The bare `docker run` snippet
+already uses `-v monitor-data:/data` literally, so it stays correct unchanged.
+
+Edge to handle in the prose so the doc stays internally honest:
+- The volume-ownership note (~208-220) currently says "A fresh named Docker volume is created `root:root`
+  … a bare `-v monitor-data:/data` makes `store.Open` fail permission-denied". That stays true; just make
+  sure the note's "do this first" prep and the Compose fragment now refer to the SAME literal volume name
+  (`monitor-data`), with no project-prefix ambiguity. A one-clause mention that the explicit `name:` is what
+  makes the literal-name `chown` line up with the Compose mount keeps the WHY evident (CLAUDE.md: evergreen
+  comments describe the current state).
+- Keep the existing alternative (bind-mount a host dir you `chown 65532:65532`) — it is correct and is the
+  more robust real-world path; this fix only corrects the named-volume path.
+- Do not weaken any other claim: `ISCC_MONITOR_REALM` is baked via `ENV` (so the snippets correctly omit
+  it), `ISCC_MONITOR_DB` has no default, the container publishes no host port. All must remain accurate.
+
+Relevant correctness rule (`learnings.md` Go/tooling + CLAUDE.md): "the quick-start must be runnable as
+written" / "smallest reasonable changes" — pin the name, do not restructure the doc.
 
 ## Verification
-- `test -f /workspace/iscc-monitor/README.md` exits 0 (the file exists at the repo root).
-- `mise run check` is green (a doc-only change must not regress the gate — `go build`/`vet`/`test` pass;
-  no `.go` file changed).
+- `grep -nA2 '^volumes:' /workspace/iscc-monitor/deploy/OPERATING.md` shows `monitor-data:` with a child
+  `name: monitor-data` (the Compose volume is pinned to the literal name).
+- The literal volume name in the `chown` prep line and in the Compose `volumes:` block is the SAME string
+  `monitor-data` — assert with:
+  `grep -c 'monitor-data' /workspace/iscc-monitor/deploy/OPERATING.md` returns the count, and a manual read
+  confirms the `chown` target (`-v monitor-data:/data`) equals the pinned Compose `name:`.
+- `mise run check` is green (a doc-only change must not regress the gate; no `.go` file changed).
 - `gofmt -l /workspace/iscc-monitor` is empty (no Go file touched).
-- `grep -q 'mise run check' /workspace/iscc-monitor/README.md` — the README names the quality gate.
-- `grep -q 'cmd/iscc-monitor' /workspace/iscc-monitor/README.md` — the README shows the build/run path.
-- `grep -qi 'verifiable cache' /workspace/iscc-monitor/README.md` — the honest framing is present.
-- No dead relative links: for each path the README references
-  (`CLAUDE.md`, `deploy/OPERATING.md`, `.claude/prd`, `.claude/adr`), `test -e <path>` exits 0.
+- No new tracked Compose file was added: `test ! -f /workspace/iscc-monitor/docker-compose.yml && test ! -f
+  /workspace/iscc-monitor/compose.yaml` exits 0 (the fix stays in the doc fragment).
+- The doc's other persistence claims are intact: `grep -q 'recreate the volume on a schema change'`,
+  `grep -q '65532'`, and `grep -q '/etc/iscc-monitor/realm.txt'` all still match in `OPERATING.md`.
 
 ## Done When
-`README.md` exists at the repo root with a project overview, a runnable build/run snippet, the
-`mise run check` gate, and working links to `CLAUDE.md` + the spec dirs; all Verification checks pass and
-`mise run check` stays green.
+`deploy/OPERATING.md`'s Compose `volumes:` block pins `name: monitor-data` so the documented `chown` prep
+chowns the same volume `docker compose up` mounts, all Verification checks pass, and `mise run check` stays
+green — closing the persistence `critical`'s last doc caveat and clearing `review` to confirm/prune it.
