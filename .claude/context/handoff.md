@@ -1,73 +1,60 @@
-## 2026-06-22 — Review of: Ship the canonical `deploy/realm-testnet.txt` and bake it into the image
+## 2026-06-22 — Write the deployment/operability doc (`deploy/OPERATING.md`)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added the tracked operator-facing `deploy/OPERATING.md` — the deployment/operability
+contract for a server instance — sourcing every claim from ADR-0013 + confirmed code facts (uid
+65532, bind `:9464`, baked realm `/etc/iscc-monitor/realm.txt`, WAL `-wal`/`-shm` siblings, OTS
+calendar host). Doc-only: no Go, Dockerfile, or workflow touched. It answers all three remaining
+`critical` iscc-infra ops asks (persistence/volume/uid/migration, `/metrics` exposure, egress +
+footprint) so `review` can clear the `critical` count to 0.
 
-**Summary:** Added `deploy/realm-testnet.txt` (the canonical, mountable/bakeable domains-only testnet
-realm doc), repointed the Dockerfile bake `COPY` from the Go testdata fixture to it, added a non-vacuous
-golden test (`registry.Parse` accepts the real `deploy/` file as exactly the two ordered entries), and
-documented the canonical path in CLAUDE.md's env table. The diff matches `next.md` exactly (4 files:
-1 new realm doc + 1 new test + Dockerfile + CLAUDE.md doc; 1 prod/config + 1 test + 2 docs, well under
-the ≤3 budget), all gates are green, the test is mutation-proven non-vacuous, and Codex found no issues.
-This closes the M-Deploy "canonical realm document" Verify item and the realm-doc half of the last open
-`critical` issue (the identity-key half was already done) — so I deleted that `critical`.
+**Files changed:**
+- `deploy/OPERATING.md` (new): sections — What this is / scope (links CLAUDE.md "Running a local dev
+  instance" as the env-var source of truth, names `monitor-test.iscc.io` as first consumer); Image &
+  tags (`:develop` floating + `:sha-<short>` immutable, self-contained, uid 65532, `GET /version`
+  provenance); State/volume/backup (`/data/monitor.db` on a mounted volume, the `.db`+`-wal`+`-shm`
+  backup unit, single-writer, uid-65532-writable, baked realm); Migration policy (interim "recreate
+  the volume on a schema change", links the open issue); Reverse-proxy & port (binds `:9464`,
+  publishes no host port, own vhost); Route exposure & `/metrics` decision (public-by-design allow
+  list, no-secret/no-signing-key, recommend denying `/metrics` at Caddy); Egress (hub `/log` +
+  `/.well-known/did.json` + `alice.btc.calendar.opentimestamps.org`, per-realm DNS, labelled
+  footprint estimates + DO disk alert); Graceful shutdown (SIGTERM drain + `stop_grace_period`);
+  Quick start (Compose fragment + `docker run`, no host port).
 
-**Verification:**
-- [x] `mise run check` green — all 28 packages `ok`; `go build`/`go vet` clean.
-- [x] `gofmt -l .` empty outside `cauldron/`.
-- [x] `go test -count=1 -run TestParseCanonicalDeployRealm ./internal/registry` → `ok` (reads the real
-  `deploy/realm-testnet.txt`, asserts the two ordered entries).
-- [x] Test non-vacuity (mutation-proven): URL-shaping a line → FAIL; dropping a hub → FAIL; original file
-  restores green with no diff vs HEAD.
-- [x] `deploy/realm-testnet.txt` exists at repo-root `deploy/`, domains-only, `Parse` accepts it → exactly
-  `sb0.iscc.id`, `sb1.amlet.id`.
-- [x] `grep -q 'COPY deploy/realm-testnet.txt /etc/iscc-monitor/realm.txt' Dockerfile` PASS;
-  `grep 'COPY .*testdata/realm.txt' Dockerfile` → no match (testdata reference gone from the bake line).
-- [x] `deploy/` is git-tracked and NOT in `.dockerignore` (verified) — the new `COPY deploy/…` resolves in
-  the Docker build context; the baked path `/etc/iscc-monitor/realm.txt` is unchanged, so the CI `docker`
-  `/healthz` smoke (boots with the baked realm) keeps passing.
-- [x] CLAUDE.md env table names `deploy/realm-testnet.txt` as the canonical doc baked at
-  `/etc/iscc-monitor/realm.txt` and reframes testdata as the in-tree fixture.
-- [x] Scope discipline: exactly the 4 declared files; `internal/registry/testdata/realm.txt` left
-  untouched (Not-In-Scope honored); `registry.Parse`/`Entry`/follower wiring untouched; `go.mod`/`go.sum`
-  byte-identical. Oracle/conformance gate N/A (no proof/verify/didweb/merkle/signature path touched).
-- [x] Quality-gate integrity: scanned all unpushed commits (`@{upstream}..HEAD`); the lone `t.Skip`/
-  `//go:build` grep hit is in handoff prose, not code. No `nolint`, no skipped/deleted tests, no loosened
-  gate.
+**Verification:** `mise run fmt` → clean; `mise run check` → green (all 28 packages `ok`; doc-only,
+no Go/test/Dockerfile/workflow touched). All 11 `next.md` Verification greps PASS (file exists;
+`monitor-test.iscc.io`; `65532`; `:9464`; `no host port|publishes no`; `-wal` + `backup`; `/metrics`;
+`alice.btc.calendar.opentimestamps.org` + `did.json`; `recreate the volume|schema change`). Manual
+content cross-check: every "Verify fixed" line of all three open `critical` issues (persistence,
+`/metrics` exposure, egress+footprint) is answered — see Notes. CLAUDE.md anchor
+`#running-a-local-dev-instance` matches the live `## Running a local dev instance` heading;
+`deploy/OPERATING.md` is git-tracked and NOT in `.dockerignore`.
 
-**Issues found:** (none) — the byte-identity-vs-parse-equivalence question advance flagged is correctly
-resolved: `next.md` Scope said "same content as testdata", which means the same *parsed* membership (the
-deploy file needs its own deploy-oriented header), and both golden tests confirm parse-equivalence. No
-defect. Resolved this iteration: deleted the `critical` "Provide a canonical, mountable testnet realm file
-+ instance identity env values" — its full code-closable contract is now delivered (canonical doc at a
-documented non-testdata path + baked + `Parse`-tested; the three masthead identity keys were already in
-CLAUDE.md's env table and `GET /` already renders them). The residual "confirm membership / hub
-reachability / set the masthead values" sub-asks are pure human/infra confirmation, explicitly out of the
-loop's scope per target.md M-Deploy.
-
-**Codex second opinion:** clean — no findings. Verdict: "The change cleanly adds the canonical deploy realm
-file, points the Dockerfile at it, and adds a test that validates the parsed membership. Existing tests
-pass and I did not identify any introduced correctness issues." Nothing to triage.
-
-**Visual check:** n/a — no SSR surface changed (a realm doc, the Dockerfile bake line, a CLAUDE.md doc
-edit, and a registry test; no `internal/dashboard`/`dossier`/`web`/`certificate`/template touched).
-
-**Next:** Two code-closable M-Deploy slices remain, neither code-blocked: (1) the deployment/operability
-doc — the natural fold-in for the remaining three `critical` infra asks (SQLite volume path + single-file
-backup unit + non-root uid; the interim "recreate volume on schema change" migration policy; egress
-endpoints + reverse-proxy `:9464` contract + the `/metrics` exposure decision); then (2) the root
-`README.md` (`target.md` "Done When" requires it before DONE). Suggest the operability doc next (it closes
-3 `critical`s at once), then `README.md`. The `normal` `workflow_dispatch` ref-guard issue stays a
-fold-in candidate whenever a workflow file is next touched.
+**Next:** The root `README.md` (the last `target.md` "Done When" gate, a `normal` issue) — the human
+front door: what iscc-monitor is (verifiable cache, not trusted oracle), the Go 1.26 / `CGO_ENABLED=0`
+/ single-binary stack, a build+run snippet against the testnet realm, `mise run check`, and pointers
+to `.claude/prd` / `.claude/adr` / the CLAUDE.md glossary — link CLAUDE.md "Running a local dev
+instance" rather than duplicating the env table.
 
 **Notes:**
-- After deleting the realm-file `critical`, the open `critical` count drops to 3 — all three are the
-  iscc-infra ops asks that the single deployment/operability doc closes (persistence/volume, exposure/
-  `/metrics`, egress/sizing). DONE is still gated on those + the root `README.md` + clearing the open
-  `normal`s.
-- Docker is CI-only on this host (per prior reviews) — the Dockerfile `COPY` change is a one-line
-  source-path swap to an existing tracked file and cannot be `docker build`-verified locally; the CI
-  `docker` job is the real oracle. The swap is low-risk because the baked target path is unchanged and
-  `deploy/` is confirmed reachable in the build context.
-- Registry learnings updated: recorded the canonical-vs-testdata distinction (content-equivalent, NOT
-  byte-identical; assert parse-equivalence) and the `.dockerignore`-must-not-exclude-`deploy/` invariant.
+- This doc is the single artifact that closes all THREE remaining open `critical` issues. Mapping
+  for `review` to delete them:
+  - "Persistence contract for the SQLite DB volume + acknowledge the in-place migration hazard" →
+    sections **State, volume & backup** (path + volume + `.db`/`-wal`/`-shm` backup unit +
+    confirmation that one file-set captures all durable state + uid 65532) and **Migration policy**
+    (interim "recreate the volume on a schema change", links the open `normal` migration issue).
+  - "Decide which routes are safe to publish at the public vhost (especially /metrics)" → section
+    **Route exposure & the `/metrics` decision** (explicit public allow-list, the no-secret /
+    no-signing-key confirmation, the ADR-0013 Decision-6 per-instance operator choice, and the
+    recommendation to deny `/metrics` at Caddy and scrape it internally).
+  - "Document egress + resource footprint for box sizing" → sections **Egress** (hub `/log` +
+    `/.well-known/did.json` + `alice.btc.calendar.opentimestamps.org`, per-realm DNS / no fixed IP
+    allow-list) and **Footprint** (labelled ballpark RAM / CPU / mirror-BLOB disk-growth for the
+    2-hub testnet realm + the DO disk-usage-alert flag).
+- Footprint numbers are deliberately HONEST ballpark ranges labelled "estimates ... not measured
+  benchmarks" per `next.md` Not-In-Scope — no invented precision. Refine against live testnet data.
+- Strictly doc-only and within scope: no Dockerfile / workflow / Go change, no `/metrics` auth flag,
+  no second listener, no `publish.yml` ref-guard fix (those stay their own open issues). The
+  `/metrics`-deny and the `publish.yml` `workflow_dispatch` ref-guard remain open backlog items
+  (`normal`), untouched here.
+- Oracle/conformance gate N/A — no proof/verify/didweb/merkle/signature path touched. No visual
+  surface changed (a doc, no template).
