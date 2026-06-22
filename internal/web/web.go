@@ -1,8 +1,8 @@
 // Package web serves the monitor's shared static front-end assets — the ISCC
 // Design System v2 token stylesheet, the self-hosted webfont @font-face shell, the
-// woff2 binaries themselves, the Go WASM runtime loader (wasm_exec.js), and the
-// verifier WebAssembly artifact (verify.wasm) — over net/http as a tiny stdlib-only
-// leaf. The stylesheets and fonts are the one no-JS,
+// woff2 binaries themselves, the Go WASM runtime loader (wasm_exec.js), the
+// verifier WebAssembly artifact (verify.wasm), and the grayscale ISCC masthead logo
+// (iscc-logo-black.png) — over net/http as a tiny stdlib-only leaf. The stylesheets and fonts are the one no-JS,
 // no-CDN style shell every server-rendered M-UI surface (the realm index at "/", the
 // hub dossier, the log browser, the certificate page) links via stable paths under
 // /_ds/, so the design tokens and fonts are defined once and shared. The wasm_exec.js
@@ -75,6 +75,12 @@ const WasmExecPath = "/_ds/wasm_exec.js"
 // verifier; like TokensPath a page's fetch URL literal must stay in sync with it.
 const WasmVerifyPath = "/_ds/verify.wasm"
 
+// LogoPath is the stable exact path the self-hosted grayscale ISCC logo is served at.
+// Every SSR masthead renders it as an <img src> beside the "Trust & Transparency
+// Monitor" text mark (the shared document chrome); like TokensPath a page's <img src>
+// literal must stay in sync with this value, since templates cannot read the Go const.
+const LogoPath = "/_ds/iscc-logo-black.png"
+
 // WasmVerifyHash is the published lowercase-hex SHA-256 of the committed verify.wasm
 // bytes — the reproducible-build artifact hash a client compares against to confirm it
 // loaded the audited verifier (the SRI/verify-artifact pin). It is produced by the
@@ -111,6 +117,12 @@ const contentTypeJS = "text/javascript; charset=utf-8"
 // explicitly so a content sniffer cannot downgrade it and refuse the streaming
 // instantiation.
 const contentTypeWASM = "application/wasm"
+
+// contentTypePNG is the media type served for the embedded logo PNG. It is set
+// explicitly so the browser renders the masthead <img> without depending on content
+// sniffing. The string literal stays decoupled from the image/png package, so the
+// leaf imports no image/* package and remains WASM-shareable.
+const contentTypePNG = "image/png"
 
 // TokensCSS is the embedded ISCC Design System v2 token stylesheet — a single
 // concatenated, CDN-free file (colors, typography, spacing, base tokens), embedded
@@ -150,11 +162,20 @@ var wasmExecJS []byte
 //go:embed verify.wasm
 var wasmVerify []byte
 
+// logoPNG is the embedded grayscale ISCC logo — a committed, pre-downscaled PNG (a few
+// KB, ~76px tall with a preserved alpha channel so it sits on the light chrome). It is
+// a build-pinned asset like the woff2 binaries; the downscale happens once at commit
+// time, never at build time, so no image toolchain is needed on a CI/dev machine.
+//
+//go:embed iscc-logo-black.png
+var logoPNG []byte
+
 // Handler returns an http.Handler for the /_ds/ static-asset subtree. It serves the
 // token stylesheet, the @font-face stylesheet, the woff2 binaries, the wasm_exec.js
-// runtime loader, and the verifier verify.wasm artifact; the content type is chosen
-// per path (text/css for the .css, text/javascript for wasm_exec.js, application/wasm
-// for verify.wasm, font/woff2 for .woff2). Only GET is served
+// runtime loader, the verifier verify.wasm artifact, and the masthead logo PNG; the
+// content type is chosen per path (text/css for the .css, text/javascript for
+// wasm_exec.js, application/wasm for verify.wasm, image/png for the logo, font/woff2
+// for .woff2). Only GET is served
 // (any other method is 405); an unknown /_ds/ path is 404. Every 200 carries
 // Cache-Control: no-cache and a strong content ETag, with an If-None-Match match
 // short-circuiting to 304. It sets no CORS headers — the outer corsmw wrap at the mux
@@ -178,6 +199,8 @@ func Handler() http.Handler {
 			writeAsset(w, r, wasmExecJS, contentTypeJS)
 		case WasmVerifyPath:
 			writeAsset(w, r, wasmVerify, contentTypeWASM)
+		case LogoPath:
+			writeAsset(w, r, logoPNG, contentTypePNG)
 		default:
 			serveFont(w, r)
 		}

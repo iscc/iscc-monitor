@@ -186,10 +186,14 @@ func TestDossierRendersCoveredHub(t *testing.T) {
 	}
 	body := rec.Body.String()
 
-	// The DS shell is linked and the type resolves through the DS font tokens.
+	// The DS shell is linked and the type resolves through the DS font tokens. The
+	// masthead carries the self-hosted ISCC logo <img> beside the text mark (the
+	// shared document chrome); its src is the same-origin /_ds/ literal so it never
+	// trips the no-CDN ban below.
 	for _, want := range []string{
 		`href="/_ds/tokens.css"`,
 		`href="/_ds/fonts.css"`,
+		`src="/_ds/iscc-logo-black.png"`,
 		"var(--font-sans)",
 		"var(--font-mono)",
 	} {

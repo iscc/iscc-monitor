@@ -1,42 +1,56 @@
-## 2026-06-22 — Review of: Wire the first SSR WASM `<script>` caller — certificate tier-2 "your browser verified"
+## 2026-06-22 — Serve the self-hosted ISCC logo at `/_ds/iscc-logo-black.png` and render it in the `/` + dossier mastheads
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added a build-pinned grayscale ISCC logo as a `go:embed`-ed `/_ds/` asset served through the
+existing `writeAsset` leaf, and rendered it as an `<img>` beside the text `.chrome-mark` in the realm-index
+(`/`) and hub-dossier mastheads (with a 1px divider, matching the mockup). Closes the front-of-queue
+human-filed `critical` (ISCC logo masthead chrome). The serve route is now in place for the remaining four
+mastheads to reuse with a one-line `<img>` edit.
 
-**Summary:** The certificate page (`GET /inclusion/<iscc_id>`) now ships the first real SSR caller of the
-in-browser WASM verifier: under `{{if .HasBundle}}` it embeds the proof in a `<script type="application/json">`
-data island, loads `/_ds/wasm_exec.js`+`/_ds/verify.wasm` via a progressive-enhancement loader, and renders an
-honest tier-2 verdict — verified live end-to-end against the testnet (the WASM ran headlessly and produced the
-correct `verified` verdict matching server §3). The `cmd/wasm/main.go` shim's `safeIndex` guard closes the
-`js.Value.Int()` truncation in production. All gates green; the work is clean and well-scoped (6 source/test/doc
-files), with two non-blocking `normal` follow-ups (an untested guard, a no-JS honesty-copy overstatement).
+**Files changed:**
+- `internal/web/iscc-logo-black.png`: committed, pre-downscaled grayscale PNG (199×76, gray+alpha, 2976 bytes
+  ≈3 KB) — `convert .claude/design/assets/iscc-logo-black.png -resize x76 -strip …` run ONCE at this step
+  (not at build time; no image toolchain on the build path, preserving the pure-Go CGO_ENABLED=0 posture).
+- `internal/web/web.go`: added `LogoPath` const, `contentTypePNG` const, `//go:embed iscc-logo-black.png`
+  → `var logoPNG`, and a `case LogoPath: writeAsset(w, r, logoPNG, contentTypePNG)` in `Handler`'s path
+  switch. Updated the package + `Handler` doc comments. No new imports (`image/png` is a string literal
+  only), so the leaf stays pure stdlib and WASM-green.
+- `internal/dashboard/dashboard.html`: wrapped the masthead in `.chrome-brand` (flex), added the
+  `<img class="chrome-logo" src="/_ds/iscc-logo-black.png" alt="ISCC">` + a `.chrome-divider` span before
+  the existing text block; added `.chrome-brand`/`.chrome-logo`/`.chrome-divider` CSS (height:19px,
+  `--space-3` gap, 1px×24px divider).
+- `internal/dossier/dossier.html`: identical masthead change + CSS.
+- `internal/web/web_test.go`: added `TestLogoServed` — `GET /_ds/iscc-logo-black.png` → 200,
+  `Content-Type: image/png`, body byte-equal to embedded bytes, PNG magic, strong ETag, `If-None-Match`→304.
+- `internal/dashboard/handler_test.go`: extended `TestDashboardRendersHeroAndNavigation` to assert
+  `src="/_ds/iscc-logo-black.png"` in the masthead.
+- `internal/dossier/handler_test.go`: extended `TestDossierRendersCoveredHub` DS-shell block to assert the
+  same `<img>` src.
 
-**Verification:**
-- [x] `mise run check` — green (25 packages `ok`); `gofmt -l .` excl. `cauldron/` empty.
-- [x] `mise run build:wasm` reproduces `internal/web/verify.wasm` byte-identical (`7d57ab1b…`) == `WasmVerifyHash`; rebuild left no git diff; `TestWasmVerifyHashPinned` PASS.
-- [x] `GOOS=js GOARCH=wasm CGO_ENABLED=0 go build ./cmd/wasm` — OK with the new integer guard.
-- [x] `TestVerifyJSON ./cmd/wasm/verifyadapter` — PASS (WASM-vs-server golden parity, adapter untouched).
-- [x] `TestCertificate ./internal/certificate` — PASS, incl. `TestCertificateRendersWasmVerifier` (positive + negative subtests); mutation-proven non-vacuous (blanking `RecordB64` → FAIL, restore → PASS).
-- [x] No-CDN: `TestCertificateKnownID` (holds the no-CDN body assertions) PASS — same-origin `/_ds/` script+wasm refs do not trip the third-party-CDN ban.
-- [x] No-JS baseline asserted in-test AND verified live: §1–§6 + Tier 1/Tier 2 + Download proof bundle all render before the first executable loader `<script src>`; the tier-2 verdict panel's default text is honest with JS disabled.
-- [x] Live end-to-end (testnet `ISCC:MAIGKSETI7MJ4EAB`, fresh binary): the certificate served full §1–§3 + all tier-2 markers; agent-browser executed the WASM and rendered a green-bordered `verified` panel ("Your browser re-verified this inclusion proof against the accepted root").
-- [x] Gate-integrity scan over all unpushed commits — no `nolint`/`t.Skip`/swallowed errors/build-tag exclusions/deleted assertions.
-- [x] Oracle/conformance gate: N/A for the trust-root crypto — no signature/RFC-6962/Merkle/`verifyadapter.VerifyJSON`/`proof/verify` change; only the `cmd/wasm` arg-marshaling guard. WASM-vs-server parity (`TestVerifyJSON`) still green; the live render matched server §3.
+**Verification:** `mise run check` → green (all 25 packages `ok`); `gofmt -l .` excl. `cauldron/` clean.
+Per criterion:
+- [x] `go test -run 'TestLogo|TestNoExternalCDN|TestWasmVerifyServed' ./internal/web` PASS (incl. new `TestLogoServed`).
+- [x] `go test -run TestDashboard ./internal/dashboard` PASS; mutation-proven non-vacuous (dropped the `<img>` → FAIL, restored → PASS).
+- [x] `go test -run TestDossier ./internal/dossier` PASS.
+- [x] Committed PNG is small grayscale PNG: `ls -l` shows 2976 bytes (not 113 KB), `file` reports `PNG image data, 199 x 76, 8-bit gray+alpha`.
+- [x] `GOOS=js GOARCH=wasm CGO_ENABLED=0 go build ./internal/web` exits 0 (leaf stays WASM-shareable).
+- [x] No-CDN ban satisfied: same-origin `/_ds/iscc-logo-black.png` has no `http(s)://`/`cdn.`/`jsdelivr` substring; `TestDashboardLinksTokensNoCDN` + the dossier no-CDN body scan stay green.
 
-**Issues found:**
-- (normal, filed) **`safeIndex` integer guard is untested.** The `js.Value.Int()` truncation IS closed in production code (`cmd/wasm/main.go:52-83`, verified live), but `safeIndex` is a pure `float64→(uint64,string)` fn trapped in the `//go:build js && wasm` `main.go`, so no linux test exercises its NaN/fractional/negative/range branches — the build gate only proves it compiles, and the caller's test feeds only valid integers. The original truncation issue's "Verify fixed" (a `1.9` test) was NOT met. Fix: move `safeIndex`+`maxSafeInteger` into `verifyadapter` and table-test. (Reframed the prior `normal` truncation issue to this residual test gap.)
-- (normal, filed) **Tier-2 honesty header overstates "This browser re-verifies" on the no-JS baseline** (`cert.html:465`). With JS disabled no verdict runs, yet the `HasBundle` header asserts present-tense re-verification while the verdict panel below correctly hedges "with JavaScript enabled". Make the static header describe only the bundle/offline path; let the script's panel be the sole asserter.
-
-**Codex second opinion:** Finished, one P2 finding (two sub-claims), triaged:
-- **Sub-claim 1 (no-JS / load-failure overstatement) — CONFIRMED (minor).** Filed as the tier-2-honesty-header `normal` issue above. Real imprecision on a Tier-1 honesty surface; non-blocking (the verdict panel itself is honest; every clause renders no-JS).
-- **Sub-claim 2 (`!HasBundle` branch shows stale "lands in a later release") — REFUTED / false positive.** That copy renders ONLY in the `{{else}}`/no-bundle branch, which is accurate — an uncertifiable id has no bundle and no verifier (the negative test confirms zero tier-2 markers; `grep "land in a later release"` on a certifiable page → 0). Dismissed, no action.
-
-**Visual check:** Done (SSR surface `internal/certificate/cert.html` changed). Launched the freshly-built binary against the testnet, screenshotted `/inclusion/ISCC:MAIGKSETI7MJ4EAB` and the `Certificate.dc.html` mockup with agent-browser. The live page faithfully matches the mockup's clause structure and ADDS the new green `verified` tier-2 panel below the actions (constraint > mockup — the WASM milestone mandates the tier-2 result; the mockup predates it). No NEW visual delta from this increment. Pre-existing tracked deltas unchanged: masthead logo (open `critical`), instance identity (`normal`), §5/§6 (testnet has no OTS; timestamp `normal`).
-
-**Next:** The lone open `critical` is the human-filed **ISCC logo masthead** issue — prioritize it (self-hosted `internal/web` `go:embed`+serve at `/_ds/iscc-logo-black.png`, downscaled, referenced from all six masthead templates). After that, continue the WASM milestone: wire the same tier-2 caller into the **dossier**, then the standalone `monitor.iscc.codes` Independent Verification app (Surface C). The guided **split-view alert** keys on the now-distinct `data-state="failed"` verdict.
+**Next:** The immediate follow-up named in `next.md` Not-In-Scope: add the identical one-line
+`<img src="/_ds/iscc-logo-black.png" …>` (+ divider) to the remaining FOUR mastheads —
+`internal/certificate/cert.html` and `internal/proofserve/{browser,record,records}.html` — now that the
+serve route exists; pure template edits, each beside its own `.chrome-mark`. After that, continue the WASM
+milestone (wire the tier-2 verifier caller into the dossier, then the standalone `monitor.iscc.codes`
+Independent Verification app). Optional KISS factoring of a shared chrome partial (the six near-identical
+mastheads) is deferred per the issue.
 
 **Notes:**
-- **`issues.md` reconciled (orchestrator note):** the uncommitted change was legitimate — a `define-next`/`update-state` phase added the human-filed `critical` ISCC-logo issue and extracted sub-item (1) "No logo" from the realm-index-deltas issue into it (cross-referenced). Kept it; committed as part of this review's issue bookkeeping. It is now the front-of-queue `critical`, so DONE is not reachable until it lands.
-- **Stray `/wasm` artifact:** the bare WASM build gate (`go build ./cmd/wasm`, no `-o`) again dropped a 2.9 MB `wasm` binary at the repo root (untracked, not gitignored). Deleted it. Still worth adding `/wasm` to `.gitignore` or always using `mise run build:wasm` (it has `-o`).
-- **`maxSafeInteger` bound:** the guard rejects `>= 2^53` (i.e. `> maxSafeInteger = 2^53-1`), slightly stricter than the issue's literal "`> 2^53`". Fine — well outside any realistic leaf-index domain; both reject the unsafe range.
-- **Two independent re-verifications must agree:** the server §3 ✓ and the browser tier-2 ✓ both gate on the same `proof.VerifyInclusion`-against-the-accepted-root; the data island carries the `record` only when §3 passed (the `if ok` block), so the browser can never re-verify a proof the server declined. Do not weaken either.
+- The masthead now carries BOTH the logo and the text mark (target.md:148 wants both), with a 1px divider
+  between them per the mockup (`.dc.html:30-34`).
+- The `image/png` content type is a string const only — no `image/*` package imported — so the leaf's
+  pure-stdlib closure (`crypto/sha256`/`embed`/`fmt`/`io/fs`/`net/http`/`strings`) is unchanged and the WASM
+  build still passes. Confirmed via `GOOS=js GOARCH=wasm go build ./internal/web`.
+- Oracle/conformance gate: N/A — pure static-asset transport, no signature/RFC-6962/Merkle/proof path
+  touched (matches `internal/web`'s docstring and the `next.md` correctness rule).
+- Visual check (ADR-0012) is a `review` responsibility: the `/` masthead is the surface the critical's
+  verify bar measures; the served HTML now carries the `<img>` (asserted in-test), but a live screenshot vs
+  the `Realm Index.dc.html` mockup is the reviewer's call.

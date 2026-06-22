@@ -261,11 +261,15 @@ func TestDashboardRendersHeroAndNavigation(t *testing.T) {
 		t.Errorf("dossier link count = %d, want >= 2 (one per hub)\n%s", dossierLinks, body)
 	}
 
-	// (c) The masthead instance-identity block + the tier-2 verify link.
+	// (c) The masthead instance-identity block + the tier-2 verify link, plus the
+	// self-hosted ISCC logo <img> beside the text mark (the shared document chrome).
+	// The logo src is the literal web.LogoPath; same-origin /_ds/ so it never trips
+	// the no-CDN ban.
 	for _, want := range []string{
 		"monitor instance",
 		"monitor.iscc.codes",
 		"hubs followed",
+		`src="/_ds/iscc-logo-black.png"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("masthead/heading missing %q\n%s", want, body)

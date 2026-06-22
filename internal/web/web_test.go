@@ -298,6 +298,53 @@ func TestWasmVerifyHashPinned(t *testing.T) {
 	}
 }
 
+// TestLogoServed checks the grayscale ISCC masthead logo is served at LogoPath with
+// the image/png content type, the revalidating no-cache + strong ETag policy, a
+// non-empty body byte-equal to the embedded bytes, and the PNG magic header — the
+// build-pinned masthead asset every SSR chrome references same-origin. It also asserts
+// an If-None-Match echo of the served ETag short-circuits to 304, the sibling /_ds/
+// conditional-GET policy.
+func TestLogoServed(t *testing.T) {
+	rec := get(t, LogoPath)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/png" {
+		t.Errorf("Content-Type = %q, want image/png", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	etag := rec.Header().Get("ETag")
+	if !strings.HasPrefix(etag, "\"") || strings.HasPrefix(etag, "W/") {
+		t.Errorf("ETag = %q, want a strong quoted-hex tag", etag)
+	}
+	body := rec.Body.Bytes()
+	if len(body) == 0 {
+		t.Fatal("body is empty")
+	}
+	if !bytes.Equal(body, logoPNG) {
+		t.Errorf("served body (%d bytes) differs from the embedded logoPNG (%d bytes)", len(body), len(logoPNG))
+	}
+	// A PNG file begins with the 8-byte signature (89 50 4e 47 0d 0a 1a 0a).
+	if magic := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}; len(body) < 8 || !bytes.Equal(body[:8], magic) {
+		t.Errorf("body is not a PNG (magic = %x, want %x)", body[:min(8, len(body))], magic)
+	}
+
+	// An If-None-Match echo of the served ETag short-circuits to 304 with no body.
+	cond := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, LogoPath, nil)
+	req.Header.Set("If-None-Match", etag)
+	Handler().ServeHTTP(cond, req)
+	if cond.Code != http.StatusNotModified {
+		t.Errorf("If-None-Match status = %d, want 304", cond.Code)
+	}
+	if cond.Body.Len() != 0 {
+		t.Errorf("304 body not empty (%d bytes)", cond.Body.Len())
+	}
+}
+
 func TestFontMissingIs404(t *testing.T) {
 	if rec := get(t, "/_ds/fonts/does-not-exist.woff2"); rec.Code != http.StatusNotFound {
 		t.Errorf("missing font status = %d, want 404", rec.Code)
