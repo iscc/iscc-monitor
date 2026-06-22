@@ -469,3 +469,30 @@ filed it and does **not** affect priority.
 - **Spec:** ADR-0003 `CGO_ENABLED=0` static build; CLAUDE.md "single binary configured
   entirely through environment variables".
 
+## `deploy/OPERATING.md` §Footprint gives a QUALITATIVE disk-growth answer, not a concrete per-hub/N-hub rate
+- **Priority:** low
+- **Source:** [review] (Codex P2, reviewer-triaged — bar met as well as in-repo data allows; the missing number needs live testnet measurement)
+- **What / where / how to verify:** When the egress+footprint `critical` was pruned (advance `3af0084`),
+  Codex flagged that the deleted Verify bar asked for "ballpark RAM / CPU / **disk-growth** for an N-hub
+  realm" (the original body emphasized "especially the **disk-growth rate** of the mirror BLOBs per hub
+  over time, so infra can size the volume"), but `deploy/OPERATING.md` §Footprint (lines 161-166) answers
+  disk-growth only QUALITATIVELY: "proportional to each hub's log activity — a quiet testnet hub adds
+  little; a high-traffic hub at millions of records/day would dominate", plus a "set a DigitalOcean
+  disk-usage alert + size with headroom" recommendation. RAM ("tens of MB") and CPU ("near-idle, brief
+  per-poll bursts") DO carry ballpark numbers; the disk-growth clause is the one answered without a rate.
+  Reviewer-confirmed the gap is real (the §Footprint text is qualitative) AND that the missing number is
+  **not derivable in-repo**: there are no benchmarks, no on-disk size fixtures, and the rate depends on
+  each testnet hub's real-world record volume + actual ISCC-note/tile BLOB sizes — none of which is loop
+  ground truth (the §Footprint header itself says the estimates are "to be refined against live data —
+  not measured benchmarks"). Fabricating a "~X MB/day" number would assert an un-run measurement, which
+  is worse than the honest qualitative answer. So this is **`low`, not a re-block**: the critical's bar is
+  met as well as in-repo data allows, the prune stays correct, and a concrete rate is a live-data
+  refinement (a human/infra observation), NOT a loop-closeable doc edit. Fix when the testnet instance has
+  run long enough to measure: record an OBSERVED per-hub BLOB-growth rate (e.g. MB per N records, or per
+  day on each testnet hub) in §Footprint, replacing the qualitative-only disk clause. Verify fixed:
+  §Footprint states a measured/estimated disk-growth rate (bytes per record or per day) for the testnet
+  hubs, not just "proportional to activity". Low — skipped by the loop until live data exists.
+- **Spec:** ADR-0007 mirror growth / per-network DB sizing; ADR-0013 M-Deploy footprint note; CLAUDE.md
+  "Coverage" (never imply a guarantee the data does not support — including a fabricated sizing number);
+  the (pruned) egress+footprint critical's disk-growth-rate Verify clause.
+
