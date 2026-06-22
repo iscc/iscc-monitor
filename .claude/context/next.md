@@ -1,112 +1,109 @@
 # Next Work Package
 
-## Step: Static-site generator for the Surface-C verifier deploy (`cmd/verifier-site`)
+## Step: GitHub-Pages publish workflow for the Surface-C verifier (`monitor.iscc.codes`)
 
 ## Advances
-WASM verifier milestone — the still-open Verify front:
-> "the standalone **Independent Verification** verifier app … (Surface C) at `monitor.iscc.codes`
-> (monitor-agnostic via `?monitor=<url>`); reproducible build + published hash + SRI pin. **Verify:**
-> identical vectors yield identical verdicts (WASM vs server); the verifier artifact hash matches the
-> published value; a `(size, root)` mismatch renders the guided split-view alert, not a dead error."
+WASM verifier milestone — target.md: *"plus the standalone **Independent Verification** verifier app
+(… Surface C) at `monitor.iscc.codes` (monitor-agnostic via `?monitor=<url>`); reproducible build +
+published hash + SRI pin (ADR-0003, ADR-0010). **Verify:** … the verifier artifact hash matches the
+published value …"*
 
-State (state.md lines 32-37) and the review handoff both name this as the front-of-queue sub-step: the
-client-side target gating just landed, so `internal/verifier` is now a single static artifact — but
-**"only `.github/workflows/ci.yml` exists — no Pages publish workflow"** and there is no way to
-materialize the deployable site (`index.html` + `/_ds/` assets) from the handlers. This step builds the
-load-bearing, golden-testable **generator** that the GitHub-Pages publish step (a later sub-step) will
-invoke. The review handoff `**Next:**` is exactly: "generate the static `index.html` (render
-`verifier.Handler` once to a file) + the `/_ds/` assets and publish to GitHub Pages via a
-`.github/workflows/*`." This step does the generate half (mechanically verifiable); the workflow YAML is
-the follow-up sub-step.
+This is the **front-of-queue open Verify** and the explicit `review` handoff `**Next:**`: "Build the
+GitHub-Pages publish workflow (`.github/workflows/*`) that runs `go run ./cmd/verifier-site -out <dir>`
+and deploys the tree to `monitor.iscc.codes` — this generator is its build command." state.md's
+DRIFT WATCH (amber) says the next increment must **close** a Verify criterion, not add more build
+plumbing around the still-unpublished artifact — this is that closer: the reproducible build command
+(`cmd/verifier-site`) exists; this step is the missing PUBLISH half that makes the artifact actually
+deployed (the only remaining step to a live, hash-published Surface-C artifact).
 
 ## Goal
-Add a small `cmd/verifier-site` Go program that renders the complete Surface-C static site
-(`index.html` from `verifier.Handler()` + every `/_ds/` asset from `web.Handler()`) into an output
-directory, so the `monitor.iscc.codes` GitHub-Pages deploy has a single reproducible build command. The
-generator is the deployable-artifact core; without it the deploy cannot be assembled or tested.
+Add a GitHub Actions workflow that runs the existing `cmd/verifier-site` generator and publishes the
+rendered static tree to GitHub Pages at `monitor.iscc.codes`, so the verifier app is a *deployed*,
+public, reproducible-from-commit artifact (ADR-0003 "Pages-from-repo ties the deployed WASM to a public
+commit") — closing the "published" half of the WASM milestone's Verify bar.
 
 ## Scope
-- **Create**: `cmd/verifier-site/main.go` — the static-site generator.
-- **Create**: `cmd/verifier-site/main_test.go` — golden test (generates into a temp dir, asserts the
-  tree).
-- **Modify**: `CLAUDE.md` — add a short "Building the Surface-C verifier site" subsection under
-  "Development" documenting the generate command (one paragraph; the usage this step introduces).
+- **Create**: `.github/workflows/pages.yml` — the Pages build+deploy workflow (the publish half).
+- **Create**: `.github/pages/CNAME` — a tracked file containing exactly `monitor.iscc.codes` (+ newline)
+  that the workflow copies into the published tree so Pages serves the custom domain (ADR-0003 `.codes` =
+  code). Keep it under `.github/pages/`, NOT a bare repo-root `CNAME` where tooling might trip on it.
+- **Modify**: `CLAUDE.md` — the WASM/surfaces section documents the surfaces; add a one-line note that
+  `monitor.iscc.codes` is published by `.github/workflows/pages.yml` (with `cmd/verifier-site` as its
+  build command). Minimum needed to keep docs in sync (this is the only non-test/doc file; well within 3).
 - **Reference**:
-  - `.claude/context/learnings/verifier.md` (Surface-C handler shape, `/_ds/` literals, client-side
-    target, no-CDN ban — Read before writing).
-  - `.claude/context/learnings/web.md` (`web.Handler` `/_ds/` SUBTREE mount, the five exact asset
-    paths + `fonts/*.woff2`, `noExternalCDN` rules, the `verify.wasm` SRI pin — Read before writing).
-  - `.claude/context/learnings/cmd-monitor.md` (thin-main idiom: `cmd/iscc-monitor` owns the one
-    `os.Exit`; mirror that structure).
-  - `internal/verifier/handler.go` (`verifier.Handler()` — GET-only, no-arg, renders `index.html`).
-  - `internal/web/web.go` (`web.Handler()`, `web.Prefix`, `TokensPath`/`FontsCSSPath`/`WasmExecPath`/
-    `WasmVerifyPath`/`LogoPath`, exported `web.TokensCSS` + `web.WasmVerifyHash`; fonts are embedded but
-    NOT exported as a list — derive font paths from `fonts.css` `src:` URLs the way `web_test.go`
-    `TestFontsCSSReferencesEmbeddedSubsets` does).
-  - `internal/web/web_test.go` (the existing `src:`-URL-extraction + "exactly 8 woff2" pattern to
-    reuse for enumerating fonts).
+  - `cmd/verifier-site/main.go` — the build command this workflow invokes (`go run ./cmd/verifier-site
+    -out <dir>`, exits 0, writes the 14-file tree; default out dir is `dist`; fails closed on any non-200).
+  - `.github/workflows/ci.yml` — the existing workflow's shape to mirror: `runs-on: ubuntu-latest`,
+    `actions/checkout@v4`, `actions/setup-go@v5` with `go-version: "1.26"`, `env: CGO_ENABLED: "0"`.
+  - `.claude/adr/0003-client-verification-and-in-browser-verifier.md` (lines 51–74) — verifier hosting:
+    independent origin `monitor.iscc.codes`, GitHub-Pages-from-repo, reproducible-build + published-hash.
+  - `.claude/context/learnings/verifier-site.md` — the generator's contract (fail-closed on a non-200,
+    copies the byte-pinned `verify.wasm` whose SHA-256 == `web.WasmVerifyHash`, non-atomic-output `low`).
+  - `.claude/context/learnings/ci.md` — CI workflow conventions (one `ubuntu-latest` job,
+    `CGO_ENABLED: "0"`; PyYAML is absent locally so validate YAML via the cached `gopkg.in/yaml.v3`).
 
 ## Not In Scope
-- **The GitHub-Pages publish workflow itself** (`.github/workflows/*` to deploy to
-  `monitor.iscc.codes`). That is the next sub-step and depends on this generator; do not add or edit a
-  workflow YAML here.
-- Mounting `verifier.Handler` in `cmd/iscc-monitor`'s `buildMux` — Surface C deliberately ships on a
-  different origin (verifier.md). Keep it unmounted.
-- The WASM-verifier-scope signature/id-binding gap, the `readTarget` `u.href` normalization, and the
-  `safeIndex`-to-`verifyadapter` move (all open `normal`s) — those wait for a WASM-core touch, not this
-  HTML-assembly step.
-- Rebuilding `verify.wasm` or re-pinning `WasmVerifyHash` — the generator COPIES the already-built,
-  byte-pinned embedded asset; it does not invoke `go build -GOOS=js`.
-- Any new store read / projection or `/` sub-region parity — unrelated to this step.
+- Do **not** modify `cmd/verifier-site/main.go` — it is the finished build command; this step only
+  *invokes* it from CI. (Its non-atomic-output `low`, the Surface-C `readTarget`, and the WASM-scope
+  `normal`s are separate later steps; folding them in here would blur the publish-workflow change.)
+- Do **not** add the dossier tier-2 WASM caller — that is the *other* WASM sub-step, a separate ≤3-file
+  increment; pick one front. This step lands the publish workflow.
+- Do **not** touch `.github/workflows/ci.yml`; the publish workflow is a new, separate file so CI and
+  Pages have independent triggers and the existing gate stays unchanged.
+- Do **not** add the missing `safeStamp` OTS guard, the §5 digest binding, or any `host:port`-DID work —
+  those are unrelated `normal` issues touched only when their exact lines are next edited.
 
 ## Implementation Notes
-- **Thin main, mirror `cmd/iscc-monitor`.** `main()` parses one flag `-out <dir>` (default e.g.
-  `dist/`), calls a pure `generate(outDir string) error`, prints what it wrote, and owns the single
-  `os.Exit(1)` on error. Keep `generate` package-private but testable (same package as the test) so the
-  test calls it directly into `t.TempDir()` — do not shell out.
-- **Render `index.html` via the real handler, not by re-embedding the template.** Drive
-  `verifier.Handler()` with an `httptest.NewRecorder()` + `httptest.NewRequest(http.MethodGet, "/",
-  nil)`, assert `rec.Code == 200`, and write `rec.Body` to `<out>/index.html`. This guarantees the
-  deployed page is byte-identical to what the golden tests already gate (the client-side loader, the
-  no-CDN body, the honest baseline) — no second source of truth.
-- **Materialize `/_ds/` assets via `web.Handler()` over httptest, one GET per path.** The five exact
-  paths are `web.TokensPath`, `web.FontsCSSPath`, `web.WasmExecPath`, `web.WasmVerifyPath`,
-  `web.LogoPath`; plus the woff2 binaries under `web.Prefix + "fonts/"`. For each, issue a GET, assert
-  200, and write the body to `<out>` at the URL path — `web.Prefix` (`/_ds/`) becomes a real
-  subdirectory (`<out>/_ds/tokens.css`, `<out>/_ds/verify.wasm`,
-  `<out>/_ds/fonts/readex-pro-400.woff2`, …). Create parent dirs with `os.MkdirAll`. Use the URL path
-  verbatim so the on-disk layout matches what the page fetches at runtime — GitHub Pages serves files at
-  their path.
-- **Enumerate fonts from `fonts.css`, do not hardcode the 8 names.** Fetch `web.FontsCSSPath` first,
-  extract each `url("/_ds/fonts/<name>.woff2")` `src:` path (same regex/scan as
-  `web_test.go`'s `TestFontsCSSReferencesEmbeddedSubsets`), and GET each — so a future font add/remove
-  flows through without editing the generator. This keeps `fonts.css` the single source of truth.
-- **No CDN literals leak.** The generator writes only bytes the handlers already produce (golden-tested
-  CDN-free), so the on-disk `index.html` inherits the no-CDN guarantee; the test re-asserts it on the
-  generated file for defense in depth.
-- **Correctness rule (learnings.md, always-loaded "`proof/verify` is pure" + verifier.md):** the
-  generator is a pure-stdlib + two-internal-import leaf (`internal/verifier`, `internal/web`,
-  `net/http/httptest`, `os`, `path/filepath`, `flag`, `regexp`/`strings`). Do not add a network fetch,
-  a `database/sql` import, or a third internal dep — it assembles from embedded bytes only.
-- **Edge case:** if `web.Handler()` returns non-200 for any expected path (a future asset rename),
-  `generate` must error, not write a partial site — fail closed so a broken deploy is caught in the test
-  and in CI, not in production.
+- **Workflow shape** — use the modern GitHub-Pages Actions deploy (no `gh-pages` branch). One job that
+  builds the artifact + uploads it, and a second that deploys it, gated to the default branch:
+  - `name`, `on: push: branches: [develop]` (Pages publishes from the active branch — the repo's default
+    here is `develop` per the git state) plus `workflow_dispatch` for manual runs. Do NOT trigger on PRs.
+  - Top-level `permissions: { contents: read, pages: write, id-token: write }` and
+    `concurrency: { group: "pages", cancel-in-progress: false }` (the canonical Pages concurrency).
+  - **build job** (`runs-on: ubuntu-latest`, `env: CGO_ENABLED: "0"`): `actions/checkout@v4` →
+    `actions/setup-go@v5` (`go-version: "1.26"`) → `go run ./cmd/verifier-site -out dist` (the generator
+    fails closed → a non-zero exit aborts the deploy, so a broken render is never published — the
+    fail-closed contract from `verifier-site.md`) → `cp .github/pages/CNAME dist/CNAME` →
+    `actions/configure-pages@v5` → `actions/upload-pages-artifact@v3` with `path: dist`.
+  - **deploy job** (`needs: build`, `environment: { name: github-pages, url: ${{
+    steps.deployment.outputs.page_url }}}`): `actions/deploy-pages@v4` (`id: deployment`).
+  - Pin action **major** tags as above (matches the project's `@v4`/`@v5` style in `ci.yml`). These
+    `actions/*-pages` versions are the current canonical set; keep the four-action build→deploy shape.
+- **CNAME** — content is exactly `monitor.iscc.codes` + a trailing newline, nothing else (ADR-0003 the
+  custom domain). It must land at the *root* of the published artifact (`dist/CNAME`) so Pages applies the
+  custom domain. Keep `CNAME` as a tracked repo file (`.github/pages/CNAME`) the workflow `cp`s into
+  `dist` after `go run` — do NOT make `cmd/verifier-site` write it (keep the generator a pure renderer of
+  handler output, per `verifier-site.md`'s one-source-of-truth rule).
+- **Reproducibility / published hash (ADR-0003).** The published `verify.wasm` inherits its byte-pinned
+  hash from the generator (it *copies* the embedded blob whose SHA-256 == `web.WasmVerifyHash`, per
+  `verifier-site.md`); the workflow must NOT rebuild the WASM (no `mise run build:wasm` step) — it only
+  renders + uploads, so the deployed artifact hash equals the committed, golden-tested value. This is what
+  "the verifier artifact hash matches the published value" means: build-from-commit, copy-not-rebuild.
+- **Relevant learnings rule:** `ci.md` — the existing CI job uses `CGO_ENABLED: "0"` and pins
+  `actions/checkout@v4` / `actions/setup-go@v5` / `go-version: "1.26"`; mirror these. PyYAML is absent
+  locally, so validate the new YAML with the cached `gopkg.in/yaml.v3` (see Verification), not `python3 -c
+  "import yaml"`. `verifier-site.md` — the generator is fail-closed (non-200 → abort), so a `go run` that
+  exits 0 guarantees the complete 14-file tree; the workflow needs no extra completeness assertion.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`; `gofmt -l .` empty).
-- `go test -count=1 -run TestGenerate ./cmd/verifier-site` passes.
-- The golden test generates into `t.TempDir()` and asserts: `<out>/index.html` exists, is non-empty,
-  and contains the client-side loader markers (`/_ds/wasm_exec.js`, `/_ds/verify.wasm`,
-  `isccVerifyInclusion`, `URLSearchParams`); `<out>/_ds/tokens.css`, `<out>/_ds/fonts.css`,
-  `<out>/_ds/wasm_exec.js`, `<out>/_ds/verify.wasm`, `<out>/_ds/iscc-logo-black.png` all exist and are
-  non-empty; at least one `<out>/_ds/fonts/*.woff2` exists; and the generated `index.html` contains no
-  `jsdelivr` / `http://` / `https://` / `cdn.` substring (inherited no-CDN, re-asserted).
-- The generated `<out>/_ds/verify.wasm` SHA-256 equals `web.WasmVerifyHash` (the deployed WASM is the
-  byte-pinned artifact — proves the generator copies, not rebuilds).
-- `go run ./cmd/verifier-site -out <tmp>` exits 0 and the directory contains `index.html` + `_ds/`.
+- `mise run check` is green (the workflow file does not touch the Go build, but confirm nothing else
+  regressed): `go build ./... && go vet ./... && go test ./...` all pass, `gofmt -l .` empty.
+- The new workflow is valid YAML — parse it with the cached `gopkg.in/yaml.v3` (PyYAML is absent
+  locally): a tiny throwaway `go run` of a `yaml.Unmarshal([]byte(read .github/workflows/pages.yml),
+  &map[string]any{})` exits 0 with no error.
+- `go run ./cmd/verifier-site -out /tmp/pages-verify` exits 0 and writes the full **14-file** tree
+  (`index.html` + `_ds/{tokens.css,fonts.css,wasm_exec.js,verify.wasm,iscc-logo-black.png}` + 8 woff2) —
+  the workflow's build step reproduced locally: `find /tmp/pages-verify -type f | wc -l` prints `14`.
+- The deployed-tree `verify.wasm` is the byte-pinned artifact, not a rebuild: `sha256sum
+  /tmp/pages-verify/_ds/verify.wasm` matches `web.WasmVerifyHash` (the generator copies it; the existing
+  `TestGenerate` already pins this — re-confirm it still passes).
+- The `CNAME` content is exactly `monitor.iscc.codes`: `grep -qx "monitor.iscc.codes"
+  .github/pages/CNAME` exits 0, and the workflow `cp`s it to `dist/CNAME`.
+- The workflow declares the Pages permissions and the build→deploy job pair: `grep -q "pages: write"
+  .github/workflows/pages.yml` and `grep -q "deploy-pages" .github/workflows/pages.yml` both exit 0.
 
 ## Done When
-`mise run check` is green and `go test -run TestGenerate ./cmd/verifier-site` passes, with the generator
-materializing `index.html` (byte-identical to `verifier.Handler`'s output) plus every `/_ds/` asset
-(including the SRI-pinned `verify.wasm`) into the output directory — the deployable Surface-C site the
-Pages workflow will publish next.
+`mise run check` is green, `.github/workflows/pages.yml` parses as valid YAML and declares the Pages
+build→deploy job pair (`pages: write` + `deploy-pages`) running `go run ./cmd/verifier-site`, the
+generator reproduces the 14-file tree locally with `verify.wasm`'s SHA-256 == `web.WasmVerifyHash`, and
+a tracked `CNAME` containing exactly `monitor.iscc.codes` is copied into the published artifact.
