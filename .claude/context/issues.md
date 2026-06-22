@@ -391,35 +391,66 @@ filed it and does **not** affect priority.
   `parseTarget`'s rules"; `learnings/verifier.md` "`parseTarget`/`readTarget` is a usability guard, NOT a
   trust boundary"; CLAUDE.md "Verifiable cache" (the client re-verifies; the monitor is not trusted).
 
-## The WASM verifier proves only inclusion math — it never checks the checkpoint signature or binds the record to the requested id (monitor stays in the trust path)
+## The WASM verifier never checks the checkpoint signature against the hub's did:web key (the signature half of the verifier-scope trust gap; id-binding half now CLOSED in source)
 - **Priority:** normal
 - **Source:** [review] (Codex P1, reviewer-confirmed against the verify core; affects BOTH tier-2 callers)
-- **What / where / how to verify:** `isccVerifyInclusion` (`cmd/wasm/verifyadapter/verify_adapter.go`
-  `VerifyJSON` → `internal/proof/verify.VerifyInclusion`) verifies ONLY that `record` hashes into a tree
-  of `size` leaves with `proof` → `root` (RFC-6962 inclusion). It does NOT (1) verify the checkpoint
-  note signature against the hub's did:web key, nor (2) bind the returned `record` to the requested
-  `target.id`. On Surface C this is acute: the verifier's whole mission is that "the instance you point it
-  at is never in the trust path", yet a malicious/compromised monitor can return a bundle whose
-  record+proof+root are internally consistent (forged unsigned checkpoint, or a DIFFERENT declaration's
-  record) and the browser renders the green `verified` state — putting the monitor BACK in the trust path.
-  The copy overstates this: `verifier.html:449` lists "Check the signature against the hub's did:web key"
-  as a step the verifier WILL run, and `verifier.html:601` reports "✓ … re-verified this inclusion proof
-  against the **hub-signed** checkpoint root" — but neither the signature nor a did:web resolution runs.
-  This is the SAME verifier-core scope the certificate's same-origin tier-2 already ships
-  (`cert.html:565`), so it is NOT a regression introduced here and does NOT block this increment (its
-  Verify is met); but it is more serious cross-origin. NOT currently exploitable on the testnet (the
-  fixture monitor is honest), but it is a real trust-root honesty gap. Fix when the WASM verifier scope
-  is next expanded: extend the verifier (or a sibling export) to (a) verify the checkpoint note signature
-  against a did:web key fetched/resolved in the browser, and (b) assert the record decodes to the
-  requested `target.id`, gating `verified` on ALL THREE; until then, narrow the success copy + drop the
-  unrun did:web step from the record block so the page does not claim a signature/key check it skips.
-  Verify fixed: a bundle with a valid inclusion proof but a checkpoint signed by a non-did:web key, or a
-  record whose id != the requested id, renders `error`/`failed`, NOT `verified`; reverting the added
-  checks makes that test FAIL.
+- **What / where / how to verify:** UPDATE: the **id-binding half** of this gap is now CLOSED IN SOURCE
+  (advance `22f0420`): `verifyadapter.RecordCommitsID` binds the record's committed `iscc_id` to the
+  requested id, and the 6-arg `isccVerifyInclusion` shim gates `verified` on it (the cross-origin
+  `verifier.html:628` passes `target.id`). What REMAINS open is the **signature half**:
+  `isccVerifyInclusion` (`VerifyJSON` → `internal/proof/verify.VerifyInclusion`) still verifies ONLY
+  that `record`+`proof`+`size`→`root` (RFC-6962 inclusion) and the id-binding — it does NOT verify the
+  checkpoint note signature against the hub's did:web key. So a malicious/compromised monitor can still
+  return a bundle whose record+proof+root are internally consistent under a FORGED (unsigned / wrong-key)
+  checkpoint and — provided the record commits the requested id — the browser renders the green
+  `verified` state, trusting the monitor for the signature. The copy overstates this: `verifier.html:449`
+  lists "Check the signature against the hub's did:web key" as a step the verifier WILL run, and
+  `verifier.html:631` reports "✓ … re-verified this inclusion proof against the **hub-signed** checkpoint
+  root" — but neither the signature nor a did:web resolution runs. This is the SAME verifier-core scope
+  the certificate's same-origin tier-2 ships (`cert.html:565`), so it is NOT a regression and does NOT
+  block progress; but it is more serious cross-origin. NOT currently exploitable on the testnet (the
+  fixture monitor is honest). It needs a DESIGN PASS (browser did:web resolution + note-signature verify)
+  — review flagged it as the design-first remainder. Fix when the WASM verifier scope is next expanded:
+  extend the verifier (or a sibling export) to verify the checkpoint note signature against a did:web key
+  fetched/resolved in the browser, gating `verified` on signature + id-binding + inclusion; until then,
+  narrow the success copy + drop the unrun did:web step from the record block so the page does not claim a
+  signature/key check it skips. Verify fixed: a bundle with a valid inclusion proof + matching id but a
+  checkpoint signed by a non-did:web key renders `error`/`failed`, NOT `verified`; reverting the added
+  signature check makes that test FAIL.
 - **Spec:** CLAUDE.md "Verifier app" / "Proof bundle" / "Verifiable cache" (the monitor is NOT in the
   trust path; the client re-verifies signature + Merkle); ADR-0009 did:web is the only key source;
   learnings.md always-loaded "gate a rendered ✓ on a re-VERIFICATION" (a full re-verification includes
   the signature + id binding, not inclusion math alone); `learnings/cmd-wasm.md` `isccVerifyInclusion` scope.
+
+## Source carries the WASM id-binding but the pinned `verify.wasm` artifact does NOT — the deployed verifier would render `error` for EVERY target until rebuilt + re-pinned
+- **Priority:** normal
+- **Source:** [review] (Codex P1, reviewer-confirmed by `strings` on the committed artifact + a clean rebuild)
+- **What / where / how to verify:** Advance `22f0420` committed `verifier.html:628` passing a 6th `id`
+  arg to `isccVerifyInclusion`, AND the source shim now accepts 5-or-6 args — but it did NOT rebuild
+  the pinned byte artifact `internal/web/verify.wasm`, which is the module the verifier actually loads at
+  `/_ds/verify.wasm`. Reviewer-confirmed the committed artifact is STALE:
+  `strings internal/web/verify.wasm | grep -c "expected 5 or 6 args"` → 0,
+  `... | grep -c "expected 5 args"` → 1, `... | grep -c "decode record envelope"` → 0 (no
+  `RecordCommitsID`). The committed wasm was last touched at `196c1e8` (`git log -- internal/web/verify.wasm`),
+  not this commit. Against the OLD shim a 6-arg JS call hits `len(args) != 5` → returns
+  `{verified:false, error:"...expected 5 args..."}`, and `verifier.html`'s loader maps any `out.error` to
+  the `error` render state — so on the deployed Surface-C page EVERY valid verification would render
+  `error` (a functional regression, strictly worse than the prior all-inclusion-only behavior). NOT live
+  TODAY: Surface C is NOT mounted in the instance binary (`cmd/iscc-monitor` never references
+  `verifier.`), it ships only via the `cmd/verifier-site` Pages build, and that deploy is itself blocked
+  on the human repo-Settings step (separate `normal`). The handoff HONESTLY flagged this skew. But the
+  committed source + artifact are internally inconsistent, so the step's user-visible goal (the browser
+  gates `verified` on id-binding) is NOT achieved by the committed tree — this is the NEEDS_WORK gate for
+  this increment. Fix (one command, reproducible): `mise run build:wasm` (rebuilds
+  `internal/web/verify.wasm` with `-trimpath -ldflags=-buildid= -buildvcs=false`) then re-pin
+  `web.WasmVerifyHash` to the emitted SHA-256 (`TestWasmVerifyHashPinned` gates it). Reviewer verified a
+  clean rebuild yields SHA `96b2a40d459c51817dd87911063ab14abf481080e30ecb17ef311090755852d3` (≠ the
+  committed `7d57ab1b…`) and DOES contain `expected 5 or 6 args` (1) + `decode record envelope` (1). Verify
+  fixed: `strings internal/web/verify.wasm | grep -c "expected 5 or 6 args"` → 1 AND
+  `go test ./internal/web -run TestWasmVerifyHashPinned` passes against the re-pinned hash.
+- **Spec:** ADR-0003 "Pages-from-repo ties the deployed WASM to a public commit"; `learnings/cmd-wasm.md`
+  "the committed verify.wasm is a pinned byte artifact, not auto-rebuilt"; `internal/web/web.go`
+  `WasmVerifyHash` + `TestWasmVerifyHashPinned`; CLAUDE.md "a built artifact is not the shipped artifact".
 
 ## Pages custom domain is not bound by the artifact CNAME under Actions-based deploy — needs a one-time repo-settings step (else `/_ds/` asset paths break on the project URL)
 - **Priority:** normal

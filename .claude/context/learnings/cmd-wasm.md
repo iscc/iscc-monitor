@@ -85,13 +85,29 @@ marshaling adapter). Durable cross-cutting rules live in the index
   data island + loader render ONLY under `HasBundle`, so an uncertifiable id wires no verifier (the
   negative test asserts none of the markers appear). Do not collapse `error`/`failed`.
 
-- **SCOPE GAP (filed `normal`): `isccVerifyInclusion` proves ONLY inclusion math, NOT the chain of
-  trust.** It checks `record`+`proof`+`size`→`root` (RFC-6962), but does NOT verify the checkpoint note
-  signature against the hub's did:web key, and does NOT bind `record` to a requested id. So a
-  self-consistent forged bundle (unsigned checkpoint with any root + matching proof, or a different
-  declaration's record) renders `verified`. Harmless on the same-origin certificate (the monitor already
-  baked the bundle), but on the cross-origin Surface-C verifier — whose whole promise is "the monitor is
-  not in the trust path" — a `verified` here still trusts the monitor for the signature + id-binding. A
-  full re-verification (the always-loaded rule) is signature + did:web-key + id-binding + inclusion, not
-  inclusion alone. When the verifier scope is next expanded, gate `verified` on all of them (or narrow
-  the success/step copy so it never claims a signature/key check it skips).
+- **SCOPE GAP (id-binding half CLOSED in source, signature half still open): `isccVerifyInclusion`
+  proves inclusion math + (with a 6th `id` arg) id-binding, but NOT the checkpoint signature.** The
+  shim now accepts 5 OR 6 args: a 6-arg call additionally gates `verified` on
+  `verifyadapter.RecordCommitsID(record, id)` (canonical `"ISCC:"+TrimPrefix` byte-compare of the
+  record's committed `iscc_id` vs the requested id), so a different-declaration bundle yields a negative
+  verdict, not a false green. Still OPEN (filed `normal`): the did:web-key + checkpoint-note signature
+  half — a `verified` cross-origin still trusts the monitor for the signature. A full re-verification is
+  signature + did:web-key + id-binding + inclusion; only the last two run. Until the signature lands,
+  do NOT loosen `verifier.html`'s "hub-signed root" success copy to claim a check it skips.
+- **The arg-count guard is intentionally `5 OR 6`, NOT a hard `!= 6` (design deviation from a `5→6`
+  bump).** The SAME committed `/_ds/verify.wasm` is shared by the cross-origin verifier (6-arg, with
+  id-binding) AND the same-origin certificate (`cert.html:565`, still 5-arg). A hard `!= 6` would
+  regress the certificate's live tier-2 verifier to an `error` on every certifiable id with no in-scope
+  fix (the cert test only asserts markup, not WASM execution — it would NOT catch the runtime break).
+  The optional 6th arg honors both. To go strict `!= 6` later, you MUST pair it with a `cert.html`
+  edit (pass a 6th id from its data island) in the SAME increment.
+- **TRAP — the committed `verify.wasm` is a PINNED BYTE ARTIFACT, not auto-rebuilt from source.** A
+  `cmd/wasm`/`verifyadapter` source change does NOT update `internal/web/verify.wasm`; `mise run check`
+  stays green because `GOOS=js GOARCH=wasm go build ./cmd/wasm` builds to `/tmp`, and
+  `TestWasmVerifyHashPinned` only checks the COMMITTED bytes match `WasmVerifyHash` (both stale → still
+  green). So a shim change that lands the source but not the rebuilt artifact ships a self-contradiction:
+  `verifier.html` passing the new 6th arg against an old `expected 5 args` wasm makes EVERY live
+  Surface-C call render `error`. ANY change to `cmd/wasm` or `cmd/wasm/verifyadapter` that alters runtime
+  behavior MUST be followed by `mise run build:wasm` + re-pin `WasmVerifyHash` in the SAME increment —
+  verify with `strings internal/web/verify.wasm | grep -c "<a new message you added>"` (must be 1), not
+  just the source build exiting 0.
