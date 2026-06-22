@@ -72,13 +72,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `logclient/checkpointkey_test.go`). Because `KeyIDFromCheckpoint` ignores the sig, the §4-happy-path test
   threads a real signed note `Raw` while §3 callers keep `[]byte("raw")`.
   - settled: `found4` cache-hit gate pinned by `TestCertificateSigningKeyUncached` (git history).
-- **`did:web:` + `data.Domain` is WRONG for a `host:port` hub (latent, Codex-confirmed).** §4 builds
-  the DID as `"did:web:" + data.Domain`, but `internal/registry` explicitly supports `host:port`
-  domains and `didweb.DocumentURL` requires the port colon `%3A`-encoded — so a `host:port` hub renders
-  `did:web:localhost:8443` (which did:web reads as host `localhost`, path `8443`), naming a different
-  DID than the key resolved from. Not currently exploitable (the testnet realm uses clean
-  `sb0.iscc.id`/`sb1.amlet.id`); filed as a `normal` issue. Same fail-quietly-on-clean-fixtures class as
-  the `hubDomain` ForceQuery gap. Any surface building a DID from a domain must `%3A`-encode the port.
+- **Any surface building a DID from a domain MUST `%3A`-encode the port** — a bare `host:port`
+  colon makes did:web read `8443` as a path segment, naming a different did.json than the key
+  resolved from. The §4 `SigningKeyDID` AND the proof-bundle `Hub.DID` both route through the local
+  `didWeb(domain)` helper (`handler.go:116`, `strings.Replace(domain, ":", "%3A", 1)`, the resolver's
+  idiom); a no-port domain round-trips byte-identical.
+  - settled: the `host:port` DID bug (both sites) is CLOSED, pinned by
+    `TestCertificateSigningKeyDIDPortEncoded` (§4) + `TestCertificateProofBundleDIDPortEncoded`
+    (bundle), both mutation-proven, with `…DIDCleanDomain` as the no-port regression (git history).
 - **`html/template` entity-escapes base64 `+`/`/` in text nodes (`+`→`&#43;`)** — only the
   execution-path contextual escaper, not `html.EscapeString`. Any test asserting on rendered base64
   chips must `html.UnescapeString(body)` first (the §3/§5 tests do); the on-page entity escaping is
@@ -147,6 +148,6 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `href="#ZgotmplZ.bundle"` and fails the `ISCC:`-prefixed sub-case of
   `TestCertificateProofBundleLinkRendered` (review-reproduced). The guard tests BOTH id forms.
   settled: the `#ZgotmplZ` critical (bare form worked, prefixed form broke) is closed by this href.
-- **`bundle.Hub.DID` reuses §4's `"did:web:"+Domain` and inherits the `host:port` bug**
-  (the same already-filed `normal` issue, now carried on a second surface). Fix both DID-building
-  sites together when next touched; `%3A`-encode the port (reuse the resolver's encoding).
+- **`bundle.Hub.DID` shares §4's `didWeb(domain)` helper** (one encoder, two surfaces) so a
+  `host:port` hub's bundle DID is `did:web:host%3Aport` while `bundle.Hub.Domain` stays the verbatim
+  `host:port`. settled: pinned by `TestCertificateProofBundleDIDPortEncoded` (git history).

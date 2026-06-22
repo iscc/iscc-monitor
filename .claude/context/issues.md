@@ -82,28 +82,6 @@ filed it and does **not** affect priority.
 - **Spec:** next.md "Fail closed, like Parse" Implementation Note; ADR-0010 Hub-List schema; CLAUDE.md
   registry-rejects-URL-shapes precedent (a bare host base url carries no query).
 
-## Certificate §4 AND the proof bundle build `did:web:` + raw domain, mis-rendering a `host:port` hub's DID
-- **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed — now on TWO surfaces)
-- **What / where / how to verify:** NOTE: the proof-bundle assembler now carries this bug on a SECOND
-  surface — `internal/certificate/handler.go` `serveBundle` sets `bundle.Hub.DID = "did:web:" +
-  data.Domain` (same string §4 builds). Fix BOTH sites together when next touched. `handler.go:485` sets
-  `data.SigningKeyDID = "did:web:" + data.Domain`. `internal/registry` explicitly supports `host:port`
-  domains (`registry.go` docstring: `a kept line is a bare host (e.g. "sb0.iscc.id", optionally
-  "host:port")`), and the codebase's own `didweb.DocumentURL` (`url.go:17-19`) documents the
-  method-specific id's first segment as the **percent-encoded** `host[:port]`. So a hub configured as
-  `localhost:8443` renders `did:web:localhost:8443`, which per the did:web method denotes host
-  `localhost` with path segment `8443` — a DIFFERENT DID than the key was resolved from. The §4 clause
-  would name the wrong DID. Reviewer-confirmed against the resolver + registry contracts. NOT currently
-  exploitable (the testnet realm fixture uses clean `sb0.iscc.id`/`sb1.amlet.id`; the displayed key id
-  `40b74463` is correct and the certificate is an explicitly-Tier-1 "re-verify yourself" surface), so it
-  does not block progress — same latent fail-open class as the `hubDomain` ForceQuery gap below. Fix when
-  §4 (or a sibling DID-building surface) is next touched: `%3A`-encode the port in the domain→DID
-  conversion (reuse the resolver's encoding, do not hand-roll). Verify fixed: a §4 test with a
-  `host:port`-domain hub renders `did:web:host%3Aport`, and reverting the encode makes it FAIL.
-- **Spec:** ADR-0009 did:web is the only key source; W3C did:web method (port `%3A` encoding);
-  `internal/didweb/url.go` DocumentURL contract; `internal/registry` `host:port` support.
-
 ## Certificate §6 RECORD HISTORY omits the per-record `· at` timestamp the mockup shows
 - **Priority:** normal
 - **Source:** [review] (visual pass vs the §6 mockup region)
