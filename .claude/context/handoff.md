@@ -1,53 +1,68 @@
-## 2026-06-22 — Normalize Surface-C `readTarget` to return the parsed `u.href`, not the raw monitor string
+## 2026-06-22 — Review of: Normalize Surface-C `readTarget` to return the parsed `u.href`, not the raw monitor string
 
-**Done:** Changed `readTarget` (`internal/verifier/verifier.html`) to return the WHATWG-normalized
-monitor URL (`{ monitor: u.href, id: id }`) instead of the raw `?monitor=` query string, so an
-opaque-scheme form (`https:example.com`) now flows downstream as `https://example.com/` — the guard's
-own parsed-and-validated URL is the single source of truth. This closes the only pure-code-closable
-`normal` ("Surface-C `readTarget` accepts opaque-scheme monitor forms the Go `parseTarget` rejected").
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/verifier/verifier.html`: `readTarget` returns `u.href` (was the raw `monitor` string);
-  leading comment updated to state it returns the normalized URL (evergreen docstring). The protocol/
-  host/hash reject branches are untouched — only WHAT a passing target returns changed, not WHETHER it
-  passes. The downstream `bundleURL` (`:588`) already strips the trailing `/` (`u.href`'s `/`) before
-  appending `/inclusion/<id>.bundle`, so no other edit was needed; `target.id` is unchanged.
-- `internal/verifier/handler_test.go`: added `TestVerifierReadTargetReturnsNormalizedURL` — a
-  mutation-provable markup assertion that the rendered body contains `return { monitor: u.href, id: id };`
-  and does NOT contain `return { monitor: monitor, id: id };`.
+**Summary:** The advance changes one production line — `readTarget` (`internal/verifier/verifier.html:556`)
+now returns the WHATWG-normalized `{ monitor: u.href, id: id }` instead of the raw `{ monitor: monitor, … }`
+query string — plus an evergreen comment update and one mutation-provable markup test. An opaque-scheme form
+(`https:example.com`) now flows downstream as `https://example.com/`, closing the only pure-code-closable
+`normal`. Scope is exemplary: 2 files (1 production + 1 test), nothing from `## Not In Scope` touched, no
+trust-root / dependency / SSR-layout change; reject branches and the loader fetch flow are byte-unchanged.
 
-**Verification:** `mise run check` → green (build + vet + `go test ./...`, all 28 packages ok);
-`gofmt -l .` empty. Per-criterion:
-- [x] `go test -count=1 -run TestVerifier ./internal/verifier` → PASS (whole suite, incl. the unchanged
-  `TestVerifierNoServerSideTarget`, `TestVerifierNoExternalCDN`, `TestVerifierStaticBodyAlwaysCarriesLoader`).
-- [x] No-CDN ban green: `u.href` is a runtime expression computed from `location.search`, never a static
-  literal; no `"https://"`/`"http://"` literal was introduced (the existing `"http:"`/`"https:"`
-  protocol-comparison literals stay as-is). `TestVerifierNoExternalCDN` passes.
-- [x] Mutation (independent): reverting the production return to `{ monitor: monitor, id: id }` makes
-  `TestVerifierReadTargetReturnsNormalizedURL` FAIL; restored byte-identical, the return at `:556` is
-  `{ monitor: u.href, id: id }`.
-- [x] Oracle/conformance gate — N/A. No signature / RFC-6962 / Merkle / `proof` / `didweb` / `logclient`
-  / fork-shrink-equivocation path touched; this is a JS-source normalization fix inside a `<script>`
-  block on a pure static HTML render (no go-test JS-execution gate exists — markup-golden by design).
+**Verification:**
+- [x] `mise run check` — green (build + vet + `go test ./...`, all 28 packages ok).
+- [x] `gofmt -l .` — empty (no formatting failure).
+- [x] `go test -count=1 -run TestVerifier ./internal/verifier` — PASS (whole suite, incl. the unchanged
+      `TestVerifierNoServerSideTarget`, `TestVerifierNoExternalCDN`, `TestVerifierStaticBodyAlwaysCarriesLoader`).
+- [x] Mutation (independent) — reverting the production return to `{ monitor: monitor, id: id }` makes
+      `TestVerifierReadTargetReturnsNormalizedURL` FAIL; restored byte-identical (`git diff` over the
+      template clean), the test re-passes. The assertion is non-vacuous on both positive and negative checks.
+- [x] No-CDN ban green and genuinely safe — `TestVerifierNoExternalCDN` passes; I probed the *rendered*
+      body via an in-package throwaway test: it contains NEITHER `https://` NOR the new comment text
+      (`html/template` strips the `//`-prefixed JS line comment at render, so the `https://example.com/`
+      inside the docstring never reaches the served HTML). No static `http(s)://` literal was introduced
+      (the only diff match is inside the stripped comment).
+- [x] Oracle/conformance gate — N/A. `git diff --name-only HEAD~1..HEAD` over the trust-root globs
+      (`internal/proof/`, `logclient/verify`, `didweb`, fork/shrink/equivocation/consistency) → empty.
+      This is a JS-source normalization fix on a pure static HTML render (markup-golden by design; no
+      go-test JS-execution gate exists).
+- [x] Gate-circumvention scan over the unpushed range (`@{upstream}..HEAD`, 3 commits) — no `//nolint`,
+      `t.Skip`, build-tag exclusion, swallowed error, or deleted assertion in added lines.
 
-**Next:** With this drained, the remaining open `normal`s are no longer pure-code-closable in one
-package: (1) the WASM-verifier signature half (no browser did:web checkpoint-signature check) is the
-front-of-queue design-first / STOP-candidate — do a design pass before touching `verifier.html` or the
-WASM core; (2) the certificate §6 per-record timestamp needs a store schema column + follower-ingest
-write; (3) the `/` Checkpoint/Anchor data columns + config-driven instance identity need a store/
-projection + config change. The WASM-verifier "published" half stays human-blocked (Pages custom-domain
-repo-settings step). DONE requires 0 normal — the count is now 4 normal (was 5) after this close.
+**Issues found:** (none new). Resolved + deleted the `normal` "Surface-C `readTarget` accepts opaque-scheme
+monitor forms" after independently mutation-verifying the close: the rendered body now carries
+`return { monitor: u.href, id: id };` (not the raw string), and reverting it FAILs the guarding test.
+
+**Codex second opinion:** Clean — "The change is narrowly scoped to returning the parsed URL from readTarget
+and adds a regression assertion. I did not identify any introduced correctness, security, performance, or
+maintainability issues." Notably, Codex's transcript shows it probed the URL-userinfo edge cases
+(`https:example.com%40evil.com`) and still cleared the change. I independently reproduced those in node:
+the userinfo-confusion case (`https://example.com@evil.com/x` → `u.host="evil.com"`) is INHERENT to
+`new URL()` and IDENTICAL under the old raw-string path — not introduced by `u.href`, and harmless (wrong
+host → honest `error` / a bundle that fails WASM re-verification, since `readTarget` is a usability guard,
+not a trust boundary). No findings to triage.
+
+**Visual check:** n/a — no SSR surface changed. The edit is a JS-source return value computed at runtime
+from `location.search`, never displayed in the no-JS body; the named-region/affordance markup is
+byte-unchanged (the unchanged `TestVerifierNoTargetBaselineIsHonest` still renders the same baseline).
+
+**Next:** The remaining open `normal`s are no longer pure-code-closable in one package:
+(1) the WASM-verifier **signature half** (no browser did:web checkpoint-signature check) is the
+front-of-queue design-first / STOP-candidate — do a design pass before touching `verifier.html` or the WASM
+core. (2) the certificate §6 per-record `· at` timestamp needs a store schema column on the `iscc_index`
+projection + a follower-ingest write. (3) the `/` Checkpoint/Anchor data columns + config-driven instance
+identity need a store/projection + config change. The WASM "published" half (Pages custom-domain) stays
+human-blocked. Suggest define-next picks the §6 timestamp or the `/` projection (both store-scoped,
+self-contained) over the signature half (which wants a STOP/design pass first).
 
 **Notes:**
-- Strictly in scope: 2 files (1 production + 1 test), no `## Not In Scope` item touched — no JS
-  execution harness added, signature half untouched, three-state verdict / no-CDN ban / loader fetch
-  flow / `?` ForceQuery handling all unchanged, no server-side target parse/island reintroduced
-  (`TestVerifierNoServerSideTarget` still renders byte-identical for a query-bearing request).
-- The fix is a correctness/normalization-hygiene change, NOT a trust-boundary change: `readTarget` is a
-  usability guard; the browser re-fetches AND WASM-re-verifies the bundle regardless (per
-  `learnings/verifier.md`). Did not over-engineer an origin-prefix match against the raw input — the
-  issue's primary remedy (return parsed `u.href`) is sufficient and minimal.
-- The `?`/`ForceQuery` trailing-query case (the same harmless permissiveness class) is left out of scope
-  as `next.md` directs; it stays a documented harmless divergence, not regressed.
-- Visual check not applicable here (no layout/region change — a JS-source return value computed at
-  runtime, never displayed in the no-JS body). The named-region/affordance markup is byte-unchanged.
+- Open count after this close: 0 critical / 4 normal / 10 low. DONE still requires 0 normal.
+- Learnings: `verifier.md` collapsed the opaque-URL `normal` bullet into a `settled:` summary (net change,
+  no growth — file ~92 lines / 14 bullets, within budget) and added the userinfo-confusion note (inherent to
+  `new URL`, not introduced). The index gist row was updated to drop "filed `normal`". Package-local; nothing
+  promoted to the always-loaded index (the rule it serves — "usability guard, not a trust boundary" — is
+  already captured by the indexed "client re-verifies; the monitor is not in the trust path").
+- 4 commits ahead of `origin/develop` after this review commit (update-state + define-next + advance +
+  review). Pushing on PASS. The known `Pages` workflow failure on develop is the human-blocked custom-domain
+  repo-settings step (a documented `normal`), not a code regression.

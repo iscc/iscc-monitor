@@ -234,37 +234,6 @@ filed it and does **not** affect priority.
 - **Spec:** target.md M-UI design-parity "named-region" bar (the `/` realm-index region) + "Document chrome
   + instance identity"; ADR-0010 Evidence-Ledger handoff; ADR-0012 visual-pass.
 
-## Surface-C `readTarget` accepts opaque-scheme monitor forms (`https:example.com`) the Go `parseTarget` rejected — JS port is more permissive
-- **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed against both URL parsers)
-- **What / where / how to verify:** `internal/verifier/verifier.html:550-553` (`readTarget`) ports the
-  former Go `parseTarget` rules to the browser's WHATWG `new URL()`, but the two parsers disagree on the
-  opaque-path / scheme-relative form. `new URL("https:example.com")` yields `protocol="https:"` +
-  `host="example.com"`, so the JS guard PASSES it and returns the RAW string `"https:example.com"` (not
-  the normalized `u.href`); the later fetch concatenates the raw value, so the loader leaves the honest
-  baseline and runs a live attempt instead of declining. Go's `net/url.Parse("https:example.com")` (the
-  original `parseTarget`) instead yields `Host=""`, so the server-side guard REJECTED it — the JS port is
-  strictly MORE permissive on this edge form (reviewer-reproduced in node + Go: `https:example.com`,
-  `http:foo.bar/x`, `https:example.com:8443` all pass the JS guard but fail the Go one). NOT a
-  trust/security defect and NOT exploitable: the browser RESOLVES the raw fetch URL to exactly the same
-  host the parser reported (`https:example.com` → `https://example.com/inclusion/…` — never a "wrong host"
-  / SSRF), the returned bundle is RE-VERIFIED by WASM against the hub-signed root (the monitor is never in
-  the trust path), and an unreachable host yields the documented honest `error` render — never a false
-  `verified`/`failed`. So Codex's "fetch the wrong URL" framing is overstated; the only real delta is the
-  guard is sloppier than its Go original on a malformed input that still resolves correctly. Does NOT block
-  this increment (the static artifact works; well-formed targets run; all gates green; `readTarget` is a
-  documented usability guard, NOT a trust boundary — `learnings/verifier.md`). A byte-for-byte port is not
-  achievable here because WHATWG `new URL` and Go `net/url` genuinely differ on opaque paths. Fix when
-  `readTarget` is next touched: return the PARSED `u.href` (or `u.toString()`) instead of the raw
-  `monitor` so the normalized URL is what flows downstream — and/or reject when `u.href`'s origin/path
-  prefix does not match the raw input, so the guard's own normalization is the single source of truth.
-  Verify fixed: a JS-level test (or the deploy harness) feeds `monitor=https:example.com` and asserts the
-  fetch URL begins `https://example.com/` (normalized), or that the raw opaque form is declined; reverting
-  the normalization makes it FAIL.
-- **Spec:** next.md Surface-C Implementation Note "Port the validation verbatim, in JS" / "Mirror
-  `parseTarget`'s rules"; `learnings/verifier.md` "`parseTarget`/`readTarget` is a usability guard, NOT a
-  trust boundary"; CLAUDE.md "Verifiable cache" (the client re-verifies; the monitor is not trusted).
-
 ## The WASM verifier never checks the checkpoint signature against the hub's did:web key (the signature half of the verifier-scope trust gap; id-binding half now CLOSED in source)
 - **Priority:** normal
 - **Source:** [review] (Codex P1, reviewer-confirmed against the verify core; affects BOTH tier-2 callers)

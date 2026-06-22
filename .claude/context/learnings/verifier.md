@@ -78,10 +78,15 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   runtime) — that keeps a user `https://` target from tripping the no-CDN body ban (the ban-test runs the
   no-target baseline). The body DOES carry the JS literals `"http:"`/`"https:"` (protocol comparisons) but
   NOT `http://`/`https://`, so the ban holds.
-- **The JS port is MORE permissive than the Go original on opaque-scheme URLs (filed `normal`).** WHATWG
-  `new URL("https:example.com")` yields `protocol="https:"` + `host="example.com"` (guard PASSES), whereas
-  Go `net/url.Parse` yields `Host=""` (the old `parseTarget` REJECTED it). Harmless — the browser resolves
-  the raw fetch to the SAME host the parser reported (no wrong-host/SSRF) and WASM re-verifies regardless,
-  so the worst case is an honest `error` render. The fix (return parsed `u.href`, not the raw string) is a
-  filed `normal` issue. A byte-for-byte port is impossible: the two URL parsers genuinely differ on opaque
-  paths. Also does NOT reject `u.hash`-less trailing `?` (`ForceQuery`); same harmless class.
+- **settled (opaque-URL `normal` CLOSED):** `readTarget` now returns the WHATWG-normalized `u.href` (not
+  the raw `monitor` query string), so an opaque-scheme form (`https:example.com`) propagates downstream as
+  `https://example.com/` — the parsed URL the guard validated is the single source of truth. The downstream
+  `bundleURL` (`:591`) `.replace(/\/+$/, "")` trims `u.href`'s trailing `/` before appending the
+  `/inclusion/<id>.bundle` path, so the fetch URL is correct with no other edit. Mutation-proven
+  (`TestVerifierReadTargetReturnsNormalizedURL`, markup-golden). The change is NOT a trust-boundary change:
+  `readTarget` stays a usability guard, the browser re-fetches + WASM-re-verifies the bundle regardless.
+  Note the userinfo-confusion case (`https://example.com@evil.com/x` → `u.host="evil.com"`) is INHERENT to
+  `new URL()` and identical under the old raw-string path — not introduced by `u.href`, and harmless (wrong
+  host → honest `error` / bundle fails re-verification). A byte-for-byte port to the Go `parseTarget` is
+  still impossible (the two URL parsers genuinely differ on opaque paths); the residual `?`/`ForceQuery`
+  trailing-query permissiveness is the same harmless class, left as a documented divergence.
