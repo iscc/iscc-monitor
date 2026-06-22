@@ -98,6 +98,18 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   hero footer omitted (no store history). The `#` row number is `RowNo = fmt.Sprintf("%02d", i+1)` on the
   view-model — presentation only, no store value; the new `34px` grid column is fixed-width mono and does
   not ellipsize (the `min-width:0` trap applies only to `.hub-cell`).
+- **The dossier masthead chrome is a VERBATIM port of `certificate/cert.html` — keep the two byte-identical.**
+  `dossier.html` carries the same `.chrome-actions`/`.chrome-instance`/`.chrome-verify` CSS + `<div
+  class="chrome-actions">` (static `monitor instance` label + `verify ↗ monitor.iscc.codes` tier-2 link to
+  `https://monitor.iscc.codes/`) and the `.backlink-row`/`.backlink` `← Realm index` link (`href="/"`) the
+  certificate ships. The dossier's tier-2 affordance is correctly the cross-surface link to Surface C (the
+  `.codes` verifier app), NOT a baked-in WASM proof island — it has no single ISCC-ID subject to re-verify.
+  The dossier no-CDN ban is the same narrowed list (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`/`http://`, NOT a
+  blanket `https://`) so `monitor.iscc.codes` passes; `TestDossierChromeTierTwoAndBackLink` pins all three
+  affordances (mutation-proven: change the back-link copy → FAIL). Visual pass vs the dossier mockup: chrome,
+  back-link, tier-2 chip all match named regions; the only deltas are already-filed (static instance identity
+  vs config-driven; mockup Checkpoint/Anchor columns — those belong to the `/` realm-index issue). If you edit
+  either masthead, mirror the change in both `cert.html` and `dossier.html`.
 - **The status cell renders through the `hubStatusBadge` partial, not the bare word.** The partial is
   associated into the page set once at init (`template.Must(template.New("dashboard").Parse(pageTemplate))`
   then `template.Must(t.Parse(badge.Source))`, wrapped in an init closure since `template.Must` returns

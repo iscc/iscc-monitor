@@ -1,60 +1,63 @@
-## 2026-06-22 — Add the dossier's tier-2 `verify ↗ monitor.iscc.codes` chrome link, instance-identity block, and `← Realm index` back-link
+## 2026-06-22 — Review of: Add the dossier's tier-2 `verify ↗ monitor.iscc.codes` chrome link, instance-identity block, and `← Realm index` back-link
 
-**Done:** Ported the shared-chrome masthead actions (`.chrome-actions` / `.chrome-instance` /
-`.chrome-verify`) and the `.backlink-row` / `.backlink` `← Realm index` link from `certificate/cert.html`
-into `internal/dossier/dossier.html`, so the dossier now carries the static `monitor instance`
-identity label, the tier-2 link out to the monitor-agnostic verifier app (`https://monitor.iscc.codes/`),
-and a back-link up to the realm index at `/` — making `/` → dossier → log browser fully no-JS
-traversable. Template-only production change (no `dossierData` fields added; all three are static
-literals, matching the certificate). Narrowed the dossier's no-CDN body ban to third-party CDN hosts +
-bare `http://` (mirroring `certificate/handler_test.go:201`) so the one intentional external https
-origin passes.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/dossier/dossier.html`: added the chrome `.chrome-actions`/`.chrome-instance`/`.chrome-verify`
-  CSS (verbatim from `cert.html:66-88`) and the `.backlink-row`/`.backlink` CSS (from `cert.html:96-104`);
-  added the `<div class="chrome-actions">` block (instance label + verify link) inside `<header class="chrome">`,
-  and the `<div class="backlink-row">` `← Realm index` link as the first child of `<main class="page">`.
-  Updated the `.chrome` comment to note the tier-2 affordance. No new DS token introduced (all `var(--*)`
-  already resolved in the dossier).
-- `internal/dossier/handler_test.go` *(test)*: narrowed the `TestDossierRendersCoveredHub` no-CDN ban from
-  `{"jsdelivr","http://","https://","cdn."}` to `{"jsdelivr","cdn.","unpkg","googleapis","http://"}` (the
-  certificate baseline); added `TestDossierChromeTierTwoAndBackLink` asserting `← Realm index` + `href="/"`,
-  `monitor instance`, `monitor.iscc.codes` + `href="https://monitor.iscc.codes/"`, and the same-origin
-  `/_ds/` DS-shell links.
+**Summary:** The advance ports the certificate's shared-chrome masthead (`.chrome-actions` /
+`.chrome-instance` / `.chrome-verify`) and the `.backlink-row` / `← Realm index` link verbatim into
+`internal/dossier/dossier.html`, giving the dossier the static `monitor instance` identity label, the
+tier-2 link out to the `.codes` verifier app, and a back-link to the realm index — making `/` → dossier
+→ log browser fully no-JS traversable. It is a template-only production change (no new `dossierData`
+fields; three static literals) plus the test narrowing the no-CDN body ban to third-party CDN hosts so
+`https://monitor.iscc.codes/` (the one intentional external origin) passes. Gates green, scope clean
+(1 production + 1 test file), mutation-proven, visual pass and Codex both clean.
 
-**Verification:** `mise run check` → all packages `ok` (`go build`/`go vet`/`go test ./...`); `gofmt -l .`
-(excl. `cauldron/`) empty. `go test -count=1 ./internal/dossier` → all 9 tests PASS.
-Per-criterion:
-- [x] `mise run check` green.
-- [x] `go test -count=1 ./internal/dossier` green (all prior + new chrome/back-link test).
-- [x] Served dossier contains all three literals: `← Realm index`, `monitor.iscc.codes`, `monitor instance`.
-- [x] No third-party CDN reference (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`/`http://`); narrowed ban passes
-  for `https://monitor.iscc.codes/`.
+**Verification:**
+- [x] `mise run check` green — `go build`/`go vet`/`go test ./...` all `ok` (dossier included).
+- [x] `gofmt -l .` (excl. `cauldron/`) — empty.
+- [x] `go test -count=1 -v ./internal/dossier` — all 14 tests PASS (incl. new `TestDossierChromeTierTwoAndBackLink`).
+- [x] Served dossier contains all three literals: `← Realm index`, `monitor.iscc.codes`, `monitor instance` — confirmed by test + live harness probe.
+- [x] No third-party CDN reference; narrowed ban passes for `https://monitor.iscc.codes/` — independently probed: the ONLY absolute URL in the served body is `https://monitor.iscc.codes/`, no bare `http://`. The narrowing is the certificate-established correct fix, NOT a gate weakening (a blanket `https://` ban would wrongly reject the legitimately-allowed verifier-app link).
 - [x] DS shell stays same-origin (`href="/_ds/tokens.css"`, `href="/_ds/fonts.css"`).
-- [x] Mutation-proven: replacing the `← Realm index` link text in the template makes
-  `TestDossierChromeTierTwoAndBackLink` FAIL; restored → green.
+- [x] Verbatim-port claim verified: the dossier chrome/back-link CSS + markup are byte-identical to `cert.html:66-104` / `:390-399` (only the `.chrome-verify` comment is adapted to explain the dossier has no single subject — correct, matches next.md).
+- [x] Mutation reproduced: changing the `← Realm index` copy in the template makes `TestDossierChromeTierTwoAndBackLink` FAIL; restored → green.
+- [x] Gate-integrity scan over the unpushed diff (`@{upstream}..HEAD`, 4 unpushed commits) — no `//nolint`/`t.Skip`/build-tag/swallowed-error/deleted-assertion in the production diff (the grep hits were all handoff/learnings prose).
+- [x] `go.mod`/`go.sum`/schema byte-identical (unchanged). Oracle/conformance gate N/A — pure HTML render of one persisted store row + static chrome; touches no signature/RFC-6962/Merkle/did:web/fsck/proof path.
 
-**Next:** The remaining open WASM/M-UI sub-steps from the prior `review` handoff are still open and larger:
-(1) the **GitHub-Pages / `monitor.iscc.codes` deploy workflow** for Surface C, which MUST reconcile the
-static-deployment gating Codex-P1 (read `?monitor=&id=` client-side, not via server-side `.HasTarget`);
-(2) the **WASM verifier-scope signature/id-binding gap** (the verifier core proves inclusion only — no
-checkpoint-signature / did:web-key / id-binding check), shared with the certificate's tier-2; (3) the
-`safeIndex` WASM test-gap (move it into `verifyadapter`). A small follow-on parity item: the dossier's
-honest "Prove an ISCC-ID in this hub →" action (deliberately Not-In-Scope here pending its no-id target
-design).
+**Issues found:** (none) — no defect from me or Codex. This iteration resolves no existing `issues.md` entry (additive chrome only, touching no filed-issue code path); no new issue filed.
+
+**Codex second opinion:** Completed (exit 0, ~1 min); CLEAN, no findings: "The change is limited to
+adding the dossier chrome/back-link markup and corresponding tests. The new external verifier link is
+intentional and the test adjustment matches the established certificate behavior; the full test suite
+passes." Agrees with my own review — no triage action needed.
+
+**Visual check:** Done (ADR-0012, `agent-browser` 0.29.0). Built a throwaway in-module harness (mount
+`dossier.Handler` over a seeded covered-hub store + `web.Handler` on :43922, since the live testnet
+cold-start index is empty), screenshotted the live dossier and the `.dc.html` mockup, removed the
+harness (no stray files; tree clean). The three new chrome regions match the mockup's named regions:
+top-right `monitor instance` identity label, the `verify ↗ monitor.iscc.codes` tier-2 chip (visually
+identical bordered chip), and the `← Realm index` back-link (same position + blue link styling). The
+mockup renders a frozen hub (Exhibit) vs the live verified hub — a fixture-state difference, not a
+layout delta. No new visual delta worth filing — the only deviations (config-driven instance identity;
+mockup Checkpoint/Anchor columns) are already-tracked open `normal` issues (the latter belongs to the
+`/` realm-index issue, not the dossier).
+
+**Next:** The remaining open WASM/M-UI sub-steps are larger and still open: (1) the GitHub-Pages /
+`monitor.iscc.codes` Surface-C deploy workflow, which MUST reconcile the static-deployment gating
+Codex-P1 (read `?monitor=&id=` client-side, not server-side `.HasTarget`); (2) the WASM verifier-scope
+signature/id-binding gap (verifier core proves inclusion only — no checkpoint-signature / did:web-key /
+id-binding check), shared with the certificate's tier-2; (3) the `safeIndex` WASM test-gap (move it into
+`verifyadapter`). A smaller parity follow-on: the dossier's honest "Prove an ISCC-ID in this hub →"
+action (deliberately out of scope here pending its no-id target design).
 
 **Notes:**
-- This step touches NO signature/RFC-6962/Merkle/did:web/fsck/proof path (pure HTML render of one persisted
-  store row + static chrome), so the oracle/conformance gate is N/A — same posture the dossier package
-  docstring records.
-- The narrowed no-CDN ban is the certificate-established correct fix, not a gate weakening: `monitor.iscc.codes`
-  is the one intentional external https origin (per `learnings/web.md` + `learnings/verifier.md`'s `.codes` ≠
-  `.id` distinction), so banning every `https://` substring would now be wrong. Bare `http://` and the
-  third-party CDN hosts are still banned.
-- Instance identity is the static `monitor instance` label (matching the certificate baseline). Making it
-  config-driven (domain/operator/realm from env) is the separate filed `normal` issue and is Not-In-Scope.
-- No WASM proof island on the dossier — it has no single ISCC-ID subject, so its tier-2 affordance is
-  correctly the cross-surface link to Surface C, not a baked-in re-verification (per next.md Not-In-Scope).
-- The certificate vs dossier mastheads are now byte-identical in the chrome CSS + actions/back-link markup
-  (verbatim port; reviewer can diff cert.html:66-104/380-399 against the dossier).
+- Scope was exemplary: 1 production file (`dossier.html`), 1 test file, no `internal/web` import, no
+  `handler.go` change, no `go.mod`/`go.sum` change. Well within the ≤3 non-test/doc budget.
+- The two mastheads (`cert.html` + `dossier.html`) are now byte-identical in the chrome CSS +
+  actions/back-link markup. Learnings updated: added one bullet to `learnings/dashboard.md` (the
+  dossier-shares-certificate-masthead rule + the "mirror any masthead edit in both files" reminder);
+  no index promotion (the always-loaded rules already cover this; index unchanged at 97 lines,
+  dashboard.md now ~123 lines, under the rotation budget).
+- No DONE: the WASM milestone is still open (Surface-C deploy, verifier-scope sig/id, safeIndex test)
+  and there are open `normal` issues; M1→OTS milestones are not all independently re-confirmed this
+  iteration. CONTINUE is correct.
