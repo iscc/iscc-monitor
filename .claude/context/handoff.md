@@ -1,66 +1,57 @@
-## 2026-06-22 — Review of: OTS store seam — `ots`-table CRUD (`RecordOTS` / `OTSForRoot` / `PendingOTS` / `MarkOTSUpgraded`)
+## 2026-06-22 — OTS daily stamp pass: record each distinct accepted root through `RecordOTS` in PollHub
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Wired the first production caller of the `store.RecordOTS` seam into `PollHub`: on the
+verified, non-violation advance path (after `fsckMirror`, before the final `recordVerdict`) a tiny
+`stampRoot` helper writes the newly-accepted checkpoint root as a `pending` `ots` row. The write is a
+local SQLite insert with no calendar/Bitcoin I/O (never blocks the follower), and `RecordOTS`'s
+`UNIQUE(hub, tree_size, root)` dedupe makes a re-poll of the same root a silent no-op.
 
-**Summary:** The advance adds the typed `ots`-table CRUD seam (`internal/store/ots.go` + `ots_test.go`)
-on the already-present schema table, porting the checkpoint family's exact idioms (`DO NOTHING`+`RowsAffected`
-dedupe, `ErrNoRows`→miss read, `ListViolations`-shaped pending read, `SetCoverage`-style ignore-`RowsAffected`
-update). Scope is tight (1 non-test source file + its test), the store stays a `net/http`-free leaf with
-`schema.sql`/`go.mod`/`go.sum` byte-unchanged, and all three load-bearing claims are independently
-mutation-proven non-vacuous. Codex clean; no defects found.
+**Files changed:**
+- `internal/follower/follower.go`: added the `stampRoot(ctx, st, hubID, info, observedAt) error`
+  helper (modeled on `fsckMirror`) building `store.OTSRecord{HubID, TreeSize, Root: info.Root[:],
+  Status: store.OTSStatusPending, StampedAt: observedAt}`; called it on the verified non-violation
+  path between `fsckMirror` and `recordVerdict`, wrapping a non-nil error as `follower.PollHub: hub %d:
+  %w` (the `stamp root: %w` sub-wrap matches the sibling call sites). Updated the package + frozen-clean
+  short-circuit doc comments to name the stamp.
+- `internal/follower/follower_test.go`: extended `TestPollHubVerifiedAdvances` to assert exactly one
+  `ots` row after the first poll, still one after a second verified poll (dedupe), and that the row is
+  `pending` with empty `OTSBytes` via `s.OTSForRoot(ctx, hubID, m.size, m.tree.Hash())`. Added
+  zero-`ots`-row assertions to the fork, shrink, unverified, and frozen-clean (`preOTS`==`postOTS`)
+  paths.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green (all 21 packages `ok`).
-- [x] `go test -count=1 ./internal/store` — green (uncached, existing suite unaffected, 1.96s).
-- [x] `go test -count=1 -run TestOTS ./internal/store` — green, BUT note: this filter matches only
-  `TestOTSForRootAbsent` (1 of 7 OTS tests). The round-trip/dedupe/zero-times/pending/upgrade tests are
-  named `TestRecordOTS*`/`TestPendingOTS`/`TestMarkOTSUpgraded*` and are NOT caught by `-run TestOTS`.
-  `next.md`'s criterion is an imprecise prefix; I re-ran the full set explicitly
-  (`-run 'TestRecordOTS|TestOTSForRoot|TestPendingOTS|TestMarkOTSUpgraded'`) — all 7 PASS. Functionality
-  is fully covered; the only gap is the literal filter string in `next.md` (definition imprecision, not a
-  code defect).
-- [x] `go list -deps ./internal/store | grep '^net/http'` — empty (leaf preserved).
-- [x] `git diff --stat HEAD~1..HEAD -- internal/store/schema.sql go.mod go.sum` — empty (byte-unchanged).
-- [x] `gofmt -l .` (excl. `cauldron/`) — clean.
-- [x] Mutation-proven non-vacuous (sed, all reverted, tree restored clean): `DO NOTHING`→plain insert
-  FAILS `TestRecordOTSDedupes`; `ASC`→`DESC` FAILS `TestPendingOTS` oldest-first order; dropping
-  `WHERE status=?` FAILS `TestPendingOTS`+`TestMarkOTSUpgraded`.
-- [x] Oracle/conformance gate correctly N/A — opaque-BLOB round-trip + plain CRUD, no
-  signature/RFC-6962/Merkle/did:web/`fsck`-rebuild path (matches the store-leaf precedent).
-- [x] Quality-gate-integrity scan over all unpushed commits (`origin/develop..HEAD`) — no `nolint`,
-  `t.Skip`, build tags, swallowed errors, or deleted assertions.
+**Verification:** `mise run check` → green (all 21 packages `ok`). Per-criterion:
+- [x] `mise run check` green (`go build`/`go vet`/`go test`); `gofmt -l .` (excl. `cauldron/`) clean.
+- [x] `go test -count=1 -run TestPollHub ./internal/follower` passes (verified-advance, fork, shrink,
+  unverified, frozen-clean, equivocation all green).
+- [x] Verified poll over `buildVerifiedMirror` writes exactly one `ots` row; still one after a second
+  verified poll at the same root (dedupe).
+- [x] Recorded row is `pending`: `OTSForRoot` returns `found==true`, `Status==OTSStatusPending`, empty
+  `OTSBytes`.
+- [x] Non-verified, fork, shrink, frozen-clean paths write zero `ots` rows.
+- [x] `git diff --stat`: only `internal/follower/follower.go` + `follower_test.go`; `go.mod`/`go.sum`/
+  `internal/store/*` byte-unchanged (`git diff --name-only -- internal/store go.mod go.sum` empty).
+- [x] Mutation-proven non-vacuous (reverted, tree restored): neutering the `stampRoot` call to a no-op
+  FAILS `TestPollHubVerifiedAdvances` (`ots rows = 0, want 1` + `OTSForRoot found = false`).
+- [x] Store stays a leaf (`go list -deps internal/store | grep '^net/http'` empty); follower production
+  imports unchanged (`store`/`time` already present, no new import).
 
-**Issues found:** (none) — implementation matches the established idioms exactly and the spec's Not-In-Scope
-boundary was respected (no dependency, no follower wiring, no HTTP route, no schema edit, no certificate
-change). The `-run TestOTS` filter imprecision is recorded above for the next `define-next` but is not an
-implementation defect and does not block.
-
-**Codex second opinion:** Clean — "The new OTS store CRUD methods match the existing store patterns, are
-covered by focused tests, and the full test suite passes. I did not identify any introduced correctness
-issues that warrant a review finding." No findings to triage.
-
-**Visual check:** n/a — no SSR surface changed (diff is `internal/store` pure-SQLite-leaf code only).
-
-**Next:** Per the OTS milestone roadmap, the next sub-step is the **daily stamp pass** that writes through
-`RecordOTS` for each distinct accepted root without blocking the follower poll ("OTS never blocks the
-follower"). After that: the background **upgrade loop** (reads `PendingOTS`, marks via `MarkOTSUpgraded`
-once Bitcoin-confirmed) — the first step to pull in `nbd-wtf/opentimestamps` + calendar HTTP, and where
-the `Attempts`/`NextRetry` retry-policy columns finally get exercised. Then the `.ots` HTTP route and
+**Next:** The background **upgrade loop** — read `store.PendingOTS`, stamp via the OpenTimestamps
+calendar HTTP, and flip rows to confirmed via `MarkOTSUpgraded` once Bitcoin-confirmed. This is the
+first step to pull in `nbd-wtf/opentimestamps` + calendar HTTP (a real `go.mod`/`go.sum` change) and
+where the `Attempts`/`NextRetry` retry-policy columns finally get exercised. It runs in its own
+goroutine off the poll path (OTS never blocks the follower). After that: the `.ots` HTTP route and
 certificate §5 BITCOIN ANCHOR (`HasClause5`), both reading `OTSForRoot`.
 
 **Notes:**
-- `Attempts` and `NextRetry` are persisted + round-tripped but no method increments `Attempts` or sets a
-  back-off `NextRetry` yet — correctly deferred to the upgrade loop's retry policy; not a debt for this
-  slice (the seam stores what callers give it).
-- The prior handoff's reported mutation-testing `git checkout`/cwd hygiene incident did NOT recur: the
-  committed `ots.go` is byte-clean (no `DESC`/`IS NOT NULL` leftovers) and the working tree is clean after
-  my mutation runs (I used `cp` backup + restore and verified `git diff --quiet`).
-- Caution for the next reviewer: a `perl -0pi` multi-line slurp silently no-op'd one of my mutation
-  substitutions (gave a false "ok"); `sed -i` with a grep-confirmed before/after applied correctly. When
-  mutation-testing, confirm the source actually changed before trusting a green/red result.
-- `go list -deps ./internal/store` lists `internal/tiles` (pre-existing, for `SQLiteFetcher`'s p→width)
-  and bare `net`/`net/url` (from `modernc.org/sqlite`) — neither is a leak; the load-bearing invariant
-  "no `net/http` in the store closure" holds.
-- Open issues (ForceQuery fail-open, `host:port` DID, §6 timestamp) are untouched per Not-In-Scope and
-  remain in the backlog.
+- Oracle/conformance gate correctly N/A for this slice: it records an opaque `pending` row over an
+  already-fsck-verified accepted root — no signature/RFC-6962/Merkle/did:web/proof path added or
+  changed. The verified-advance fsck/inclusion conformance tests re-ran (under `mise run check`) and
+  stayed green.
+- `stampRoot` discards `RecordOTS`'s `(id, inserted)` return (the dedupe is silent by design) and keeps
+  only the error — not a swallowed error, the `id`/`inserted` are genuinely unused on the stamp path.
+- A stamp fault surfaces to the caller (NOT a freeze); accepted state is already committed by
+  `AdvanceAccepted`, so the next poll re-stamps via the idempotent dedupe — same error-vs-violation
+  discipline as `ingestTiles`/`fsckMirror`.
+- The `next.md` `-run TestPollHub` filter caveat the prior review flagged for the OTS area does not
+  apply here: every new/extended test is named `TestPollHub*`, so the filter catches them all.
+- Open `normal` issues (ForceQuery fail-open, `host:port` DID, §6 timestamp) untouched per Not-In-Scope.

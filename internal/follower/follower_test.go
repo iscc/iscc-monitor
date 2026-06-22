@@ -273,6 +273,12 @@ func TestPollHubFork(t *testing.T) {
 		t.Errorf("hub_keys rows after a fork freeze = %d, want 0 (a violation must not cache a key)", n)
 	}
 
+	// A frozen/violating observation must not stamp a root either: stampRoot is on
+	// the verified, non-violation path, never inside freeze.
+	if n := countRows(t, path, "ots"); n != 0 {
+		t.Errorf("ots rows after a fork freeze = %d, want 0 (a violation must not stamp a root)", n)
+	}
+
 	// Re-detect on an already-frozen hub through a second real PollHub. checkConsistency
 	// runs before the fs.Frozen short-circuit and reads the prior accepted root via
 	// CheckpointAt(hubID, m.size), which deterministically returns the seed root (lowest
@@ -407,6 +413,11 @@ func TestPollHubShrink(t *testing.T) {
 	if n := countRows(t, path, "hub_keys"); n != 0 {
 		t.Errorf("hub_keys rows after a shrink freeze = %d, want 0 (a violation must not cache a key)", n)
 	}
+
+	// A frozen/violating observation must not stamp a root (verified-path only).
+	if n := countRows(t, path, "ots"); n != 0 {
+		t.Errorf("ots rows after a shrink freeze = %d, want 0 (a violation must not stamp a root)", n)
+	}
 }
 
 // TestPollHubFrozenCleanRepollIsEvidenceOnly pins the ADR-0006 frozen =
@@ -458,6 +469,9 @@ func TestPollHubFrozenCleanRepollIsEvidenceOnly(t *testing.T) {
 		t.Fatalf("Coverage before re-poll: %v", err)
 	}
 	preKeys := countRows(t, path, "hub_keys")
+	// The seed verified poll stamped the accepted root once; the clean frozen re-poll
+	// must not add a second ots row (a frozen hub never advances accepted state).
+	preOTS := countRows(t, path, "ots")
 
 	// Re-poll the SAME mirror (same size, same signed root): verified AND clean (no
 	// shrink/fork/equivocation), so the already-frozen short-circuit must fire.
@@ -496,6 +510,10 @@ func TestPollHubFrozenCleanRepollIsEvidenceOnly(t *testing.T) {
 
 	if postKeys := countRows(t, path, "hub_keys"); postKeys != preKeys {
 		t.Errorf("hub_keys rows = %d after a clean frozen re-poll, want %d (a frozen hub must not refresh the key cache)", postKeys, preKeys)
+	}
+
+	if postOTS := countRows(t, path, "ots"); postOTS != preOTS {
+		t.Errorf("ots rows = %d after a clean frozen re-poll, want %d (a frozen hub must not stamp a root)", postOTS, preOTS)
 	}
 
 	// The metric maps to the glossary "frozen" status, never "verified".
@@ -610,12 +628,38 @@ func TestPollHubVerifiedAdvances(t *testing.T) {
 		t.Errorf("hub_keys pubkey_raw = %d bytes, want 32 (Ed25519 key)", len(pubkey))
 	}
 
+	// The accepted root is stamped exactly once as a pending OTS row (the OTS
+	// milestone's "stamp each distinct observed root" criterion): one ots row keyed
+	// on the mirror's signed root, status pending, with no OpenTimestamps bytes yet
+	// (the upgrade loop fills those later).
+	if n := countRows(t, path, "ots"); n != 1 {
+		t.Errorf("ots rows = %d, want 1 (a verified poll stamps the accepted root)", n)
+	}
+	rec, found, err := s.OTSForRoot(ctx, hubID, m.size, m.tree.Hash())
+	if err != nil {
+		t.Fatalf("OTSForRoot: %v", err)
+	}
+	if !found {
+		t.Fatalf("OTSForRoot found = false, want true (the accepted root was stamped)")
+	}
+	if rec.Status != store.OTSStatusPending {
+		t.Errorf("ots Status = %q, want %q (a fresh stamp is pending)", rec.Status, store.OTSStatusPending)
+	}
+	if len(rec.OTSBytes) != 0 {
+		t.Errorf("ots OTSBytes = %d bytes, want 0 (no OpenTimestamps proof until the upgrade loop)", len(rec.OTSBytes))
+	}
+
 	// A second verified poll refreshes the same key in place: still exactly one row.
 	if _, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", observedAt, noopAlert, nil); err != nil {
 		t.Fatalf("second PollHub for key cache: %v", err)
 	}
 	if n := countRows(t, path, "hub_keys"); n != 1 {
 		t.Errorf("hub_keys rows after second poll = %d, want 1 (refresh in place)", n)
+	}
+	// The same accepted root must NOT add a second ots row: RecordOTS dedupes on
+	// UNIQUE(hub, tree_size, root), so each distinct observed root is stamped once.
+	if n := countRows(t, path, "ots"); n != 1 {
+		t.Errorf("ots rows after second poll = %d, want 1 (dedupe on the same accepted root)", n)
 	}
 
 	// Coverage is recorded on the first verified observation at the fixture size and
@@ -701,6 +745,12 @@ func TestPollHubUnverifiedDoesNotAdvance(t *testing.T) {
 	// verified, non-violation path only).
 	if n := countRows(t, path, "hub_keys"); n != 0 {
 		t.Errorf("hub_keys rows after an unverified poll = %d, want 0", n)
+	}
+
+	// A non-verified verdict must not stamp a root either (stampRoot is on the
+	// verified, non-violation path only).
+	if n := countRows(t, path, "ots"); n != 0 {
+		t.Errorf("ots rows after an unverified poll = %d, want 0", n)
 	}
 }
 

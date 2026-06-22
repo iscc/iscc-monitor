@@ -16,10 +16,12 @@
 // view, so a growing equivocation is detected and frozen instead of silently
 // advancing to the inconsistent root. On the verified, non-violation path PollHub
 // also records the hub's coverage start once (ADR-0001, set-once), caches the
-// resolved did:web signing key (ADR-0009, hub_keys), and rebuilds the accepted root
+// resolved did:web signing key (ADR-0009, hub_keys), rebuilds the accepted root
 // from the mirror and cross-checks it against the signed checkpoint root (ADR-0005,
-// fsckMirror -> logclient.RunFsck). The poll loop is its own later step; PollHub does
-// exactly one observation per call and returns.
+// fsckMirror -> logclient.RunFsck), and records the accepted root once for later
+// OpenTimestamps stamping (stampRoot -> store.RecordOTS, a local insert that never
+// blocks the follower). The poll loop is its own later step; PollHub does exactly
+// one observation per call and returns.
 //
 // Mirror root-rebuild (ADR-0005): after the tiles are mirrored, fsckMirror runs
 // RunFsck over the SQLiteFetcher to re-derive the RFC-6962 root from the local
@@ -111,8 +113,9 @@ func glossaryStatus(st logclient.Status, frozen bool) string {
 // none). After the self-consistency check, if the hub is already frozen and this
 // poll did NOT re-detect a fresh violation, PollHub records the verdict metric (as
 // the glossary "frozen" status) and returns WITHOUT recording the checkpoint,
-// setting coverage, advancing the follow cursor, caching the key, or running the
-// fsck root-rebuild. A frozen hub that re-serves a fresh contradiction still flows
+// setting coverage, advancing the follow cursor, caching the key, running the
+// fsck root-rebuild, or stamping the root. A frozen hub that re-serves a fresh
+// contradiction still flows
 // through the violation branch above (re-detection is itself evidence). The
 // candidate tiles ingested earlier are left mirrored — they are rebuildable
 // evidence, not accepted state.
@@ -239,6 +242,18 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	// origin (info.Origin, <domain>/log) come from this poll's AcceptCheckpoint, so
 	// fsckMirror reuses them instead of re-resolving did.json.
 	if err := fsckMirror(ctx, st, hubID, vctx.VKey, info.Origin); err != nil {
+		return status, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err)
+	}
+	// Record the newly-accepted root for later OpenTimestamps stamping (the OTS
+	// milestone's "stamp each distinct observed root" criterion). This is a local
+	// SQLite insert with no calendar/Bitcoin I/O, so it never blocks the follower;
+	// RecordOTS dedupes on UNIQUE(hub, tree_size, root), so a re-poll of the same
+	// accepted root is a silent no-op (each distinct root recorded once). Placed
+	// after fsckMirror so a mirror-rebuild fault aborts the poll before stamping. A
+	// stamp fault is a genuine store fault (NOT a self-consistency violation):
+	// accepted state is already committed by AdvanceAccepted, so the next poll
+	// re-stamps via the idempotent dedupe.
+	if err := stampRoot(ctx, st, hubID, info, observedAt); err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err)
 	}
 	recordVerdict(m, hubID, status, false, observedAt)
@@ -375,6 +390,32 @@ func cacheHubKeyResolve(ctx context.Context, st *store.Store, hubID int64, vctx 
 func fsckMirror(ctx context.Context, st *store.Store, hubID int64, vkey, origin string) error {
 	if err := logclient.RunFsck(ctx, vkey, origin, store.SQLiteFetcher{Store: st, HubID: hubID}); err != nil {
 		return fmt.Errorf("fsck: %w", err)
+	}
+	return nil
+}
+
+// stampRoot records the newly-accepted checkpoint root as a pending OTS row for
+// later OpenTimestamps stamping (the OTS milestone's "stamp each distinct observed
+// root" criterion). It is a single local SQLite insert with no calendar/Bitcoin
+// I/O, so it never blocks the follower (OTS is best-effort and off the poll path).
+//
+// RecordOTS dedupes on UNIQUE(hub_id, tree_size, root): a re-poll of the same
+// accepted root returns inserted=false and adds no second row, so each distinct
+// observed root is recorded exactly once and the first stamping's StampedAt is
+// preserved. The (id, inserted) return is discarded — the dedupe is silent by
+// design. A non-nil error is a genuine store fault (NOT a self-consistency
+// violation): it is wrapped and surfaced so the caller can re-attempt next poll;
+// accepted state is already committed by AdvanceAccepted, so the next poll
+// re-stamps idempotently.
+func stampRoot(ctx context.Context, st *store.Store, hubID int64, info logclient.CheckpointInfo, observedAt time.Time) error {
+	if _, _, err := st.RecordOTS(ctx, store.OTSRecord{
+		HubID:     hubID,
+		TreeSize:  info.TreeSize,
+		Root:      info.Root[:],
+		Status:    store.OTSStatusPending,
+		StampedAt: observedAt,
+	}); err != nil {
+		return fmt.Errorf("stamp root: %w", err)
 	}
 	return nil
 }
