@@ -1,29 +1,76 @@
-## 2026-06-22 — Bring `/` realm index to its mockup's named regions — claim-lookup hero, per-row dossier links, instance-identity masthead
+## 2026-06-22 — Review of: Bring `/` realm index to its mockup's named regions — claim-lookup hero, per-row dossier links, instance-identity masthead
 
-**Done:** Brought the `GET /` realm index to its authoritative mockup's three headline landmark regions: a claim-lookup hero (a no-JS `<form method="get" action="/inclusion/">` with an `iscc_id` input → `Find evidence →`), every hub row wrapped in an `<a href="/{{.Domain}}">` to its dossier (navigation closure, anchor count ≥ hub count), and the masthead instance-identity block + `verify ↗ monitor.iscc.codes` tier-2 link. The certificate handler gained a query-param fallback so the no-JS hero form (which can only emit a query string) resolves to a real lookup. Closes the lone open `critical`.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/dashboard/dashboard.html`: added the hero `<section>` (eyebrow + lede + no-JS GET form), the masthead `.chrome-actions` (instance-identity block + `verify ↗` link), the `#` ledger column, wrapped each `{{range .Hubs}}` row in `<a class="ledger-row" href="/{{.Domain}}">`, and the "{{.HubCount}} hubs followed & mirrored" count. All new layout is page-scoped `<style>` over DS `var(--*)` tokens (verified every token resolves in `web/tokens.css`).
-- `internal/dashboard/handler.go`: added `HubCount` to `pageData` (`len(rows)`) and a per-row `RowNo` (`fmt.Sprintf("%02d", i+1)`, 1-based zero-padded). No new store read; both derive from the existing summaries slice. Added `fmt` import.
-- `internal/certificate/handler.go`: when the path id is empty, fall back to `r.URL.Query().Get("iscc_id")` before the `.bundle` CutSuffix, so the hero's query form flows through the identical decode→resolve→render chain; a bare `/inclusion/` with no query stays the honest "no id supplied" 200.
-- `internal/dashboard/handler_test.go`: narrowed `TestDashboardLinksTokensNoCDN`'s ban to third-party CDN hosts (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`) — mirroring the certificate's posture — and added an assertion the `monitor.iscc.codes` link is present; added `TestDashboardRendersHeroAndNavigation` pinning the hero form, per-hub dossier links (count ≥ hub count), and the masthead identity + verify link.
-- `internal/certificate/handler_test.go`: added `TestCertificateQueryFallback` asserting `GET /inclusion/?iscc_id=<golden>` certifies the same subject as `GET /inclusion/<golden>`, and bare `GET /inclusion/` (no id, no query) still renders "no ISCC-ID supplied".
+**Summary:** The advance brought `GET /` to its authoritative mockup's three headline landmark regions — a
+no-JS claim-lookup hero (`<form method="get" action="/inclusion/">` → `iscc_id` query), every hub row
+wrapped in an `<a href="/{{.Domain}}">` dossier link (navigation closure), and the masthead
+instance-identity block + `verify ↗ monitor.iscc.codes` tier-2 link — plus a symmetric query-param
+fallback on the certificate handler so the no-JS form resolves. Scope held to exactly the 3 named source
+files + 2 test files; both new tests are mutation-proven non-vacuous; all gates green; the visual pass
+confirms faithful named-region parity. This closes the lone open `critical`.
 
-**Verification:** `mise run check` → green (all 25 packages `ok`, `go build`/`go vet`/`go test` pass); `gofmt -l .` (excl. gitignored `cauldron/`) empty.
-- `go test -run TestDashboard ./internal/dashboard` → PASS: (a) hero `<form action="/inclusion/">` + `name="iscc_id"`, (b) dossier link per hub (anchor count ≥ hub count), (c) masthead carries the instance-identity block + `monitor.iscc.codes`.
-- `go test -run TestCertificate ./internal/certificate` → PASS: query fallback certifies the same subject as the path form; bare path stays "no id supplied" 200.
-- Updated no-CDN test still bans real CDN hosts and the body contains none, while permitting `https://monitor.iscc.codes/`.
-- Manual seam check (temp test, since removed): rendered `/` contains the hero form, `href="/sb0.iscc.id"` + `href="/sb1.amlet.id"`, the `verify ↗ monitor.iscc.codes` link, "2 hubs followed", and row numbers `01`/`02`.
+**Verification:**
+- [x] `mise run check` — green (all 25 packages `ok`: build + vet + test).
+- [x] `go test -count=1 -run TestDashboard ./internal/dashboard` — PASS. Mutation-confirmed non-vacuous:
+  reverting the row `<a>` wrapper → `dossier link count = 0`; removing the hero `<section>` → `<form`
+  missing. Both fail the new `TestDashboardRendersHeroAndNavigation`.
+- [x] `go test -count=1 -run TestCertificate ./internal/certificate` — PASS. Mutation-confirmed:
+  removing the `?iscc_id=` fallback makes the query request render "no ISCC-ID supplied" → test FAILS.
+- [x] Updated no-CDN test still bans real CDN hosts (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`) AND now
+  positively asserts `monitor.iscc.codes` is present — the certificate's already-merged precedent, not a
+  weakening (the third-party-origin rule still holds; the one permitted external origin is the intentional
+  tier-2 verify link).
+- [x] `gofmt -l .` (excl. gitignored `cauldron/`) — empty.
+- [x] Every new `var(--*)` token resolves in `internal/web/tokens.css` (checked all 39; only
+  `--status-error-bg` is the documented pre-existing literal-fallback exception).
+- [x] Scope — exactly 3 non-test/doc source files (`dashboard.html`, `dashboard/handler.go`,
+  `certificate/handler.go`), as `next.md` named. No Not-In-Scope path touched (no `internal/dossier`,
+  `internal/proofserve`, `cmd/wasm`, `internal/config`; no store read/column added).
+- [x] Gate-integrity scan over all 3 unpushed commits — no `nolint`/`t.Skip`/swallowed errors/build-tag
+  exclusions/deleted assertions/removed tests. Only 2 test functions ADDED.
+- [x] Oracle/conformance gate — N/A: pure SSR of persisted rows + a query-param intake on the certificate
+  handler that flows through the IDENTICAL existing decode→resolve→render chain. No
+  signature/RFC-6962/Merkle/did:web/fsck/proof code touched. `<a>`-wrapping-a-grid-row HTML5 validity
+  holds because the `hubStatusBadge` partial has no nested interactive element (verified).
 
-**Next:** Carry the same named-region + `←` back-link parity pass to the remaining SSR surfaces (`internal/dossier`, `internal/proofserve` log browser / single record), which lack the masthead instance-identity block and (for dossier→log→record) the full back-link chain — the explicit follow-on sub-steps named in `next.md`'s Not-In-Scope. After that, resume the WASM `<script>` caller and the `cmd/wasm/main.go:39-40` `js.Value.Int()` truncation fix.
+**Issues found:** No new blocking defects. Filed one `normal` `[review]` issue capturing the four deferred
+`/` sub-region deltas the parity step left as constraint-wins (no logo asset, static instance identity +
+realm name, absent Checkpoint/Anchor data columns, omitted "recent declarers" footer) — the named
+sub-steps to finish full `/` design-parity at the M-UI exit. Deleted the resolved `critical` (its (a)/(b)/(c)
+Verify criteria are all met).
+
+**Codex second opinion:** Clean (exit 0). Codex independently reviewed the dashboard additions + the
+certificate query fallback and the full suite: "The dashboard additions and certificate query fallback are
+consistent with the intended routing and existing handler behavior, and the full test suite passes. I did
+not find any introduced correctness issues that warrant an actionable finding." No findings to triage;
+corroborates the reviewer's own measurements.
+
+**Visual check:** Performed (ADR-0012, `agent-browser` headless). Built + launched the monitor against a
+seeded rich-state DB (a verified hub with coverage + observed size 1428, a frozen hub) on `127.0.0.1:43464`;
+screenshotted live `/` and the `ISCC Monitor - Realm Index.dc.html` mockup. The three headline landmark
+regions render faithfully: masthead (mark + instance-identity block + `verify ↗ monitor.iscc.codes`), the
+claim-lookup hero (ISO-24138 eyebrow + identical title/lede + input + "Find evidence →"), and the realm
+register (`#`/Hub·domain/Coverage since/Observed size/Status + "N hubs followed & mirrored" + Verified
+badge). Remaining deltas are all the constraint-wins/deferred sub-regions (logo, static identity/realm,
+Checkpoint/Anchor columns, recent-declarers footer) — filed as the one `normal` issue above, none blocks
+this surface's primary function or navigation closure.
+
+**Next:** Carry the same named-region + `←` back-link parity pass to the remaining SSR surfaces
+(`internal/dossier`, then `internal/proofserve` log browser / single record), which lack the masthead
+instance-identity block and the full back-link chain — the explicit follow-on sub-steps named in this
+step's Not-In-Scope. After that, resume the WASM `<script>` caller and the `cmd/wasm/main.go:39-40`
+`js.Value.Int()` truncation fix (open `normal` issue).
 
 **Notes:**
-- **Mockup deviations (flagged, constraint wins):**
-  1. **No logo image.** The mockup's masthead has `<img src="assets/iscc-logo-black.png">`; no such asset is served (`/_ds/` carries only tokens/fonts/wasm) and the no-CDN constraint bans external origins. Kept the text-only `.chrome-mark` masthead (the certificate's established precedent). A self-hosted logo would be a separate `internal/web` asset step.
-  2. **Static instance identity.** Rendered "monitor instance" + a generic operator/realm line as static copy (the certificate's `monitor instance` placeholder precedent); making it env-configurable is explicitly out of scope.
-  3. **Checkpoint-size + Bitcoin-anchor data columns deferred.** Per Not-In-Scope, `HubSummary` carries no per-hub checkpoint-size-vs-observed split or OTS anchor state for the index, so I did NOT add those columns (no store read). The grid renders `#`/Hub·domain/Coverage since/Observed size/Status — the honest subset of the mockup's column set. The mockup's "Checkpoint" and "Anchor" columns are absent; surfacing them is a later store-projection step.
-  4. **"Recent declarers checked" hero footer omitted** — it requires a recent-lookup history the store does not track; out of scope.
-- **No-CDN gate not weakened.** The dashboard ban was narrowed to third-party-origin hosts only (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`), exactly matching the certificate's already-merged posture and `learnings/web.md`'s `noExternalCDN` rule (third-party origins only; same-origin/self links pass). The single permitted external origin is the intentional `https://monitor.iscc.codes/` tier-2 verifier link. The load-bearing rule (no third-party CDN origin) still holds.
-- **Oracle/conformance gate N/A** for this increment: pure SSR of persisted rows + a query-param intake on the certificate handler that does NOT alter the decode/verify/Merkle chain (the query id flows through the identical existing `buildData` path). No signature/RFC-6962/Merkle/did:web/fsck/proof code touched.
-- **Grid-ellipsis trap respected:** the only ellipsizing cell (`.hub-cell`) already carries `min-width:0`; the new `#`/rowno cell is fixed-width mono text that does not ellipsize.
-- Scope held to 3 non-test source files (dashboard.html, dashboard/handler.go, certificate/handler.go) + 2 test files.
+- The query-param fallback and the hero form are a LOCKSTEP pair: a `method=get` form can only emit a
+  query string, so the certificate handler must accept `?iscc_id=`. Keep them in sync if either moves;
+  recorded in `learnings/dashboard.md`.
+- The seed program used for the visual pass was a throwaway in `cmd/seedvis_tmp/` (removed immediately
+  after; `git status` clean — it never entered a commit). No standalone seed binary exists in-repo; a
+  future visual pass must re-seed via the store API (the dashboard `fixtureStore` shape).
+- Open issues after this sweep: 0 `critical`, 6 `normal` (two certificate latent fail-opens, the OTS
+  stamp guard, the `hubDomain` ForceQuery gap, the WASM shim `Int()` truncation, certificate §6 timestamp,
+  plus this new `/` sub-region parity entry), several `low` (loop-skipped). None blocks the next increment.
+- Pushing `develop` to `origin` (remote configured, upstream `origin/develop`).

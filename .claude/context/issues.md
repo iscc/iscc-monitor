@@ -330,35 +330,33 @@ filed it and does **not** affect priority.
   truncated input is NOT an identical vector; learnings.md always-loaded "a built proof is not a verified
   proof / fail closed"; `learnings/cmd-wasm.md` JS-call-boundary truncation gotcha.
 
-## `/` realm index is far below its authoritative mockup — no claim-lookup hero, rows not linked, masthead chrome absent
-- **Priority:** critical
-- **Source:** [human] (Titusz — dev-instance review 2026-06-22; escalated normal→critical at Titusz's request to front-load visible UI progress)
-- **What / where / how to verify:** The served `/` (`internal/dashboard/dashboard.html` rendered by
-  `internal/dashboard/handler.go`) renders only the realm-register grid (domain · coverage · observed-size
-  · status badge). Against the authoritative mockup `.claude/design/ISCC Monitor - Realm Index.dc.html`
-  (target.md design-parity named-region bar, lines 158-162) it is missing the surface's THREE headline
-  landmark regions:
-  (1) **claim-lookup hero** foregrounded *above* the register (ISO-24138 eyebrow + plain-language
-  explainer + ISCC-ID lookup → certificate) — the page's primary call to action; **absent entirely**.
-  (2) **every row a link to that hub's dossier** — the served HTML has **0 `<a>` tags**
-  (`curl -s localhost:41464/ | grep -c '<a '` → `0`); target.md:155 already flags "the
-  realm-index→dossier row link, today absent, must restore", so with JS disabled `/` is a navigation
-  dead-end (no traversal into dossier → log → record → certificate).
-  (3) the cross-cutting **document chrome + instance identity** (target.md:148-151, handoff invariant 9):
-  the ISCC logo, the instance-identity block (this instance's domain + operator + realm), and the
-  `verify ↗ monitor.iscc.codes` tier-2 link. Today only a bare "Trust & Transparency Monitor" mark
-  renders. Also missing vs the mockup: the `#` row number, the **Checkpoint**-size column, the
-  **Bitcoin-anchor** dot+label column, and the "N hubs followed & mirrored" count.
-  No-JS is satisfiable: the hero's ISCC-ID input becomes a plain `GET` form targeting the existing
-  `/inclusion/{iscc_id}` route (target.md:144 "an interactive control becomes its plain-link/GET-form
-  equivalent"). NOTE the over-claim this corrects: `state.md` lists the "`/` realm-index grid" under M-UI
-  **Met**, but the surface is met only at functional-grid fidelity, not at the mockup's named-region bar.
-  Verify fixed: served `/` HTML carries (a) a hero region with a no-JS `GET` lookup form whose action
-  resolves to `/inclusion/…`, (b) each hub row wrapped in an `<a href>` to that hub's dossier (anchor
-  count ≥ hub count), and (c) the masthead logo + instance-identity + `verify ↗` link region; the
-  `internal/dashboard` handler golden test asserts those landmark regions are present; and the ADR-0012
-  visual pass against the mockup files no remaining headline-region deviation.
-- **Spec:** target.md M-UI design-parity "named-region" bar (lines 138-162, the "`/` realm index" region)
-  + the cross-cutting "Document chrome + instance identity" and "Navigation closure" requirements;
-  ADR-0010 Evidence-Ledger handoff.
+## `/` realm-index sub-region deltas vs the mockup (logo, instance-identity copy, Checkpoint/Anchor columns)
+- **Priority:** normal
+- **Source:** [review] (visual pass vs the Realm-Index mockup, after the named-region parity landed)
+- **What / where / how to verify:** The three HEADLINE landmark regions (claim-lookup hero, per-row
+  dossier link, instance-identity masthead) now render and the lone `critical` is closed — but the
+  ADR-0012 visual pass against `.claude/design/ISCC Monitor - Realm Index.dc.html` shows four remaining
+  sub-region deltas the parity step deferred as constraint-wins (all flagged in that handoff):
+  (1) **No logo** — the mockup masthead has the ISCC logo `<img src="assets/iscc-logo-black.png">`; the
+  live `/` (`internal/dashboard/dashboard.html`) renders a text-only `.chrome-mark` because no logo asset
+  is served (`/_ds/` carries only tokens/fonts/wasm) and the no-CDN constraint bans external origins.
+  Surfacing it cleanly is a self-hosted `internal/web` asset step (embed a logo woff2/svg/png + serve at
+  `/_ds/...`, mirroring the `wasm_exec.js`/woff2 `go:embed` idiom).
+  (2) **Static instance identity + realm name** — the mockup shows `monitor.iscc.id` / "instance operated
+  by ISCC Foundation · ISCC mainnet" and a "REALM REGISTER · ISCC MAINNET" subtitle; the live page renders
+  generic static copy ("monitor instance" / "independent Trust & Transparency service" and a bare "Realm
+  register") because the identity is not env-configurable. Needs the deferred config-driven instance
+  identity (domain / operator / realm name) before it can be honest per-deployment.
+  (3) **Checkpoint-size + Bitcoin-anchor data columns absent** — the mockup's ledger has `Checkpoint` and
+  `Anchor` columns; the live grid renders `#`/Hub·domain/Coverage since/Observed size/Status only, because
+  `store.HubSummary` carries no per-hub checkpoint-size-vs-observed split or OTS anchor state for the index.
+  Surfacing them is a store-projection change (add the fields to `ListHubs`/`HubSummary` + render the
+  columns) — do NOT add a store read until that projection lands.
+  (4) **"Recent declarers checked" hero footer omitted** — needs a recent-lookup history the store does
+  not track. None of these block progress (the headline-region parity Verify criteria are met); they are
+  the named sub-steps to finish full `/` design-parity at the M-UI exit. Verify fixed: the served `/`
+  carries a self-hosted logo, config-driven instance identity + realm name, and honest Checkpoint/Anchor
+  columns; the visual pass files no remaining sub-region delta.
+- **Spec:** target.md M-UI design-parity "named-region" bar (the `/` realm-index region) + "Document chrome
+  + instance identity"; ADR-0010 Evidence-Ledger handoff; ADR-0012 visual-pass.
 

@@ -76,6 +76,28 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   fallback, never a broken `{{range}}`. Empty-list and NULL-detected-at ("detected at an unknown time")
   branches are coverage-honesty discipline applied to evidence timestamps. Both the ordering and the
   Frozen gate are mutation-proven non-vacuous (reviewer reconfirmed independently).
+- **The `/` named-region parity landed: claim-lookup hero + per-row dossier `<a>` + masthead identity.**
+  The hero is a no-JS `<form method="get" action="/inclusion/">` with `<input name="iscc_id">` — a
+  `method=get` form can ONLY emit a query string, so the certificate handler gained the symmetric
+  fallback (use `?iscc_id=` when the path id is empty) for the chain to resolve; keep the two in lockstep
+  if you move either. Each data row is now `<a class="ledger-row" href="/{{.Domain}}">` (Navigation
+  closure); wrapping a `display:grid` row in an `<a>` is valid HTML5 ONLY because the `hubStatusBadge`
+  partial carries no nested interactive element (no `<a>`/`<button>`) — re-check that invariant before
+  adding any control inside a row. `TestDashboardRendersHeroAndNavigation` pins all three regions and
+  counts dossier links specifically (`href="/<domain>"`, not bare `<a `) so the masthead verify link +
+  hero button don't inflate the count; mutation-proven (drop the row `<a>` → count 0; drop the hero
+  `<section>` → `<form` missing).
+- **The no-CDN ban is now narrowed to third-party hosts (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`), NOT a
+  blanket `https://` ban** — the masthead's intentional `https://monitor.iscc.codes/` tier-2 verify link
+  must pass, so the test now ALSO positively asserts `monitor.iscc.codes` is present. This mirrors the
+  certificate's already-merged posture and `web.md`'s `noExternalCDN` rule (third-party origins only).
+  The load-bearing rule (no third-party CDN origin) still holds; this is the precedent, not a weakening.
+  Mockup deviations accepted as constraint-wins (all flagged): no logo `<img>` (no served asset + no-CDN),
+  static instance identity (`monitor instance` placeholder, env-config out of scope), Checkpoint/Anchor
+  data columns deferred (no `HubSummary` column — do NOT add a store read for them), "recent declarers"
+  hero footer omitted (no store history). The `#` row number is `RowNo = fmt.Sprintf("%02d", i+1)` on the
+  view-model — presentation only, no store value; the new `34px` grid column is fixed-width mono and does
+  not ellipsize (the `min-width:0` trap applies only to `.hub-cell`).
 - **The status cell renders through the `hubStatusBadge` partial, not the bare word.** The partial is
   associated into the page set once at init (`template.Must(template.New("dashboard").Parse(pageTemplate))`
   then `template.Must(t.Parse(badge.Source))`, wrapped in an init closure since `template.Must` returns
