@@ -20,6 +20,15 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   existing `didweb`/`logclient`/`follower` fixtures and `derive_vkey.py`'s HUBS — not invented. The
   registry→`HubTarget` mapping is deferred to wiring (needs `HubID` from `store.UpsertHub`), so
   `Loop`/`HubTarget`/`cmd/` stay untouched here, as scoped.
+- **`deploy/realm-testnet.txt` is the canonical mountable/bakeable realm doc; `testdata/realm.txt` is
+  the in-package fixture — two independent artifacts.** They are content-EQUIVALENT (both parse to the
+  same two ordered entries) but NOT byte-identical (the testdata fixture has an inter-hub blank line + a
+  pilot header; the deploy file has no blank + a deploy header). `Parse` drops blanks/`#`-comments so
+  both map to the same `Entry` slice — assert parse-equivalence, never byte-identity, between them.
+  `deploy_test.go` reads the real `deploy/` file (repo-root-relative `filepath.Join("..","..",…)`), so it
+  is non-vacuous (URL-shaping a line or dropping a hub FAILS it — mutation-proven). The Dockerfile bakes
+  `deploy/realm-testnet.txt` → `/etc/iscc-monitor/realm.txt`; `deploy/` must stay OUT of `.dockerignore`
+  (it is, and it is git-tracked) or the `COPY` breaks the image build.
 
 ## Hub-List parser (`ParseHubList` / `HubList.Resolve`, ADR-0010)
 

@@ -491,27 +491,6 @@ filed it and does **not** affect priority.
 - **Spec:** ADR-0003 `CGO_ENABLED=0` static build; CLAUDE.md "single binary configured
   entirely through environment variables".
 
-## Provide a canonical, mountable testnet realm file (not testdata) + the instance identity env values
-- **Priority:** critical
-- **Source:** [human] (iscc-infra ops, required config)
-- **What / where / how to verify:** `ISCC_MONITOR_REALM` is a REQUIRED path to the realm
-  document, but the only realm file in the repo is `internal/registry/testdata/realm.txt`
-  (`sb0.iscc.id`, `sb1.amlet.id`) — a Go *testdata* path inside the source tree, not
-  something a container exposes at a stable, documented location. Ask: ship a canonical
-  testnet realm document at a non-testdata path (e.g. `deploy/realm-testnet.txt`) that infra
-  can bake into the image at a fixed path OR mount read-only, AND confirm whether infra
-  should own/version it in iscc-infra instead. Confirm the current membership is what we
-  want monitored today and that both hubs are actually reachable now (an unreachable hub
-  renders `unresolvable` on the dashboard — acceptable, but we want to know that's expected,
-  not a misconfig). Also give the values to set for the optional masthead identity on THIS
-  instance so the served page is honest per ADR-0010 rather than the static placeholder:
-  `ISCC_MONITOR_INSTANCE` (e.g. `monitor-test.iscc.io`), `ISCC_MONITOR_OPERATOR`,
-  `ISCC_MONITOR_REALM_NAME` (e.g. "ISCC testnet"). Verify fixed: the deploy mounts/bakes a
-  realm file at a documented path, the binary registers exactly the intended hubs at
-  startup, and `GET /` renders the configured instance/operator/realm strings.
-- **Spec:** `internal/config` required `ISCC_MONITOR_REALM`; CLAUDE.md instance-identity env
-  keys (`ISCC_MONITOR_INSTANCE`/`OPERATOR`/`REALM_NAME`); ADR-0009 domains-only realm.
-
 ## Persistence contract for the SQLite DB volume + acknowledge the in-place migration hazard
 - **Priority:** critical
 - **Source:** [human] (iscc-infra ops, stateful deploy)
