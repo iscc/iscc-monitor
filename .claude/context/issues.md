@@ -18,6 +18,30 @@ filed it and does **not** affect priority.
 
 ---
 
+## Certificate §5 BITCOIN ANCHOR does not bind the OTS proof's committed digest to §2's accepted root
+- **Priority:** normal
+- **Source:** [review] (Codex P2, reviewer-confirmed against the library + the OTS write path)
+- **What / where / how to verify:** `internal/certificate/handler.go:843-845` sets `HasClause5=true` and
+  renders "block N" whenever `ots.Confirmed(rec.OTSBytes)` parses a Bitcoin attestation — but
+  `ots.Confirmed` (`internal/ots/ots.go:58`) only classifies the proof's attestations; it never compares
+  the parsed `File.Digest` (the 32-byte SHA-256 the proof commits to, exposed by
+  `opentimestamps@v0.4.0` `ots.go:61`) against the §2 accepted `root`. So a stored OTS row whose
+  `ots_bytes` commit to a DIFFERENT digest than §2's root would render the §5 anchor as if §2's root were
+  Bitcoin-confirmed when it is not — a false anchor claim on a Tier-1 self-verifiable surface. This is the
+  always-loaded "gate a rendered ✓/anchor on a re-VERIFICATION, not a classify-only flag" rule applied to
+  the §5 anchor assertion. NOT currently exploitable: the production write path
+  (`follower.OTSTick`→Stamper→`MarkOTSStamped`, Upgrader→`MarkOTSUpgraded` in `otsloop.go:144-179`) always
+  submits/upgrades the row's OWN `r.Root` digest, so a mismatched (root-key, proof-digest) row is
+  unreachable; only a buggy `RecordOTS` — or the §5 tests, which seed `hello-world.txt.ots` against an
+  arbitrary tree root for fixture convenience — produces one. Does NOT block this increment's stated goal
+  (the three honest §5 states render correctly from production-written rows). Fix when §5 / `ots.Confirmed`
+  is next touched: have `Confirmed` (or a sibling) surface `File.Digest` and require
+  `bytes.Equal(file.Digest, root)` before `HasClause5=true`; an unbound proof declines §5 like an
+  unparseable one. Verify fixed: a §5 test seeds a confirmed proof under a root that does NOT match the
+  proof's digest and asserts §5 is OMITTED; reverting the digest check makes it FAIL.
+- **Spec:** learnings.md always-loaded "re-verify a rendered ✓, not a status flag"; target.md M-UI
+  certificate Bitcoin-anchor Verify criterion; ADR-0001 fail-closed; CLAUDE.md "Verifiable cache".
+
 ## The production OTS stamp path has neither a panic-recover nor a per-request timeout (the upgrade path has both)
 - **Priority:** normal
 - **Source:** [review] (Codex P1+P2, reviewer-confirmed against the library source)
