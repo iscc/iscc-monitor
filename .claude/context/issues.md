@@ -381,28 +381,6 @@ filed it and does **not** affect priority.
   already correct.
 - **Spec:** CLAUDE.md "Write evergreen comments that describe the current state, not historical changes".
 
-## No public-facing root `README.md` — the project has no human-facing front door
-- **Priority:** normal
-- **Source:** [human]
-- **What / where / how to verify:** The repository root has **no `README.md`** — the only README is the
-  CID context pack's `.claude/context/README.md` (loop-internal), and `CLAUDE.md` is agent-facing project
-  instructions, not a human overview. So a person landing on the repo (GitHub, a fresh clone, the future
-  GHCR image's "source" link) gets no front-door explanation of what iscc-monitor is, how to build it, or
-  how to run an instance. Add a tracked root `README.md` that states (1) **what it is** — the independent
-  Trust & Transparency service for the ISCC-Hub network: follows every hub's tlog-tiles transparency log,
-  verifies Ed25519 signatures + RFC-6962 consistency, mirrors the logs, and publishes verifiable evidence,
-  framed honestly as a *verifiable cache*, not a trusted oracle; (2) **the stack** (Go 1.26,
-  `CGO_ENABLED=0`, single binary `cmd/iscc-monitor`); (3) **build + run** — a copy-pasteable snippet that
-  builds the binary and starts it against the testnet realm (the `ISCC_MONITOR_DB` / `ISCC_MONITOR_REALM` /
-  `ISCC_MONITOR_ADDR` / cadence env config), plus the quality gate `mise run check`; (4) **pointers to the
-  specs** (`.claude/prd`, `.claude/adr`, the glossary in `CLAUDE.md`). Keep it human-facing and evergreen;
-  do **not** duplicate the full env-var table — link `CLAUDE.md` "Running a local dev instance" as the
-  authoritative source so the two never drift. Verify fixed: `README.md` exists at the repo root, renders a
-  project overview + a build/run snippet that actually starts the binary, and links the spec dirs;
-  `target.md` "Done When" requires it, so DONE is not reachable until it exists.
-- **Spec:** target.md "Done When" (now requires a root README); CLAUDE.md project overview + "Running a
-  local dev instance"; memory `docs-layout-convention` (`.claude/` = agentic docs, public docs elsewhere).
-
 ## `.dockerignore` secret/sidecar globs are slashless — they only exclude CONTEXT-ROOT files, not nested ones
 - **Priority:** low
 - **Source:** [review] (Codex P2, reviewer-confirmed against Docker's `filepath.Match` vs git basename matching)
