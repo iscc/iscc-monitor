@@ -1,153 +1,106 @@
 # Next Work Package
 
-## Step: Wire the first SSR WASM `<script>` caller — light up the certificate's tier-2 "your browser verified" result against `/_ds/verify.wasm`
+## Step: Serve the self-hosted ISCC logo at `/_ds/iscc-logo-black.png` and render it in the `/` + dossier mastheads
 
 ## Advances
-Target → **WASM verifier upgrade** milestone, Verify criterion:
-> "identical vectors yield identical verdicts (WASM vs server)" — and the M-UI two-tier honesty
-> requirement "the tier-2 result itself lands in the WASM milestone".
-
-This is the **front of the queue** per `state.md` ("the WASM `<script>` verifier caller is now the
-front of the queue") and the `review` handoff ("resume the WASM `<script>` caller and the
-`cmd/wasm/main.go:39-40` `js.Value.Int()` truncation fix"). The `.wasm` artifact is already built
-reproducibly and served byte-pinned at `/_ds/verify.wasm`; the milestone Verify stays 1/1 open ONLY
-because no SSR surface yet calls it. This step closes the "first real caller" sub-step of that
-criterion as a **verifiable skeleton** (remaining sub-steps in `## Not In Scope`).
-
-It also closes the open `normal` issue **"WASM shim `js.Value.Int()` truncates a non-integer JS
-`index`/`size`"** — the issue text says to fix it "when the FIRST real caller is wired (the natural
-place to enforce the JS→Go arg contract)", which is exactly this step.
+Preempts the milestone gap by closing the front-of-queue **human-filed `critical`**:
+*"Add the ISCC logo to the nav-bar masthead chrome (self-hosted asset, replacing the text-only mark)"*
+(`issues.md`). A `critical` preempts everything (protocol step 3), and the `review` handoff `**Next:**`
+names exactly this. It is rooted in **target.md:148** ("Document chrome + instance identity — Every
+surface carries the shared handoff header: the ISCC logo + 'Trust & Transparency Monitor' mark"), an
+M-UI design-parity / Document-chrome requirement. DONE is unreachable while any `critical` is open, so
+this must land before the WASM milestone continues.
 
 ## Goal
-Make the certificate page's tier-2 promise real: a progressive-enhancement `<script>` loads the
-served `/_ds/wasm_exec.js` + `/_ds/verify.wasm`, calls `globalThis.isccVerifyInclusion` over the proof
-data already embedded in the page (record, root, proof hashes, position, size), and renders an honest
-in-browser verdict region — without breaking the no-JS baseline (§3 still renders server-side). This
-is the first wiring that proves WASM-vs-server verdict parity end-to-end in a browser, and the natural
-place to harden the JS→Go integer arg contract.
+Serve the grayscale ISCC logo as a build-pinned, CDN-free `/_ds/` asset (mirroring the existing
+`wasm_exec.js` / woff2 embed idiom) and render it as a plain `<img>` next to the existing text
+`.chrome-mark` on the two surfaces the critical's verify bar asserts (`/` and the hub dossier). This
+removes the text-only-mark delta from the index masthead — the surface measured by the ADR-0012 visual
+pass — and lays the serve infrastructure the remaining four mastheads reuse with a one-line edit.
 
 ## Scope
-- **Create**: (none)
+- **Create**: `internal/web/iscc-logo-black.png` — a *committed, pre-downscaled* grayscale PNG generated
+  ONCE by advance (not at build time; see Implementation Notes), embedded via `go:embed`.
 - **Modify** (≤3 non-test/doc source files):
-  1. `internal/certificate/handler.go` — add a `RecordB64 string` field to `certData` and populate it
-     from the already-computed `arts.record` (base64-Std) on the §3 success path (the only data the
-     WASM caller needs that the template does not yet expose). Set it inside the same `if ok` block that
-     sets `arts.record`/`data.ProofHashes` (~`handler.go:814-828`), gated by the §3 re-verification, so
-     it is empty on every honest decline (read only under `{{if .HasBundle}}`).
-  2. `internal/certificate/cert.html` — add the tier-2 in-browser verifier: a result `<div>` (rendered
-     only under `{{if .HasBundle}}`, with no-JS default text the script replaces) plus a
-     `<script src="/_ds/wasm_exec.js">` + an inline `<script>` that instantiates `/_ds/verify.wasm` and
-     calls `isccVerifyInclusion(record, root, [proofHashes...], position, size)`, then writes the
-     verdict into the region. Pass the Go values into JS via a `<script type="application/json">` data
-     island read with `JSON.parse` — NOT string-interpolated into executable JS.
-  3. `cmd/wasm/main.go` — fold the open `normal` `js.Value.Int()` truncation fix in at this first
-     caller: before calling `verifyadapter.VerifyJSON`, validate that `args[3]`/`args[4]` (index/size)
-     are integral and within the JS safe-integer range; on a violation return the same
-     `{verified:false, error:...}` map the arg-count guard uses. (This file is `//go:build js && wasm`,
-     so `go build ./...` skips it on linux — but `mise run build:wasm` rebuilds it; see Verification.)
-- **Modify (docs — keep in sync):**
-  - `CLAUDE.md` — extend the `GET /inclusion/<iscc_id>` bullet (lines 63-67) to note the tier-2
-    in-browser re-verification result now renders for a certifiable id via the
-    `/_ds/wasm_exec.js` + `/_ds/verify.wasm` progressive-enhancement loader (no-JS baseline unchanged).
+  1. `internal/web/web.go` — add `LogoPath` const, `contentTypePNG` const, `//go:embed iscc-logo-black.png`
+     var, and a `case LogoPath:` in `Handler`'s path switch.
+  2. `internal/dashboard/dashboard.html` — add `<img src="/_ds/iscc-logo-black.png" …>` beside the
+     `.chrome-mark` (line ~315).
+  3. `internal/dossier/dossier.html` — same `<img>` beside the `.chrome-mark` (line ~300).
+- **Tests (not counted in the 3)**: add `TestLogoServed` to `internal/web/web_test.go`; extend
+  `internal/dashboard/handler_test.go` and `internal/dossier/handler_test.go` to assert the `<img>` in
+  the served body.
 - **Reference**:
-  - `.claude/context/learnings/cmd-wasm.md` — the `js.Value.Int()` truncation gotcha + the exact JS
-    arg order (`record, root, proofArray, index, size`) + the defensive arg-count-guard pattern to
-    mirror. **Read before editing `cmd/wasm/main.go`.**
-  - `.claude/context/learnings/certificate.md` — §3 re-verification gate (`HasClause3`/`HasBundle`),
-    `arts.record`/`builtProof`, base64-Std cross-surface, and the `html/template` `+`→`&#43;` text-node
-    entity-escaping trap (matters for the base64 JSON data island). **Read before editing.**
-  - `.claude/context/learnings/web.md` — `noExternalCDN` bans only third-party origins; same-origin
-    `/_ds/...` script/wasm refs pass; `wasm_exec.js`/`verify.wasm` are served at `WasmExecPath` /
-    `WasmVerifyPath`. **Read before editing `cert.html`.**
-  - `cmd/wasm/verifyadapter/verifyadapter.go` (+ its `_test.go`) — the verdict contract the shim must
-    preserve and the golden vector that proves WASM-vs-server parity.
-  - `internal/certificate/cert.html` (existing honesty/actions region, ~lines 424-432) — where the
-    tier-2 result region and scripts attach.
-  - `mise.toml` (`[tasks."build:wasm"]`, line 39-42) — the `-buildvcs=false` rebuild command.
-  - `internal/web/web.go` (`WasmVerifyHash`, line 78) — the SRI pin to re-set if the rebuilt wasm hash
-    moves.
+  - `.claude/context/learnings/web.md` — the `/_ds/` subtree mount, `writeAsset` no-cache+strong-ETag+304
+    leaf, and the `wasm_exec.js`/woff2 embed pattern to copy verbatim.
+  - `internal/web/web.go:166-185` — `Handler`'s path-switch + `writeAsset` (the exact idiom to extend).
+  - `.claude/design/ISCC Monitor - Realm Index.dc.html:30-34` — the mockup masthead: `<img src=
+    "assets/iscc-logo-black.png" alt="ISCC" style="height:19px;width:auto;display:block">` then a
+    `1px×24px` divider span then the text mark — the layout to reproduce.
+  - `.claude/design/assets/iscc-logo-black.png` — the source asset (5000×1906 gray+alpha, 113 KB) to
+    downscale and copy in.
+  - `issues.md` — the critical's full "Verify fixed" criteria.
 
 ## Not In Scope
-- The standalone `monitor.iscc.codes` **Independent Verification** app (Surface C,
-  `ISCC Monitor - Independent Verification.dc.html`, monitor-agnostic via `?monitor=<url>`) — a
-  separate later sub-step of the WASM milestone.
-- The guided **split-view alert** on a `(size, root)` mismatch — a later WASM sub-step; this step only
-  renders verified / failed / error for the certificate's own embedded proof.
-- Wiring the WASM caller into the **dossier** or any other SSR surface — certificate first; dossier is
-  a later sub-step.
-- Changing `verifyadapter.VerifyJSON`, `internal/proof/verify`, or any signature / RFC-6962 / Merkle /
-  proof-bundle crypto — the adapter and core are already parity-proven; only the `cmd/wasm/main.go`
-  arg-marshaling guard changes.
-- Carrying the named-region + `←` back-link parity pass to the remaining SSR surfaces — deferred.
+- The remaining FOUR mastheads (`internal/certificate/cert.html`, `internal/proofserve/{browser,record,
+  records}.html`) get the identical one-line `<img>` insertion in the **immediate follow-up step** — the
+  serve route this step lands makes that a pure-template edit. Listing them here keeps the arc coherent
+  rather than ballooning this step past the 3-file bar.
+- Extracting a shared chrome partial (the issue's optional KISS factoring) — defer; six near-identical
+  one-liners is the smaller, lower-risk move now.
+- Any white/dark logo variant — only the black variant exists and the masthead is light (issue scope).
+- Request-time resizing — forbidden; the served bytes are the committed pre-downscaled asset.
+- The `/` `normal` sub-region deltas (instance-identity copy, Checkpoint/Anchor columns, recent-declarers
+  footer) — separate `normal` issue, not this critical.
 
 ## Implementation Notes
-- **No-JS baseline is the hard constraint (target.md M-UI "complete with JavaScript disabled").** §1–§6
-  and the existing honesty/actions copy MUST stay rendered server-side. The tier-2 result region's
-  default (no-JS) content must read honestly ("Re-verify the downloadable bundle yourself"), and the
-  script only ENHANCES it — never gate any clause behind a `<script>`. The existing no-CDN body
-  assertions must still pass.
-- **Pass Go→JS data via a `<script type="application/json">` data island + `JSON.parse`, never by
-  interpolating Go values into executable JS.** `html/template` does not contextually escape inside a
-  `<script>` the same way it does an attribute, and base64 `+`/`/` plus the `ISCC:`-prefixed id are
-  exactly the chars that break naive interpolation (the certificate.md `+`→`&#43;` trap). A JSON island
-  holding `{{.RecordB64}}`, `{{.CheckpointRoot}}`, the `{{range .ProofHashes}}` array, `{{.Position}}`,
-  `{{.CheckpointSize}}` is the safe channel — `html/template` JSON-context-escapes it. Parse it, then
-  call `isccVerifyInclusion`.
-- **JS arg order is `(record, root, proofArray, index, size)`** (cmd-wasm.md): record + root are
-  base64-Std strings, proofArray is a JS array of base64-Std strings, index = `Position`, size =
-  `CheckpointSize`. The returned JS object is `{verified: bool, error: string}` — render: `error != ""`
-  → show the error; else `verified` → "✓ your browser re-verified this proof against the accepted
-  root"; else → "✗ in-browser verification did not match" (a negative VERDICT, not an error — keep that
-  distinction visible; it is what the later split-view alert keys on).
-- **Loader shape:** `<script src="/_ds/wasm_exec.js"></script>` then an inline script that does
-  `const go = new Go();` and `WebAssembly.instantiateStreaming(fetch("/_ds/verify.wasm"),
-  go.importObject)` (ours serves `application/wasm`, so streaming works; add the
-  `instantiate(await (await fetch).arrayBuffer())` fallback for robustness), `go.run(inst)`, then call
-  the now-registered global. Wrap in `try/catch`; on any load failure leave the no-JS default text
-  (graceful degradation). A plain inline script at end-of-body is acceptable for this skeleton.
-- **`cmd/wasm/main.go` integer guard (closes the `normal` issue).** Before `index := …`, read
-  `fIdx := args[3].Float()`, `fSize := args[4].Float()`; reject when not integral
-  (`fIdx != math.Trunc(fIdx)` / same for size) or out of safe range (`< 0` or `> 1<<53`), returning the
-  `{verified:false, error:"…"}` map. Then `uint64(fIdx)` / `uint64(fSize)`. Add `import "math"`. Per
-  cmd-wasm.md, `js.Value.Int()` is `int(v.Float())` and silently truncates — this is the documented fix
-  point.
-- **Correctness rule (always-loaded learnings):** "On a self-verifiable surface, gate a rendered
-  ✓/Merkle assertion on a re-VERIFICATION, not a status flag." The tier-2 ✓ here is genuinely
-  re-verified — it runs `proof.VerifyInclusion` in WASM over the embedded proof — exactly the rule
-  honored; the server-side §3 ✓ already gates on `HasClause3` re-verification, so the page carries two
-  independent re-verifications that must agree. Do not weaken either.
-- **Reproducible build / pin discipline (web.md).** The `cmd/wasm/main.go` change recompiles
-  `verify.wasm`, so its SHA-256 WILL change. Run `mise run build:wasm` (it carries `-buildvcs=false`),
-  then update `WasmVerifyHash` in `internal/web/web.go` to the new lowercase-hex SHA-256 and commit the
-  rebuilt `internal/web/verify.wasm`. `TestWasmVerifyHashPinned` FAILS until the pin matches — that is
-  the guard working, not a regression. (The wasm artifact + its pin are one indivisible change moving
-  together, not a fourth feature file.)
+- **Downscale at the embed step, NOT at build time.** The mockup renders the logo at `height:19px`. The
+  source is 5000×1906 / 113 KB — wildly oversized. Advance must run a ONE-TIME downscale to a slim,
+  height-appropriate (≤2× retina, e.g. ~76px tall) grayscale PNG and COMMIT that file as
+  `internal/web/iscc-logo-black.png`. Use the available `convert` (ImageMagick), e.g.
+  `convert ".claude/design/assets/iscc-logo-black.png" -resize x76 -strip "internal/web/iscc-logo-black.png"`
+  (verify the result is a few KB, preserves the alpha channel so it sits on the `#fbf9f4` chrome, and
+  stays grayscale). **Do NOT add a `mise`/build-step that resizes** — that would require ImageMagick on
+  every CI/dev machine and break the cross-platform, reproducible-build posture (ADR-0003,
+  `CGO_ENABLED=0`, pure-Go). The committed PNG is the build-pinned artifact, exactly like the committed
+  woff2 binaries and `verify.wasm`.
+- **Serve via the existing leaf, do not invent a new policy.** Add to `internal/web/web.go`:
+  `const LogoPath = "/_ds/iscc-logo-black.png"`, `const contentTypePNG = "image/png"`,
+  `//go:embed iscc-logo-black.png` → `var logoPNG []byte`, and a `case LogoPath:
+  writeAsset(w, r, logoPNG, contentTypePNG)` in `Handler`. `writeAsset` already gives the
+  no-cache + strong-content-ETag + `If-None-Match`→304 policy the sibling `/_ds/` assets use — reuse it,
+  set NO extra headers (the issue's "sibling-`/_ds/` ETag/304 policy"). CORS rides the outer `corsmw`
+  wrap; this handler sets none.
+- **Template insertion.** Beside the existing `<div class="chrome-mark">Trust &amp; Transparency
+  Monitor</div>`, add `<img src="/_ds/iscc-logo-black.png" alt="ISCC" style="height:19px;width:auto">`
+  (and, matching the mockup, an optional `1px` divider span) so the served HTML carries **both** the
+  logo and the text mark (target.md:148 wants both). The src is a literal string in the template — like
+  `TokensPath`, templates cannot read the Go const, so the literal must match `LogoPath` exactly.
+- **Purity / WASM-green is preserved.** `embed` is already imported and `image/png` is only a string
+  literal (no `image/*` package import), so `internal/web` stays the pure stdlib leaf
+  (`bytes`/`embed`/`fmt`/`io/fs`/`net/http`/`strings`/`crypto/sha256`) and `GOOS=js GOARCH=wasm go build
+  ./internal/web` stays OK (learnings/web.md "Pure stdlib leaf, WASM-green").
+- **No-CDN ban is satisfied.** A same-origin `/_ds/iscc-logo-black.png` is a relative path with no
+  `http://`/`https://`/`cdn.`/`jsdelivr` substring, so it passes `noExternalCDN` and the dashboard body
+  ban (`TestDashboardLinksTokensNoCDN`) — same class as the existing `/_ds/wasm_exec.js` ref.
+- **Correctness rule (learnings.md):** none of the crypto/freeze/re-verify rules apply — this is pure
+  static-asset transport; the oracle/conformance gate is **N/A** (no signature/RFC-6962/Merkle/proof
+  path touched), exactly as `internal/web`'s docstring states.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`; `gofmt -l .` excluding
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`; `gofmt -l .` excl.
   `cauldron/` empty).
-- `mise run build:wasm` produces `internal/web/verify.wasm` whose SHA-256 equals the updated
-  `web.WasmVerifyHash` — `go test -count=1 -run TestWasmVerifyHashPinned ./internal/web` passes.
-- `GOOS=js GOARCH=wasm CGO_ENABLED=0 go build ./cmd/wasm` succeeds with the new integer guard (the WASM
-  build gate; `go build ./...` correctly skips the tagged package on linux).
-- `go test -count=1 -run TestVerifyJSON ./cmd/wasm/verifyadapter` passes — the WASM-vs-server golden
-  parity check still holds (the parity oracle for this milestone).
-- `go test -count=1 -run TestCertificate ./internal/certificate` passes, including a NEW test
-  (`TestCertificateRendersWasmVerifier` or similar) asserting the served certifiable-id HTML carries
-  `/_ds/wasm_exec.js`, `/_ds/verify.wasm`, the JSON data island with the base64 record/root/proof, and
-  the tier-2 result region — AND that the non-certifiable / `!HasBundle` body does NOT (no fabricated
-  verifier on an uncertifiable id). Mutation: removing the `RecordB64` field or the script block makes
-  the new test FAIL.
-- `go test -count=1 -run TestCertificateNoCDN ./internal/certificate` (the existing no-CDN test) still
-  passes — the same-origin `/_ds/` script + wasm refs do not trip the third-party-CDN ban
-  (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`); `monitor.iscc.codes` stays the one permitted external origin.
-- Assertion: the no-JS baseline holds — with scripting removed, the served certifiable-id HTML still
-  contains the §3 clause markup and the honesty/actions region verbatim (no §1–§6 clause is inside a
-  `<script>` / script-gated).
+- `go test -run 'TestLogo|TestNoExternalCDN|TestWasmVerifyServed' ./internal/web` passes — including a
+  new `TestLogoServed` asserting `GET /_ds/iscc-logo-black.png` → `200`, `Content-Type: image/png`,
+  body byte-equal to the embedded bytes, a strong ETag, and an `If-None-Match` of that ETag → `304`.
+- `go test -run TestDashboard ./internal/dashboard` passes — the `/` body assertion now requires
+  `src="/_ds/iscc-logo-black.png"` present in the masthead (mutation: drop the `<img>` → FAIL).
+- `go test -run TestDossier ./internal/dossier` passes — same `<img>` assertion on the dossier body.
+- The committed `internal/web/iscc-logo-black.png` is a grayscale PNG of a few KB (not 113 KB):
+  `ls -l internal/web/iscc-logo-black.png` shows a small file and `file` reports `PNG image data`.
+- `GOOS=js GOARCH=wasm CGO_ENABLED=0 go build ./internal/web` exits 0 (the leaf stays WASM-shareable).
 
 ## Done When
-`mise run check` is green, `mise run build:wasm` reproduces the re-pinned `verify.wasm`, the new
-certificate test proves the tier-2 WASM loader + JSON data island render for a certifiable id (and are
-absent for an uncertifiable one) without breaking the no-JS/no-CDN baseline, and the WASM shim rejects
-a non-integer `index`/`size` — wiring the first real SSR caller of the in-browser verifier and closing
-the `js.Value.Int()` truncation issue.
+`mise run check` is green, `GET /_ds/iscc-logo-black.png` returns a small build-pinned `image/png` with
+the sibling `/_ds/` ETag/304 policy, and the served `/` and hub-dossier HTML both carry
+`<img src="/_ds/iscc-logo-black.png">` beside the existing text mark — all asserted by the tests above.
