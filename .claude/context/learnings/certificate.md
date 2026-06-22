@@ -41,6 +41,20 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   the testnet fixture sb0=0/sb1=1). KISS interim; documented TODO. `registry.go` and
   `internal/config` stay untouched. The `Hub` literal needs `*uint16` HubIDs.
 
+- **Masthead identity is config-driven via `Handler(hubList, st, statuses, id dashboard.Identity)`** —
+  the SAME value `/` + dossier render (cert is the 3rd/final SSR-masthead port, byte-identical chrome; see
+  dashboard.md). Resolve ONCE at the top of `Handler` (cert-local `resolveIdentity` + `instanceFallback`/
+  `operatorFallback` literal consts, "MUST stay byte-identical" comment) and set `data.Instance/Operator`
+  on the value `buildData` RETURNS — NOT inside `buildData`, whose `certData{}` literal early-returns
+  bypass it — on BOTH the HTML AND `.bundle` branch (`serveBundle` ignores them; uniform so every honest
+  200 carries the masthead). NO Realm slot (thread only Instance/Operator). Fail-safe in the handler (not
+  main.go) → seam-testable regardless of env. **Test-collision trap:** a bare `Contains(body, "monitor
+  instance")` absence check is VACUOUS — the footer carries "issued by this monitor **instance**"
+  (cert.html:419). `TestCertificateRendersInstanceIdentity` pins the masthead element
+  `chrome-instance">monitor instance` on a malformed id (honest-200 masthead path), mutation-proven on the
+  `{{.Instance}}` binding AND `resolveIdentity` dropping the value; the operator fallback's literal `&`
+  renders `&amp;` (assert the escaped form). Oracle gate N/A (pure render; go.mod/go.sum byte-identical).
+
 - **§3 INCLUSION PROOF is gated on a fail-closed re-VERIFICATION, not a status flag.**
   `buildData` ports `serveVerify` over a `store.SQLiteFetcher`: `InclusionProofFromTiles` →
   `ReadEntryBundle` → `RecordBytesFromBundle` → `HashLeaf` → `proof.VerifyInclusion(... root) == nil`,
@@ -71,12 +85,11 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 - **§4 SIGNING KEY derives the key id from the accepted checkpoint's OWN raw bytes, not synthetically.**
   `buildData` captures `CheckpointAt`'s `raw`, recovers the key id via `logclient.KeyIDFromCheckpoint(raw)`
-  (pure stdlib+sumdb/note; reads only the BE-uint32 keyhash, does NOT verify the sig), and reads the cached
-  resolution via `store.LookupHubKey(hubID, keyID)`. `HasClause4` is set ONLY on a cache hit — a
-  `KeyIDFromCheckpoint` error or a `!found4` miss is an honest decline (no §4, no 500, no fabricated key);
-  only a real `LookupHubKey` DB fault 500s. Key id is oracle-grounded (equals the `0x40b74463` pin in
-  `logclient/checkpointkey_test.go`). Because `KeyIDFromCheckpoint` ignores the sig, the §4-happy-path test
-  threads a real signed note `Raw` while §3 callers keep `[]byte("raw")`.
+  (pure stdlib+sumdb/note; reads only the BE-uint32 keyhash, does NOT verify the sig), then `store.LookupHubKey`.
+  `HasClause4` set ONLY on a cache hit — a `KeyIDFromCheckpoint` error or `!found4` miss is an honest decline
+  (no §4, no 500); only a `LookupHubKey` DB fault 500s. Key id is oracle-grounded (`0x40b74463` pin in
+  `logclient/checkpointkey_test.go`). Since `KeyIDFromCheckpoint` ignores the sig, the §4-happy test threads a
+  real signed `Raw` while §3 callers keep `[]byte("raw")`.
   - settled: `found4` cache-hit gate pinned by `TestCertificateSigningKeyUncached` (git history).
 - **Any surface building a DID from a domain MUST `%3A`-encode the port** — a bare `host:port`
   colon makes did:web read `8443` as a path segment, naming a different did.json than the key
@@ -97,16 +110,11 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   accepted tree (`if seq >= hub.LastSize { continue }`, same boundary as §1) so a deletion above the
   accepted checkpoint is dropped; a `RecordAt` MISS lists the seq with the `kindUnknown` label, not a 500
   (only a DB fault 500s). `HasDeletion` ORs the per-row `isDeletion` for the deletion note.
-  - settled: `HasClause6`/`isDeletion` mutations pinned by `TestCertificateRecordHistory`. The mockup
-    §6 `· at` timestamp is now LANDED (advance `2a2c0f6`): `RecordAt`'s `NoteTimestamp` threads into
-    `HistoryRow.At` under the existing `if found` gate, and `cert.html` renders it CONDITIONALLY
-    (`{{if .At}} · {{.At}}{{end}}`) so a timestamp-less row carries no trailing `· ` artifact. Rendered
-    VERBATIM (RFC-3339, no parse/relativize — ADR-0008). Pinned by the full-row marker
-    `Declaration · seq N · <ts>` + the deletion-row no-trailing-`· ` assertion (mutation: dropping the
-    `{{if .At}}` makes only `TestCertificateRecordHistory` fail; declaration-only test stays green).
-    Test timestamps stay Z-suffixed UTC so no `html.UnescapeString` (a non-UTC offset's `+`→`&#43;`).
-    REMAINING (visual polish, not filed): the mockup humanizes to `2026-02-14 18:40 UTC` — deferred,
-    would introduce `time` parsing + a format policy (a deliberate step, not a free follow-up).
+  - settled: `HasClause6`/`isDeletion` + the `· <ts>` timestamp (RFC-3339 VERBATIM, conditional
+    `{{if .At}}` so no trailing `· ` on timestamp-less rows; Z-suffixed UTC test data avoids `+`→`&#43;`)
+    pinned by `TestCertificateRecordHistory` (git history). REMAINING (visual polish, not filed): the
+    mockup humanizes to `2026-02-14 18:40 UTC` — a deliberate `time`-parse + format-policy step, not a
+    free follow-up.
 
 - **§5 BITCOIN ANCHOR reads the mirrored OTS row of §2's root and classifies via `ots.ConfirmedFor`
   (DIGEST-BOUND, not the digest-agnostic `ots.Confirmed`).** Inside `HasClause2`,
@@ -119,10 +127,8 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   a parseable, digest-bound proof → `HasClause5=true` (confirmed shows `block <height>` + `UpgradedAt`
   RFC-3339; pending shows "awaiting Bitcoin confirmation"). `internal/ots` is NOT WASM-pure but certificate
   is server-side only.
-  - settled: digest-binding gap CLOSED + pinned (`TestCertificateBitcoinAnchorDigestMismatch`; the
-    confirmed/pending render tests force `acceptedRoot != tree.Hash()` so §3 declines there but stays
-    covered elsewhere; five states + oracle height 358391 mutation-proven, `internal/ots/testdata`
-    fixtures byte-identical — git history).
+  - settled: digest-binding gap CLOSED + five states pinned (`TestCertificateBitcoinAnchor*`, oracle
+    height 358391, `internal/ots/testdata` fixtures byte-identical — git history).
 
 - **COMPARISON ANCHOR is §2's `(size, root)` reframed as the monitor's own observation — a SEPARATE,
   distinctly-labelled element from §5, NOT Bitcoin.** Set `data.HasComparisonAnchor = true` inside the

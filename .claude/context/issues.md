@@ -376,27 +376,26 @@ filed it and does **not** affect priority.
 - **Spec:** `learnings/config.md` (env parsing belongs in the config leaf); CLAUDE.md "Running a local dev
   instance" env-var documentation; next.md Not-In-Scope (config move deferred to the follow-on sub-step).
 
-## Masthead identity fallback consts are duplicated across dashboard + dossier (and cert next) instead of one shared resolve leaf
+## Masthead identity fallback consts are now duplicated across dashboard + dossier + certificate (3x) instead of one shared resolve leaf
 - **Priority:** low
-- **Source:** [review] (filed alongside the dossier masthead-identity slice `413efe8`)
-- **What / where / how to verify:** The dossier masthead-identity slice copied `instanceFallback` /
-  `operatorFallback` (`internal/dossier/handler.go:97-103` const block) as LITERALS byte-identical to
-  `internal/dashboard/handler.go:113-116`, plus a private `resolveIdentity` mirroring
-  `dashboard.Identity.resolve` — because neither package can import the other's unexported consts and
-  exporting `dashboard.resolve` would have pushed the slice to a 4th prod file (over the ≤3 budget). This
-  is a documented, commented duplication (each const block carries a "MUST stay byte-identical" comment),
-  not a defect — and the slice is mutation-proven that the fallback strings match. But it means the
-  fallback copy now lives in TWO places (THREE once `internal/certificate` is wired next), so a future
-  change to the static masthead copy is a multi-site edit that can silently diverge. Fix when the
-  masthead-identity arc finishes across all surfaces: lift `Identity` + the fallback consts + a single
-  exported `Resolve` into ONE owner (the `internal/dashboard` package already owns the type, or a tiny new
-  shared leaf) that dossier/cert/proofserve all import, so the fallback exists once. Verify fixed: the
+- **Source:** [review] (filed alongside the dossier masthead-identity slice `413efe8`; updated when the cert copy landed `3c64097`)
+- **What / where / how to verify:** The masthead-identity arc has now copied `instanceFallback` /
+  `operatorFallback` + a private `resolveIdentity` into THREE packages: `internal/dashboard/handler.go:114-115`
+  (the original `Identity.resolve` owner), `internal/dossier/handler.go:107-108`, and now
+  `internal/certificate/handler.go:174-175` (advance `3c64097`). All are LITERALS byte-identical with a "MUST
+  stay byte-identical" comment, because neither package can import the other's unexported consts and exporting
+  `dashboard.resolve` would push each slice to a 4th prod file (over the ≤3 budget). This is a documented,
+  commented, mutation-proven duplication, not a defect — but a future change to the static masthead copy is now
+  a THREE-site edit (FOUR once the proofserve mastheads land) that can silently diverge. Fix when the
+  masthead-identity arc finishes across all surfaces: lift `Identity` + the fallback consts + a single exported
+  `Resolve` into ONE owner (the `internal/dashboard` package already owns the type, or a tiny new shared leaf)
+  that dossier/cert/proofserve all import, so the fallback exists once. Verify fixed: the
   `instanceFallback`/`operatorFallback` literals appear in exactly one package and every masthead resolves
-  through it; a test asserting dossier+dashboard render the SAME fallback line passes. Low — the consts are
-  currently byte-identical and the duplication is commented; this only removes the divergence risk once the
-  arc is complete.
+  through it; a test asserting dashboard+dossier+cert render the SAME fallback line passes. Low — the consts are
+  currently byte-identical and the duplication is commented; this only removes the divergence risk once the arc
+  is complete (best folded WITH the proofserve masthead slice, the natural 4th-copy trigger).
 - **Spec:** CLAUDE.md DRY ("Reduce code duplication even if refactoring requires extra effort"); next.md
-  Implementation Note (dossier-local helper chosen to stay ≤3 prod files, consolidation deferred).
+  Implementation Note (per-package helper chosen to stay ≤3 prod files, consolidation deferred).
 
 ## Stale `.chrome-identity` CSS comment in dashboard.html still says "static copy in this skeleton"
 - **Priority:** low

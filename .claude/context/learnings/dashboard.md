@@ -95,18 +95,22 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   **certificate §5** (`OTSForRoot` bound to the §2 accepted root). Do NOT "fix" the subselect to
   `o.tree_size = f.last_size` without a design pass (it would render "not anchored" for every actively-polling
   hub). Open `normal` records the design question.
-- **The dossier/dashboard/cert mastheads are byte-identical VERBATIM ports — edit all together.**
-  `dossier.html` and `dashboard.html` now share the same `.chrome-identity`/`.chrome-instance`/`.chrome-operator`
+- **All THREE SSR mastheads (dashboard/dossier/cert) are now byte-identical VERBATIM ports — edit all
+  together (a masthead change is a three-site HTML edit + three const copies).** `dashboard.html`,
+  `dossier.html`, AND `cert.html` share the same `.chrome-identity`/`.chrome-instance`/`.chrome-operator`
   CSS rule bodies AND the same `<div class="chrome-actions">` block (the two-line `chrome-identity`
-  `{{.Instance}}`/`{{.Operator}}` div + `verify ↗ monitor.iscc.codes` tier-2 link to `https://monitor.iscc.codes/`);
-  `cert.html` is the still-pending lockstep twin (`cert.html:391` still carries the static `monitor instance`
-  placeholder — the NEXT slice). Only the explanatory CSS comment differs per file (the dashboard's still says
-  "static copy in this skeleton" — now stale, flagged `low`). The dossier's tier-2 affordance is correctly the
-  cross-surface link to Surface C (`.codes`), NOT a WASM proof island (no single ISCC-ID subject). Same narrowed
-  no-CDN ban (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`/`http://`, NOT a blanket `https://`) so `monitor.iscc.codes`
-  passes; `TestDossierChromeTierTwoAndBackLink` pins all three affordances. Visual pass vs the dossier mockup:
-  masthead instance-identity region matches the mockup exactly (`monitor.iscc.id` / `instance operated by ISCC
-  Foundation · ISCC mainnet`). If you edit any masthead, mirror it in all three HTML files.
+  `{{.Instance}}`/`{{.Operator}}` div + `verify ↗ monitor.iscc.codes` tier-2 link to `https://monitor.iscc.codes/`).
+  Each handler carries its OWN private `resolveIdentity` + `instanceFallback`/`operatorFallback` const copies
+  (byte-identical literals, "MUST stay byte-identical" comment — neither package can import the other's
+  unexported consts; consolidation into one shared `Resolve` leaf is the tracked `low`, fold once proofserve
+  lands). Only the explanatory CSS comment differs per file (the dashboard's still says "static copy in this
+  skeleton" — stale, flagged `low`; the dossier+cert copies are accurate). Same narrowed no-CDN ban
+  (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`/`http://`, NOT a blanket `https://`) so `monitor.iscc.codes` passes.
+  Visual pass (cert, reviewer `3c64097`): the cert masthead renders the configured `monitor.iscc.id` /
+  `instance operated by ISCC Foundation · ISCC mainnet` right-aligned beside the logo + tier-2 link, byte-identical
+  to dashboard/dossier. STILL PENDING: the three proofserve mastheads (`browser.html`/`records.html`/`record.html`)
+  — `internal/verifier` stays EXCLUDED (its `.codes` chrome is the verifier-app identity). If you edit any
+  masthead, mirror it in all three SSR HTML files.
 - **Config-driven masthead identity LANDED on the dossier too (`Handler(st, hubID, statuses, id dashboard.Identity)`).**
   The dossier REUSES `dashboard.Identity` (imports `internal/dashboard`) rather than redefining it, but applies its
   OWN private `resolveIdentity` fail-safe + dossier-local `instanceFallback`/`operatorFallback` consts (literal

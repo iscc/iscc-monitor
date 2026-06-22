@@ -1,84 +1,81 @@
-## 2026-06-22 — Thread config-driven instance identity into the certificate masthead
+## 2026-06-22 — Review of: Thread config-driven instance identity into the certificate masthead
 
-**Done:** Made the certificate-of-inclusion masthead (`/inclusion/{iscc_id}`) render this deployment's
-configured `dashboard.Identity` (instance domain + operator/realm line) instead of the static `monitor
-instance` placeholder, completing the third (and final SSR-masthead) leg of the identity arc so the
-dashboard / dossier / certificate mastheads are now byte-identical. An unconfigured binary (a
-zero-value `Identity`) falls back to today's exact static copy.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/certificate/handler.go`: added a 4th `id dashboard.Identity` arg to `Handler`; ported the
-  `instanceFallback`/`operatorFallback` consts + `resolveIdentity` helper VERBATIM from the dossier
-  (with the "MUST stay byte-identical" comment); added `Instance`/`Operator` fields to `certData`;
-  resolve `id` once at the top of `Handler` and set the two fields on the value `buildData` RETURNS, on
-  BOTH the HTML branch and the `.bundle` branch (so every honest 200 carries the masthead regardless of
-  `buildData`'s `certData{}` literal early returns). Renamed the `.bundle` branch's local `id` to
-  `bareID` to avoid shadowing the new param.
-- `internal/certificate/cert.html`: replaced the static `<span class="chrome-instance">monitor
-  instance</span>` (line 391) with the two-line `chrome-identity` block ported byte-for-byte from
-  dashboard/dossier (`{{.Instance}}`/`{{.Operator}}`); added the `.chrome-identity` + `.chrome-operator`
-  CSS rules (rule bodies now byte-identical across all three mastheads). The certificate footer phrase
-  "issued by this monitor instance" (line 419) is untouched (pre-existing, unrelated).
-- `cmd/iscc-monitor/main.go`: forwarded the already-constructed `id` into the certificate mount
-  (`certificate.Handler(hubList, st, m, id)`); `buildMux`'s own signature is unchanged.
-- `internal/certificate/handler_test.go` (test): added `TestCertificateRendersInstanceIdentity`
-  (populated + zero-value paths, exercised on a cannot-certify/malformed id so the masthead is tested on
-  the honest-200 path); added the `dashboard` import; updated 32 existing `Handler(...)` calls for the
-  new 4th arg.
-- `internal/certificate/bundle_test.go` (test): added the `dashboard` import; updated 5 `Handler(...)`
-  calls for the new 4th arg.
+**Summary:** The advance threads `dashboard.Identity` into the certificate handler
+(`Handler(hubList, st, statuses, id)`), renders the configured instance + operator strings in the
+`/inclusion/{iscc_id}` masthead, and falls back to today's static copy on a zero-value Identity —
+completing the third (and final SSR-masthead) leg of the identity arc, byte-identical to the already-landed
+`/` and dossier mastheads. The diff is exactly the spec's 3 production files + 2 test files (additive only:
+a new mutation-proven identity test, 32 mechanical call-site updates, no gate weakening). I independently
+re-ran both mutations, the full check suite, and a live visual pass; all green.
 
-**Verification:** `mise run check` → ALL GREEN (build + vet + `go test ./...`, all 27 packages ok;
-`gofmt -l .` empty outside `cauldron/`).
-- `mise run check` green — pass.
-- `go test -count=1 -run TestCertificate ./internal/certificate` — pass (existing tests under the new
+**Verification:**
+- [x] `mise run check` green — build + vet + `go test ./...`, all 27 packages ok.
+- [x] `go test -count=1 -run TestCertificate ./internal/certificate` — pass (existing tests under the new
   4-arg signature + the new identity test).
-- `TestCertificateRendersInstanceIdentity`: populated `Identity{Instance:"monitor.example.test",
-  Operator:"operated by Example Org · example net"}` renders BOTH literals AND the masthead placeholder
-  is ABSENT; zero-value `Identity{}` renders the masthead fallback + the generic operator fallback —
-  pass.
-- Mutation A (run + reverted byte-clean): replacing `{{.Instance}}` in cert.html with the literal
-  placeholder → test FAILS. Restored.
-- Mutation B (run + reverted byte-clean): forcing `resolveIdentity` to `instance, operator = "", ""` →
-  test FAILS. Restored. Tree byte-clean, HEAD unchanged after both.
-- `go test -count=1 ./cmd/iscc-monitor` — pass (new `certificate.Handler(...,id)` signature compiles).
-- No-CDN ban intact: cert.html still contains `monitor.iscc.codes` (3x); the diff introduces no
+- [x] `go test -count=1 -v -run TestCertificateRendersInstanceIdentity ./internal/certificate` — PASS
+  (populated path: both operator strings present, masthead placeholder absent; zero-value path: fallback +
+  generic operator line render).
+- [x] `go test -count=1 ./cmd/iscc-monitor` — pass (new `certificate.Handler(...,id)` signature compiles).
+- [x] `gofmt -l .` (outside `cauldron/`) — empty.
+- [x] Mutation A (reviewer-run + reverted byte-clean): `{{.Instance}}` → literal `monitor instance` in
+  cert.html → `TestCertificateRendersInstanceIdentity` FAILS. Restored, tree clean.
+- [x] Mutation B (reviewer-run + reverted byte-clean): `resolveIdentity` forced to `instance, operator = "", ""`
+  → test FAILS. Restored, tree clean.
+- [x] No-CDN ban intact — `monitor.iscc.codes` still present (3x); the diff introduces no
   `cdn.`/`jsdelivr`/`unpkg`/`googleapis`/`http://` token.
-- Byte-identical-chrome rule verified: the `.chrome-identity`/`.chrome-instance`/`.chrome-operator` CSS
-  rule bodies AND the `chrome-actions` masthead block are now byte-identical across dashboard.html,
+- [x] Byte-identical-chrome rule verified — the `.chrome-identity`/`.chrome-operator` CSS rule bodies AND
+  the `<div class="chrome-actions">` masthead block are now byte-identical across dashboard.html,
   dossier.html, and cert.html.
-- **Oracle gate: N/A** — pure HTML render of masthead strings; no signature / RFC-6962 / Merkle /
-  did:web / fsck / proof / store path touched. `go.mod`/`go.sum`/`schema.sql` byte-identical (not in the
-  diff). Scope: exactly 3 production files + 2 test files.
+- [x] No import cycle (dashboard does not import certificate/dossier); no purity regression (certificate is
+  an HTTP handler, not a WASM-shared pure package — it already imports `net/http`).
+- [x] Quality-gate integrity scan over all unpushed commits — no `//nolint`/`t.Skip`/build-tag/swallowed
+  error/deleted assertion. All changes additive.
+- [x] **Oracle gate: N/A** — pure HTML render of masthead strings; no signature / RFC-6962 / Merkle /
+  did:web / fsck / proof / store path touched. `go.mod`/`go.sum`/`schema.sql` byte-identical (not in the diff).
 
-**Next:** The config-leaf env move — move the three identity env keys
-(`ISCC_MONITOR_INSTANCE`/`ISCC_MONITOR_OPERATOR`/`ISCC_MONITOR_REALM_NAME`) from `main.go`'s inline
-`identity()` into `internal/config`'s `optional(get, key, fallback)` leaf (ratifying the realm-name key
-name) and add them to CLAUDE.md's env table. That is a focused `config.go` + `main.go` + CLAUDE.md
-change and CLOSES the config-move `normal` issue (deliberately deferred this slice to stay ≤3 prod
-files, per next.md Not-In-Scope). After that: the proofserve mastheads (`browser.html`, `records.html`,
-`record.html`); `internal/verifier` stays EXCLUDED (its `.codes` chrome is the verifier-app identity).
-Folding `Identity` + the now-three duplicated fallback consts + one exported `Resolve` into a shared
-leaf would close the dup `low` once the arc reaches all surfaces.
+**Issues found:** (none new) The two pre-existing related issues stay open and unblocking, as next.md
+directed: the config-leaf env move (`normal`, the explicit NEXT sub-step) and the masthead-fallback-const
+duplication (`low`) — I updated the latter's title/body to record the cert copy as the 3rd duplicate (was
+"and cert next").
+
+**Codex second opinion:** Clean. Verdict: "The identity is consistently threaded into the certificate
+handler and rendered with existing fallback behavior, with call sites and tests updated. I did not identify
+any introduced correctness issue." No findings to triage; matches my independent review.
+
+**Visual check:** Built the binary and launched a fixture instance with the three identity env vars set,
+then screenshotted `/inclusion/NOTANISCCID` (the honest-200 masthead path) via `agent-browser` and read the
+PNG. The cert masthead renders the configured `monitor.iscc.id` / `instance operated by ISCC Foundation ·
+ISCC mainnet` right-aligned beside the ISCC logo + `verify ↗ monitor.iscc.codes` tier-2 link — byte-identical
+chrome to the already-verified dashboard/dossier mastheads, "CANNOT CERTIFY INCLUSION" honest state below.
+No visual deltas to file.
+
+**Next:** The config-leaf env move (the explicit NEXT sub-step, closes the open `normal`): move the three
+identity env keys (`ISCC_MONITOR_INSTANCE` / `ISCC_MONITOR_OPERATOR` / `ISCC_MONITOR_REALM_NAME`) from
+`main.go`'s inline `identity()` into `internal/config`'s `optional(get, key, fallback)` leaf (ratifying the
+realm-name key name) and add them to CLAUDE.md's env table — a focused `config.go` + `main.go` + CLAUDE.md
+change. After that: the three proofserve mastheads (`browser.html`, `records.html`, `record.html`) — the
+natural trigger to ALSO fold the now-3x duplicated `instanceFallback`/`operatorFallback` consts + a single
+exported `Resolve` into one shared leaf (closes the `low`). `internal/verifier` stays EXCLUDED (its `.codes`
+chrome is the verifier-app identity).
 
 **Notes:**
-- **Substring collision found & handled in the test:** the certificate has a pre-existing footer phrase
-  "issued by this monitor instance · verifiable cache…" (cert.html:419), so a bare
-  `strings.Contains(body, "monitor instance")` placeholder-absence check (as the dossier test uses)
-  matches the footer and is vacuous here. The new test instead pins the masthead element specifically
-  (`chrome-instance">monitor instance`) for both the negative (configured) and positive (fallback)
-  assertions — so it is non-vacuous against the masthead, not the footer. The footer phrase was left
-  untouched (out of scope; not an identity claim).
-- This is the third VERBATIM copy of the `instanceFallback`/`operatorFallback` consts + `resolveIdentity`
-  (dashboard → dossier → certificate). Commented "MUST stay byte-identical"; the consolidation into one
-  shared resolve leaf remains the tracked `low` (fold when the masthead arc finishes all surfaces).
-- The certificate masthead `.chrome-instance` CSS comment was replaced with the dossier's accurate one
-  ("config-driven from the masthead Identity"); the `.chrome-verify` comment was left as-is (the review
-  noted only the explanatory CSS comment may differ per file). The dashboard.html's stale
-  ".chrome-identity" comment ("static copy in this skeleton") is still the tracked `low` — out of scope
-  (would be a 4th prod file).
-- The unconfigured certificate masthead now renders a SECOND line (the operator fallback) it did not
-  show before — intended per the byte-identical-chrome rule (same change the dossier slice made).
-- `internal/certificate` already imports `net/http` (it is an HTTP handler, not a WASM-shared pure
-  package), so adding the `internal/dashboard` import introduces no purity regression; no import cycle
-  (dashboard does not import certificate/dossier, mirroring the dossier slice).
+- The fallback-const + `resolveIdentity` copy now lives in THREE packages (dashboard owns
+  `Identity.resolve`; dossier + cert carry byte-identical private copies with the "MUST stay byte-identical"
+  comment). A masthead-copy change is now a three-site edit (four once proofserve lands) — best consolidated
+  WITH the proofserve slice. Tracked `low`, updated this iteration.
+- Test-collision trap recorded in `learnings/certificate.md`: a bare `Contains(body, "monitor instance")`
+  placeholder-absence check is vacuous here (the cert footer at cert.html:419 carries "issued by this
+  monitor instance"). The advance correctly pinned the masthead element `chrome-instance">monitor instance`
+  instead — non-vacuous against the masthead, not the footer.
+- The operator fallback const's literal `&` renders as `&amp;` (html/template text-node escape); the test
+  correctly asserts the escaped form.
+- A transient `.gitignore` working-tree modification (additive secrets/DB ignores, NOT in the advance
+  commit, NOT in my review commit) appeared mid-review and reset itself — environmental, benign, not part of
+  this increment.
+- `learnings/certificate.md` (176 lines) and `dashboard.md` (154 lines) remain slightly over the ~150-line
+  soft cap; I net-collapsed the §4/§5/§6 settled blocks this iteration to absorb the new masthead bullet.
+  Both should be rotated harder when the masthead arc completes (the settled clause-by-clause detail is
+  git-history material).
