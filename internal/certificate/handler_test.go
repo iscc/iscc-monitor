@@ -65,6 +65,20 @@ func testnetHubList() *registry.HubList {
 	}
 }
 
+// hostPortHubList is a Hub-List whose slot 1 (the slot goldenID decodes to) resolves
+// to a host:port hub (https://localhost:8443 → domain localhost:8443). It exercises
+// the certificate's did:web port-encoding path: the resolved domain carries a port
+// colon, so the §4 DID and the bundle's hub.did must render did:web:localhost%3A8443.
+func hostPortHubList() *registry.HubList {
+	return &registry.HubList{
+		Version: 1,
+		Hubs: []registry.Hub{
+			{HubID: hubID(0), URL: "https://sb0.iscc.id", Active: true},
+			{HubID: hubID(1), URL: "https://localhost:8443", Active: true},
+		},
+	}
+}
+
 // fixtureStore opens a fresh store, registers the two testnet hubs (sb0 then sb1,
 // matching the slot order), indexes one leaf for the hub at the given domain under
 // the PRODUCTION storage form (ISCC:-prefixed, matching logclient/projection.go),
@@ -580,8 +594,18 @@ func fixtureStoreTiled(t *testing.T, indexDomain, indexedID string, seq uint64, 
 		t.Fatalf("UpsertHub sb1: %v", err)
 	}
 	target := id0
-	if indexDomain == "sb1.amlet.id" {
+	switch indexDomain {
+	case "sb0.iscc.id":
+		target = id0
+	case "sb1.amlet.id":
 		target = id1
+	default:
+		// A non-testnet indexDomain (e.g. the host:port DID fixture localhost:8443)
+		// registers its own hub so the host:port path can be exercised.
+		target, err = st.UpsertHub(ctx, indexDomain, indexDomain+"/log", "https://"+indexDomain)
+		if err != nil {
+			t.Fatalf("UpsertHub %q: %v", indexDomain, err)
+		}
 	}
 
 	// Ingest every hash tile the mirror needs, byte-accurate against the tree. Each
@@ -1072,6 +1096,82 @@ func TestCertificateSigningKeyUncached(t *testing.T) {
 	// §4 must be ABSENT — an uncached key is an honest decline, not a fabricated key.
 	if strings.Contains(body, "§4 SIGNING KEY") {
 		t.Errorf("an uncached-key hub rendered a §4 SIGNING KEY clause\n%s", body)
+	}
+}
+
+// TestCertificateSigningKeyDIDPortEncoded is the §4 did:web port-encoding test: a hub
+// resolved to a host:port domain (localhost:8443) must render its §4 SIGNING KEY DID
+// as did:web:localhost%3A8443 — the port colon percent-encoded — so the DID denotes
+// the same host the key resolved from (didweb.DocumentURL reads a bare colon as a
+// path-segment boundary). The malformed did:web:localhost:8443 (host localhost, path
+// 8443) must NOT appear.
+//
+// Mutation (non-vacuity): reverting didWeb at the §4 site to "did:web:" + data.Domain
+// makes this test FAIL — the rendered DID would be did:web:localhost:8443.
+func TestCertificateSigningKeyDIDPortEncoded(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
+	st, _ := fixtureStoreTiled(t, "localhost:8443", goldenID, seq, leaves, nil, false, raw)
+
+	// Seed the cached did:web key keyed on the SAME key id the live checkpoint carries,
+	// so §4 renders its DID for the host:port hub.
+	if err := st.RecordHubKey(context.Background(), store.HubKey{
+		HubID:      hubIDForDomain(t, st, "localhost:8443"),
+		KeyID:      sb0CheckpointKeyID,
+		PubkeyRaw:  make([]byte, 32),
+		PubkeyZ:    "z6MktestKeyMultibaseValue000000000000000000000",
+		ResolvedAt: time.Unix(1700000000, 0),
+	}); err != nil {
+		t.Fatalf("RecordHubKey: %v", err)
+	}
+
+	h := Handler(hostPortHubList(), st, nil)
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := html.UnescapeString(rec.Body.String())
+
+	if !strings.Contains(body, "§4 SIGNING KEY") {
+		t.Fatalf("body missing §4 SIGNING KEY clause for the host:port hub\n%s", body)
+	}
+	if want := "did:web:localhost%3A8443"; !strings.Contains(body, want) {
+		t.Errorf("§4 DID missing the port-encoded form %q\n%s", want, body)
+	}
+	// The unencoded form denotes a different host (localhost, path 8443) — it must not render.
+	if bad := "did:web:localhost:8443"; strings.Contains(body, bad) {
+		t.Errorf("§4 DID rendered the unencoded host:port form %q (the port colon must be %%3A-encoded)\n%s", bad, body)
+	}
+}
+
+// TestCertificateSigningKeyDIDCleanDomain is the §4 no-port regression: a clean
+// domain (sb1.amlet.id, no colon) must still render did:web:sb1.amlet.id exactly,
+// with no spurious encoding — didWeb replaces only a port colon, leaving a no-port
+// domain byte-identical to the prior "did:web:" + Domain behavior.
+func TestCertificateSigningKeyDIDCleanDomain(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
+	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, raw)
+	if err := st.RecordHubKey(context.Background(), store.HubKey{
+		HubID:      hubIDForDomain(t, st, "sb1.amlet.id"),
+		KeyID:      sb0CheckpointKeyID,
+		PubkeyRaw:  make([]byte, 32),
+		PubkeyZ:    "z6MktestKeyMultibaseValue000000000000000000000",
+		ResolvedAt: time.Unix(1700000000, 0),
+	}); err != nil {
+		t.Fatalf("RecordHubKey: %v", err)
+	}
+
+	h := Handler(testnetHubList(), st, nil)
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := html.UnescapeString(rec.Body.String())
+	if want := "did:web:sb1.amlet.id"; !strings.Contains(body, want) {
+		t.Errorf("§4 DID for a clean domain = missing %q (no-port domain must round-trip unchanged)\n%s", want, body)
 	}
 }
 

@@ -106,6 +106,17 @@ import (
 // handler and derives the path in one place.
 const PathPrefix = "/inclusion/"
 
+// didWeb builds a hub's did:web identifier from its domain, percent-encoding the
+// port colon (host:port -> did:web:host%3Aport) so the DID denotes the same host
+// the signing key was resolved from. did:web reads a bare colon as a path-segment
+// boundary, so an unencoded host:port would name a different did.json than
+// didweb.DocumentURL fetches; replacing only the FIRST colon leaves a clean,
+// no-port domain (e.g. sb0.iscc.id) byte-identical. It mirrors the resolver's
+// idiom (internal/didweb uses strings.Replace(host, ":", "%3A", 1)).
+func didWeb(domain string) string {
+	return "did:web:" + strings.Replace(domain, ":", "%3A", 1)
+}
+
 // pageTemplate is the embedded certificate template, parsed once at package init so
 // a malformed template fails the build, not a request.
 //
@@ -258,9 +269,9 @@ type certData struct {
 	// through a JSON data island (never string-interpolated into executable JS).
 	RecordB64 string
 
-	// SigningKeyDID is the hub's did:web identifier ("did:web:" + Domain), the §4
-	// SIGNING KEY clause subject (ADR-0009: domain ownership is identity). Meaningful
-	// only when HasClause4.
+	// SigningKeyDID is the hub's did:web identifier (didWeb(Domain): "did:web:" +
+	// the domain with its port colon %3A-encoded), the §4 SIGNING KEY clause subject
+	// (ADR-0009: domain ownership is identity). Meaningful only when HasClause4.
 	SigningKeyDID string
 	// SigningKeyID is the BE-uint32 signed-note keyhash of the key that signed the §2
 	// accepted checkpoint, hex-formatted (%08x, matching how the codebase prints key
@@ -408,7 +419,8 @@ type bundleKey struct {
 }
 
 // bundleHub is the proof bundle's hub member: the resolved domain and its did:web
-// identifier ("did:web:" + domain). A client uses the DID to resolve the signing key.
+// identifier (didWeb(domain): "did:web:" + the domain with its port colon
+// %3A-encoded). A client uses the DID to resolve the signing key.
 type bundleHub struct {
 	Domain string `json:"domain"`
 	DID    string `json:"did"`
@@ -550,7 +562,7 @@ func serveBundle(w http.ResponseWriter, data certData, arts bundleArtifacts) {
 		IsccID: data.IsccID,
 		Hub: bundleHub{
 			Domain: data.Domain,
-			DID:    "did:web:" + data.Domain,
+			DID:    didWeb(data.Domain),
 		},
 		Checkpoint: string(arts.raw),
 		Inclusion: logclient.InclusionEvidence{
@@ -871,7 +883,7 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 				return certData{}, arts, http.StatusInternalServerError
 			}
 			if found4 {
-				data.SigningKeyDID = "did:web:" + data.Domain
+				data.SigningKeyDID = didWeb(data.Domain)
 				data.SigningKeyID = fmt.Sprintf("%08x", keyID)
 				data.SigningKeyMultibase = key.PubkeyZ
 				if !key.Revoked.IsZero() {

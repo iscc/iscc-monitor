@@ -154,6 +154,37 @@ func TestCertificateProofBundle(t *testing.T) {
 	}
 }
 
+// TestCertificateProofBundleDIDPortEncoded asserts the proof bundle's hub.did
+// percent-encodes a host:port hub's port colon: a hub resolved to localhost:8443
+// serves a bundle whose Hub.DID is did:web:localhost%3A8443 (NOT the malformed
+// did:web:localhost:8443, which would name a different did.json than the key
+// resolved from), while hub.domain stays the verbatim localhost:8443. A no-port
+// hub's bundle DID is regression-covered by TestCertificateProofBundle
+// (did:web:sb1.amlet.id).
+//
+// Mutation (non-vacuity): reverting didWeb at the bundle site to "did:web:" +
+// data.Domain makes this test FAIL — the bundle DID would be did:web:localhost:8443.
+func TestCertificateProofBundleDIDPortEncoded(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
+	st, _ := fixtureStoreTiled(t, "localhost:8443", goldenID, seq, leaves, nil, false, raw)
+
+	h := Handler(hostPortHubList(), st, nil)
+	rec := get(t, h, goldenID+bundleSuffix)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	bundle := decodeBundle(t, rec.Body.Bytes())
+
+	if bundle.Hub.Domain != "localhost:8443" {
+		t.Errorf("bundle hub.domain = %q, want localhost:8443 (verbatim, not encoded)", bundle.Hub.Domain)
+	}
+	if want := "did:web:localhost%3A8443"; bundle.Hub.DID != want {
+		t.Errorf("bundle hub.did = %q, want %q (the port colon must be %%3A-encoded)", bundle.Hub.DID, want)
+	}
+}
+
 // TestCertificateProofBundleLinkRendered asserts the certificate HTML page wires the
 // download action: a certifiable id renders an enabled <a href="…bundle"> download
 // link (not the disabled placeholder), and a non-certifiable id keeps the disabled
