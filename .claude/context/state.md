@@ -1,17 +1,16 @@
-<!-- assessed-at: 2bf66a8bb056ffbb307be3563189b6ecfe8f3e72 -->
+<!-- assessed-at: 381764d2c884f06ef0b7250360d1bd6b8bada3c5 -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: M-UI (Evidence Ledger frontend, ADR-0010) — stack now on the locked Go 1.26 + iscc-lib v0.5.0 (ADR-0011 closed, TARGET/CODE gap eliminated). Remaining M-UI tail: §5 BITCOIN ANCHOR (OTS-blocked), the anchor panels, the WASM verifier, OTS anchoring, and the mandatory M-UI visual-exit gate.
+## Phase: M-UI tail + OTS milestone. The OTS store CRUD seam (`internal/store/ots.go`) landed and was reviewed PASS, the first concrete step toward Bitcoin anchoring. Remaining v1 work: the OTS stamp pass + upgrade loop + `.ots` route (which then unblocks certificate §5 BITCOIN ANCHOR), the WASM verifier, the anchor panels, and the mandatory M-UI visual-exit gate.
 
-The ADR-0011 stack increment landed and was reviewed PASS: `go.mod` is now `go 1.26.1` with a pinned
-`github.com/iscc/iscc-lib/packages/go v0.5.0` require, mirrored across `mise.toml` (`go = "1.26"`),
-`ci.yml` (`go-version: "1.26"`), and the devcontainer Dockerfile — closing the long-standing
-TARGET/CODE stack mismatch. The certificate of inclusion still has five of six clauses sound (§1, §2,
-§3, §4, §6) plus a working downloadable proof bundle; §5 BITCOIN ANCHOR remains blocked on the absent
-OTS store seam. M1/M2/M3 remain fully met.
+The OTS store seam is the active increment: `internal/store/ots.go` adds typed CRUD
+(`RecordOTS`/`OTSForRoot`/`PendingOTS`/`MarkOTSUpgraded`) over the already-present `ots` schema table,
+porting the checkpoint family's exact idioms. It is store-only — not yet wired into the follower, no
+HTTP route, no `opentimestamps` dependency — so certificate §5 stays deliberately unrendered. M1/M2/M3
+remain fully met; the ADR-0011 Go 1.26 + iscc-lib v0.5.0 stack increment is closed and CI-confirmed.
 
 ## Convergence
 - **Remaining Verify criteria:**
@@ -24,41 +23,43 @@ OTS store seam. M1/M2/M3 remain fully met.
     `(realm, hub_id) → domain` Hub-List resolver (`internal/registry`); certificate **§1 SUBJECT +
     §2 CHECKPOINT + §3 INCLUSION PROOF + §4 SIGNING KEY + §6 RECORD HISTORY** (all sound); the
     proof-bundle **endpoint** (`.bundle`, gated on §3 re-verification, oracle-cross-checked) **and its
-    download LINK** (canonical path-rooted `BundleHref`, both id forms — critical closed at `34e189e`).
-    **Open:** certificate **§5 BITCOIN ANCHOR** (`HasClause5` deliberately false until the OTS seam
-    exists); the separate **Bitcoin-anchor vs comparison-anchor** panels; and the mandatory **M-UI exit
-    visual-pass + human sign-off** (ADR-0012 agent-browser).
-  - **WASM verifier: 1/1 open** (re-verified not started — no `internal/proof` package, no `syscall/js`
-    in any source file).
-  - **OTS anchoring: 1/1 open** (re-verified not started — `opentimestamps` absent from `go.mod`). §5 of
-    the certificate is its downstream consumer, so OTS gates the last certificate clause too.
-- **Last ~10 iterations: ~7 milestone-Verify-advancing / ~3 refactor·foundational·gate.** The recent arc
-  built the certificate clause-by-clause (cert §3 fail-close → §6 → proof-bundle endpoint → #ZgotmplZ
-  link fix → ADR-0011 stack bump). The latest increment (ADR-0011) is foundational config, not feature
-  drift: it closes a target-mandated stack gap that was filed as a `normal` issue and is a prerequisite
-  for the iscc-lib codec reuse the target locks. No drift — the remaining work (§5 / OTS / WASM / visual
-  exit gate) is the genuinely large, partly-blocked tail, not avoidable polish.
+    download LINK** (canonical path-rooted `BundleHref`, both id forms). **Open:** certificate **§5
+    BITCOIN ANCHOR** (`HasClause5` deliberately false until the OTS path is wired end-to-end); the
+    separate **Bitcoin-anchor vs comparison-anchor** panels; and the mandatory **M-UI exit visual-pass +
+    human sign-off** (ADR-0012 agent-browser).
+  - **WASM verifier: 1/1 open** (not started — no `internal/proof` package, no `syscall/js` in any
+    source file).
+  - **OTS anchoring: 1/1 open — first sub-step landed.** The `ots`-table CRUD store seam exists and is
+    reviewed PASS, but the milestone's Verify ("a stamped root upgrades to Bitcoin-confirmed and the
+    served `.ots` verifies with the standard `ots` client") needs the stamp pass + upgrade loop + `.ots`
+    route + the `nbd-wtf/opentimestamps` dependency, none of which exist yet. Still 1/1 open; the seam is
+    necessary plumbing, not a closed criterion. §5 of the certificate is its downstream consumer.
+- **Last ~10 iterations: ~6 milestone-Verify-advancing / ~4 refactor·foundational·plumbing.** Recent
+  arc: cert §3 fail-close → §6 → proof-bundle endpoint → #ZgotmplZ link fix → ADR-0011 stack bump →
+  **OTS store CRUD seam**. The last two increments (stack bump, OTS store seam) are foundational/plumbing
+  rather than direct Verify-closures, but both are target-mandated prerequisites (the stack gap was a
+  filed `normal` issue; the OTS table is the only path to §5 + the OTS milestone), not avoidable polish.
+  No drift — the remaining tail (OTS stamp/upgrade/route → §5, WASM, anchor panels, visual exit) is the
+  genuinely large, partly-blocked remainder.
 
 ## M1 — Read-only Monitor
-**Status**: **met** — carried forward. The `34e189e..HEAD` diff touched ONLY build config (`go.mod`,
-`go.sum`, `mise.toml`, `.devcontainer/Dockerfile`, `.github/workflows/ci.yml`), one new test file
-(`internal/index/iscclib_tripwire_test.go`), and `.claude/*` context — **no M1 source touched.** All M1
-Verify criteria remain satisfied: `origin`/`vkey` golden; all three triggers (fork/shrink/equivocation)
-golden-tested end-to-end with freeze + alert-once + restart survival; coverage tracked; structured logs;
-`/metrics` over HTTP.
+**Status**: **met** — carried forward. The `2bf66a8..HEAD` diff touched ONLY `internal/store/ots.go` +
+`internal/store/ots_test.go` and `.claude/*` context — **no M1 source touched** (`schema.sql`, `go.mod`,
+`go.sum` byte-unchanged, verified empty diff). All M1 Verify criteria remain satisfied: `origin`/`vkey`
+golden; all three triggers (fork/shrink/equivocation) golden-tested end-to-end with freeze + alert-once
++ restart survival; coverage tracked; structured logs; `/metrics` over HTTP.
 - **Packages present (re-verified)**: `cmd/{iscc-monitor,notecheck}`; **20 internal packages** —
   `badge, certificate, config, corsmw, dashboard, didweb, dossier, follower, healthz, index, logclient,
-  metrics, metricshttp, proofserve, registry, store, tiles, tilesserve, web`. Module
-  `github.com/iscc/iscc-monitor`, **now `go 1.26.1`** (no explicit `toolchain` line; CI `setup-go`
-  resolves the latest 1.26 patch).
+  metrics, metricshttp, proofserve, registry, store, tiles, tilesserve, web` (unchanged — no new package
+  this iteration). Module `github.com/iscc/iscc-monitor`, `go 1.26.1`.
 - **Reuse imports wired** (carried forward): `golang.org/x/mod/sumdb/note`, `modernc.org/sqlite`,
   `transparency-dev/merkle` (`rfc6962`, `proof.Inclusion`+`Consistency`+`VerifyInclusion`),
   `transparency-dev/tessera` (`api`, `api/layout`, both proof builders, `leafhasher`, `fsck`, `client`),
-  `transparency-dev/formats` (`cmd/notecheck`), `gopkg.in/yaml.v3` (Hub-List parser). **Newly wired:**
-  `github.com/iscc/iscc-lib/packages/go v0.5.0` — present as a live require (`go.sum` has 2 iscc-lib
-  entries) but **test-only** in the build closure: the production decoder leaf `internal/index/iscc.go`
-  does NOT import it (verified empty grep), held by the carve-out (ADR-0011) + the tripwire test. **Not
-  wired:** `nbd-wtf/opentimestamps`.
+  `transparency-dev/formats` (`cmd/notecheck`), `gopkg.in/yaml.v3` (Hub-List parser),
+  `github.com/iscc/iscc-lib/packages/go v0.5.0` (test-only in the build closure; production
+  `internal/index` leaf stays iscc-lib-free under the ADR-0011 carve-out + tripwire test). **Not
+  wired:** `nbd-wtf/opentimestamps` (the OTS store seam stores opaque `ots_bytes` BLOBs only — no
+  calendar/Bitcoin code yet).
 
 ## M2 — Aggregator
 **Status**: **met** — carried forward; no M2 source touched. Both Verify criteria remain exercised:
@@ -76,21 +77,14 @@ ETag/Cache-Control on size-dependent proof surfaces (the `/_ds/` static assets D
 strong ETag + 304).
 
 ## M-UI — Evidence Ledger frontend
-**Status**: **in progress — carried forward (no M-UI source in the diff); proof-bundle endpoint +
-download link both landed and verified; §5 + anchor panels + visual-exit gate remain.** §1 SUBJECT,
-§2 CHECKPOINT, §3 INCLUSION PROOF, §4 SIGNING KEY, and §6 RECORD HISTORY are all sound. Badge, DS shell,
-`/` index, `/<domain>/log/` browser, hub dossier, frozen Exhibit, record list, single-record page, the
-ISCC-IDv1 decoder, and the Hub-List resolver are all built and verified.
-- **§3 INCLUSION PROOF (verified):** builds the RFC-6962 proof of `data.Position` against `hub.LastSize`
-  over a `SQLiteFetcher`, gates `HasClause3` on `proof.VerifyInclusion(...) == nil` against the §2
-  accepted root. Fails closed; mutation-proven.
-- **Proof-bundle ENDPOINT + download LINK (verified, critical closed at `34e189e`):** `serveBundle`
-  writes a self-contained `{checkpoint, inclusion, record, key}` JSON gated on the same §3
-  re-verification; `cert.html` links a canonical path-rooted `BundleHref` working for both the bare and
-  the `ISCC:`-prefixed request forms. Both mutation-proven.
-- **Still open on the M-UI Verify bar:** clause **§5 BITCOIN ANCHOR** (`HasClause5` deliberately false;
-  BLOCKED on a non-existent OTS/anchor store seam); the separate **Bitcoin-anchor vs comparison-anchor**
-  panels; and the **mandatory M-UI exit visual-pass + human sign-off** (ADR-0012).
+**Status**: **in progress — carried forward (no M-UI source in the diff).** §1 SUBJECT, §2 CHECKPOINT,
+§3 INCLUSION PROOF, §4 SIGNING KEY, and §6 RECORD HISTORY are all sound. Badge, DS shell, `/` index,
+`/<domain>/log/` browser, hub dossier, frozen Exhibit, record list, single-record page, the ISCC-IDv1
+decoder, the Hub-List resolver, and the proof-bundle endpoint + download link are all built and verified.
+- **Still open on the M-UI Verify bar:** clause **§5 BITCOIN ANCHOR** (`HasClause5` deliberately false —
+  now has its store backing via the OTS seam but no live anchor data path: stamp pass + upgrade loop +
+  `.ots` route + the `opentimestamps` dependency are all absent); the separate **Bitcoin-anchor vs
+  comparison-anchor** panels; and the **mandatory M-UI exit visual-pass + human sign-off** (ADR-0012).
 - **Residual notes (filed `normal`, NOT fixed):**
   - `did:web:` + raw `data.Domain` rides TWO surfaces (§4 AND the bundle), mis-rendering a `host:port`
     hub's DID. Not exploitable on the clean testnet realm. Fix BOTH sites together (`%3A`-encode the
@@ -101,48 +95,58 @@ ISCC-IDv1 decoder, and the Hub-List resolver are all built and verified.
     timestamp column; a store/projection schema change, larger than the clause. Cosmetic.
 
 ## WASM verifier · OTS anchoring
-**Status**: **not started** (re-verified). `opentimestamps` not in `go.mod`/`go.sum` or source; no
-`internal/proof` package; no WASM build target (`syscall/js` not in any source file). The
-`internal/badge`, `internal/web`, `internal/metrics`, `internal/index`, and `internal/registry` leaves
-are WASM-shareable primitives the verifier app will reuse (the production `internal/index` leaf is
-confirmed WASM-buildable + iscc-lib-free), but the verifier itself does not exist. OTS is the upstream
-blocker for certificate §5.
+**Status**: **OTS — first sub-step landed (store CRUD seam, reviewed PASS); WASM — not started.**
+- **OTS:** `internal/store/ots.go` adds the typed `ots`-table CRUD seam —
+  `RecordOTS` (DO-NOTHING dedupe on `(hub, tree_size, root)`), `OTSForRoot` (ErrNoRows→miss read),
+  `PendingOTS` (oldest-first pending list), `MarkOTSUpgraded` (pending → confirmed) — over the
+  pre-existing `ots` schema table, with 7 tests (`internal/store/ots_test.go`), all mutation-proven
+  per the review verdict. The store stays a `net/http`-free leaf (verified: empty `net/http` in
+  `go list -deps ./internal/store`). The `Attempts`/`NextRetry` columns are persisted + round-tripped
+  but no method increments them yet (correctly deferred to the upgrade loop's retry policy). **Not yet
+  built:** the daily stamp pass (write through `RecordOTS` for each distinct accepted root, never
+  blocking the follower), the background upgrade loop (`PendingOTS` → `nbd-wtf/opentimestamps` calendar
+  → `MarkOTSUpgraded`), the `.ots` HTTP route, and certificate §5. The milestone Verify (stamped root
+  upgrades to Bitcoin-confirmed + served `.ots` verifies with the standard `ots` client) is still 1/1
+  open.
+- **WASM:** not started. No `internal/proof` package; no WASM build target (`syscall/js` not in any
+  source file). The `internal/badge`, `internal/web`, `internal/metrics`, `internal/index`, and
+  `internal/registry` leaves are WASM-shareable primitives the verifier app will reuse, but the verifier
+  itself does not exist.
 
 ## Quality gates
-**Status**: **GREEN at HEAD per the review verdict; CI run for HEAD still in progress.** HEAD
-(`2bf66a8`) is the ADR-0011 review commit, in sync with `origin/develop` (0 ahead, 0 behind). The
-latest `review` verdict (`2bf66a8`) is **PASS / CONTINUE** with `mise run check` green under Go 1.26.1
-(all 21 packages `ok`), the oracle gate N/A (dependency + tripwire test, no crypto path touched), and
-Codex clean.
-- `go.mod` present (`module github.com/iscc/iscc-monitor`, **`go 1.26.1`** + the iscc-lib v0.5.0
-  require); `mise run check` runnable.
+**Status**: **GREEN at HEAD — review PASS + CI confirmed success.** HEAD (`381764d`) is the OTS-seam
+review commit, in sync with `origin/develop` (0 ahead, 0 behind).
+- `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.26.1` + the iscc-lib v0.5.0 require);
+  `mise run check` runnable.
+- The latest `review` verdict (`381764d`) is **PASS / CONTINUE**: `mise run check` green (all 21
+  packages `ok`), 3 mutations proven non-vacuous, store leaf preserved, oracle gate correctly N/A
+  (opaque-BLOB round-trip + plain CRUD, no crypto path), Codex clean.
 - **CI**: `.github/workflows/ci.yml` runs the inlined `mise run check` gate + the `cmd/notecheck` oracle
-  shell-out on push/PR, now pinned to `go-version: "1.26"`. Remote `origin` =
-  `github.com/iscc/iscc-monitor.git`, branch `develop`. **Latest CI run on HEAD (`2bf66a8`) is
-  `in_progress`** (first run exercising the Go 1.26 toolchain provisioning + the three new transitive
-  deps under `CGO_ENABLED=0`); the prior run at `34e189e` concluded `success`. Watch this run conclude
-  before treating CI as confirmed-green at the new toolchain.
-- **TARGET/CODE GAP: CLOSED.** `target.md` "Stack (locked)" mandated Go 1.26 + iscc-lib v0.5.0; the
-  code now matches on all four config surfaces. The previously-open foundational `normal` issue was
-  resolved and deleted by review.
+  shell-out on push/PR, pinned to `go-version: "1.26"`. Remote `origin` =
+  `github.com/iscc/iscc-monitor.git`, branch `develop`. **Latest CI run on HEAD (`381764d`) concluded
+  `success`** (run 27922172138) — this also confirms the Go 1.26 toolchain provisioning + the iscc-lib
+  transitive deps build clean under `CGO_ENABLED=0`, resolving the prior iteration's in-progress
+  uncertainty. The prior run at `2bf66a8` also concluded `success`.
 - **Open issues: 0 `critical`, 3 `normal`, 6 `low`.** The 3 `normal`: (a) Hub-List `hubDomain`
   `ForceQuery` fail-open; (b) §4 AND bundle `did:web:` + raw domain mis-render a `host:port` hub's DID
   (2 surfaces); (c) §6 RECORD HISTORY omits the per-record `· at` timestamp. The 6 `low` are
   loop-skipped.
 
 ## Next Milestone
-**M1/M2/M3 met; M-UI is the active milestone; the ADR-0011 stack prerequisite is now satisfied.** The
-next `define-next`/`advance` should pick from:
+**M1/M2/M3 met; M-UI + OTS are the active milestones. The OTS store seam is in place — the next
+increment builds on it.** Per the review's stated roadmap, pick from:
 
-1. **OTS / Bitcoin anchoring** — build the anchor store seam + stamp/upgrade loop, which then
-   **unblocks certificate §5 BITCOIN ANCHOR** and the Bitcoin-anchor panel. §5 cannot be honestly
-   rendered until this exists. Fold in the deferred `host:port` DID-encoding fix (both §4 and bundle
-   sites) when handler.go is next touched.
-2. **WASM verifier** remains a v1 milestone (1/1 Verify open) — `internal/proof/verify` →
-   `GOOS=js GOARCH=wasm` plus the `monitor.iscc.codes` Independent Verification app. The stack bump just
-   landed makes the iscc-lib codec available where generic ISO-24138 codec work is needed.
-3. **M-UI exit gate (ADR-0012):** before M-UI is DONE, every SSR surface must pass the agent-browser
+1. **OTS daily stamp pass** — write through `RecordOTS` for each distinct accepted root without blocking
+   the follower poll ("OTS never blocks the follower"). This is the immediate next sub-step and needs no
+   new external dependency.
+2. **OTS upgrade loop** — read `PendingOTS`, pull in `nbd-wtf/opentimestamps` + calendar HTTP, mark via
+   `MarkOTSUpgraded` once Bitcoin-confirmed, exercising the `Attempts`/`NextRetry` retry policy. Then the
+   `.ots` HTTP route and certificate **§5 BITCOIN ANCHOR** (`HasClause5`, reading `OTSForRoot`) — which
+   unblocks the last open certificate clause and the Bitcoin-anchor panel.
+3. **WASM verifier** (1/1 Verify open) — `internal/proof/verify` → `GOOS=js GOARCH=wasm` plus the
+   `monitor.iscc.codes` Independent Verification app.
+4. **M-UI exit gate (ADR-0012):** before M-UI is DONE, every SSR surface must pass the agent-browser
    visual pass with deviations filed and a human sign-off.
 
-If the in-progress CI run at `2bf66a8` fails on Go 1.26 toolchain provisioning, fixing CI preempts all
-feature work.
+Fold in the deferred `host:port` DID-encoding fix (both §4 and bundle sites) when handler.go is next
+touched. CI is confirmed green, so feature work proceeds.
