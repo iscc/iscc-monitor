@@ -45,6 +45,13 @@ The monitor is a single binary (`cmd/iscc-monitor`) configured entirely through 
 - `ISCC_MONITOR_FROZEN` (optional, default `1h`) — frozen-hub evidence-only re-poll interval; must be
   `>= NORMAL` (the freeze back-off, ADR-0006).
 - `ISCC_MONITOR_ADDR` (optional, default `:9464`) — HTTP listen address.
+- `ISCC_MONITOR_INSTANCE` (optional) — this instance's domain, rendered on the server-rendered
+  masthead. Empty falls back to the static placeholder copy.
+- `ISCC_MONITOR_OPERATOR` (optional) — the operator/realm line beneath the instance on the masthead.
+  Empty falls back to the static placeholder copy.
+- `ISCC_MONITOR_REALM_NAME` (optional) — the human realm NAME (e.g. `ISCC mainnet`) shown in the ledger
+  subtitle. Distinct from the required realm-document PATH `ISCC_MONITOR_REALM`: this is the display
+  name, not the on-disk file, so overloading the path var would leak a filename into the subtitle.
 
 Run it against the testnet realm with a short poll cadence:
 

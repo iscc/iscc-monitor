@@ -147,7 +147,7 @@ func run() error {
 	hubList := hubListFromEntries(entries)
 
 	m := metrics.New()
-	go serveMetrics(ctx, cfg.Addr, st, routes, hubList, m, identity(), logger)
+	go serveMetrics(ctx, cfg.Addr, st, routes, hubList, m, identity(cfg), logger)
 	go runOTSLoop(ctx, st, stampFunc(), otsclient.NewUpgrader(), logger)
 
 	loop := &follower.Loop{
@@ -278,33 +278,17 @@ func buildMux(st *store.Store, routes []hubRoute, hubList *registry.HubList, m *
 	return corsmw.Handler(mux)
 }
 
-// Instance-identity environment keys: the operator-supplied values rendered on the
-// masthead so the served "/" page is honest per-deployment. They are read inline
-// here (not in internal/config) for now; the follow-on sub-step that threads
-// identity to the remaining surfaces moves them into the config leaf. An unset key
-// leaves the field empty and the dashboard applies its own fail-safe default.
-//
-// keyRealmName is deliberately distinct from internal/config's existing required
-// ISCC_MONITOR_REALM (the realm-document filesystem PATH): the masthead needs the
-// human realm NAME ("ISCC mainnet"), not the on-disk path, so overloading the path
-// var would leak a filename into the ledger subtitle. The name var is optional and
-// falls back to the bare "Realm register" subtitle when unset.
-const (
-	keyInstance  = "ISCC_MONITOR_INSTANCE"
-	keyOperator  = "ISCC_MONITOR_OPERATOR"
-	keyRealmName = "ISCC_MONITOR_REALM_NAME"
-)
-
-// identity builds the dashboard's instance identity from the optional
-// ISCC_MONITOR_INSTANCE / ISCC_MONITOR_OPERATOR / ISCC_MONITOR_REALM_NAME
-// environment variables. Unset keys stay empty strings, which dashboard.Handler
-// renders as its static fallback masthead, so an unconfigured binary is honest
-// rather than asserting a false instance.
-func identity() dashboard.Identity {
+// identity builds the dashboard's instance identity from the validated config's
+// optional masthead-identity strings. Unset keys leave the Config fields empty,
+// which each masthead handler renders as its static fallback, so an unconfigured
+// binary is honest rather than asserting a false instance. RealmName feeds the
+// dashboard's Realm subtitle (the human realm name, distinct from the realm-
+// document path).
+func identity(cfg config.Config) dashboard.Identity {
 	return dashboard.Identity{
-		Instance: os.Getenv(keyInstance),
-		Operator: os.Getenv(keyOperator),
-		Realm:    os.Getenv(keyRealmName),
+		Instance: cfg.Instance,
+		Operator: cfg.Operator,
+		Realm:    cfg.RealmName,
 	}
 }
 

@@ -1,81 +1,67 @@
-## 2026-06-22 — Review of: Thread config-driven instance identity into the certificate masthead
+## 2026-06-22 — Move the three instance-identity env keys into the `internal/config` leaf
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Moved the three optional masthead-identity env keys (`ISCC_MONITOR_INSTANCE` /
+`ISCC_MONITOR_OPERATOR` / `ISCC_MONITOR_REALM_NAME`) out of `main.go`'s inline `os.Getenv`-based
+`identity()` and into `internal/config` as typed `Config.Instance`/`Operator`/`RealmName` fields read
+through the existing no-validation `optional(get, key, "")` helper; `main.go`'s `identity` is now
+`identity(cfg config.Config) dashboard.Identity`, and CLAUDE.md documents all three keys with the
+realm-name-vs-path distinction. `internal/config` stays a pure leaf (still imports exactly `{fmt time}`).
 
-**Summary:** The advance threads `dashboard.Identity` into the certificate handler
-(`Handler(hubList, st, statuses, id)`), renders the configured instance + operator strings in the
-`/inclusion/{iscc_id}` masthead, and falls back to today's static copy on a zero-value Identity —
-completing the third (and final SSR-masthead) leg of the identity arc, byte-identical to the already-landed
-`/` and dossier mastheads. The diff is exactly the spec's 3 production files + 2 test files (additive only:
-a new mutation-proven identity test, 32 mechanical call-site updates, no gate weakening). I independently
-re-ran both mutations, the full check suite, and a live visual pass; all green.
+**Files changed:**
+- `internal/config/config.go`: added `keyInstance`/`keyOperator`/`keyRealmName` const block (with the
+  realm-name-vs-path rationale ported from main.go), three `string` fields on `Config`, three
+  `optional(get, key, "")` reads in `Load`; updated the package doc + `Config` struct doc to list the
+  three optional keys.
+- `cmd/iscc-monitor/main.go`: deleted the inline identity const block + `os.Getenv`-based `identity()`
+  body; `identity(cfg config.Config)` now builds `dashboard.Identity` from `cfg.Instance/Operator/
+  RealmName`; its single caller at the `serveMetrics` goroutine launch passes `cfg`. `os` stays imported
+  (still used for `os.ReadFile`/`os.LookupEnv`/`os.Exit`/`os.Stderr`).
+- `internal/config/config_test.go`: `TestLoadGolden` now sets + asserts all three identity keys
+  (full round-trip); `TestLoadDefaults` asserts the three fields are `""` when absent; added two
+  partial-set `TestLoad` table cases (instance-only, realm-name-only) so per-field independence is
+  non-vacuous; updated the test-file doc comment.
+- `CLAUDE.md`: added the three keys to the "Running a local dev instance" env-var bullet list, each
+  `(optional)`, with the `ISCC_MONITOR_REALM_NAME` = human NAME vs `ISCC_MONITOR_REALM` = realm-document
+  PATH distinction.
 
-**Verification:**
-- [x] `mise run check` green — build + vet + `go test ./...`, all 27 packages ok.
-- [x] `go test -count=1 -run TestCertificate ./internal/certificate` — pass (existing tests under the new
-  4-arg signature + the new identity test).
-- [x] `go test -count=1 -v -run TestCertificateRendersInstanceIdentity ./internal/certificate` — PASS
-  (populated path: both operator strings present, masthead placeholder absent; zero-value path: fallback +
-  generic operator line render).
-- [x] `go test -count=1 ./cmd/iscc-monitor` — pass (new `certificate.Handler(...,id)` signature compiles).
-- [x] `gofmt -l .` (outside `cauldron/`) — empty.
-- [x] Mutation A (reviewer-run + reverted byte-clean): `{{.Instance}}` → literal `monitor instance` in
-  cert.html → `TestCertificateRendersInstanceIdentity` FAILS. Restored, tree clean.
-- [x] Mutation B (reviewer-run + reverted byte-clean): `resolveIdentity` forced to `instance, operator = "", ""`
-  → test FAILS. Restored, tree clean.
-- [x] No-CDN ban intact — `monitor.iscc.codes` still present (3x); the diff introduces no
-  `cdn.`/`jsdelivr`/`unpkg`/`googleapis`/`http://` token.
-- [x] Byte-identical-chrome rule verified — the `.chrome-identity`/`.chrome-operator` CSS rule bodies AND
-  the `<div class="chrome-actions">` masthead block are now byte-identical across dashboard.html,
-  dossier.html, and cert.html.
-- [x] No import cycle (dashboard does not import certificate/dossier); no purity regression (certificate is
-  an HTTP handler, not a WASM-shared pure package — it already imports `net/http`).
-- [x] Quality-gate integrity scan over all unpushed commits — no `//nolint`/`t.Skip`/build-tag/swallowed
-  error/deleted assertion. All changes additive.
-- [x] **Oracle gate: N/A** — pure HTML render of masthead strings; no signature / RFC-6962 / Merkle /
-  did:web / fsck / proof / store path touched. `go.mod`/`go.sum`/`schema.sql` byte-identical (not in the diff).
+**Verification:** `mise run check` — build + vet clean; `gofmt -l .` empty outside `cauldron/`; 25/27
+packages `ok`. Per-criterion:
+- [x] `go test -count=1 -run TestLoad ./internal/config` — pass (golden incl. three identity fields,
+  absent→`""` default, both partial-set cases).
+- [x] `go test -count=1 ./cmd/iscc-monitor` — pass (`identity(cfg)` signature compiles + wires at the
+  `serveMetrics` launch).
+- [x] Assertion (keys set → fields equal; keys absent → `""`) covered by `TestLoadGolden` /
+  `TestLoadDefaults` and proven non-vacuous by the mutation below.
+- [x] Import-purity assertion: `go list -f '{{.Imports}}' .../internal/config` = exactly `[fmt time]`
+  (no `os`/`dashboard`/`net`); `GOOS=js GOARCH=wasm go build ./internal/config` still builds.
+- [x] Mutation check (run + reverted byte-clean): forcing `instance := "MUTANT"` in `Load` makes
+  `TestLoadGolden` AND `TestLoadDefaults` FAIL; restored, `git diff --stat` shows only the intended
+  additive change (47 ins / 1 del), no mutation residue.
+- [x] Oracle gate **N/A** — pure startup-value parsing, no signature/Merkle/did:web/proof path.
+  `go.mod`/`go.sum`/`schema.sql` byte-identical (not in the diff).
 
-**Issues found:** (none new) The two pre-existing related issues stay open and unblocking, as next.md
-directed: the config-leaf env move (`normal`, the explicit NEXT sub-step) and the masthead-fallback-const
-duplication (`low`) — I updated the latter's title/body to record the cert copy as the 3rd duplicate (was
-"and cert next").
-
-**Codex second opinion:** Clean. Verdict: "The identity is consistently threaded into the certificate
-handler and rendered with existing fallback behavior, with call sites and tests updated. I did not identify
-any introduced correctness issue." No findings to triage; matches my independent review.
-
-**Visual check:** Built the binary and launched a fixture instance with the three identity env vars set,
-then screenshotted `/inclusion/NOTANISCCID` (the honest-200 masthead path) via `agent-browser` and read the
-PNG. The cert masthead renders the configured `monitor.iscc.id` / `instance operated by ISCC Foundation ·
-ISCC mainnet` right-aligned beside the ISCC logo + `verify ↗ monitor.iscc.codes` tier-2 link — byte-identical
-chrome to the already-verified dashboard/dossier mastheads, "CANNOT CERTIFY INCLUSION" honest state below.
-No visual deltas to file.
-
-**Next:** The config-leaf env move (the explicit NEXT sub-step, closes the open `normal`): move the three
-identity env keys (`ISCC_MONITOR_INSTANCE` / `ISCC_MONITOR_OPERATOR` / `ISCC_MONITOR_REALM_NAME`) from
-`main.go`'s inline `identity()` into `internal/config`'s `optional(get, key, fallback)` leaf (ratifying the
-realm-name key name) and add them to CLAUDE.md's env table — a focused `config.go` + `main.go` + CLAUDE.md
-change. After that: the three proofserve mastheads (`browser.html`, `records.html`, `record.html`) — the
-natural trigger to ALSO fold the now-3x duplicated `instanceFallback`/`operatorFallback` consts + a single
-exported `Resolve` into one shared leaf (closes the `low`). `internal/verifier` stays EXCLUDED (its `.codes`
-chrome is the verifier-app identity).
+**Next:** The proofserve-trio masthead slice (`browser.html`, `records.html`, `record.html`) — thread
+`dashboard.Identity` into those three SSR mastheads, and (the natural trigger) fold the now-3x-duplicated
+`instanceFallback`/`operatorFallback` consts + a single exported `Resolve` into one shared leaf, closing
+the `low` issue. `internal/verifier` stays EXCLUDED (its `.codes` chrome is the verifier-app identity).
 
 **Notes:**
-- The fallback-const + `resolveIdentity` copy now lives in THREE packages (dashboard owns
-  `Identity.resolve`; dossier + cert carry byte-identical private copies with the "MUST stay byte-identical"
-  comment). A masthead-copy change is now a three-site edit (four once proofserve lands) — best consolidated
-  WITH the proofserve slice. Tracked `low`, updated this iteration.
-- Test-collision trap recorded in `learnings/certificate.md`: a bare `Contains(body, "monitor instance")`
-  placeholder-absence check is vacuous here (the cert footer at cert.html:419 carries "issued by this
-  monitor instance"). The advance correctly pinned the masthead element `chrome-instance">monitor instance`
-  instead — non-vacuous against the masthead, not the footer.
-- The operator fallback const's literal `&` renders as `&amp;` (html/template text-node escape); the test
-  correctly asserts the escaped form.
-- A transient `.gitignore` working-tree modification (additive secrets/DB ignores, NOT in the advance
-  commit, NOT in my review commit) appeared mid-review and reset itself — environmental, benign, not part of
-  this increment.
-- `learnings/certificate.md` (176 lines) and `dashboard.md` (154 lines) remain slightly over the ~150-line
-  soft cap; I net-collapsed the §4/§5/§6 settled blocks this iteration to absorb the new masthead bullet.
-  Both should be rotated harder when the masthead arc completes (the settled clause-by-clause detail is
-  git-history material).
+- **PRE-EXISTING, UNRELATED FAILURE (not introduced by this increment):** `internal/certificate` fails
+  two tests — `TestCertificateComparisonAnchor` (handler_test.go:1478, "body missing comparison-anchor
+  marker `2026-01-05T09:00:00Z`") and `TestCertificateBitcoinAnchorConfirmed` (handler_test.go:1685,
+  "body missing §5 confirmation time `2026-02-14T18:40:00Z`"). I confirmed these FAIL on a clean
+  `git stash` of my changes, and the last cert review handoff (commit 7a32458) recorded "all 27 packages
+  ok" — so this is a regression that surfaced since, NOT from the config move (which touches no cert
+  code). Both rendered bodies now show a tier-2 `data-state="failed"` panel instead of the expected
+  RFC-3339 markers. The fixtures use fixed past timestamps (coverSince 2026-01-05, confirm 2026-02-14)
+  vs today 2026-06-22 — strong signal of a wall-clock-dependent rendering branch (or a recently-landed
+  cert change that broke these) that has gone stale. Out of scope here; flagging for `review` to triage
+  / file. This is why `mise run check` is RED overall despite every criterion of THIS package passing.
+- `internal/config` purity nuance still holds: `go list -deps` shows `os` transitively (via `fmt`), but
+  the load-bearing rule (no direct `net`/`net/http`/`database/sql`/`dashboard`; WASM-shareable) is
+  verified by the exact direct-import set `{fmt time}` and the `GOOS=js GOARCH=wasm` build.
+- Did NOT touch the `low` duplication (`instanceFallback`/`operatorFallback` × 3 packages) — that lands
+  WITH the proofserve slice, per next.md's Not-In-Scope. No handler fail-safe defaulting was changed;
+  config carries empty strings when keys are unset, handlers keep applying their static placeholder.
+- Untracked `.claude/adr/0013-server-packaging-and-deployment.md` and modified
+  `.claude/context/{issues,target}.md` are NOT mine (other roles) and are excluded from my commit.

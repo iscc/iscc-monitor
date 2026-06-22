@@ -19,6 +19,19 @@
 //	                    evidence-only re-poll cadence (ADR-0006); default 1h.
 //	ISCC_MONITOR_ADDR   optional — listen address for the /metrics HTTP server;
 //	                    default :9464.
+//	ISCC_MONITOR_INSTANCE   optional — this instance's domain, rendered on the
+//	                    server-rendered masthead (default empty).
+//	ISCC_MONITOR_OPERATOR   optional — the operator/realm line beneath the
+//	                    instance on the masthead (default empty).
+//	ISCC_MONITOR_REALM_NAME optional — the human realm NAME ("ISCC mainnet")
+//	                    shown in the ledger subtitle, deliberately distinct from
+//	                    the required ISCC_MONITOR_REALM realm-document PATH so a
+//	                    filename never leaks into the subtitle (default empty).
+//
+// The three identity values are free-form display strings carried verbatim; an
+// unset key leaves the field empty and each masthead handler applies its own
+// static fail-safe copy, so they are read through the no-validation optional
+// helper (like ISCC_MONITOR_ADDR, but with an empty default).
 //
 // Intervals are parsed with time.ParseDuration. The load-bearing cross-check is
 // Frozen >= Normal: the follower loop encodes its back-off by polling a frozen
@@ -40,6 +53,18 @@ const (
 	keyAddr   = "ISCC_MONITOR_ADDR"
 )
 
+// Instance-identity key names: the optional operator-supplied display strings
+// rendered on the server-rendered masthead so each deployment is honest about
+// who runs it. keyRealmName is deliberately distinct from keyRealm (the required
+// realm-document filesystem PATH): the masthead needs the human realm NAME
+// ("ISCC mainnet"), not the on-disk path, so overloading the path var would leak
+// a filename into the ledger subtitle.
+const (
+	keyInstance  = "ISCC_MONITOR_INSTANCE"
+	keyOperator  = "ISCC_MONITOR_OPERATOR"
+	keyRealmName = "ISCC_MONITOR_REALM_NAME"
+)
+
 // Default poll intervals applied when the corresponding key is absent. Normal is
 // the clean-hub cadence; Frozen is the longer evidence-only re-poll cadence for a
 // frozen hub (ADR-0006). The defaults satisfy Frozen >= Normal.
@@ -58,12 +83,21 @@ const defaultAddr = ":9464"
 // realm-membership document, Normal/Frozen the follower loop's poll intervals
 // (Frozen >= Normal encodes the freeze back-off, ADR-0006), and Addr the listen
 // address for the /metrics HTTP server (default :9464).
+//
+// Instance, Operator, and RealmName are the optional free-form masthead-identity
+// display strings (empty when their keys are unset); the binary builds the
+// dashboard's Identity from them and each masthead handler applies its own
+// static fail-safe copy for any empty field. RealmName is the human realm NAME,
+// distinct from RealmPath (the realm-document filesystem path).
 type Config struct {
 	DBPath    string
 	RealmPath string
 	Normal    time.Duration
 	Frozen    time.Duration
 	Addr      string
+	Instance  string
+	Operator  string
+	RealmName string
 }
 
 // Load reads the configuration from the injected get closure, applies the
@@ -102,7 +136,19 @@ func Load(get func(key string) (string, bool)) (Config, error) {
 		return Config{}, fmt.Errorf("config: %q (%s) must be >= %q (%s): freeze cadence backs off, never speeds up", keyFrozen, frozen, keyNormal, normal)
 	}
 	addr := optional(get, keyAddr, defaultAddr)
-	return Config{DBPath: dbPath, RealmPath: realmPath, Normal: normal, Frozen: frozen, Addr: addr}, nil
+	instance := optional(get, keyInstance, "")
+	operator := optional(get, keyOperator, "")
+	realmName := optional(get, keyRealmName, "")
+	return Config{
+		DBPath:    dbPath,
+		RealmPath: realmPath,
+		Normal:    normal,
+		Frozen:    frozen,
+		Addr:      addr,
+		Instance:  instance,
+		Operator:  operator,
+		RealmName: realmName,
+	}, nil
 }
 
 // required returns the value for key, failing closed with a wrapped error naming

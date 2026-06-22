@@ -1,5 +1,7 @@
 // Tests for the pure config loader: a minimal {DB, realm} input loads with the
-// documented default intervals, a full input round-trips every field, and the
+// documented default intervals and empty identity strings, a full input
+// round-trips every field (including the three optional masthead-identity
+// strings), a partially-set identity proves per-field independence, and the
 // validations fail closed — a missing required path, an unparseable interval, a
 // non-positive interval, and a Frozen < Normal cross-check each return a non-nil
 // wrapped error naming the offending key and the zero Config.
@@ -24,11 +26,14 @@ func fromMap(m map[string]string) func(string) (string, bool) {
 func TestLoadGolden(t *testing.T) {
 	// A full input round-trips every field verbatim.
 	get := fromMap(map[string]string{
-		keyDB:     "/var/lib/iscc-monitor/testnet.db",
-		keyRealm:  "/etc/iscc-monitor/realm.txt",
-		keyNormal: "30s",
-		keyFrozen: "10m",
-		keyAddr:   "127.0.0.1:41234",
+		keyDB:        "/var/lib/iscc-monitor/testnet.db",
+		keyRealm:     "/etc/iscc-monitor/realm.txt",
+		keyNormal:    "30s",
+		keyFrozen:    "10m",
+		keyAddr:      "127.0.0.1:41234",
+		keyInstance:  "monitor.iscc.id",
+		keyOperator:  "ISCC Foundation",
+		keyRealmName: "ISCC mainnet",
 	})
 	got, err := Load(get)
 	if err != nil {
@@ -40,6 +45,9 @@ func TestLoadGolden(t *testing.T) {
 		Normal:    30 * time.Second,
 		Frozen:    10 * time.Minute,
 		Addr:      "127.0.0.1:41234",
+		Instance:  "monitor.iscc.id",
+		Operator:  "ISCC Foundation",
+		RealmName: "ISCC mainnet",
 	}
 	if got != want {
 		t.Errorf("Load(full) = %#v, want %#v", got, want)
@@ -69,6 +77,10 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if got.Addr != ":9464" {
 		t.Errorf("Load(minimal) Addr = %q, want default %q", got.Addr, ":9464")
+	}
+	if got.Instance != "" || got.Operator != "" || got.RealmName != "" {
+		t.Errorf("Load(minimal) identity = {Instance:%q Operator:%q RealmName:%q}, want all empty when keys absent",
+			got.Instance, got.Operator, got.RealmName)
 	}
 	if !(want.Frozen >= want.Normal) {
 		t.Fatalf("default intervals violate Frozen >= Normal: Normal=%s Frozen=%s", want.Normal, want.Frozen)
@@ -105,6 +117,16 @@ func TestLoad(t *testing.T) {
 			name: "empty addr falls back to default",
 			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyAddr: ""},
 			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, Addr: defaultAddr},
+		},
+		{
+			name: "only instance identity set, operator and realm name stay empty",
+			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyInstance: "monitor.example"},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, Addr: defaultAddr, Instance: "monitor.example"},
+		},
+		{
+			name: "only realm name set, distinct from realm path",
+			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyRealmName: "ISCC mainnet"},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, Addr: defaultAddr, RealmName: "ISCC mainnet"},
 		},
 	}
 	for _, tc := range cases {
