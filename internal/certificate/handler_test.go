@@ -993,6 +993,187 @@ func TestCertificateRecordHistoryDeclarationOnly(t *testing.T) {
 	}
 }
 
+// fixtureStoreCovered seeds a certifiable hub whose coverage window carries BOTH a
+// monitored-since size and a non-zero monitored-since TIME, so the COMPARISON ANCHOR
+// panel renders the full "since size N · <RFC-3339>" window. It sets the coverage start
+// (SetCoverage, the set-once monitored_since_{size,time}) with coverSize/coverSince
+// BEFORE AdvanceAccepted, so AdvanceAccepted's own set-once coverage UPDATE no-ops
+// (monitored_since_size is already non-NULL) and the explicit time survives — the only
+// way to get a coverage time in a fixture, since AdvanceAccepted writes a NULL time for
+// the zero-ObservedAt CheckpointRecord the other fixtures pass. The leaf is indexed at
+// seq under the production ISCC:-prefixed form and accepted at LastSize = seq+1.
+func fixtureStoreCovered(t *testing.T, indexDomain, indexedID string, seq, coverSize uint64, coverSince time.Time) *store.Store {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "certificate-covered.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	id0, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub sb0: %v", err)
+	}
+	id1, err := st.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub sb1: %v", err)
+	}
+	target := id0
+	if indexDomain == "sb1.amlet.id" {
+		target = id1
+	}
+
+	if err := st.RecordProjections(ctx, []store.ProjectionRecord{
+		{HubID: target, Seq: seq, IsccID: "ISCC:" + indexedID, NoteSchema: "iscc-note-0.8.0.json"},
+	}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+	// Set the coverage start WITH a time before AdvanceAccepted so the explicit time is
+	// what ListHubs reads back (AdvanceAccepted's set-once UPDATE then no-ops).
+	if err := st.SetCoverage(ctx, target, coverSize, coverSince); err != nil {
+		t.Fatalf("SetCoverage: %v", err)
+	}
+	if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+		HubID:    target,
+		TreeSize: seq + 1,
+		Root:     []byte("root"),
+		Raw:      []byte("raw"),
+	}); err != nil {
+		t.Fatalf("AdvanceAccepted: %v", err)
+	}
+	return st
+}
+
+// TestCertificateComparisonAnchor is the COMPARISON ANCHOR test: a certifiable id on a
+// hub with a recorded coverage window renders the distinctly-labelled comparison-anchor
+// panel — the monitor's independently-observed (size, root) of what this hub showed
+// THIS monitor, plus the coverage window (size + since) that bounds it — and that panel
+// carries NO "Bitcoin"/"anchoring"/"OpenTimestamps" copy, proving it is a SEPARATE,
+// distinctly-labelled element from the §5 Bitcoin anchor (target.md: "anchoring" copy is
+// Bitcoin-only).
+//
+// Mutation (non-vacuity, review reproduces it): forcing HasComparisonAnchor = false in
+// buildData (or removing the {{if .HasComparisonAnchor}} template block) makes this test
+// FAIL — the body would then carry no COMPARISON ANCHOR marker. Restoring it passes.
+func TestCertificateComparisonAnchor(t *testing.T) {
+	const seq = uint64(24815)
+	coverSince := time.Date(2026, 1, 5, 9, 0, 0, 0, time.UTC)
+	st := fixtureStoreCovered(t, "sb1.amlet.id", goldenID, seq, 24000, coverSince)
+	h := Handler(testnetHubList(), st, nil)
+
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := html.UnescapeString(rec.Body.String())
+
+	// The distinctly-labelled comparison-anchor panel + its bounding coverage window.
+	for _, want := range []string{
+		"COMPARISON ANCHOR",             // the distinct label (NOT "§5"/"BITCOIN ANCHOR")
+		"size 24000",                    // the coverage-window size (monitored_since_size)
+		coverSince.Format(time.RFC3339), // the coverage-window since-time (RFC-3339)
+		"detect a split view",           // the comparison-anchor affordance copy
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing comparison-anchor marker %q\n%s", want, body)
+		}
+	}
+	// The §1/§2 clauses still render alongside it (regression).
+	for _, want := range []string{"§1 SUBJECT", "§2 CHECKPOINT"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("comparison-anchor certificate missing %q\n%s", want, body)
+		}
+	}
+
+	// Distinctness: the comparison-anchor PANEL must carry no "anchoring"/Bitcoin copy.
+	// Slice the COMPARISON ANCHOR clause out of the rendered page (from its marker to the
+	// next clause marker) and assert the Bitcoin/OTS lexicon never appears inside it —
+	// proving the two anchor panels are separate, distinctly-labelled elements.
+	panel := comparisonAnchorPanel(t, body)
+	for _, banned := range []string{"Bitcoin", "anchoring", "OpenTimestamps", "BITCOIN ANCHOR", "ots verify"} {
+		if strings.Contains(panel, banned) {
+			t.Errorf("comparison-anchor panel contains Bitcoin/anchoring copy %q\n%s", banned, panel)
+		}
+	}
+}
+
+// comparisonAnchorPanel slices the COMPARISON ANCHOR clause out of the rendered body —
+// from its clause marker up to the next clause marker (or end of document) — so a test
+// can assert on the panel's OWN copy in isolation, never catching a §5 Bitcoin string
+// from elsewhere on the page.
+func comparisonAnchorPanel(t *testing.T, body string) string {
+	t.Helper()
+	start := strings.Index(body, "COMPARISON ANCHOR")
+	if start < 0 {
+		t.Fatalf("no COMPARISON ANCHOR panel in body\n%s", body)
+	}
+	rest := body[start+len("COMPARISON ANCHOR"):]
+	// The next clause marker bounds this panel; §6 is the only clause that can follow it.
+	if end := strings.Index(rest, "§6 RECORD HISTORY"); end >= 0 {
+		return rest[:end]
+	}
+	// No §6 follows (e.g. an empty record history) — bound at the honesty panel instead.
+	if end := strings.Index(rest, "honesty"); end >= 0 {
+		return rest[:end]
+	}
+	return rest
+}
+
+// TestCertificateComparisonAnchorIndependentOfOTS asserts the two anchor panels are
+// DECOUPLED: a certifiable id on a hub with NO OTS row (so §5 BITCOIN ANCHOR is omitted)
+// STILL renders the COMPARISON ANCHOR panel. The comparison anchor does not depend on
+// the Bitcoin anchor — exactly the "separate, distinctly-labelled elements" the Verify
+// criterion requires (a hub with no §5 still shows the comparison anchor).
+func TestCertificateComparisonAnchorIndependentOfOTS(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
+	// No seedOTS: the accepted root has no mirrored OTS row, so §5 is omitted.
+	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, raw)
+
+	h := Handler(testnetHubList(), st, nil)
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := html.UnescapeString(rec.Body.String())
+
+	// §5 is ABSENT (no OTS row) but the COMPARISON ANCHOR is PRESENT — the two are decoupled.
+	if strings.Contains(body, "§5 BITCOIN ANCHOR") {
+		t.Errorf("an un-anchored root rendered a §5 BITCOIN ANCHOR clause\n%s", body)
+	}
+	if !strings.Contains(body, "COMPARISON ANCHOR") {
+		t.Errorf("a hub with no §5 OTS row dropped the COMPARISON ANCHOR panel\n%s", body)
+	}
+}
+
+// TestCertificateComparisonAnchorCoverageJustStarted asserts the honest no-window state:
+// a certifiable hub whose coverage time is not recorded (the zero-time case) renders the
+// COMPARISON ANCHOR panel WITHOUT a since-time chip — the honest "coverage just started"
+// copy — never implying a pre-coverage guarantee (ADR-0001). fixtureStore's
+// AdvanceAccepted writes a NULL monitored_since_time (zero ObservedAt), so Coverage.Since
+// is zero while Coverage.Size is set.
+func TestCertificateComparisonAnchorCoverageJustStarted(t *testing.T) {
+	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815)
+	h := Handler(testnetHubList(), st, nil)
+
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := html.UnescapeString(rec.Body.String())
+
+	if !strings.Contains(body, "COMPARISON ANCHOR") {
+		t.Errorf("a certifiable id with NULL coverage-time dropped the COMPARISON ANCHOR panel\n%s", body)
+	}
+	// fixtureStore's AdvanceAccepted set monitored_since_size (the leaf's accepted size)
+	// with a NULL time, so the panel states the size window but no RFC-3339 since-time.
+	if !strings.Contains(body, "since size 24816") {
+		t.Errorf("comparison-anchor panel missing the NULL-time coverage size window\n%s", body)
+	}
+}
+
 // otsFixture loads one bundled .ots vector from this package's testdata/ (copied
 // verbatim from internal/ots/testdata so the certificate test is hermetic and never
 // reads another package's testdata at runtime). hello-world.txt.ots is the external

@@ -1,88 +1,72 @@
-## 2026-06-22 — Review of: Light up certificate §5 BITCOIN ANCHOR (confirmed / pending) from the mirrored OTS row
+## 2026-06-22 — Add the distinct comparison-anchor panel to the certificate (separate from §5 Bitcoin-anchor)
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Added a distinctly-labelled `COMPARISON ANCHOR` panel to the realm-wide Certificate of
+Inclusion — the monitor's independently-observed record of the §2 accepted `(size, root)` this hub
+showed THIS monitor, bounded by the coverage window — rendered as a SEPARATE element from §5, carrying
+no "Bitcoin"/"anchoring"/"OpenTimestamps" copy. This closes the last open observable M-UI certificate
+Verify element (target.md: Bitcoin-anchor and comparison-anchor are separate, distinctly-labelled).
 
-**Summary:** The advance lights up the last open certificate clause — §5 BITCOIN ANCHOR — reading the
-mirrored OTS row of §2's accepted root (`store.OTSForRoot` keyed on the raw `(hubID, LastSize, root)`)
-and classifying via `ots.Confirmed`: confirmed shows `block <height>` + the RFC-3339 upgrade time,
-pending shows the honest "awaiting Bitcoin confirmation", and an un-anchored root / empty-bytes
-sentinel / unparseable proof omits §5 cleanly. Scope is tight (1 prod source file `handler.go`,
-template + test + two byte-identical OTS fixtures), `mise run check` is green, four independent
-mutations confirm the tests are non-vacuous, and the work matches `next.md` exactly. One Codex [P2] —
-§5 does not bind the proof's committed digest to §2's root — is a real but non-exploitable robustness
-gap, filed `normal`; it does not block the increment's stated goal.
+**Files changed:**
+- `internal/certificate/handler.go`: added `HasComparisonAnchor` + `HasCoverageWindow` gate flags and
+  `CoverageSize uint64` / `CoverageSince string` fields to `certData`; populated them inside the existing
+  `HasClause2` guard in `buildData` from `followedHub`'s `HubSummary.Coverage` (no new store read, reuses
+  the already-encoded `CheckpointSize`/`CheckpointRoot`); updated the package doc, the `certData` doc, and
+  the `buildData` step list (new step 9b). Flagged the mockup deviation in the field + package docstrings.
+- `internal/certificate/cert.html` (template, not counted): rendered the `COMPARISON ANCHOR` clause between
+  §5 and §6, reusing `.clause`/`.clause-mono`/`.clause-note` (page-scoped, no new CSS/CDN). Coverage copy
+  is "since size N · <RFC-3339>" when the window has a time, "since size N" when time is NULL, and the
+  honest "coverage just started" state when no window is set.
+- `internal/certificate/handler_test.go` (test, not counted): added `fixtureStoreCovered` (sets the
+  coverage start with a non-zero time via `SetCoverage` BEFORE `AdvanceAccepted`, the only way to get a
+  coverage time given `AdvanceAccepted` writes a NULL time for a zero-`ObservedAt` record), the
+  `comparisonAnchorPanel` slicer, and three tests: `TestCertificateComparisonAnchor` (label + window +
+  no-Bitcoin-copy-in-panel), `TestCertificateComparisonAnchorIndependentOfOTS` (no §5 OTS row → §5 absent
+  but comparison anchor present — the two are decoupled), `TestCertificateComparisonAnchorCoverageJustStarted`
+  (NULL coverage time → window states size only, no since-time chip).
 
-**Verification:**
-- [x] `mise run check` — green (build + vet + test, all 23 packages).
-- [x] `go test -count=1 -run TestCertificate ./internal/certificate` — passes (existing + 4 new §5 tests).
-- [x] `TestCertificateBitcoinAnchorConfirmed` — renders `§5 BITCOIN ANCHOR` + `block 358391` (oracle
-  literal) + the RFC-3339 confirmation time; §1-§3/§6 still render; no "pending" copy. PASS.
-- [x] `TestCertificateBitcoinAnchorUnanchored` — no OTS row → page renders §1-§3+§6 WITHOUT the §5
-  marker. PASS.
-- [x] `TestCertificateBitcoinAnchorPending` — calendar-only `merkle1.txt.ots` (confirmed independently
-  to classify `(false,0,nil)`) renders the honest pending state, no `block ` literal. PASS.
-- [x] `TestCertificateBitcoinAnchorEmptySentinel` — zero-`OTSBytes` row omits §5. PASS.
-- [x] **Mutation (non-vacuous, reviewer-reproduced 4×):** `HasClause5=true` unconditionally → unanchored
-  + empty-sentinel tests FAIL; `BTCConfirmed=true` → pending test FAIL; `BTCHeight=height+1` → confirmed
-  test FAIL (height tied to oracle literal 358391). Each reverted → green. `handler.go` confirmed
-  byte-identical to HEAD after probes.
-- [x] `gofmt -l .` (excl `cauldron/`) clean; `go mod tidy -diff` clean (no new prod dep).
-- [x] WASM-purity guard — `GOOS=js GOARCH=wasm go build ./internal/didweb ./internal/index
-  ./internal/badge` builds; `go list -deps` of each shows 0 `internal/ots` hits (the non-WASM-pure OTS
-  closure did NOT leak into a WASM-shared package).
-- [x] `cmd/iscc-monitor/main.go`, `go.mod`, `go.sum` byte-unchanged in the advance commit (verified).
-- [x] Testdata fixtures byte-identical to `internal/ots/testdata/` (`cmp` clean for both).
-- [x] Oracle/conformance gate — **N/A**: the diff touches no signature/RFC-6962/Merkle/proof/did:web
-  code (a classify-only read of an OTS blob); §3 Merkle re-verify regression still green.
-- [x] Quality-gate integrity — no `nolint`/`t.Skip`/build-tag/swallowed-error/deleted-assertion in any
-  unpushed Go diff.
+**Verification:** `mise run check` → green (build + vet + test, all packages). Per criterion:
+- `go test -count=1 -run TestCertificate ./internal/certificate` — PASS (existing suite + 3 new tests).
+- `TestCertificateComparisonAnchor` — asserts `COMPARISON ANCHOR` label + `size 24000` + the RFC-3339
+  coverage-since + "detect a split view" affordance; slices the panel and asserts it contains NONE of
+  `Bitcoin`/`anchoring`/`OpenTimestamps`/`BITCOIN ANCHOR`/`ots verify` — proving the two anchor panels are
+  separate, distinctly-labelled elements. PASS.
+- `TestCertificateComparisonAnchorIndependentOfOTS` — hub with no OTS row renders no §5 but DOES render the
+  comparison anchor (the two are decoupled). PASS.
+- `TestCertificateComparisonAnchorCoverageJustStarted` — NULL coverage time → panel present, "since size
+  24816", no time chip (honest no-window state, ADR-0001). PASS.
+- **Mutation (non-vacuous, reproduced):** forcing `data.HasComparisonAnchor = false` → all three new tests
+  FAIL (no `COMPARISON ANCHOR` marker); reverting → green. `handler.go` confirmed restored to `= true`.
+- `gofmt -l internal/ cmd/` empty; `go mod tidy -diff` clean (no new prod dep).
+- WASM-purity guard — `GOOS=js GOARCH=wasm go build ./internal/didweb ./internal/index ./internal/badge`
+  builds (certificate stays server-side-only; no leak into a WASM-shared package).
 
-**Issues found:**
-- (new, `normal`, Codex-confirmed) Certificate §5 does not bind the OTS proof's committed digest to §2's
-  accepted root — see Codex triage below. Filed in `issues.md`.
-
-**Codex second opinion:** One [P2] finding — "Verify OTS proof digest before rendering anchor"
-(`handler.go:843-845`). **Confirmed real, filed `normal` (does not block).** Verified against the library
-+ write path: `ots.Confirmed` only classifies the proof's attestations and never compares the parsed
-`File.Digest` (32-byte SHA-256 the proof commits to, exposed by `opentimestamps@v0.4.0`) against §2's
-`root`, so a row whose `ots_bytes` commit to a different digest would falsely render §2's root as
-anchored. This is the always-loaded "gate a rendered ✓/anchor on re-VERIFICATION, not a classify-only
-flag" rule applied to §5. NOT exploitable today: the production write path (`OTSTick`→Stamper→
-`MarkOTSStamped`, Upgrader→`MarkOTSUpgraded`) always submits/upgrades the row's OWN `r.Root` digest, so a
-mismatched row is unreachable — only a buggy `RecordOTS` (or the tests, which seed `hello-world.txt.ots`
-against an arbitrary tree root for fixture convenience) produces one. Fix when §5/`ots.Confirmed` is next
-touched: surface `File.Digest` and require `bytes.Equal(digest, root)` before `HasClause5=true`.
-
-**Visual check:** SSR surface (`internal/certificate/cert.html`) screenshotted with agent-browser
-(bundles its own browser; system Chrome absent but the CLI works). Rendered the landed confirmed
-certificate (HTML captured from the §5 confirmed test, tokens.css inlined) and compared the §5 region
-against `.dc.html:66`. Named-region affordances all present and matching: status dot + `block 358391 ·
-<time>` + "OpenTimestamps. Run `ots verify` for the authoritative check." note, DS-token styled. One
-minor cosmetic copy delta (not filed as a blocking issue — affordance is complete): the impl renders the
-confirmation time as raw RFC-3339 (`2026-02-14T18:40:00Z`) where the mockup shows human-formatted
-`2026-02-14 18:40 UTC`. agent-browser's batch `viewport`/`eval` subcommands are unavailable in this
-build, so the below-the-fold §5 region was verified via the captured DOM/HTML + test assertions rather
-than a scrolled screenshot; the above-fold §1-§2 layout matches the mockup grid.
-
-**Next:** §5 closes the last numbered certificate clause. Best next observable Verify-closer toward
-M-UI: the **separate comparison-anchor panel** on the certificate (target.md names Bitcoin-anchor AND
-comparison-anchor as distinct, distinctly-labelled elements — §5 is the Bitcoin side; "anchoring" copy
-stays Bitcoin-only). Alternatively the **dossier §4 Bitcoin-anchor** region (same `OTSForRoot` read
-pattern, different surface). The `safeStamp` panic-recover + timeout guard (`normal` OTS issue) is the
-highest-value non-UI hardening and should fold in the next time the stamp path is edited.
+**Next:** With all six numbered clauses + both anchor panels (Bitcoin + comparison) now present, the
+certificate's observable M-UI Verify surface is complete. The next M-UI closer toward milestone exit is the
+**dossier §4 Bitcoin-anchor** region (same `OTSForRoot` read pattern, different surface — see the prior
+review's `Next:`), or a dossier comparison-anchor equivalent. The standing non-UI hardening items remain:
+the §5 digest-binding (`bytes.Equal(File.Digest, root)`), the §4/bundle `host:port` DID `%3A`-encode, and
+the §6 `· at` timestamp — fold each in the next time that exact line is edited. The **WASM verifier** (1/1
+open) and the **M-UI exit visual-pass + human sign-off** (ADR-0012) are the remaining milestone gates.
 
 **Notes:**
-- This increment is the Verify-closer the prior state demanded (§5, observable, HTTP-seam-tested) — no
-  drift; the long internal-OTS-seam streak surfaced its second observable in a row.
-- NOT DONE: OTS Verify keeps its offline-unprovable live-chain Bitcoin-confirmed half open; WASM
-  verifier is 1/1 not started (no `internal/proof`, no `syscall/js`); the M-UI exit visual-pass + human
-  sign-off (ADR-0012) has not been run. Loop = CONTINUE.
-- The §5 read keys on §2's RAW `[]byte` root (not the base64 `CheckpointRoot` string); `seedOTS` records
-  the same `tree.Hash()`/`tree.Size()` `AdvanceAccepted` committed, so the key aligns — the confirmed
-  test passing proves it end-to-end.
-- Open issues carried forward unchanged: `safeStamp` guard (`normal`), nil-Stamper+empty-row fall-through
-  (`low`), `hubDomain` ForceQuery (`normal`), §4/bundle `host:port` DID `%3A`-encode (`normal`), §6 `· at`
-  timestamp (`normal`), plus the existing `low` debt set. None touched by this diff.
-- learnings/certificate.md net-rotated this iteration (added §5 + the digest-binding gap; collapsed
-  settled §1/§3/§4 mechanics into git-history-backed one-liners) — landed at 159 lines, near budget.
+- **Scope:** 1 prod file of substance (`handler.go`), within the ≤3 budget. No store schema / new query —
+  the coverage window rides out of the existing `followedHub` `ListHubs` scan (`HubSummary.Coverage`); §2
+  already loaded the `(size, root)`. No new error path: the panel renders inside `HasClause2` and cannot
+  500 on its own. None of the earmarked `normal` fixes were touched (the comparison anchor adds a new clause
+  and edits none of those lines), per next.md's "keep the diff tight".
+- **Mockup deviation (design-parity flag):** the certificate mockup (`.dc.html`) has NO comparison-anchor
+  element — target.md mandates it beyond the mockup. Flagged in the package doc + the `HasComparisonAnchor`
+  field docstring (one evergreen sentence each), not silently dropped. Placed as its own numbered-clause row
+  with a distinct `COMPARISON ANCHOR` heading (never "§5"/"BITCOIN ANCHOR").
+- **Coverage-time fixture nuance:** `AdvanceAccepted` writes `monitored_since_size` with a NULL time for a
+  zero-`ObservedAt` record, so the existing fixtures yield `Coverage.Set == true` with a zero `Since`. The
+  new `fixtureStoreCovered` calls `SetCoverage` with an explicit time BEFORE `AdvanceAccepted` (whose
+  set-once UPDATE then no-ops) to seed a real coverage time — the test covers both the with-time and
+  NULL-time paths.
+- **Glossary discipline:** the panel copy uses "Comparison anchor" framing (the monitor's own observation,
+  the split-view check), never "witness" (reserved for the deferred M7 cosigner role) and never any
+  "anchoring"/Bitcoin lexicon (verified by the panel-slice assertion). It reads as the monitor's account
+  (Tier 1, verifiable cache), consistent with the existing two-tier honesty panel.
+- **Oracle/conformance gate — N/A:** this diff touches no signature/RFC-6962/Merkle/proof/did:web code —
+  the comparison anchor reuses §2's already-read `(size, root)` and the coverage window, no crypto path.
+  §3's Merkle re-verify regression still green.

@@ -402,6 +402,15 @@
         </div>
       </div>
       {{end}}
+      {{if .HasComparisonAnchor}}
+      <div class="clause">
+        <div class="clause-marker">COMPARISON ANCHOR</div>
+        <div class="clause-value">
+          <div class="clause-mono">size {{.CheckpointSize}} · root {{.CheckpointRoot}}</div>
+          {{if .HasCoverageWindow}}<div class="clause-note">This monitor independently observed this (size, root) from <span class="subject-mono">{{.Domain}}</span> since size {{.CoverageSize}}{{if .CoverageSince}} · {{.CoverageSince}}{{end}}. Check your own (size, root) against this record to detect a split view — guarantees hold only from coverage start.</div>{{else}}<div class="clause-note">This monitor independently observed this (size, root) from <span class="subject-mono">{{.Domain}}</span>. Coverage just started — no observation window yet, so guarantees hold only from now on.</div>{{end}}
+        </div>
+      </div>
+      {{end}}
       {{if .HasClause6}}
       <div class="clause">
         <div class="clause-marker">§6 RECORD HISTORY</div>

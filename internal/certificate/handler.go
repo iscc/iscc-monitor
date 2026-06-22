@@ -41,7 +41,14 @@
 // root shows the confirming block height, a still-pending (calendar-asserted) root
 // shows the honest "pending" state, and an un-anchored root (no OTS row, the empty-bytes
 // sentinel, or an unparseable proof) omits §5 — never an error (ADR-0001 / ADR-0004:
-// OTS never faults a surface).
+// OTS never faults a surface). The COMPARISON ANCHOR panel reframes §2's accepted
+// (size, root) as the monitor's own independently-observed record of what this hub
+// showed THIS monitor — the artifact a client checks its own (size, root) against to
+// detect a split view (CLAUDE.md "Comparison anchor") — bounded by the coverage window
+// (ADR-0001). It is a SEPARATE, distinctly-labelled element from §5: it does not depend
+// on the OTS row (a hub with no §5 still renders it) and carries no "anchoring"/Bitcoin
+// copy (target.md: "anchoring" stays Bitcoin-only). target.md mandates this panel the
+// certificate mockup omits (design-parity: the constraint wins over the mockup).
 //
 // The downloadable proof bundle is served at GET /inclusion/{iscc_id}.bundle: a
 // self-contained JSON artifact {checkpoint (verbatim signed-note text), inclusion
@@ -277,6 +284,19 @@ type certData struct {
 	// Meaningful only when HasClause5 && BTCConfirmed.
 	BTCConfirmedAt string
 
+	// CoverageSize is the monitor's coverage-start tree size for this hub
+	// (HubSummary.Coverage.Size, monitored_since_size), the lower bound of the window
+	// the comparison anchor's observation is honest over (ADR-0001: guarantees hold
+	// only from coverage start). Meaningful only when HasComparisonAnchor &&
+	// HasCoverageWindow.
+	CoverageSize uint64
+	// CoverageSince is the monitor's coverage-start instant for this hub (RFC-3339,
+	// from HubSummary.Coverage.Since); empty when coverage has not started yet
+	// (Coverage.Set false), so the template renders the honest "coverage just started"
+	// state instead of implying a pre-coverage guarantee (the same zero-guard as
+	// SigningKeyRevoked). Meaningful only when HasComparisonAnchor.
+	CoverageSince string
+
 	// RecordHistory is the §6 RECORD HISTORY rows: every accepted-tree seq the hub
 	// indexed under the subject id (seqs ascending, capped to seq < CheckpointSize),
 	// each labelled by its note.$schema kind (recordKind). iscc_id → seq is
@@ -307,6 +327,28 @@ type certData struct {
 	HasClause4 bool
 	HasClause5 bool
 	HasClause6 bool
+
+	// HasComparisonAnchor gates the COMPARISON ANCHOR panel — the monitor's
+	// independently-observed record of the (size, root) this hub showed THIS monitor,
+	// the artifact a client checks its own (size, root) against to detect a split view
+	// (CLAUDE.md "Comparison anchor"; NOT a witness, the deferred M7 role). It is the §2
+	// accepted (size, root) reframed as the monitor's own observation, bounded by the
+	// coverage window — never Bitcoin, never a re-verification, never "anchoring" copy
+	// (target.md: "anchoring" stays Bitcoin-only). It is set inside the HasClause2 guard
+	// (the anchor is meaningful only when there is an accepted (size, root) to anchor),
+	// so a hub WITH no §5 OTS row still renders it (it does NOT depend on the Bitcoin
+	// anchor — the two panels are decoupled, distinctly-labelled elements).
+	//
+	// Mockup deviation (design-parity rule: the constraint wins over the mockup):
+	// target.md mandates a comparison-anchor panel the certificate mockup omits, so this
+	// panel is rendered beyond the mockup. Flagged here rather than silently dropped.
+	HasComparisonAnchor bool
+	// HasCoverageWindow reports whether the monitor has a recorded coverage window for
+	// this hub (HubSummary.Coverage.Set). When true the panel states the window (since
+	// CoverageSize · CoverageSince); when false it renders the honest "coverage just
+	// started" state, never implying a pre-coverage guarantee (ADR-0001 coverage
+	// honesty). Meaningful only when HasComparisonAnchor.
+	HasCoverageWindow bool
 
 	// HasBundle is set to HasClause3 (the §3 re-verification gate): the downloadable
 	// proof bundle is offered ONLY when the built inclusion proof actually rebuilt the
@@ -568,6 +610,12 @@ func serveBundle(w http.ResponseWriter, data certData, arts bundleArtifacts) {
 //     row, the empty-bytes sentinel, or a proof ots.Confirmed cannot parse leaves §5
 //     unrendered (an un-anchored root is NOT an error); only a real OTSForRoot DB fault
 //     is a 500 (buffered before any 200).
+//     9b. For a certifiable id, render the COMPARISON ANCHOR panel: §2's accepted
+//     (size, root) reframed as the monitor's own independently-observed record of what
+//     this hub showed THIS monitor (CLAUDE.md "Comparison anchor"), bounded by the
+//     coverage window (followedHub's Coverage, no new read). It is a SEPARATE,
+//     distinctly-labelled element from §5 — it does not depend on the OTS row — and
+//     carries no "anchoring"/Bitcoin copy (target.md invariant). No new error path.
 //  10. For a certifiable id, list the §6 RECORD HISTORY: the accepted-tree seqs (seq <
 //     LastSize) from the same SeqsForISCCID result, each read via RecordAt for its
 //     note.$schema and labelled by recordKind (declaration / deletion / unknown). It
@@ -850,6 +898,31 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 						data.BTCConfirmedAt = rec.UpgradedAt.Format(time.RFC3339)
 					}
 				}
+			}
+		}
+
+		// COMPARISON ANCHOR: the monitor's independently-observed record of the
+		// (size, root) this hub showed THIS monitor — the artifact a client checks its
+		// own (size, root) against to detect a split view (CLAUDE.md "Comparison
+		// anchor"). It is §2's accepted (size, root) reframed as the monitor's own
+		// observation (no new read, no re-encode — it reuses data.CheckpointSize /
+		// data.CheckpointRoot), PLUS the coverage window that bounds the claim (ADR-0001:
+		// guarantees hold only from coverage start). It is a SEPARATE, distinctly-labelled
+		// element from the §5 Bitcoin anchor: it does NOT depend on the OTS row, so a hub
+		// with no §5 still renders it (target.md: the two anchor panels are decoupled and
+		// "anchoring" copy stays Bitcoin-only). No new error path — the data is already in
+		// hand, so this panel cannot 500 on its own; it renders inside the HasClause2
+		// guard and stays absent (like §2) when there is no accepted checkpoint. The
+		// coverage window rides out of followedHub's HubSummary (no second store
+		// round-trip): when Coverage.Set is true the panel states the window, when false
+		// it renders the honest "coverage just started" state (the zero-time guard mirrors
+		// SigningKeyRevoked / §5's UpgradedAt).
+		data.HasComparisonAnchor = true
+		if hub.Coverage.Set {
+			data.HasCoverageWindow = true
+			data.CoverageSize = hub.Coverage.Size
+			if !hub.Coverage.Since.IsZero() {
+				data.CoverageSince = hub.Coverage.Since.Format(time.RFC3339)
 			}
 		}
 	}
