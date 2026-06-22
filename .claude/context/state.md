@@ -1,21 +1,23 @@
-<!-- assessed-at: 39f04036d6c9545a06e27b6f3541f1b32eb0d6ab -->
+<!-- assessed-at: 5f069d5362176c8c517cef476bc114c385881c92 -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: M-Deploy build phase — feature milestones M1–M3/M-UI behaviorally complete; gate green on every host. The loop is executing the order-independent **M-Deploy** packaging milestone (ADR-0013). First M-Deploy Verify item just closed (SIGTERM trap); the remaining blockers are the Dockerfile/GHCR image, version stamp, canonical realm doc + operability doc, and the root README.
+## Phase: M-Deploy build phase — feature milestones M1–M3/M-UI behaviorally complete; gate green on every host. The loop is executing the order-independent **M-Deploy** packaging milestone (ADR-0013). Two of ~6 M-Deploy Verify items now closed (SIGTERM trap, version stamp); the remaining blockers are the Dockerfile/GHCR image, the canonical realm doc, the operability doc, and the root README.
 
 The feature surface is built; the loop is on the M-Deploy runway. This window's only production change
-was the SIGTERM trap in `cmd/iscc-monitor/main.go` — the first M-Deploy Verify criterion to close
-(graceful shutdown under `docker stop`). M-Deploy is now partially met (1 of ~6 Verify items), but no
-Dockerfile, no GHCR workflow, no version stamp, no `deploy/` realm doc, no operability doc, and no root
+was the version-stamp leaf — `internal/version` (a pure-stdlib `GET /version` JSON endpoint, `var
+Version = "dev"` as the `-ldflags -X` target) plus its mount in `cmd/iscc-monitor/main.go` and a
+`build:monitor` mise task that stamps the git short SHA. M-Deploy is now partially met (2 of ~6 Verify
+items), but no Dockerfile, no GHCR workflow, no `deploy/` realm doc, no operability doc, and no root
 `README.md` exist, so DONE stays far out of reach.
 
 ## Convergence
 - **Remaining Verify criteria:**
   - **M1: 0 open (met). M2: 0 open (met). M3: 0 open (met, 4/4).** Carried forward — the
-    `a9f088a7..HEAD` diff touched no trust-path source (only `cmd/iscc-monitor` process-lifecycle wiring).
+    `39f0403..HEAD` diff touched no trust-path source (only `cmd/iscc-monitor` wiring + the new
+    `internal/version` HTTP leaf + `mise.toml`).
   - **M-UI: behavioral + named-region Verify met; the mandatory M-UI exit visual-pass + human sign-off
     (ADR-0012) still pending.** Instance identity is config-driven on THREE of six SSR mastheads
     (`/`, dossier, certificate); the proofserve trio (`browser.html`, `records.html`, `record.html`)
@@ -27,29 +29,29 @@ Dockerfile, no GHCR workflow, no version stamp, no `deploy/` realm doc, no opera
     WASM caller.
   - **OTS anchoring: 1/1 open (carried).** All observable HTTP halves + both calendar-transport guards
     in place; only a root actually transiting to **Bitcoin-confirmed** remains (offline-unprovable).
-  - **M-Deploy: 1 of ~6 Verify items met (SIGTERM trap), milestone PARTIALLY MET.** **CLOSED this
-    window:** SIGTERM cancels the run context (verified — `notifyShutdown` at `main.go:113-114` registers
-    `os.Interrupt, syscall.SIGTERM`, mutation-proven test in `shutdown_test.go`). **Still open:** no root
-    `Dockerfile` + CI-runs-container `/healthz` job; no GHCR publish workflow; no `-ldflags` version stamp
-    / `/version` field; no canonical `deploy/` realm doc; no operability/deployment doc.
-  - **Root README: missing (blocks "Done When").** Repo root has no `README.md`.
-- **Last ~10 iterations: ~3 milestone-Verify-or-gate-advancing (Pages publish unblock; cert UTC
-  gate-greening; this window's SIGTERM trap) / ~7 chrome·plumbing·config-leaf.** **No drift:** the loop
-  is on the M-Deploy runway — code-closable work that depends on no feature milestone, and it has begun
-  closing M-Deploy Verify criteria (SIGTERM done). The next slices are the Dockerfile/GHCR image + version
-  stamp.
+  - **M-Deploy: 2 of ~6 Verify items met (SIGTERM trap, version stamp), milestone PARTIALLY MET.**
+    **CLOSED this window:** the binary is version-stamped (`internal/version.Version`, `-ldflags -X`
+    target, default `dev`) and reports it at `GET /version` → `{"version":"<sha>"}` (HTTP-seam test +
+    `-X` injection proven by review). **Still open:** no root `Dockerfile` + CI-runs-container `/healthz`
+    job; no GHCR publish workflow; no canonical `deploy/` realm doc; no operability/deployment doc; no
+    root README.
+- **Last ~10 iterations: ~3 milestone-Verify-or-gate-advancing (Pages publish unblock; SIGTERM trap;
+  this window's version stamp) / ~7 chrome·plumbing·config-leaf.** **No drift:** the loop is on the
+  M-Deploy runway — code-closable work that depends on no feature milestone, and it is steadily closing
+  M-Deploy Verify criteria (SIGTERM, then version stamp). The next slice is the Dockerfile/GHCR image
+  (which consumes this `-ldflags -X` seam).
 
 ## M1 — Read-only Monitor
-**Status**: **met** — carried forward. The `a9f088a7..HEAD` diff touched only `cmd/iscc-monitor/main.go`
-+ `shutdown_test.go` (signal-trap wiring); no signature / RFC-6962 / Merkle / `proof` / `didweb` /
-`logclient` / `follower` / store source. All Verify criteria remain satisfied: `origin`/`vkey` golden;
-fork/shrink/equivocation golden-tested with freeze + alert-once + restart survival; structured logs;
-`/metrics`.
-- **Packages present** (unchanged, 27 source pkgs): `cmd/{iscc-monitor,notecheck,verifier-site,wasm}`;
+**Status**: **met** — carried forward. The `39f0403..HEAD` diff touched only `cmd/iscc-monitor/main.go`,
+`main_test.go`, the new `internal/version` leaf, and `mise.toml`; no signature / RFC-6962 / Merkle /
+`proof` / `didweb` / `logclient` / `follower` / store source. All Verify criteria remain satisfied:
+`origin`/`vkey` golden; fork/shrink/equivocation golden-tested with freeze + alert-once + restart
+survival; structured logs; `/metrics`.
+- **Packages present** (28 source pkgs, +`internal/version`): `cmd/{iscc-monitor,notecheck,verifier-site,wasm}`;
   internal — `badge, certificate, config, corsmw, dashboard, didweb, dossier, follower, healthz, index,
   logclient, metrics, metricshttp, ots, otsclient, proof, proofserve, registry, store, tiles,
-  tilesserve, verifier, web`. Module `github.com/iscc/iscc-monitor`, `go 1.26.1` language directive;
-  toolchain `mise.toml` `go = "1.26.4"`.
+  tilesserve, verifier, version, web`. Module `github.com/iscc/iscc-monitor`, `go 1.26.1` language
+  directive; toolchain `mise.toml` `go = "1.26.4"`.
 - **Reuse imports wired**: `golang.org/x/mod/sumdb/note`, `modernc.org/sqlite`,
   `transparency-dev/{merkle,tessera,formats}`, `gopkg.in/yaml.v3`,
   `github.com/iscc/iscc-lib/packages/go`, `github.com/nbd-wtf/opentimestamps`.
@@ -70,10 +72,10 @@ ETag/Cache-Control on size-dependent proof surfaces (the `/_ds/` static assets D
 
 ## M-UI — Evidence Ledger frontend
 **Status**: **behaviorally + named-region complete; the M-UI exit visual-pass + human sign-off is
-pending.** No template-render change this window (the only prod edit was `cmd/iscc-monitor` signal
-wiring). All six certificate clauses + both anchor panels + badge + DS shell + `/` index + log browser +
-hub dossier + frozen Exhibit + single-record page + ISCC-IDv1 decoder + Hub-List resolver + proof-bundle
-endpoint render and pass the behavioral HTTP-seam Verify.
+pending.** No template-render change this window (the only prod edits were the `internal/version` leaf +
+its `cmd/iscc-monitor` mount). All six certificate clauses + both anchor panels + badge + DS shell + `/`
+index + log browser + hub dossier + frozen Exhibit + single-record page + ISCC-IDv1 decoder + Hub-List
+resolver + proof-bundle endpoint render and pass the behavioral HTTP-seam Verify.
 - **Still open (NOT critical, carried):** instance identity is config-driven on THREE of six SSR
   mastheads; the proofserve trio (`browser.html`, `records.html`, `record.html`) still renders the
   static `monitor instance` placeholder — the follow-on arc. The `/` "recent declarers checked" hero
@@ -106,22 +108,24 @@ observable halves + both transport guards landed; only a real Bitcoin confirmati
   path).
 
 ## M-Deploy — Packaged & operable instance
-**Status**: **PARTIALLY MET (1 of ~6 Verify items) — the front-of-queue code-closable work (ADR-0013).**
+**Status**: **PARTIALLY MET (2 of ~6 Verify items) — the front-of-queue code-closable work (ADR-0013).**
 Verified by exploration:
-- **SIGTERM trapped — CLOSED this window.** `notifyShutdown()` (`cmd/iscc-monitor/main.go:113-114`)
+- **SIGTERM trapped — CLOSED (prior window).** `notifyShutdown()` (`cmd/iscc-monitor/main.go:115-116`)
   registers `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`, so `docker
-  stop`/orchestrator SIGTERM now cancels the same run context the follower loop drives, draining the
-  store via the deferred `st.Close()` instead of SIGKILL over irreplaceable evidence. Verified
-  non-vacuous by the `//go:build unix` `shutdown_test.go` (review mutation-proven). The resolved
-  `critical` ops issue was correctly deleted.
+  stop`/orchestrator SIGTERM cancels the run context, draining the store via the deferred `st.Close()`.
+  Mutation-proven by the `//go:build unix` `shutdown_test.go`.
+- **Version-stamped binary — CLOSED this window.** `internal/version.Version` (`var Version = "dev"`)
+  is the `-ldflags -X` injection target; `version.Handler()` is mounted at the exact reserved path
+  `/version` (`main.go:293`) and serves `{"version":"<Version>"}`. The `build:monitor` mise task
+  (`mise.toml:28-30`) stamps `$(git rev-parse --short HEAD)`. HTTP-seam test + the `-X` injection were
+  review-proven (default `dev`, stamped SHA flows env-free). **Carried `normal` trap:** `build:monitor`'s
+  `$(git rev-parse …)` empty-expands on git failure (no `.git` in a Docker context), silently stamping an
+  empty `/version` — must be fixed WITH/BEFORE the Dockerfile slice.
 - **No production `Dockerfile`** — only `.devcontainer/Dockerfile`. The Verify bar wants a tracked
   multi-stage `CGO_ENABLED=0` non-root `scratch`/distroless image + a CI job that runs the container and
   asserts `GET /healthz` → 200.
 - **No GHCR publish workflow** — `.github/workflows/` is `ci.yml` + `pages.yml` (the `.codes` verifier
   site) only; nothing pushes `ghcr.io/iscc/iscc-monitor` with `develop` + `sha-<short>` tags.
-- **No version stamp** — no `-ldflags` git-SHA injection and no `GET /version` / `/healthz` version
-  field (grep-confirmed: the only `ldflags` reference is the WASM-reproducibility doc comment in
-  `internal/web/web.go`).
 - **No canonical realm doc** — the only realm file is `internal/registry/testdata/realm.txt` (a
   testdata path); no `deploy/` directory exists. CLAUDE.md's env table DOES list the three masthead
   identity keys (verified), satisfying that sub-item.
@@ -133,39 +137,42 @@ Verified by exploration:
 
 ## Quality gates
 **Status**: **GREEN on every host.** Carried forward — no gate-relevant change this window beyond the
-SIGTERM wiring (review confirmed `mise run check` green, gofmt clean, cross-platform-clean with the
-Unix-only test correctly excluded on Windows).
+version-stamp leaf (review confirmed `mise run check` green, gofmt clean, `internal/version` is a pure
+HTTP leaf with no `internal/*` deps).
 - `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.26.1`; toolchain `go = "1.26.4"`);
   `mise run check` runnable.
 - **CI**: `.github/workflows/ci.yml` runs `mise run check` + the `cmd/notecheck` oracle on push/PR.
-  Latest CI run `27983760942` at HEAD `39f0403` is **success**; the matching Pages run `27983760940` is
-  `in_progress` (publishes the separate `.codes` verifier site — feature-irrelevant to the server gate).
-  HEAD == `origin/develop` (nothing unpushed).
-- **Latest `review` verdict: PASS / CONTINUE** (SIGTERM trap), gate confirmed green by `review`.
-- **Open issues: 5 critical, 5 normal, 13 low.** The five `critical` are the remaining M-Deploy ops asks
+  Latest CI run `27984749810` at HEAD `5f069d5` is **success**; the matching Pages run `27984749824` is
+  also **success** (publishes the separate `.codes` verifier site — feature-irrelevant to the server
+  gate). HEAD == `origin/develop` (nothing unpushed).
+- **Latest `review` verdict: PASS_WITH_NOTES / CONTINUE** (version-stamp leaf), gate confirmed green by
+  `review`.
+- **Open issues: 5 critical, 6 normal, 13 low.** The five `critical` are the remaining M-Deploy ops asks
   (GHCR image + push workflow, canonical mountable realm doc + identity env, DB-volume persistence
-  contract, public-route exposure decision, egress/footprint docs). The five `normal`: the DB-migration
+  contract, public-route exposure decision, egress/footprint docs). The six `normal`: the DB-migration
   hazard, the `/` "recent declarers checked" footer, the WASM signature-half gap, the per-hub-Anchor
-  design-honesty question, and the missing root README. DONE requires 0 critical AND 0 normal, so the
-  loop stays CONTINUE.
+  design-honesty question, the missing root README, and the new `build:monitor` empty-stamp-on-git-failure
+  trap. DONE requires 0 critical AND 0 normal, so the loop stays CONTINUE.
 
 ## Next Milestone
-**M-Deploy is the gate — five `critical` ops issues remain (SIGTERM just closed). The gate is green, so
-the code-closable in-repo Verify items can be verified cleanly.** In priority order:
+**M-Deploy is the gate — five `critical` ops issues remain (SIGTERM + version stamp now closed). The gate
+is green, so the code-closable in-repo Verify items can be verified cleanly.** In priority order:
 1. **Add the production `Dockerfile` + GHCR publish workflow** — multi-stage `CGO_ENABLED=0` non-root
    `scratch`/distroless image; a CI job that builds it, runs the container, asserts `GET /healthz` →
    200; a workflow pushing `ghcr.io/iscc/iscc-monitor` on push to `develop` tagged `develop` +
-   `sha-<short>`. (Now cleanly unblocked — `docker stop`/SIGTERM drains the store.)
-2. **Version-stamp the binary** (git SHA via `-ldflags`, default `dev`) and report it on `/healthz` JSON
-   or `GET /version` (HTTP-seam test).
-3. **Ship a canonical realm doc** under `deploy/` (e.g. `deploy/realm-testnet.txt`,
+   `sha-<short>`. **Fold in the fail-fast SHA fix** (the new `normal` empty-stamp issue) so the image
+   never ships an empty `/version` — either fix `build:monitor`'s `$(…)` to fail on empty, or compute the
+   SHA as a Dockerfile build-arg that fails the stage on empty.
+2. **Ship a canonical realm doc** under `deploy/` (e.g. `deploy/realm-testnet.txt`,
    `registry.Parse`-tested) and a tracked **deployment/operability doc** (volume path + backup unit +
    non-root uid + interim "recreate volume on schema change" migration policy + egress endpoints +
    reverse-proxy contract + `/metrics` exposure decision).
-4. **Add the public-facing root `README.md`** ("Done When" requirement) — what it is (verifiable cache),
+3. **Add the public-facing root `README.md`** ("Done When" requirement) — what it is (verifiable cache),
    the stack, a build/run snippet, spec pointers; link CLAUDE.md as the authoritative env source.
 
 Subsequent / parallel: the proofserve-trio masthead slice + the shared `Resolve` leaf consolidation; the
 design-first pass on the WASM signature half; the realm-index per-hub-vs-per-checkpoint Anchor honesty
 pass; the OTS "upgrades to Bitcoin-confirmed" half (offline-unprovable); the on-disk DB migration
 mechanism; the M-UI exit visual-pass + human sign-off (ADR-0012).
+</content>
+</invoke>
