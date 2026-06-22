@@ -90,7 +90,7 @@ const LogoPath = "/_ds/iscc-logo-black.png"
 // metadata into the wasm data section and the hash is unreproducible. Re-running that
 // task without re-pinning this const fails TestWasmVerifyHashPinned. The bytes are
 // toolchain-dependent, so this value tracks `mise run build:wasm`, not a bare go build.
-const WasmVerifyHash = "7d57ab1bbc0b11bd27bd0bc426121dc933158b1342a6656bc90bb5b012f22d2c"
+const WasmVerifyHash = "96b2a40d459c51817dd87911063ab14abf481080e30ecb17ef311090755852d3"
 
 // cacheControl is the Cache-Control policy for every /_ds/ asset. Each is served at
 // a stable, overwrite-in-place URL (not content-addressed), so it must NOT carry the
