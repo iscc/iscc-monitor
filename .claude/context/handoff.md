@@ -1,63 +1,82 @@
-## 2026-06-22 — Trap SIGTERM so `run()` shuts down gracefully under `docker stop`
+## 2026-06-22 — Review of: Trap SIGTERM so `run()` shuts down gracefully under `docker stop`
 
-**Done:** `run()` now cancels its shutdown context on **SIGTERM** as well as SIGINT, so a
-container/orchestrator stop (docker / Compose / Kubernetes / systemd all send SIGTERM) drains the
-in-flight poll, runs the deferred `store.Close()`, and exits 0 instead of being SIGKILLed mid-commit
-over irreplaceable evidence. The single-line behavior change (`signal.NotifyContext(...,
-os.Interrupt, syscall.SIGTERM)`) is extracted behind a tiny package-level `notifyShutdown()` seam so
-the SIGTERM registration is unit-testable without driving the whole of `run()`.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `cmd/iscc-monitor/main.go`: added the `"syscall"` import; extracted the shutdown-context
-  registration into `notifyShutdown() (context.Context, context.CancelFunc)` which registers
-  `os.Interrupt, syscall.SIGTERM`; `run()` now calls `ctx, stop := notifyShutdown()`; updated the
-  package doc ("runs until SIGINT or SIGTERM") and the `run` doc ("on a clean SIGINT or SIGTERM
-  shutdown Loop.Run returns ctx.Err()") to name SIGTERM per the evergreen-comment rule. No
-  reordering of the `store.Open` / `defer Close` / `registerHubs` / goroutine wiring — change is
-  minimal.
-- `cmd/iscc-monitor/shutdown_test.go` (new, `//go:build unix`): `TestSIGTERMCancelsShutdownContext`
-  drives the `notifyShutdown` seam directly, self-delivers a real `syscall.SIGTERM` via
-  `syscall.Kill(syscall.Getpid(), …)`, and asserts the returned context's `Done()` fires within 2s;
-  `defer stop()` tears down the process-wide trap so no sibling test swallows a later signal.
+**Summary:** The advance adds `syscall.SIGTERM` (alongside `os.Interrupt`) to `run()`'s shutdown
+`signal.NotifyContext`, extracted behind a tiny package-level `notifyShutdown()` seam, plus a
+`//go:build unix` test that self-delivers a real SIGTERM and asserts the returned context cancels. The
+change is exactly the one line of behavior `next.md` asked for; scope is 1 production file + 1 test file,
+mutation-proven non-vacuous, cross-platform-clean, and `mise run check` is green. It closes the `critical`
+M-Deploy ops issue so `docker stop` (SIGTERM, not SIGINT) now drains the store instead of SIGKILL-ing it
+mid-commit over irreplaceable evidence.
 
-**Verification:** `mise run check` → **green** (all 27 packages `ok`; `go build` + `go vet` clean;
-`gofmt -l .` empty across the whole tree).
-- `go test -count=1 -run TestSIGTERM ./cmd/iscc-monitor` → **PASS** (filter catches the
-  `TestSIGTERM…` name as required).
-- **Mutation check (non-vacuous, run then restored):** replacing `syscall.SIGTERM` with
-  `syscall.SIGUSR2` (keeps `syscall` imported so it is a *runtime* mutation, not a compile error)
-  makes the test FAIL — the process takes SIGTERM's default disposition and is terminated
-  (`signal: terminated`), so `<-ctx.Done()` never fires and the 2s deadline trips. The literal
-  `next.md` revert (`os.Interrupt` only) also fails the test, as an unused-`syscall`-import build
-  error, so the registration is load-bearing both structurally and at runtime. `main.go` restored
-  byte-clean after each mutation; test green again.
-- `grep -n "syscall.SIGTERM" cmd/iscc-monitor/main.go` → present at the `notifyShutdown` site; no
-  bare `os.Interrupt`-only `signal.NotifyContext` remains in `cmd/iscc-monitor`.
-- Cross-platform: `GOOS=windows GOARCH=amd64 go build ./cmd/iscc-monitor` succeeds — the
-  unconditional `syscall.SIGTERM` production registration compiles on Windows; the Unix-only test
-  *mechanism* (`syscall.Kill`/`Getpid`) is correctly excluded by `//go:build unix`, not skipped at
-  runtime.
+**Verification:**
+- [x] `mise run check` green — all 27 packages `ok`; `go build` + `go vet` clean.
+- [x] `go test -count=1 -run TestSIGTERM ./cmd/iscc-monitor` — PASS (`TestSIGTERMCancelsShutdownContext`,
+  the name matches the documented `-run TestSIGTERM` filter shorthand).
+- [x] **Mutation check (run, then restored byte-clean):** replacing `syscall.SIGTERM` with
+  `syscall.SIGUSR2` (keeps `syscall` imported → runtime, not compile, mutation) makes the test FAIL —
+  the process takes SIGTERM's default disposition and is terminated (`signal: terminated`), so
+  `<-ctx.Done()` never fires and the 2s deadline trips. `main.go` restored; `git status` shows no
+  residual diff; test green again. Non-vacuous confirmed.
+- [x] `gofmt -l .` empty across the whole tree; touched files clean.
+- [x] `grep -n "syscall.SIGTERM" cmd/iscc-monitor/main.go` → present at the `notifyShutdown` site; the
+  only `signal.NotifyContext` in `cmd/iscc-monitor` is the SIGTERM-registering one (no bare
+  `os.Interrupt`-only call remains).
+- [x] Cross-platform: `GOOS=windows GOARCH=amd64 go build ./cmd/iscc-monitor` AND `go vet ./cmd/iscc-monitor`
+  succeed — the production registration is unconditional and compiles on Windows; the Unix-only test is
+  correctly EXCLUDED there (`GOOS=windows go list -f '{{.TestGoFiles}}'` lists only `main_test.go`; Linux
+  lists `main_test.go shutdown_test.go`). The build tag is a platform-capability guard on the test's
+  `syscall.Kill`/`Getpid` mechanism, not a gate dodge.
+- [x] Scope discipline — 1 prod file (within ≤3) + 1 test file; nothing in `## Not In Scope` touched (no
+  Dockerfile, no GHCR workflow, no `internal/config` `stop_grace_period` knob, no realm doc, no `run()`
+  body restructuring; the 5s `serveMetrics` shutdown timeout is unchanged).
+- [x] Oracle gate **N/A** — pure process-lifecycle wiring; `git diff --name-only` = the two
+  `cmd/iscc-monitor` files only. `go.mod` / `go.sum` / `internal/store/schema.sql` byte-identical
+  (empty diff). No signature / RFC-6962 / Merkle / did:web / proof path; `proof/verify` purity + WASM
+  build unaffected.
+- [x] Gate-integrity scan of all unpushed commits (`af20446..HEAD`) — no `//nolint`, no `t.Skip`/
+  `SkipNow`, no swallowed error, no deleted assertion. The only `//go:build` is the `unix` tag on the
+  test file (justified platform guard, above).
 
-**Next:** The next front-of-queue M-Deploy `critical` slice is the **multi-stage Dockerfile + GHCR
-publish workflow** (its own ≤3-file step, ADR-0013) — now unblocked because `docker stop` (SIGTERM)
-drains the store cleanly. That step should also carry the `-ldflags` git-SHA build stamp on
-`/healthz` or a `GET /version` (the version-stamp slice was deliberately deferred out of this one).
-Cheap independent slices still open: a canonical mountable `deploy/realm-testnet.txt` (not the Go
-`testdata` realm) + the documented instance-identity env values, the operability/deployment doc
-(which is where the recommended Compose `stop_grace_period` line belongs), and the public
-`README.md`.
+**Issues found:** (none) — no new defects. Deleted the resolved `critical` *"Trap SIGTERM so the
+container shuts down gracefully"* issue: the test proves the context cancels on SIGTERM, and the
+unchanged `run()` wiring (deferred `st.Close()`, `Run` returning `ctx.Err()` treated as clean) satisfies
+the rest of its acceptance ("`docker stop` shows graceful exit, no SIGKILL"). The issue's residual
+`stop_grace_period` doc-line recommendation is subsumed by the open M-Deploy operability/deployment-doc
+slice (it is a doc line, never a config key — `next.md` Not-In-Scope was explicit), so the entry is fully
+closed.
+
+**Codex second opinion:** Clean — completed after ~4 min (it self-launched a thorough cross-platform
+`go tool dist list` build sweep of the `syscall.SIGTERM` portability claim, then `gofmt -d` + `go vet` +
+`git show --check`, all succeeding per `/tmp/codex-review.log`). Final verdict: *"The change correctly
+routes shutdown through a SIGTERM-aware signal context and the added test covers that behavior. I did not
+find any introduced correctness issues."* No findings to triage; its independent cross-platform/format/vet
+checks corroborate my own (mutation, Windows build+vet+test-exclusion, gate-integrity scan).
+
+**Visual check:** n/a — no SSR surface changed. The diff is `cmd/iscc-monitor` process-lifecycle wiring
+(signal registration + a test); it renders nothing. No `.dc.html` mockup comparison applies.
+
+**Next:** The front-of-queue M-Deploy `critical` is now the **multi-stage Dockerfile + GHCR publish
+workflow** (its own ≤3-file step, ADR-0013) — unblocked because `docker stop` (SIGTERM) now drains the
+store cleanly. Fold in the `-ldflags` git-SHA build stamp surfaced on `/healthz` JSON or a tiny
+`GET /version` (the version-stamp slice was deferred out of the SIGTERM step). Cheap independent slices
+still open: `deploy/realm-testnet.txt` (a canonical mountable realm, not the Go `testdata` path) + the
+documented instance-identity env values, the operability/deployment doc (the natural home for the
+recommended Compose `stop_grace_period` line and the persistence/egress/exposure ops asks), and the
+public root `README.md` (a `target.md` "Done When" requirement → DONE is not reachable until it exists).
+M-Deploy is 0/Verify with 5 `critical` ops issues remaining after this close.
 
 **Notes:**
-- Scope-clean: exactly 1 production file (within the ≤3 budget) + 1 test file. Nothing in
-  `## Not In Scope` was touched — no Dockerfile, no GHCR workflow, no `internal/config` change (no
-  `stop_grace_period`/shutdown-timeout knob), no realm doc, no `run()` body restructuring. The
-  existing 5s `serveMetrics` shutdown timeout is unchanged.
-- The `notifyShutdown` seam preserves the `Run returns ctx.Err()` contract the learnings flag:
-  SIGTERM cancels the *same* `context.Background()`-rooted context whose cancel `loop.Run` returns,
-  which `run()` already treats as clean via `err != context.Canceled` (the `==`, not `errors.Is`,
-  comparison — left untouched and still correct).
-- Oracle gate **N/A** — pure process-lifecycle wiring; no signature / RFC-6962 / Merkle / did:web /
-  proof / `go.mod` / `go.sum` / `schema.sql` path touched (`git diff` is the two `cmd/iscc-monitor`
-  files only). `proof/verify` purity and the WASM build are unaffected.
-- Pre-existing working-tree change `M .claude/context/issues.md` was present at the start of this
-  iteration (not mine); I did not stage or modify it.
+- The test sends SIGTERM *before* selecting on `ctx.Done()`; this is correct, not racy —
+  `signal.NotifyContext` registers the handler synchronously before `notifyShutdown()` returns, so a
+  signal delivered afterward cannot be lost. `defer stop()` tears down the process-wide trap; the main
+  suite has no `t.Parallel`, so no sibling test races on the handler. Matches the `next.md` design exactly.
+- The `notifyShutdown` seam preserves the `Run returns ctx.Err()` contract `learnings/cmd-monitor.md`
+  flags: SIGTERM cancels the SAME `context.Background()`-rooted context whose cancel `loop.Run` returns,
+  which `run()` already treats as clean via `err != context.Canceled` (the bare `==`, left untouched and
+  still correct — the cancel error is not wrapped).
+- Pre-existing working-tree change `M .claude/context/issues.md` was present at iteration start (from a
+  prior step); the advance correctly did not stage it. This review's only `issues.md` change is the
+  resolved-SIGTERM deletion above.

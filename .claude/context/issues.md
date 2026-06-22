@@ -437,26 +437,6 @@ filed it and does **not** affect priority.
 - **Spec:** ADR-0003 `CGO_ENABLED=0` static build; CLAUDE.md "single binary configured
   entirely through environment variables".
 
-## Trap SIGTERM so the container shuts down gracefully (run() handles SIGINT only)
-- **Priority:** critical
-- **Source:** [human] (iscc-infra ops, container-lifecycle defect)
-- **What / where / how to verify:** `run()` binds shutdown to
-  `signal.NotifyContext(context.Background(), os.Interrupt)` (`cmd/iscc-monitor/main.go:133`)
-  — SIGINT only. Docker / Compose `stop` (and Kubernetes, systemd) send **SIGTERM**, not
-  SIGINT. With no SIGTERM handler the Go runtime takes SIGTERM's default disposition and
-  terminates the process immediately: the context never cancels, `Loop.Run` never returns
-  cleanly, the deferred `st.Close()` (`main.go:131`) never runs, and any in-flight poll /
-  store commit / OTS tick is cut mid-flight instead of draining. For a store this project
-  itself calls "irreplaceable evidence", an unclean stop on *every* redeploy is the wrong
-  default. Fix: add SIGTERM to the call —
-  `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)` — and state a
-  recommended Compose `stop_grace_period` (how long a clean shutdown of the current poll +
-  store flush may take). Verify fixed: sending SIGTERM to the running binary cancels the
-  context, `Loop.Run` returns, `st.Close()` runs, and the process exits 0 within the grace
-  window (a `docker stop` shows graceful exit, no SIGKILL).
-- **Spec:** ADR-0007 evidence durability; CLAUDE.md cross-platform/ops reality (containers
-  and orchestrators terminate via SIGTERM).
-
 ## Provide a canonical, mountable testnet realm file (not testdata) + the instance identity env values
 - **Priority:** critical
 - **Source:** [human] (iscc-infra ops, required config)
