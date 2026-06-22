@@ -1,4 +1,4 @@
-<!-- area: .github/workflows/ci.yml + .github/workflows/pages.yml -->
+<!-- area: .github/workflows/ci.yml + .github/workflows/pages.yml + .github/workflows/publish.yml -->
 <!-- indexed-as: ci.md · owner: review · rotate at ~40 bullets / ~150 lines -->
 
 # CI + Pages workflows (`.github/workflows/`)
@@ -51,13 +51,41 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `mise.toml build:monitor` task is a SEPARATE consumer of the same `-X` path and is still unguarded — its
   `normal` issue stays open; this slice only hardened the image.
 - **`.dockerignore` keeps the context lean but must MIRROR the repo `.gitignore`'s never-commit set.** It
-  excludes `.git`/`cauldron/`/built binaries/`*.db`/`.claude/`/`.github/` etc. Two gaps to close when this
-  area is next touched (open `normal` issue): the gitignored SECRET patterns (`.env`, `.env.*`,
-  `**/auth.json`) and the WAL/SHM SIDECARS (`*.db-wal`/`*.db-shm` — `*.db`/`*.sqlite*` match NEITHER) are
-  not excluded, so `COPY . .` would bake a developer's local secret/state into the build-STAGE layer (never
-  the final image — it only `COPY --from=build`s the binary; never CI — a fresh checkout has none). General
-  rule: a `.dockerignore` for a `COPY . .` Dockerfile should be a superset of the repo's secret `.gitignore`
-  lines, not just the large/breaks-the-build ones.
+  excludes `.git`/`cauldron/`/built binaries/`*.db`/`.claude/`/`.github/` etc. The SECRET patterns (`.env`,
+  `.env.*`, `**/auth.json`) and WAL/SHM SIDECARS (`*.db-wal`/`*.db-shm` — `*.db`/`*.sqlite*` match NEITHER)
+  are now listed (advance `a15a9f4`, the `normal` gap closed for ROOT-level files). General rule still
+  holds: a `.dockerignore` for a `COPY . .` Dockerfile should be a superset of the repo's secret
+  `.gitignore` lines. **`.dockerignore` matching is NOT `.gitignore` matching** (Codex P2, reviewer-
+  confirmed): a slashless pattern (`.env`, `*.db-wal`) matches only the CONTEXT ROOT under Docker's
+  `filepath.Match`, whereas `.gitignore` matches the basename at ANY depth — so a nested `deploy/.env` /
+  `data/monitor.db-wal` is gitignored but still sent to the build stage. To truly mirror the gitignore you
+  must use recursive `**/` forms (`**/.env`, `**/*.db-wal`); `**/auth.json` already does. Latent
+  defense-in-depth only (build-STAGE layer, never the final image which only `COPY --from=build`s the
+  binary, never CI which has none of these files) — tracked as a `low` issue.
+
+## GHCR publish workflow (`.github/workflows/publish.yml`)
+
+- **The image PUBLISH lives in its own file, separate from `ci.yml`'s build+smoke `docker` job** (advance
+  `a15a9f4`, mirrors the `pages.yml` separation so triggers + permissions stay independent — the `ci.yml`
+  `docker` job stays a pure build+smoke with NO registry login). Shape: `on: push: [develop]` +
+  `workflow_dispatch`; top-level `permissions: {contents: read, packages: write}` (the auto-provided
+  `GITHUB_TOKEN` + `packages: write` is all the push needs — no PAT); `concurrency: {group: publish,
+  cancel-in-progress: false}`. One `ubuntu-latest` job: checkout → derive 7-hex short SHA
+  (`echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"`) → `docker/login-action@v3` (ghcr.io, `github.actor`
+  + `GITHUB_TOKEN`) → `docker/build-push-action@v6` with hand-written inspectable `tags:`
+  (`:develop` + `:sha-<short>`) and `build-args: VERSION=${{ github.sha }}`.
+- **`github.sha` cannot empty-expand** (unlike a `$(git rev-parse)` substitution), so the Dockerfile's
+  required non-empty `VERSION` build-arg is always satisfied in Actions — this is why the workflow uses
+  the Actions context var, not a shell substitution, for the build-arg (sidesteps the `-X` empty-stamp
+  class entirely on the CI path). Docker is absent on the dev host, so verify this workflow locally by
+  YAML validity + static inspection only (trigger/tags/permissions/build-arg) — the Verify bar asks for
+  exactly that.
+- **`workflow_dispatch` has no ref guard** (Codex P2, reviewer-confirmed): the job pushes the floating
+  `:develop` tag unconditionally, so a manual dispatch from a non-develop ref would publish that branch's
+  code as `:develop`. Same pattern as `pages.yml` (intentionally mirrored) — a pre-existing repo
+  convention, not a regression, and `workflow_dispatch` is maintainer-only. Hardening opportunity tracked
+  as a `normal` issue: guard the publish job/`:develop` tag on `github.ref == 'refs/heads/develop'` (best
+  applied to `pages.yml` too for consistency).
 
 ## Pages publish workflow (`.github/workflows/pages.yml`)
 

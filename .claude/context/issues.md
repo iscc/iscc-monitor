@@ -403,58 +403,48 @@ filed it and does **not** affect priority.
 - **Spec:** target.md "Done When" (now requires a root README); CLAUDE.md project overview + "Running a
   local dev instance"; memory `docs-layout-convention` (`.claude/` = agentic docs, public docs elsewhere).
 
-## `build:monitor`'s git-SHA command substitution empty-expands on git failure, silently stamping an empty `/version`
-- **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed by probe)
-- **What / where / how to verify:** `mise.toml`'s new `tasks."build:monitor"` runs
-  `go build -ldflags "-X …version.Version=$(git rev-parse --short HEAD)" …`. When the task runs where
-  `git rev-parse` FAILS — a Docker build context that does not COPY `.git`, a source-tarball export, or
-  a box without `git` on PATH — the command exits 128 but the `$(…)` substitution empty-expands to ``,
-  and the outer `go build` STILL SUCCEEDS with `-X …Version=` (empty). An empty `-X` value overrides the
-  `dev` default (it is not a no-op), so the resulting binary serves `{"version":""}` — silently defeating
-  the build-provenance guarantee the task exists to provide. Reviewer-confirmed by two probes: (1) in a
-  non-git dir `git rev-parse --short HEAD` exits 128 and `$(…)` captures the empty string; (2) a minimal
-  build with `-ldflags "-X …Version="` builds clean and prints `[]` for the version (empty overrides
-  `dev`). This does NOT affect this increment's gates: `mise run check` / `build` are git-free and build
-  the `dev` default (still non-empty), the HTTP-seam test asserts non-empty, and the mechanical injection
-  check stamped the real SHA — so all gates are green and the increment's Verify bar is met. It is a
-  LATENT trap the very NEXT M-Deploy slice will hit: the production Dockerfile (`critical`, ADR-0013)
-  CONSUMES this exact `-ldflags -X` path, and a multi-stage build that does not `COPY .git` (the common,
-  smaller-context choice) would produce an empty-version image while every gate stays green. Fix WITH or
-  BEFORE the Dockerfile slice: split the lookup so it fails fast, e.g.
-  `sha=$(git rev-parse --short HEAD) && [ -n "$sha" ] && go build -ldflags "-X …Version=$sha" …`
-  (or compute the SHA in the Dockerfile build-arg and fail the stage on empty). Verify fixed: running
-  `build:monitor` in a directory where `git rev-parse` fails returns a NON-zero exit (no binary, or a
-  binary whose `/version` is the non-empty `dev`/explicit default), never an empty-version binary; a check
-  that strips `.git` and runs the task asserts the failure.
-- **Spec:** target.md M-Deploy "version-stamped (git SHA via `-ldflags`, default `dev` when unset)" — an
-  empty stamp is neither the SHA nor the `dev` default; the GHCR-image issue's "the running git SHA is
-  reported by the binary"; CLAUDE.md "fail loudly" / "Never weaken a quality gate to pass".
+## `.dockerignore` secret/sidecar globs are slashless — they only exclude CONTEXT-ROOT files, not nested ones
+- **Priority:** low
+- **Source:** [review] (Codex P2, reviewer-confirmed against Docker's `filepath.Match` vs git basename matching)
+- **What / where / how to verify:** The `.dockerignore` (advance `a15a9f4`) now lists `.env`, `.env.*`,
+  `*.db-wal`, `*.db-shm` (`/workspace/iscc-monitor/.dockerignore:23-36`) — closing the ROOT-level gap — but
+  these are SLASHLESS patterns. Docker's `.dockerignore` uses Go `filepath.Match`, where a slashless
+  pattern matches ONLY a file directly under the build-context root; `.gitignore`, by contrast, matches the
+  basename at ANY depth. Reviewer-confirmed: `git check-ignore` IGNORES `deploy/.env` and
+  `data/monitor.db-wal`, but Docker would NOT exclude them — so a nested secret/sidecar (e.g. `deploy/.env`,
+  `data/monitor.db-wal`) is still sent to the build stage by `COPY . .`. The intent ("a superset of the
+  gitignore's never-commit set") therefore holds only for root-level files. `**/auth.json` already uses the
+  correct recursive form. NOT a leak in the shipped artifact (the final stage only `COPY --from=build`s the
+  binary, never the context) and NOT a CI issue (a fresh checkout has none of these files) — a latent
+  defense-in-depth gap, same class as the now-closed root-level one, strictly narrower. Does NOT block
+  progress; all gates green. Fix when `.dockerignore` is next touched: use recursive forms — `**/.env`,
+  `**/.env.*`, `**/*.db-wal`, `**/*.db-shm` (mirroring the already-recursive `**/auth.json`) — so the
+  exclusion matches the gitignore at any depth. Verify fixed: a throwaway `deploy/.env` /
+  `data/monitor.db-wal` in the working tree is NOT in the build context (a test stage `RUN ls` cannot see
+  them, or `docker build --progress=plain` shows them excluded).
+- **Spec:** repo `.gitignore` "Local secrets / state — never commit"; ADR-0013 server packaging;
+  `learnings/ci.md` (`.dockerignore` matching is not `.gitignore` matching).
 
-## `.dockerignore` does not mirror the gitignored secret patterns or the WAL/SHM DB sidecars
+## `publish.yml` `workflow_dispatch` can push the floating `:develop` tag from a non-develop ref
 - **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed against `.gitignore` + fnmatch)
-- **What / where / how to verify:** The new `.dockerignore` (`/workspace/iscc-monitor/.dockerignore:20-29`)
-  excludes `*.db`/`*.sqlite`/`*.sqlite3`/`*.sqlite*` and `.claude/`, but does NOT mirror two classes the
-  repo's own `.gitignore` already treats as never-commit: (1) the SECRET patterns `.env`, `.env.*`,
-  `**/auth.json` (`.gitignore` lines under "Local secrets / state"); (2) the WAL/SHM DB SIDECARS
-  `*.db-wal`/`*.db-shm` — reviewer-confirmed via fnmatch that `*.db` does NOT match `monitor.db-wal` and
-  `*.sqlite*` does NOT match a `.db-wal` either, and the monitor runs SQLite in WAL mode (CLAUDE.md), so
-  those sidecars are real on-disk artifacts. Because the Dockerfile does `COPY . .`, a developer who builds
-  the image with local gitignored secret/state files present sends them to the daemon and bakes them into
-  the BUILD-STAGE layer/cache. This does NOT reach the published image (the final stage does only
-  `COPY --from=build /iscc-monitor` — the binary, never the context) and does NOT affect CI (a fresh
-  checkout has none of these files — reviewer-confirmed `find` over the tree returns nothing, all gitignored),
-  so it is a defense-in-depth build-context hygiene gap, not a leak in the shipped artifact — does NOT block
-  progress and all gates are green. Fix WITH the GHCR-publish slice (the natural next toucher of
-  `.dockerignore`/Dockerfile): add `.env`, `.env.*`, `**/auth.json`, `*.db-wal`, `*.db-shm` (and
-  `.claude/settings.local.json` is already covered by the `.claude/` line) so the docker context mirrors the
-  gitignore's never-commit set. Verify fixed: `.dockerignore` lists the secret + sidecar patterns; a
-  throwaway `.env` / `monitor.db-wal` placed in the working tree is NOT present in the build context (e.g.
-  `docker build` with `--progress=plain` shows them excluded, or a test stage `RUN ls` cannot see them).
-- **Spec:** repo `.gitignore` "Local secrets / state — never commit (public-repo safety)"; CLAUDE.md
-  "single binary configured entirely through environment variables" (no secret belongs in the image);
-  ADR-0013 server packaging; `learnings/ci.md` (Dockerfile/context hygiene).
+- **Source:** [review] (Codex P2, reviewer-confirmed against the workflow)
+- **What / where / how to verify:** `.github/workflows/publish.yml` (advance `a15a9f4`) triggers on
+  `push: [develop]` AND `workflow_dispatch`, but the `publish` job has NO ref guard — it pushes the
+  floating `ghcr.io/iscc/iscc-monitor:develop` tag unconditionally. A maintainer can dispatch
+  `workflow_dispatch` against ANY ref (a feature branch, an old commit), and that run would publish the
+  selected ref's code as `:develop` — so infra pulling `:develop` could receive non-develop code (the
+  immutable `:sha-<short>` tag is unaffected, since it is keyed on the actual SHA). This mirrors the
+  in-repo `pages.yml` precedent (intentionally — `next.md` told advance to mirror its shape), so it is a
+  pre-existing repo convention, NOT a regression introduced here, and `workflow_dispatch` is
+  maintainer-only (not exposed to outside contributors). All gates green; does NOT block progress. Fix
+  when the publish/pages workflows are next touched: guard the publish job (or just the `:develop` tag
+  step) on `if: github.ref == 'refs/heads/develop'`, so a manual dispatch from a non-develop ref does NOT
+  move `:develop` (it could still push only the immutable `:sha-<short>`). Apply the same guard to
+  `pages.yml` for consistency (it has the identical unguarded `workflow_dispatch`). Verify fixed: the
+  publish job is gated on the develop ref; a `workflow_dispatch` from a feature branch does not update
+  `:develop`.
+- **Spec:** ADR-0013 server packaging (GHCR publish); the GHCR issue's "`develop` (floating) AND
+  `sha-<short>` (immutable)" tag contract — the floating tag must track develop only.
 
 ---
 
@@ -467,9 +457,20 @@ filed it and does **not** affect priority.
      standing spec the loop verifies against — re-derive these if this list is pruned. -->
 
 ## Publish a deployable container image to GHCR (Dockerfile + push workflow)
-- **Priority:** critical
+- **Priority:** low
 - **Source:** [human] (iscc-infra ops, pre-deploy blocker)
-- **What / where / how to verify:** There is no production Dockerfile (only
+- **STATUS — code-complete (advance `760213b` Dockerfile + `a15a9f4` publish workflow):** the production
+  multi-stage `Dockerfile` (static `CGO_ENABLED=0` binary → distroless/static nonroot, non-root uid 65532,
+  CA roots, ~28 MB, version-stamped, fail-fast on empty VERSION) AND `.github/workflows/publish.yml`
+  (push-to-`develop` + `workflow_dispatch`, `packages: write`, build-push tagging `:develop` + `:sha-<short>`
+  with a non-empty `VERSION` build-arg) both exist and are reviewer-verified (Dockerfile via the static-ELF
+  build half + the CI `docker` /healthz smoke; publish.yml via YAML-validity + tag/permission/trigger
+  inspection — Docker is CI-only on the dev host). What REMAINS is purely iscc-infra repo-settings work,
+  explicitly OUT of the loop's scope per `target.md` M-Deploy "Out of the loop's scope": make the GHCR
+  package public OR issue infra a `read:packages` token. Demoted to `low` (was `critical`) — the loop has
+  delivered everything code-closable; the residual is a one-time human/infra step that does not gate DONE
+  here. Kept as a tracking record until the human confirms the package is pullable.
+- **What / where / how to verify (original ask):** There was no production Dockerfile (only
   `.devcontainer/Dockerfile`) and no image-publish workflow — `.github/workflows/ci.yml`
   only builds+vets+tests, and `pages.yml` deploys the SEPARATE `.codes` verifier site, not
   the server. iscc-infra deploys via Docker Compose + caddy-docker-proxy and needs a

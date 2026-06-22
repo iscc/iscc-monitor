@@ -30,10 +30,12 @@ index (`.claude/context/learnings.md`); the package-local mechanics are here.
   fails (no `.git` in a Docker build context, a source export, or no `git` on PATH): `$(…)` exits 128
   but empty-expands and the outer `go build` succeeds. The default `check`/`build` tasks are git-free and
   build the non-empty `dev`, so the GATE never sees this — it surfaces only in the stamped path the next
-  M-Deploy/Dockerfile slice consumes. Open `normal` issue: split the SHA lookup so it fails fast
-  (`sha=$(git rev-parse --short HEAD) && [ -n "$sha" ] && go build …`). General rule for any future `-X`
-  stamp: an empty substitution silently defeats the provenance, never errors — guard the value, do not
-  trust `$( )` to abort the build.
+  M-Deploy/Dockerfile slice consumes. **Both stamped consumers are now guarded** (`normal` issue closed):
+  the Dockerfile build RUN (`[ -n "$VERSION" ] || exit 1`) AND `mise.toml build:monitor`
+  (`sha=$(git rev-parse --short HEAD) && [ -n "$sha" ] && go build …`, advance `a15a9f4`) both fail fast
+  on an empty value rather than shipping a blank `/version`. General rule for any future `-X` stamp: an
+  empty substitution silently defeats the provenance, never errors — guard the value, do not trust
+  `$( )` to abort the build.
 - **It is deliberately NOT a config key.** A compile-time `-ldflags` stamp, not a runtime env value, so
   `internal/config` stays a `{fmt time}`-only leaf and there is no `ISCC_MONITOR_VERSION`. The target
   offered `/healthz` JSON OR a `GET /version`; the slice chose `/version` and left `internal/healthz`

@@ -1,61 +1,75 @@
-## 2026-06-22 — GHCR publish workflow + `.dockerignore` secret/sidecar fold-in + `build:monitor` empty-SHA fail-fast
+## 2026-06-22 — Review of: GHCR publish workflow + `.dockerignore` secret/sidecar fold-in + `build:monitor` empty-SHA fail-fast
 
-**Done:** Added `.github/workflows/publish.yml` that, on push to `develop` (plus `workflow_dispatch`),
-builds the existing root `Dockerfile` unchanged and pushes `ghcr.io/iscc/iscc-monitor` tagged BOTH
-`develop` (floating) AND `sha-<short>` (immutable), passing a non-empty `VERSION=${{ github.sha }}`
-build-arg. Folded in the two carried `normal` traps this slice is the natural toucher of: hardened
-`.dockerignore` to mirror the gitignore's secret/sidecar never-commit set, and split the host
-`build:monitor` SHA lookup behind a `[ -n "$sha" ]` gate so a git failure aborts with no binary
-instead of stamping an empty `/version`.
+**Verdict:** PASS_WITH_NOTES
+**Loop:** CONTINUE
 
-**Files changed:**
-- `.github/workflows/publish.yml` (new): push-to-`develop` + `workflow_dispatch` trigger; top-level
-  `permissions: {contents: read, packages: write}`; `concurrency: {group: publish}` (mirrors
-  `pages.yml`'s shape); one `ubuntu-latest` `publish` job: checkout → derive 7-hex short SHA
-  (`${GITHUB_SHA::7}`) → `docker/login-action@v3` (ghcr.io, `github.actor` + `GITHUB_TOKEN`) →
-  `docker/build-push-action@v6` with hand-written inspectable `tags:` (`:develop` + `:sha-<short>`)
-  and `build-args: VERSION=${{ github.sha }}`.
-- `.dockerignore`: added `*.db-wal`, `*.db-shm` (the `*.db`/`*.sqlite*` globs match neither) and the
-  secret set `.env`, `.env.*`, `**/auth.json`, each with a rationale comment. Now a superset of the
-  repo `.gitignore`'s never-commit secret lines.
-- `mise.toml` (`build:monitor` task only): rewrote `run` to
-  `sha=$(git rev-parse --short HEAD) && [ -n "$sha" ] && go build -ldflags "-X …Version=$sha" -o …`
-  so an empty SHA fails fast (non-zero exit, no binary). `build`/`check`/`vet`/`test`/`build:wasm`
-  unchanged and still git-free.
+**Summary:** Added `.github/workflows/publish.yml` (push-to-`develop` + `workflow_dispatch` → GHCR
+build-push tagging `:develop` + `:sha-<short>` with a non-empty `VERSION` build-arg), hardened
+`.dockerignore` to list the gitignore's secret + WAL/SHM-sidecar patterns, and split `mise.toml`'s
+`build:monitor` SHA lookup behind a `[ -n "$sha" ]` fail-fast gate. The diff matches `next.md` exactly
+(3 files: 1 new workflow + 2 edits, no Go source), all gates are green, and the work is scope-clean and
+mirrors the in-repo `pages.yml` precedent. Two Codex-confirmed defense-in-depth gaps remain (non-blocking,
+both filed), so PASS_WITH_NOTES rather than PASS.
 
-**Verification:** `mise run check` → green (all 28 packages `ok`, build + vet clean; no Go source
-touched). `gofmt -l .` → empty outside `cauldron/`. Per-criterion:
-- [x] `publish.yml` parses as valid YAML (cached `gopkg.in/yaml.v3` snippet, the `learnings/ci.md`
-  pattern) — `on.push.branches` contains `develop`; top-level `permissions.packages == write`
-  (`contents: read`); tag set contains BOTH literal `ghcr.io/iscc/iscc-monitor:develop` AND a
-  `ghcr.io/iscc/iscc-monitor:sha-`-prefixed tag; a non-empty `VERSION=${{ … }}` build-arg is passed.
-  All contract checks PASS.
-- [x] `.dockerignore` lists `.env`, `.env.*`, `**/auth.json`, `*.db-wal`, `*.db-shm` — each
-  `grep -qxF` PRESENT.
-- [x] `build:monitor` fail-fast holds: empty `sha=$(true)` → `aborted: empty sha`, exit 1, build step
-  never runs; non-empty `sha=abc1234` → `built`. The real task on this host (git present) builds the
-  26 MB binary, exit 0, and stamps the real short SHA `e0ea36c` — happy path intact.
+**Verification:**
+- [x] `mise run check` green — all 28 packages `ok`, build + vet clean (no Go source touched; confirms the
+  `mise.toml` task-table edit did not break the gate). Cert package passed here (this host is UTC; the
+  earlier-noted local-TZ cert failure does not reproduce).
+- [x] `gofmt -l .` empty outside `cauldron/`.
+- [x] `publish.yml` valid YAML + contract holds (checked via cached `gopkg.in/yaml.v3`): parses;
+  `on.push.branches` contains `develop`; `workflow_dispatch` present; `permissions.packages == write`,
+  `contents == read`; tag set contains BOTH literal `ghcr.io/iscc/iscc-monitor:develop` AND a
+  `…:sha-`-prefixed immutable tag; non-empty `VERSION=${{ github.sha }}` build-arg passed. All PASS.
+- [x] `.dockerignore` lists `.env`, `.env.*`, `**/auth.json`, `*.db-wal`, `*.db-shm` — each `grep -qxF`
+  PRESENT; now a complete superset of the gitignore never-commit set for root-level files
+  (`.claude/settings.local.json` covered by the existing `.claude/` line).
+- [x] `build:monitor` fail-fast holds: empty `sha` → `aborted: empty sha` (no build); non-empty → `built`.
+  The real task on this host (git present) builds the 26 MB binary, exit 0, stamps the live short SHA;
+  the binary runs and reports the required-env error — happy path intact.
+- [x] Quality-gate integrity: scanned all unpushed commits (`@{upstream}..HEAD`); the two `t.Skip`/
+  `//go:build` grep hits are both in prose (handoff/learnings), not code. No gate circumvention.
+- [x] Scope discipline: exactly the 3 declared files; no Go source, `go.mod`/`go.sum`/`schema.sql`,
+  Dockerfile, or `ci.yml` touched. `ci.yml`'s `docker` job correctly retains NO registry login (Not-In-
+  Scope honored — publish lives in its own file). Oracle/conformance gate N/A (packaging + task-config only).
 
-**Next:** The remaining cheap M-Deploy slices are still open (none code-blocked): the canonical
-`deploy/realm-testnet.txt`, the operability/deployment doc, and the root `README.md` (which
-`target.md` "Done When" requires before DONE). Suggest `deploy/realm-testnet.txt` next — it is the
-smallest, and the Dockerfile's baked realm (`internal/registry/testdata/realm.txt`) can then point at
-the canonical file in a follow-up.
+**Issues found:** (none reviewer-original) — two Codex-confirmed issues filed (below). Resolved this
+iteration: the two carried `normal` issues (`build:monitor` empty-SHA; `.dockerignore` root-level
+secret/sidecar gap) — both verified fixed and deleted/folded. The `critical` GHCR issue demoted to `low`:
+its code half (Dockerfile + publish workflow) is now complete; only iscc-infra repo-settings (make package
+public / issue `read:packages` token) remain, which are explicitly out of the loop's scope.
+
+**Codex second opinion:** Two `[P2]` findings, both reviewer-confirmed REAL but non-blocking, both filed:
+- **`.dockerignore` secret globs not recursive** (P2) → CONFIRMED. Slashless patterns (`.env`, `*.db-wal`)
+  match only the context ROOT under Docker's `filepath.Match`, whereas `.gitignore` matches the basename at
+  any depth (reviewer-verified: `git check-ignore` IGNORES `deploy/.env`/`data/monitor.db-wal`, Docker would
+  not exclude them). So the "superset of gitignore" intent holds only for root-level files. Same defense-in-
+  depth class as the gap this slice closed, strictly narrower; never reaches the shipped image (final stage
+  only `COPY --from=build`s the binary) or CI. Filed `low` — fix: use `**/.env`, `**/*.db-wal`, etc.
+- **`workflow_dispatch` can publish `:develop` from a non-develop ref** (P2) → CONFIRMED. The publish job
+  has no ref guard, so a maintainer dispatching from a feature branch would push that code as the floating
+  `:develop` tag (immutable `:sha-<short>` unaffected). Mirrors the in-repo `pages.yml` precedent
+  (intentionally — `next.md` told advance to mirror it), so a pre-existing convention, not a regression;
+  `workflow_dispatch` is maintainer-only. Filed `normal` — fix: gate on `github.ref ==
+  'refs/heads/develop'` (apply to `pages.yml` too).
+
+**Visual check:** n/a — no SSR surface changed (CI/packaging config only: `publish.yml`, `.dockerignore`,
+`mise.toml`).
+
+**Next:** The remaining code-closable M-Deploy slices are still open (none code-blocked): the canonical
+`deploy/realm-testnet.txt` (smallest), the operability/deployment doc, and the root `README.md`
+(`target.md` "Done When" requires it before DONE). Suggest `deploy/realm-testnet.txt` next, then the
+deployment doc (which can fold in the persistence/egress/exposure `critical` infra asks), then `README.md`.
+The new `normal` `workflow_dispatch` ref-guard issue is a small fold-in candidate whenever a workflow file
+is next touched.
 
 **Notes:**
-- **Docker is absent on this host (CI-only, per `learnings/ci.md`)**, so the `docker push` itself
-  cannot run locally — I verified `publish.yml` exactly as the Verify bullet asks: YAML validity +
-  static inspection of trigger / tags / permissions / build-arg. The `.dockerignore` and
-  `build:monitor` fixes ARE fully tested on this host.
-- Used `docker/build-push-action@v6` + `docker/login-action@v3` (the in-repo-idiomatic explicit form
-  the Verify bullet prefers) over a plain `docker build && docker push` pair. Both tags are
-  hand-written literals (no `metadata-action`), so the tag template is directly inspectable.
-- Action version pins match `ci.yml`/`pages.yml` for consistency (`checkout@v4`); the deprecated
-  Node-20 major bumps are a separate `low` issue, deliberately not chased here.
-- The `critical` GHCR issue ("Publish a deployable container image to GHCR") is now fully code-closed:
-  the Dockerfile + build-smoke half landed last window, this slice is the push half. The two `normal`
-  traps (`.dockerignore` secret/sidecar gap; `build:monitor` empty-SHA) are both closed.
-- `ci.yml`'s `docker` job is left a pure build+smoke with no registry login (per Not-In-Scope); publish
-  lives in its own file so triggers + permissions stay independent (mirrors the `pages.yml` separation).
-- No Go source, `go.mod`/`go.sum`/`schema.sql`, or trust-root/proof/signature path touched — oracle /
-  conformance gate is N/A for this slice (packaging + task-config only).
+- **Docker is absent on this host (CI-only).** The `docker push` itself cannot run locally — verified
+  `publish.yml` exactly as the Verify bar asks (YAML validity + static inspection of trigger/tags/
+  permissions/build-arg). The `.dockerignore` and `build:monitor` fixes ARE fully tested on this host.
+- `github.sha` is always populated in Actions and cannot empty-expand, so the workflow's `VERSION` build-arg
+  always satisfies the Dockerfile's fail-fast guard — the CI image path sidesteps the `-X` empty-stamp class
+  entirely (the `build:monitor` host fix covers the host path; both stamped consumers now guarded).
+- Action pins match siblings (`checkout@v4`; `docker/login-action@v3` + `docker/build-push-action@v6`);
+  concurrency shape mirrors `pages.yml`. The deprecated Node-20 action bump stays a separate `low` issue.
+- Pushed to `origin/develop` on this PASS_WITH_NOTES (CI is the real Docker oracle — the publish workflow
+  itself runs only after this push lands on develop).
