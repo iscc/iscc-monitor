@@ -37,26 +37,6 @@ filed it and does **not** affect priority.
 - **Spec:** CLAUDE.md "Write evergreen comments that describe the current state" (docstring must match
   behavior); next.md Implementation Note "Prefer nil-tolerant, mirroring the Loop's nil-Logger discipline".
 
-## Certificate §6 RECORD HISTORY omits the per-record `· at` timestamp the mockup shows (store prerequisite LANDED — render-only now)
-- **Priority:** normal
-- **Source:** [review] (visual pass vs the §6 mockup region)
-- **What / where / how to verify:** The certificate mockup `.claude/design/ISCC Monitor -
-  Certificate.dc.html:68` renders each §6 row as `label` + `seq N · at` — a per-record
-  timestamp. UPDATE (advance `bc608a0`): the STORE PREREQUISITE this issue named is now CLOSED —
-  `store.RecordRow.NoteTimestamp` (and `ProjectionRecord.NoteTimestamp`) carries the verbatim optional
-  `note.timestamp` from the new `iscc_index.note_timestamp` column, written by `RecordProjections` and
-  read by `RecordAt`/`ListRecords`. What REMAINS is RENDER-ONLY: the landed §6
-  (`internal/certificate/handler.go` §6 loop, `cert.html:376-378`) still renders only
-  `{{.Label}} · seq {{.Seq}}` because the cert handler does not yet thread `RecordAt`'s `NoteTimestamp`
-  into a `HistoryRow.At`. The missing `· at` is cosmetic and does not affect certification correctness.
-  Fix when §6 is next touched: wire `RecordAt`'s `NoteTimestamp` → a `HistoryRow.At` field and render
-  `seq N · <at>` in `cert.html`, picking the format/relativize policy for the verbatim RFC-3339 string
-  (deferred per ADR-0008). The log-browser record-list `Logged` column (`internal/proofserve`) can reuse
-  the same `RecordRow.NoteTimestamp`. Verify fixed: a §6 row renders `label · seq N · <time>` and a test
-  asserts the time component is present for a seeded record.
-- **Spec:** target.md M-UI certificate Verify criterion (record history); `.dc.html` §6
-  region line 68; CLAUDE.md "Projection" (a derived view — adding a column is additive).
-
 ## No on-disk DB migration story — a column added to an existing table never reaches a pre-existing database
 - **Priority:** normal
 - **Source:** [review] (Codex P1, reviewer-confirmed against `store.Open`; codebase-wide pre-existing gap)

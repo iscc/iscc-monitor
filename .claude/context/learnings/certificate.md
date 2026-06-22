@@ -97,12 +97,16 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   accepted tree (`if seq >= hub.LastSize { continue }`, same boundary as §1) so a deletion above the
   accepted checkpoint is dropped; a `RecordAt` MISS lists the seq with the `kindUnknown` label, not a 500
   (only a DB fault 500s). `HasDeletion` ORs the per-row `isDeletion` for the deletion note.
-  - settled: `HasClause6`/`isDeletion` mutations pinned by `TestCertificateRecordHistory`. KNOWN GAP
-    (still filed `normal`): the mockup §6 row carries a `· at` timestamp — the STORE prerequisite now
-    LANDED (`store.RecordRow.NoteTimestamp` from the `iscc_index.note_timestamp` column, advance
-    `bc608a0`), so the remaining work is RENDER-ONLY: wire `RecordAt`'s `NoteTimestamp` into a
-    `HistoryRow.At` and render `seq N · <at>` in `cert.html` (pick the format/relativize policy for the
-    verbatim RFC-3339 string — deferred per ADR-0008). The impl still renders `label · seq N` only.
+  - settled: `HasClause6`/`isDeletion` mutations pinned by `TestCertificateRecordHistory`. The mockup
+    §6 `· at` timestamp is now LANDED (advance `2a2c0f6`): `RecordAt`'s `NoteTimestamp` threads into
+    `HistoryRow.At` under the existing `if found` gate, and `cert.html` renders it CONDITIONALLY
+    (`{{if .At}} · {{.At}}{{end}}`) so a timestamp-less row carries no trailing `· ` artifact. Rendered
+    VERBATIM (RFC-3339, no parse/relativize — ADR-0008). Pinned by the full-row marker
+    `Declaration · seq N · <ts>` + the deletion-row no-trailing-`· ` assertion (mutation: dropping the
+    `{{if .At}}` makes only `TestCertificateRecordHistory` fail; declaration-only test stays green).
+    Test timestamps stay Z-suffixed UTC so no `html.UnescapeString` (a non-UTC offset's `+`→`&#43;`).
+    REMAINING (visual polish, not filed): the mockup humanizes to `2026-02-14 18:40 UTC` — deferred,
+    would introduce `time` parsing + a format policy (a deliberate step, not a free follow-up).
 
 - **§5 BITCOIN ANCHOR reads the mirrored OTS row of §2's root and classifies via `ots.ConfirmedFor`
   (DIGEST-BOUND, not the digest-agnostic `ots.Confirmed`).** Inside `HasClause2`,
