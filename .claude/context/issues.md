@@ -18,6 +18,42 @@ filed it and does **not** affect priority.
 
 ---
 
+## Add the ISCC logo to the nav-bar masthead chrome (self-hosted asset, replacing the text-only mark)
+- **Priority:** critical
+- **Source:** [human]
+- **What / where / how to verify:** The logo asset **exists in-repo**:
+  `.claude/design/assets/iscc-logo-black.png` (5000×1906, 8-bit **gray+alpha** PNG, 113 KB) — grayscale,
+  so it satisfies the grayscale-safe constraint, and black-on-light matches the mockup masthead. The
+  mockup masthead on every `.dc.html` (e.g. `ISCC Monitor - Realm Index.dc.html:32`) renders
+  `<img src="assets/iscc-logo-black.png" alt="ISCC" style="height:19px;width:auto">`; the live chrome
+  renders a **text-only `.chrome-mark`** ("Trust &amp; Transparency Monitor") with no logo on every SSR
+  surface (`internal/dashboard/dashboard.html:315`). The masthead chrome is **duplicated across six
+  templates — there is no shared partial today**: `internal/dashboard/dashboard.html`,
+  `internal/dossier/dossier.html`, `internal/certificate/cert.html`, `internal/proofserve/browser.html`,
+  `internal/proofserve/record.html`, `internal/proofserve/records.html`. **How:** copy the asset into
+  `internal/web/` (e.g. `internal/web/assets/iscc-logo-black.png`), `go:embed` it, and serve it at a
+  stable `/_ds/iscc-logo-black.png` path with `image/png` — mirroring the existing self-hosted
+  `wasm_exec.js`/woff2 `go:embed`+serve idiom in `internal/web/web.go` (same no-CDN, build-pinned,
+  strong-ETag + no-cache + 304 policy the other `/_ds/` assets use). Reference it from each masthead as
+  `<img src="/_ds/iscc-logo-black.png" alt="ISCC" …>` **next to** the existing `.chrome-mark` text (keep
+  both — target.md:148 wants the logo **and** the "Trust &amp; Transparency Monitor" mark); the six-way
+  duplication may be factored into a shared chrome partial as part of the work (advance's KISS call, not
+  required). **Optimization (SHOULD, not a blocker):** 5000×1906 / 113 KB is wildly oversized for a
+  ~19px-tall nav render — downscale to a slim height-appropriate (≤2× retina) grayscale PNG at the embed
+  step so the served asset is a few KB, not 113 KB; never resize at request time. **Constraint notes:**
+  no-CDN (self-host ✓), grayscale-safe (asset is grayscale ✓), no-JS (plain `<img>` ✓); only the **black**
+  variant exists, fine for the light masthead — a white variant is out of scope unless a dark chrome
+  surface is later introduced. **Verify fixed:** `GET /_ds/iscc-logo-black.png` → 200 `image/png`
+  (byte-verbatim, sibling-`/_ds/` ETag/304 policy); every SSR surface's served HTML carries the logo
+  `<img src="/_ds/iscc-logo-black.png">` in its masthead (a handler test asserts the `<img>` on `/` and at
+  least one other surface); `mise run check` green; the ADR-0012 visual pass vs the Realm-Index mockup
+  files no remaining "no logo" delta.
+- **Spec:** target.md:148 "Document chrome + instance identity" (the ISCC logo + "Trust &amp; Transparency
+  Monitor" mark on every surface); **extracts and supersedes sub-item (1) "No logo" of the "`/`
+  realm-index sub-region deltas" issue below** (when this lands, that issue's remaining scope is the
+  instance-identity, Checkpoint/Anchor, and recent-declarers sub-deltas only); ADR-0010 Evidence-Ledger
+  handoff; the no-CDN / grayscale-safe / self-hosted hard constraints.
+
 ## Certificate §5 BITCOIN ANCHOR does not bind the OTS proof's committed digest to §2's accepted root
 - **Priority:** normal
 - **Source:** [review] (Codex P2, reviewer-confirmed against the library + the OTS write path)
@@ -304,31 +340,58 @@ filed it and does **not** affect priority.
 - **Spec:** target.md M-UI hard CDN-free constraint; `learnings/web.md` `noExternalCDN` bans third-party
   origins; CLAUDE.md "Never weaken a quality gate to pass" (the fix is the root cause, not the gate).
 
-## WASM shim `js.Value.Int()` truncates a non-integer JS `index`/`size`, risking a false verified verdict
+## The WASM `safeIndex` integer guard is trapped in the tagged `main.go` and has NO executable test
 - **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed against `syscall/js` semantics)
-- **What / where / how to verify:** `cmd/wasm/main.go:39-40` pulls the proof-bundle `index`/`size` off
-  the JS args with `args[3].Int()` / `args[4].Int()`. `js.Value.Int()` is defined as `int(v.Float())`,
-  so a JS Number passed as `1.9` TRUNCATES to `1` before the `uint64` conversion and the bundle then
-  verifies against leaf index 1 — i.e. malformed (non-integer) bundle metadata can be reported as
-  `verified` instead of an error. Values beyond JS's 2^53 safe-integer range round similarly.
-  Reviewer-confirmed the truncation: `int(1.9)==1` (Go `int(float64)` truncates toward zero, the exact
-  coercion `Value.Int()` performs). NOT currently exploitable: there is no caller yet (the tier-2
-  certificate/dossier enhancement and the standalone `monitor.iscc.codes` app are explicitly later
-  sub-steps), and the eventual real callers emit server-computed integer `(index, size)` from the proof
-  bundle, never arbitrary floats. The bug is also only in the untagged glue `main.go` — the tested,
-  parity-proven `verifyadapter.VerifyJSON` takes `uint64` and is correct. So it does NOT block this
-  increment's stated goal (the WASM side is callable with verified parity at the marshaling boundary).
-  Fix when the FIRST real caller is wired (the natural place to enforce the JS→Go arg contract): before
-  calling `VerifyJSON`, validate that `index`/`size` are integral and within the safe-integer range
-  (e.g. reject when `args[i].Float() != math.Trunc(args[i].Float())` or `> 2^53`), folding a violation
-  into the same `{verified:false, error:...}` result the arg-count guard uses; or parse decimal strings
-  instead of accepting JS Numbers. Verify fixed: a shim-level test (or the wired caller's test) passes
-  `index=1.9` against the golden vector and asserts `verified=false, error!=""`; reverting the validation
-  makes it report `verified=true`.
+- **Source:** [review] (the original `js.Value.Int()` truncation issue — production fix landed, test gap remains)
+- **What / where / how to verify:** The `js.Value.Int()` truncation is now CLOSED in production code:
+  `cmd/wasm/main.go:52-83` reads `index`/`size` via `args[i].Float()` and routes each through
+  `safeIndex(v, name) (uint64, string)`, which fails closed on NaN/Inf/fractional/negative/`>= 2^53`
+  (`maxSafeInteger = 2^53 - 1`) BEFORE the `uint64` narrowing — reviewer-verified live end-to-end on the
+  testnet (the certificate tier-2 WASM ran headlessly and produced the correct `verified` verdict). BUT
+  the guard's branch behavior has ZERO test coverage: `safeIndex` is a pure `float64 → (uint64, string)`
+  function with NO `syscall/js` dependency, yet it lives in `main.go` (`//go:build js && wasm`), so no
+  linux `go test` exercises it — the WASM build gate only proves it COMPILES, and the certificate
+  caller's test (`TestCertificateRendersWasmVerifier`) feeds only valid integers, so the
+  truncation/NaN/negative/range branches are never run. The original issue's "Verify fixed" criterion (a
+  test feeding `index=1.9` asserting `verified=false, error!=""`) was therefore NOT met. NOT a production
+  hazard (the guard is correct by inspection and the real callers emit server-computed integers), so it
+  does not block progress; it is a regression-gate hole on a trust-root-adjacent guard. Fix when the
+  guard is next touched: MOVE `safeIndex` + `maxSafeInteger` into the untagged `cmd/wasm/verifyadapter`
+  (or a new untagged helper `main.go` imports) and table-test it — `1.9`/`NaN`/`Inf`/`-1`/`2^53` → a
+  non-empty errMsg, `0`/`5` → ok. Verify fixed: `go test ./cmd/wasm/verifyadapter` covers the guard's
+  reject branches, and reverting any branch (e.g. dropping the `math.Trunc` check) makes a test FAIL.
 - **Spec:** target.md WASM milestone "identical vectors yield identical verdicts (WASM vs server)" — a
   truncated input is NOT an identical vector; learnings.md always-loaded "a built proof is not a verified
-  proof / fail closed"; `learnings/cmd-wasm.md` JS-call-boundary truncation gotcha.
+  proof / fail closed"; CLAUDE.md Testing ("comprehensive tests covering implemented functionality");
+  `learnings/cmd-wasm.md` (`safeIndex` is testable but trapped behind the build tag).
+
+## Certificate tier-2 honesty header overstates "This browser re-verifies" on the no-JS baseline
+- **Priority:** normal
+- **Source:** [review] (Codex P2, partially confirmed — the no-JS-overstatement half)
+- **What / where / how to verify:** `internal/certificate/cert.html:465` — the `{{if .HasBundle}}` honesty
+  header reads, unconditionally and present-tense, "This browser re-verifies the proof below for you, and
+  you can download the bundle and re-verify it offline." The tier-2 verifier is progressive enhancement,
+  so with JavaScript disabled (or on a WASM load/parse failure) NO browser verdict runs — yet this
+  server-rendered copy still asserts the browser re-verifies. The actual verdict panel below
+  (`cert.html:480-483`, `id="tier2-result"`) IS honest and conditional ("Re-verify the downloadable
+  bundle yourself — or, with JavaScript enabled, this browser re-checks…"), so the two regions disagree
+  on the no-JS baseline: the header promises active re-verification while the panel hedges it. On a Tier-1
+  self-verifiable surface, honesty copy is load-bearing (target.md M-UI). Reviewer-confirmed by serving a
+  certifiable id with JS disabled (the header text renders verbatim, no verdict appears). Does NOT block
+  progress (the feature works; the verdict panel itself is honest; the no-JS baseline renders every
+  clause). Fix when the honesty copy is next touched: make the `HasBundle` header describe only the
+  available bundle/offline path (e.g. "you can download the bundle and re-verify it offline; with
+  JavaScript enabled, this browser also re-checks the proof below") so the static copy never claims a
+  verdict that may not have run — let the script's panel be the sole asserter of an actual re-verification.
+  Verify fixed: the served `HasBundle` header copy does not state in the present tense that the browser
+  re-verifies, and a test asserts the no-JS header is consistent with the conditional panel default.
+  NOTE: Codex's companion claim — that the `!HasBundle` branch shows stale "lands in a later release"
+  copy — is a FALSE POSITIVE and was dismissed: that copy renders ONLY when there is no bundle (no
+  verifier wired), which is accurate (`grep "land in a later release" /tmp/cert-fresh.html` → 0 on a
+  certifiable page).
+- **Spec:** target.md M-UI two-tier honesty (the certificate is the monitor's account; the user verifies);
+  CLAUDE.md "Write evergreen comments/copy that describe the current state"; `learnings/certificate.md`
+  two-tier-honesty copy rules.
 
 ## `/` realm-index sub-region deltas vs the mockup (logo, instance-identity copy, Checkpoint/Anchor columns)
 - **Priority:** normal
@@ -337,11 +400,10 @@ filed it and does **not** affect priority.
   dossier link, instance-identity masthead) now render and the lone `critical` is closed — but the
   ADR-0012 visual pass against `.claude/design/ISCC Monitor - Realm Index.dc.html` shows four remaining
   sub-region deltas the parity step deferred as constraint-wins (all flagged in that handoff):
-  (1) **No logo** — the mockup masthead has the ISCC logo `<img src="assets/iscc-logo-black.png">`; the
-  live `/` (`internal/dashboard/dashboard.html`) renders a text-only `.chrome-mark` because no logo asset
-  is served (`/_ds/` carries only tokens/fonts/wasm) and the no-CDN constraint bans external origins.
-  Surfacing it cleanly is a self-hosted `internal/web` asset step (embed a logo woff2/svg/png + serve at
-  `/_ds/...`, mirroring the `wasm_exec.js`/woff2 `go:embed` idiom).
+  (1) **No logo** — **EXTRACTED to the critical "Add the ISCC logo to the nav-bar masthead chrome" issue
+  above; track and verify it there, not here.** (Summary: the mockup masthead has the ISCC logo, the live
+  chrome renders a text-only `.chrome-mark` because no logo asset is served and no-CDN bans external
+  origins; the fix is the self-hosted `internal/web` `go:embed`+serve step.)
   (2) **Static instance identity + realm name** — the mockup shows `monitor.iscc.id` / "instance operated
   by ISCC Foundation · ISCC mainnet" and a "REALM REGISTER · ISCC MAINNET" subtitle; the live page renders
   generic static copy ("monitor instance" / "independent Trust & Transparency service" and a bare "Realm
@@ -355,8 +417,8 @@ filed it and does **not** affect priority.
   (4) **"Recent declarers checked" hero footer omitted** — needs a recent-lookup history the store does
   not track. None of these block progress (the headline-region parity Verify criteria are met); they are
   the named sub-steps to finish full `/` design-parity at the M-UI exit. Verify fixed: the served `/`
-  carries a self-hosted logo, config-driven instance identity + realm name, and honest Checkpoint/Anchor
-  columns; the visual pass files no remaining sub-region delta.
+  carries config-driven instance identity + realm name and honest Checkpoint/Anchor columns (the logo is
+  verified in its own extracted critical issue); the visual pass files no remaining sub-region delta.
 - **Spec:** target.md M-UI design-parity "named-region" bar (the `/` realm-index region) + "Document chrome
   + instance identity"; ADR-0010 Evidence-Ledger handoff; ADR-0012 visual-pass.
 

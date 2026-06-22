@@ -43,18 +43,25 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `internal/config` stay untouched. The `Hub` literal needs `*uint16` HubIDs.
 
 - **§3 INCLUSION PROOF is gated on a fail-closed re-VERIFICATION, not a status flag.**
-  `buildData` ports proofserve's `serveVerify` path verbatim over a `store.SQLiteFetcher`:
-  `InclusionProofFromTiles` → `ReadEntryBundle` → `RecordBytesFromBundle` → `HashLeaf` →
-  `proof.VerifyInclusion(hasher, Position, LastSize, leafHash, builtProof, root) == nil`, setting
-  `HasClause3` ONLY on the nil verdict (siblings base64-Std; never hand-roll Merkle). `root` is §2's
-  `CheckpointAt` `[]byte`, reused inside the `HasClause2` guard. Error split: `os.ErrNotExist` +
-  `ErrLeafOutOfBundle` are honest gaps → §3 omitted; a non-nil `VerifyInclusion` is a SILENT decline
-  (proof didn't rebuild the root), never a 500; any other fault → 500 (buffered before any 200).
-  Replaced the `!hub.Frozen` gate — closes steady-state frozen-after-fork AND the fork-poll TOCTOU
-  (no flag read); the re-verify rule is promoted to the index. `fixtureStoreTiled` seeds entry bundles
-  (not just hash tiles) with `leaf-i` preimages so `HashLeaf(record)==tree.LeafHash(seq)` and §3 gets a
-  leaf hash; mutation `VerifyInclusion(...)==nil` → `...==nil || true` fails the contradictory test.
-  - settled: §3 gate evolved unconditional → `!hub.Frozen` → re-verification (git history).
+  `buildData` ports `serveVerify` over a `store.SQLiteFetcher`: `InclusionProofFromTiles` →
+  `ReadEntryBundle` → `RecordBytesFromBundle` → `HashLeaf` → `proof.VerifyInclusion(... root) == nil`,
+  setting `HasClause3` ONLY on nil (siblings base64-Std; `root` is §2's `CheckpointAt` `[]byte`, reused
+  inside `HasClause2`). Error split: `os.ErrNotExist`/`ErrLeafOutOfBundle` → §3 omitted; a non-nil
+  `VerifyInclusion` is a SILENT decline (never a 500); any other fault → 500 (buffered before any 200).
+  `arts.record`/`arts.builtProof` are captured ONLY inside this `if ok` block — they are the SINGLE gate
+  shared by the page ✓, the bundle, AND the tier-2 caller's `RecordB64`.
+  - settled: §3 gate evolved unconditional → `!hub.Frozen` → re-verification, closing the fork-poll
+    TOCTOU; the re-verify rule is promoted to the index; `fixtureStoreTiled` seeds `leaf-i` bundles so
+    `HashLeaf==tree.LeafHash` (git history).
+
+- **Tier-2 in-browser verifier (the certificate is the first SSR WASM caller — mechanics in
+  `cmd-wasm.md`).** `RecordB64 = base64.StdEncoding.EncodeToString(record)` is set inside the §3 `if ok`
+  block (same gate as `arts.record`/`HasClause3`), so it is empty on every honest decline; the template
+  reads it ONLY under `{{if .HasBundle}}`. `cert.html` ships a `<script type="application/json">` data
+  island (`record`/`root`/`proof[]`/`index`/`size`) + an end-of-body `/_ds/wasm_exec.js`+`/_ds/verify.wasm`
+  loader calling `globalThis.isccVerifyInclusion`. Two independent re-verifications (server §3 + browser
+  tier-2) must AGREE — gate both on the same re-verify, never a flag. Verified live end-to-end on the
+  testnet (`verified` rendered). Mutation: blanking `RecordB64` fails `TestCertificateRendersWasmVerifier`.
 
 - **§4 SIGNING KEY derives the key id from the accepted checkpoint's OWN raw bytes, not synthetically.**
   `buildData` captures `CheckpointAt`'s `raw`, recovers the key id via `logclient.KeyIDFromCheckpoint(raw)`
@@ -84,27 +91,20 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   accepted tree (`if seq >= hub.LastSize { continue }`, same boundary as §1) so a deletion above the
   accepted checkpoint is dropped; a `RecordAt` MISS lists the seq with the `kindUnknown` label, not a 500
   (only a DB fault 500s). `HasDeletion` ORs the per-row `isDeletion` for the deletion note.
-  - settled: `HasClause6`/`isDeletion` mutations pinned by `TestCertificateRecordHistory` (git history).
-- **Mockup §6 row carries a `· at` timestamp the projection has no column for.** The
-  `.dc.html` §6 row is `label` + `seq N · at`; `RecordRow` (Seq/IsccID/NoteSchema) holds
-  no per-record time, so the impl renders `label · seq N` only. Adding the timestamp needs
-  a store schema change (out of scope) — filed `normal` visual-delta. The primary §6
-  affordance (kind + seq + deletion note) is complete; the missing time is cosmetic.
+  - settled: `HasClause6`/`isDeletion` mutations pinned by `TestCertificateRecordHistory`; KNOWN GAP
+    (filed `normal`): the mockup §6 row carries a `· at` timestamp `RecordRow` has no column for —
+    needs a store schema change, the impl renders `label · seq N` only (git history).
 
 - **§5 BITCOIN ANCHOR reads the mirrored OTS row of §2's root and classifies via `ots.Confirmed`.**
   Inside `HasClause2`, `st.OTSForRoot(ctx, hub.HubID, hub.LastSize, root)` keys on §2's RAW `[]byte` root
   (NOT the base64 `CheckpointRoot`), the same `(hub,size,root)` key the `.ots` route + stamp loop use.
   Three fail-closed states (ADR-0001/0004): a miss OR the empty-`OTSBytes` sentinel → §5 OMITTED; an
-  unparseable proof → SILENT decline (never 500, like §3's non-nil VerifyInclusion); a parseable proof →
-  `HasClause5=true` (confirmed shows `block <height>` + `UpgradedAt` RFC-3339 when non-zero; pending shows
-  "awaiting Bitcoin confirmation"). `internal/ots` is NOT WASM-pure but certificate is server-side only.
-  - settled: the four state mutations are pinned (height tied to oracle literal 358391); fixtures copied
-    byte-identical from `internal/ots/testdata` (git history).
-- **§5 does NOT bind the proof's committed digest to §2's root** — `ots.Confirmed` classifies attestations
-  but never checks the parsed `File.Digest` `== root`, so a row committing a DIFFERENT digest would falsely
-  render "block N" (the "gate a ✓ on re-VERIFICATION, not a classify-only flag" rule, applied to the anchor).
-  Not exploitable today (the write path always stamps the row's own `r.Root`). Fix when §5/`ots.Confirmed`
-  next touched: `bytes.Equal(File.Digest, root)` before `HasClause5=true`. Filed `normal` (see issues.md).
+  unparseable proof → SILENT decline (never 500); a parseable proof → `HasClause5=true` (confirmed shows
+  `block <height>` + `UpgradedAt` RFC-3339; pending shows "awaiting Bitcoin confirmation"). `internal/ots`
+  is NOT WASM-pure but certificate is server-side only.
+  - settled: four state mutations pinned (height tied to oracle literal 358391); fixtures byte-identical
+    from `internal/ots/testdata`. KNOWN GAP (filed `normal`, see issues.md): §5 does NOT bind the proof's
+    `File.Digest` to §2's root, so a mis-stamped row would falsely render "block N" — fix `bytes.Equal`.
 
 - **COMPARISON ANCHOR is §2's `(size, root)` reframed as the monitor's own observation — a SEPARATE,
   distinctly-labelled element from §5, NOT Bitcoin.** Set `data.HasComparisonAnchor = true` inside the

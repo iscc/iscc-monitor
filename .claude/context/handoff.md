@@ -1,74 +1,42 @@
-## 2026-06-22 — Wire the first SSR WASM `<script>` caller — tier-2 "your browser verified" on the certificate
+## 2026-06-22 — Review of: Wire the first SSR WASM `<script>` caller — certificate tier-2 "your browser verified"
 
-**Done:** The certificate page (`GET /inclusion/<iscc_id>`) now ships the first real SSR caller of the
-in-browser WASM verifier: for a certifiable id (HasBundle), it embeds the proof data in a
-`<script type="application/json">` data island, loads `/_ds/wasm_exec.js` + `/_ds/verify.wasm` via a
-progressive-enhancement loader, and calls `globalThis.isccVerifyInclusion(record, root, proof, index, size)`
-to render an honest tier-2 verdict (verified / failed / error) — without touching the no-JS baseline (§1–§6
-stay server-rendered). The `cmd/wasm/main.go` shim now validates `index`/`size` are non-negative integers
-within the JS safe-integer range before the `uint64` narrowing, closing the `js.Value.Int()` truncation
-issue at its first real caller. The rebuilt `verify.wasm` is re-pinned.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `cmd/wasm/main.go`: replaced `args[3].Int()`/`args[4].Int()` truncating reads with a `safeIndex` helper
-  (NaN/Inf/fractional/negative/`>2^53` → `{verified:false, error:…}`, same shape as the arg-count guard);
-  added `import "math"` + a `maxSafeInteger` const.
-- `internal/certificate/handler.go`: added `RecordB64 string` to `certData`, populated base64-Std from the
-  already-computed `arts.record` inside the §3 re-verification success block (same `if ok` gate as
-  `arts.record`/`HasBundle`), so it is empty on every honest decline.
-- `internal/certificate/cert.html`: added the tier-2 result `<div id="tier2-result">` (no-JS default text)
-  + the JSON data island + the end-of-body `/_ds/wasm_exec.js` loader + inline instantiate/run/call script,
-  all under `{{if .HasBundle}}`; added `.tier2*` CSS; corrected the now-stale HasBundle honesty copy
-  ("in-browser re-verification lands in a later release" → "This browser re-verifies the proof below").
-- `internal/web/web.go`: re-pinned `WasmVerifyHash` to the rebuilt artifact
-  (`7d57ab1bbc0b11bd27bd0bc426121dc933158b1342a6656bc90bb5b012f22d2c`).
-- `internal/web/verify.wasm`: regenerated via `mise run build:wasm` (the indivisible artifact+pin pair).
-- `internal/certificate/handler_test.go`: added `TestCertificateRendersWasmVerifier` (positive +
-  negative subtests).
-- `CLAUDE.md`: extended the `GET /inclusion/<iscc_id>` bullet to note clauses §1–§6 + bundle render and the
-  tier-2 in-browser re-verification result.
+**Summary:** The certificate page (`GET /inclusion/<iscc_id>`) now ships the first real SSR caller of the
+in-browser WASM verifier: under `{{if .HasBundle}}` it embeds the proof in a `<script type="application/json">`
+data island, loads `/_ds/wasm_exec.js`+`/_ds/verify.wasm` via a progressive-enhancement loader, and renders an
+honest tier-2 verdict — verified live end-to-end against the testnet (the WASM ran headlessly and produced the
+correct `verified` verdict matching server §3). The `cmd/wasm/main.go` shim's `safeIndex` guard closes the
+`js.Value.Int()` truncation in production. All gates green; the work is clean and well-scoped (6 source/test/doc
+files), with two non-blocking `normal` follow-ups (an untested guard, a no-JS honesty-copy overstatement).
 
-**Verification:** `mise run check` → green (all 25 packages `ok`; `gofmt -l .` excl. `cauldron/` empty).
-Per-criterion:
-- `mise run build:wasm` reproduces `internal/web/verify.wasm` == `WasmVerifyHash` (built twice + again at
-  end, byte-identical hash); `TestWasmVerifyHashPinned` PASS.
-- `GOOS=js GOARCH=wasm CGO_ENABLED=0 go build ./cmd/wasm` succeeds with the new integer guard.
-- `TestVerifyJSON ./cmd/wasm/verifyadapter` PASS (WASM-vs-server golden parity intact — adapter untouched).
-- `TestCertificateRendersWasmVerifier` PASS, mutation-proven non-vacuous (3 mutations reproduced FAIL):
-  (1) blanking `data.RecordB64` → empty `"record":""` fails; (2) removing the loader `<script src>` fails;
-  (3) un-gating the loader from `{{if .HasBundle}}` fails the negative "uncertifiable wires no verifier"
-  subtest. Restoring each → PASS.
-- No-CDN: `TestCertificateKnownID` (the no-CDN body assertion at line ~200) PASS — same-origin `/_ds/`
-  script+wasm refs do not trip `jsdelivr`/`cdn.`/`unpkg`/`googleapis`; `monitor.iscc.codes` still the one
-  permitted external origin. (Note: there is no separate `TestCertificateNoCDN` function — the no-CDN bans
-  live inside `TestCertificateKnownID`, despite `next.md` naming it `TestCertificateNoCDN`.)
-- No-JS baseline asserted in-test: §1/§2/§3 + Tier 1/Tier 2 + Download proof bundle all render in `<main>`
-  BEFORE the first executable loader `<script src=...>` (proving no clause is script-gated).
+**Verification:**
+- [x] `mise run check` — green (25 packages `ok`); `gofmt -l .` excl. `cauldron/` empty.
+- [x] `mise run build:wasm` reproduces `internal/web/verify.wasm` byte-identical (`7d57ab1b…`) == `WasmVerifyHash`; rebuild left no git diff; `TestWasmVerifyHashPinned` PASS.
+- [x] `GOOS=js GOARCH=wasm CGO_ENABLED=0 go build ./cmd/wasm` — OK with the new integer guard.
+- [x] `TestVerifyJSON ./cmd/wasm/verifyadapter` — PASS (WASM-vs-server golden parity, adapter untouched).
+- [x] `TestCertificate ./internal/certificate` — PASS, incl. `TestCertificateRendersWasmVerifier` (positive + negative subtests); mutation-proven non-vacuous (blanking `RecordB64` → FAIL, restore → PASS).
+- [x] No-CDN: `TestCertificateKnownID` (holds the no-CDN body assertions) PASS — same-origin `/_ds/` script+wasm refs do not trip the third-party-CDN ban.
+- [x] No-JS baseline asserted in-test AND verified live: §1–§6 + Tier 1/Tier 2 + Download proof bundle all render before the first executable loader `<script src>`; the tier-2 verdict panel's default text is honest with JS disabled.
+- [x] Live end-to-end (testnet `ISCC:MAIGKSETI7MJ4EAB`, fresh binary): the certificate served full §1–§3 + all tier-2 markers; agent-browser executed the WASM and rendered a green-bordered `verified` panel ("Your browser re-verified this inclusion proof against the accepted root").
+- [x] Gate-integrity scan over all unpushed commits — no `nolint`/`t.Skip`/swallowed errors/build-tag exclusions/deleted assertions.
+- [x] Oracle/conformance gate: N/A for the trust-root crypto — no signature/RFC-6962/Merkle/`verifyadapter.VerifyJSON`/`proof/verify` change; only the `cmd/wasm` arg-marshaling guard. WASM-vs-server parity (`TestVerifyJSON`) still green; the live render matched server §3.
 
-**Next:** Wire the same tier-2 WASM `<script>` caller into the **dossier** (the next SSR surface that
-embeds a verifiable `(size, root)`), then the standalone `monitor.iscc.codes` Independent Verification app
-(Surface C, monitor-agnostic via `?monitor=<url>`). The guided **split-view alert** on a `(size, root)`
-mismatch is the natural follow-on now that the certificate distinguishes a negative VERDICT (`data-state
-="failed"`) from an input error (`data-state="error"`) — the alert keys on the `failed` state.
+**Issues found:**
+- (normal, filed) **`safeIndex` integer guard is untested.** The `js.Value.Int()` truncation IS closed in production code (`cmd/wasm/main.go:52-83`, verified live), but `safeIndex` is a pure `float64→(uint64,string)` fn trapped in the `//go:build js && wasm` `main.go`, so no linux test exercises its NaN/fractional/negative/range branches — the build gate only proves it compiles, and the caller's test feeds only valid integers. The original truncation issue's "Verify fixed" (a `1.9` test) was NOT met. Fix: move `safeIndex`+`maxSafeInteger` into `verifyadapter` and table-test. (Reframed the prior `normal` truncation issue to this residual test gap.)
+- (normal, filed) **Tier-2 honesty header overstates "This browser re-verifies" on the no-JS baseline** (`cert.html:465`). With JS disabled no verdict runs, yet the `HasBundle` header asserts present-tense re-verification while the verdict panel below correctly hedges "with JavaScript enabled". Make the static header describe only the bundle/offline path; let the script's panel be the sole asserter.
+
+**Codex second opinion:** Finished, one P2 finding (two sub-claims), triaged:
+- **Sub-claim 1 (no-JS / load-failure overstatement) — CONFIRMED (minor).** Filed as the tier-2-honesty-header `normal` issue above. Real imprecision on a Tier-1 honesty surface; non-blocking (the verdict panel itself is honest; every clause renders no-JS).
+- **Sub-claim 2 (`!HasBundle` branch shows stale "lands in a later release") — REFUTED / false positive.** That copy renders ONLY in the `{{else}}`/no-bundle branch, which is accurate — an uncertifiable id has no bundle and no verifier (the negative test confirms zero tier-2 markers; `grep "land in a later release"` on a certifiable page → 0). Dismissed, no action.
+
+**Visual check:** Done (SSR surface `internal/certificate/cert.html` changed). Launched the freshly-built binary against the testnet, screenshotted `/inclusion/ISCC:MAIGKSETI7MJ4EAB` and the `Certificate.dc.html` mockup with agent-browser. The live page faithfully matches the mockup's clause structure and ADDS the new green `verified` tier-2 panel below the actions (constraint > mockup — the WASM milestone mandates the tier-2 result; the mockup predates it). No NEW visual delta from this increment. Pre-existing tracked deltas unchanged: masthead logo (open `critical`), instance identity (`normal`), §5/§6 (testnet has no OTS; timestamp `normal`).
+
+**Next:** The lone open `critical` is the human-filed **ISCC logo masthead** issue — prioritize it (self-hosted `internal/web` `go:embed`+serve at `/_ds/iscc-logo-black.png`, downscaled, referenced from all six masthead templates). After that, continue the WASM milestone: wire the same tier-2 caller into the **dossier**, then the standalone `monitor.iscc.codes` Independent Verification app (Surface C). The guided **split-view alert** keys on the now-distinct `data-state="failed"` verdict.
 
 **Notes:**
-- **Out of my commit, not mine:** `git status` showed `.claude/context/issues.md` modified (a new
-  critical "add ISCC logo to masthead" issue, added by an earlier `define-next`/`update-state` phase). I
-  did NOT touch it and did NOT stage it (protocol: implementer writes only `handoff.md` + source/tests).
-- **Stray build artifact gotcha:** running the bare WASM build gate `GOOS=js GOARCH=wasm go build ./cmd/wasm`
-  (no `-o`) drops a 2.9 MB `wasm` binary at the repo root. I deleted it; it is NOT gitignored. Prefer
-  `mise run build:wasm` (it has `-o internal/web/verify.wasm`), or add `/wasm` to `.gitignore` later. CI
-  running the bare gate would leave the same stray file (harmless to the build, but untracked).
-- **Honesty-copy fix was in-scope-adjacent but necessary:** the existing HasBundle honesty line claimed
-  "in-browser re-verification lands in a later release" on the very page now shipping it — a direct M-UI
-  two-tier-honesty contradiction. Fixed only the HasBundle branch; the `!HasBundle` branch (no bundle, no
-  in-browser verify) is still accurate and untouched.
-- **`data-state` distinction is load-bearing** for the deferred split-view alert: `error` (broken input)
-  vs `failed` (negative verdict — the proof did not rebuild the accepted root) vs `verified`. The inline
-  script keeps them distinct exactly as cmd-wasm.md / proof-verify.md require; do not collapse them.
-- **Streaming + fallback:** the loader uses `WebAssembly.instantiateStreaming` (we serve `application/wasm`)
-  with an `arrayBuffer()` fallback and an outer try/catch → graceful degradation to the no-JS default text.
-  This is a plain end-of-body inline script (acceptable skeleton per next.md), not a module/bundler.
-- No signature / RFC-6962 / Merkle / `verifyadapter.VerifyJSON` / `internal/proof/verify` crypto changed —
-  only the `cmd/wasm/main.go` arg-marshaling guard. Oracle/conformance gate: the certificate's §3 path and
-  the WASM-vs-server parity (`TestVerifyJSON`) are unchanged and still green.
+- **`issues.md` reconciled (orchestrator note):** the uncommitted change was legitimate — a `define-next`/`update-state` phase added the human-filed `critical` ISCC-logo issue and extracted sub-item (1) "No logo" from the realm-index-deltas issue into it (cross-referenced). Kept it; committed as part of this review's issue bookkeeping. It is now the front-of-queue `critical`, so DONE is not reachable until it lands.
+- **Stray `/wasm` artifact:** the bare WASM build gate (`go build ./cmd/wasm`, no `-o`) again dropped a 2.9 MB `wasm` binary at the repo root (untracked, not gitignored). Deleted it. Still worth adding `/wasm` to `.gitignore` or always using `mise run build:wasm` (it has `-o`).
+- **`maxSafeInteger` bound:** the guard rejects `>= 2^53` (i.e. `> maxSafeInteger = 2^53-1`), slightly stricter than the issue's literal "`> 2^53`". Fine — well outside any realistic leaf-index domain; both reject the unsafe range.
+- **Two independent re-verifications must agree:** the server §3 ✓ and the browser tier-2 ✓ both gate on the same `proof.VerifyInclusion`-against-the-accepted-root; the data island carries the `record` only when §3 passed (the `if ok` block), so the browser can never re-verify a proof the server declined. Do not weaken either.
