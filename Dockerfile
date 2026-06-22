@@ -39,10 +39,11 @@ FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build /iscc-monitor /iscc-monitor
 
-# Bake the interim realm document so a fresh container has a valid
-# ISCC_MONITOR_REALM out of the box. This is the existing testnet pilot fixture;
-# the canonical deploy/realm-testnet.txt is a later M-Deploy slice.
-COPY internal/registry/testdata/realm.txt /etc/iscc-monitor/realm.txt
+# Bake the canonical testnet realm document so a fresh container has a valid
+# ISCC_MONITOR_REALM out of the box. deploy/realm-testnet.txt is the canonical
+# mountable/bakeable membership doc (domains only, ADR-0009); a deploy may instead
+# mount its own document and point ISCC_MONITOR_REALM at it.
+COPY deploy/realm-testnet.txt /etc/iscc-monitor/realm.txt
 
 # Documents the default ISCC_MONITOR_ADDR port (:9464); publishes nothing by itself.
 EXPOSE 9464

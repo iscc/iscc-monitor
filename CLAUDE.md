@@ -40,7 +40,9 @@ The monitor is a single binary (`cmd/iscc-monitor`) configured entirely through 
 
 - `ISCC_MONITOR_DB` (required) — path to the network's SQLite file (one file per network, ADR-0007).
 - `ISCC_MONITOR_REALM` (required) — path to the realm-membership document (one hub domain per line).
-  `internal/registry/testdata/realm.txt` is the testnet pilot (`sb0.iscc.id` + `sb1.amlet.id`).
+  `deploy/realm-testnet.txt` is the canonical, mountable/bakeable testnet realm doc (`sb0.iscc.id` +
+  `sb1.amlet.id`); the image bakes it at `/etc/iscc-monitor/realm.txt`. `internal/registry/testdata/realm.txt`
+  is the identical in-tree test fixture.
 - `ISCC_MONITOR_NORMAL` (optional, default `5m`) — clean-hub poll interval.
 - `ISCC_MONITOR_FROZEN` (optional, default `1h`) — frozen-hub evidence-only re-poll interval; must be
   `>= NORMAL` (the freeze back-off, ADR-0006).
