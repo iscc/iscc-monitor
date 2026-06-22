@@ -1,25 +1,23 @@
-<!-- assessed-at: b8638603ee4cbb4c3726ff85d01e781df552c7a4 -->
+<!-- assessed-at: 0753b6547dafdb162d4b9e77bf7cb6210ed2f0b2 -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: M-Deploy build phase — feature milestones M1–M3/M-UI behaviorally complete, gate green. The order-independent **M-Deploy** packaging milestone (ADR-0013) is the active runway. Five of ~6 M-Deploy Verify items closed; the operability doc was attempted this window but the review found it does NOT boot, so the persistence `critical` it was meant to close stays open.
+## Phase: M-Deploy build phase — feature milestones M1–M3/M-UI behaviorally complete, gate green. The order-independent **M-Deploy** packaging milestone (ADR-0013) is the active runway. The deploy quick-start now BOOTS (realm-bake advance, CI-proven); the last `target.md` "Done When" gate — a public-facing root `README.md` — is still absent.
 
-This window added a single tracked operator doc — `deploy/OPERATING.md` (219 lines, doc-only; no Go /
-test / Dockerfile / workflow source touched). The `review` verdict is **NEEDS_WORK**: the doc's
-substance is accurate and well-sourced, but its headline "copy-pasteable" quick-start **does not boot**
-— both the Compose and `docker run` snippets omit the REQUIRED `ISCC_MONITOR_REALM` (claiming it
-"defaults to the baked realm", which is false: the Dockerfile `COPY`s the realm FILE but sets no `ENV`,
-and `config.Load` calls `required(get, keyRealm)`), and they mount a fresh `root:root` named volume that
-the non-root uid 65532 cannot write. So the operability doc cannot yet close the three iscc-infra
-`critical`s, and a new `critical` (fix the non-booting quick-start) was filed. DONE stays out of reach.
+This window the realm-bake advance set `ENV ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt` in the
+Dockerfile, dropped the now-redundant `-e ISCC_MONITOR_REALM` from the CI `docker` smoke (so a
+realm-less boot to `/healthz` 200 mechanically proves the bake), and corrected `deploy/OPERATING.md`'s
+phantom-default wording + added a uid-65532 volume-prep note. Review verdict **PASS_WITH_NOTES /
+CONTINUE**; the NEW non-booting-quickstart `critical` is closed. HEAD `0753b65` is pushed and all three
+workflows (CI, Pages, Publish) are green.
 
 ## Convergence
 - **Remaining Verify criteria:**
   - **M1: 0 open (met). M2: 0 open (met). M3: 0 open (met, 4/4).** Carried forward — the
-    `89660150..HEAD` diff touched NO feature Go source (only `deploy/OPERATING.md` + context files;
-    confirmed by `git diff --stat`).
+    `b8638603..HEAD` diff touched NO Go source (only `Dockerfile`, `ci.yml`, `deploy/OPERATING.md` +
+    context/learnings; confirmed by `git diff --stat`).
   - **M-UI: behavioral + named-region Verify met; the mandatory M-UI exit visual-pass + human sign-off
     (ADR-0012) still pending.** Instance identity config-driven on THREE of six SSR mastheads
     (`/`, dossier, certificate); the proofserve trio still renders the static placeholder. No template
@@ -30,22 +28,20 @@ the non-root uid 65532 cannot write. So the operability doc cannot yet close the
     design-first remainder, `normal`.
   - **OTS anchoring: 1/1 open (carried).** All observable HTTP halves + both calendar-transport guards in
     place; only a root actually transiting to **Bitcoin-confirmed** remains (offline-unprovable).
-  - **M-Deploy: 5 of ~6 Verify items met, milestone PARTIALLY MET. Operability-doc item NOT yet met.**
-    The doc exists but its quick-start does not boot (review NEEDS_WORK), so it does not yet satisfy the
-    "an operator can deploy correctly" bar nor close the persistence `critical`. Root README still
-    absent.
-- **Last ~10 iterations: ~6 milestone-Verify-or-gate-advancing (canonical realm doc; GHCR publish
-  workflow; Dockerfile + container smoke; version stamp; SIGTERM trap; Pages publish unblock) / ~4
-  chrome·config-leaf·cert-TZ·doc-fix-needed.** **No drift:** the loop is steadily walking the M-Deploy
-  runway — code/doc-closable work that depends on no feature milestone. This window's operability doc
-  landed substantively correct but with a non-booting quick-start the review caught; the immediate next
-  step is the two-line correction, then the root README — both code-unblocked.
+  - **M-Deploy: Dockerfile + CI smoke + GHCR publish + SIGTERM + version + canonical realm + operability
+    doc all CLOSED; only the root `README.md` "Done When" item remains.** The quick-start now boots
+    (realm-bake, CI-proven) modulo the Compose volume-prefix chown caveat (`normal`).
+- **Last ~10 iterations: ~7 milestone-Verify-or-gate-advancing (canonical realm doc; GHCR publish
+  workflow; Dockerfile + container smoke; version stamp; SIGTERM trap; Pages publish unblock; realm-bake
+  so the quick-start boots) / ~3 chrome·config-leaf·cert-TZ.** **No drift:** the loop is steadily walking
+  the M-Deploy runway — code/doc-closable work that depends on no feature milestone. The remaining
+  code-closable item is the root README, then the residual `normal`s.
 
 ## M1 — Read-only Monitor
-**Status**: **met** — carried forward. The `89660150..HEAD` diff touched NO Go source under any M1 path
-(only `deploy/OPERATING.md` + context). All Verify criteria remain satisfied: `origin`/`vkey` golden;
-fork/shrink/equivocation golden-tested with freeze + alert-once + restart survival; structured logs;
-`/metrics`.
+**Status**: **met** — carried forward. The `b8638603..HEAD` diff touched NO Go source under any M1 path
+(only `Dockerfile`, `ci.yml`, `deploy/OPERATING.md` + context). All Verify criteria remain satisfied:
+`origin`/`vkey` golden; fork/shrink/equivocation golden-tested with freeze + alert-once + restart
+survival; structured logs; `/metrics`.
 - **Packages present** (28 source pkgs incl. `internal/version`): `cmd/{iscc-monitor,notecheck,verifier-site,wasm}`;
   internal — `badge, certificate, config, corsmw, dashboard, didweb, dossier, follower, healthz, index,
   logclient, metrics, metricshttp, ots, otsclient, proof, proofserve, registry, store, tiles,
@@ -71,10 +67,10 @@ ETag/Cache-Control on size-dependent proof surfaces (the `/_ds/` static assets D
 
 ## M-UI — Evidence Ledger frontend
 **Status**: **behaviorally + named-region complete; the M-UI exit visual-pass + human sign-off is
-pending.** No template-render change this window (the only change was `deploy/OPERATING.md`). All six
-certificate clauses + both anchor panels + badge + DS shell + `/` index + log browser + hub dossier +
-frozen Exhibit + single-record page + ISCC-IDv1 decoder + Hub-List resolver + proof-bundle endpoint
-render and pass the behavioral HTTP-seam Verify.
+pending.** No template-render change this window. All six certificate clauses + both anchor panels +
+badge + DS shell + `/` index + log browser + hub dossier + frozen Exhibit + single-record page +
+ISCC-IDv1 decoder + Hub-List resolver + proof-bundle endpoint render and pass the behavioral HTTP-seam
+Verify.
 - **Still open (NOT critical, carried):** instance identity is config-driven on THREE of six SSR
   mastheads; the proofserve trio (`browser.html`, `records.html`, `record.html`) still renders the
   static `monitor instance` placeholder. The `/` "recent declarers checked" hero footer is omitted
@@ -94,11 +90,11 @@ observable halves + both transport guards landed; only a real Bitcoin confirmati
 (offline-unprovable).** Neither core was touched this window.
 - **WASM:** the id-binding half is closed in source + artifact, the artifact is reproducible from
   `mise run build:wasm` (`TestWasmVerifyHashPinned` green), and it is **publicly published** —
-  `monitor.iscc.codes` serves the byte-pinned `/_ds/verify.wasm`. **Still open:** the cross-origin
-  **SIGNATURE-half gap** (the verifier core does NO checkpoint-signature / did:web check — the success
-  copy overstates a key check that never runs) — design-first remainder / STOP-candidate, `normal`.
-  **Carried `low`:** `cmd/verifier-site` writes non-atomically; `pages.yml` actions target deprecated
-  Node 20.
+  `monitor.iscc.codes` serves the byte-pinned `/_ds/verify.wasm` (Pages run on HEAD `0753b65` green).
+  **Still open:** the cross-origin **SIGNATURE-half gap** (the verifier core does NO
+  checkpoint-signature / did:web check — the success copy overstates a key check that never runs) —
+  design-first remainder / STOP-candidate, `normal`. **Carried `low`:** `cmd/verifier-site` writes
+  non-atomically; `pages.yml` actions target deprecated Node 20.
 - **OTS:** the `.ots` serve route, the §5 anchor clause (digest-bound via `ots.ConfirmedFor`), the store
   layer, the off-path stamp/upgrade loop (`OTSTick`), the offline classifier, and the calendar transport
   (both `safeUpgrade` + `safeStamp` guards) are wired. The Verify-closer not yet built: a root reaching
@@ -107,87 +103,87 @@ observable halves + both transport guards landed; only a real Bitcoin confirmati
   path).
 
 ## M-Deploy — Packaged & operable instance
-**Status**: **PARTIALLY MET (5 of ~6 Verify items) — the front-of-queue code-closable work (ADR-0013).
-The operability-doc item was ATTEMPTED this window but does not yet meet its bar (review NEEDS_WORK).**
-Verified by exploration:
+**Status**: **NEARLY MET — every code/CI Verify item CLOSED and the operability doc now states a
+correctly-booting deploy. The remaining "Done When" item is the root `README.md`.** Verified by
+exploration + CI:
 - **SIGTERM trapped — CLOSED.** `notifyShutdown()` (`cmd/iscc-monitor/main.go`) registers
   `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`, draining the store via
   the deferred `st.Close()`. Mutation-proven by the `//go:build unix` `shutdown_test.go`.
 - **Version-stamped binary — CLOSED.** `internal/version.Version` (`var Version = "dev"`) is the
   `-ldflags -X` injection target; `version.Handler()` is mounted at `/version`.
-- **Production `Dockerfile` + container `/healthz` CI smoke — CLOSED.** Multi-stage build
-  (`golang:1.26.4` → `gcr.io/distroless/static-debian12:nonroot`, uid 65532, CA roots) producing a
-  static stripped `cmd/iscc-monitor` binary, an empty-`VERSION` fail-fast `RUN` guard, and the baked
-  realm. The `ci.yml` `docker` job builds it, runs the container, and polls `GET /healthz` → 200.
+- **Production `Dockerfile` + container `/healthz` CI smoke — CLOSED + STRENGTHENED.** Multi-stage build
+  (`golang:1.26.4` → `gcr.io/distroless/static-debian12:nonroot`, uid 65532, CA roots), empty-`VERSION`
+  fail-fast `RUN` guard, baked realm, AND now `ENV ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt`
+  (`Dockerfile:51`). The `ci.yml` `docker` job builds it and runs the container with NO
+  `-e ISCC_MONITOR_REALM` — so a realm-less `/healthz` → 200 mechanically proves the bake. CI run on HEAD
+  `0753b65` green.
 - **GHCR publish workflow — CLOSED.** `.github/workflows/publish.yml` triggers on push to `develop` +
-  `workflow_dispatch`, logs into GHCR, and pushes BOTH `:develop` AND `:sha-<short>`.
+  `workflow_dispatch`, logs into GHCR, and pushes BOTH `:develop` AND `:sha-<short>`. Publish run on HEAD
+  `0753b65` green.
 - **Canonical realm document — CLOSED.** `deploy/realm-testnet.txt` at the fixed repo-root path, baked
-  at `/etc/iscc-monitor/realm.txt` (`Dockerfile:46`), `registry.Parse`-accepted by the non-vacuous
-  golden `TestParseCanonicalDeployRealm`. CLAUDE.md's env table names the three masthead identity keys.
-- **Operability doc — ATTEMPTED, NOT YET MET (review NEEDS_WORK this window).** `deploy/OPERATING.md`
-  (219 lines) exists and its substance is accurate and well-sourced (uid 65532, bind `:9464`/no
-  host-publish, baked realm path, OTS calendar host, WAL siblings, single-writer, `GET /version` shape,
-  SIGTERM drain, `:develop`+`:sha-<short>` tags, the `/metrics` exposure decision, the
-  "recreate-volume-on-schema-change" interim migration policy). **BUT the quick-start does not boot:**
-  - **[critical, NEW]** both snippets (`deploy/OPERATING.md:192`, `:214`) OMIT the REQUIRED
-    `ISCC_MONITOR_REALM`, claiming (`:67`) it "defaults to the baked realm". Verified false:
-    `config.Load` calls `required(get, keyRealm)` (`internal/config/config.go:123`) and the Dockerfile
-    sets ZERO `ENV` (only `COPY deploy/realm-testnet.txt …`, `Dockerfile:46`) — the baked FILE is not a
-    set VAR, so a copy-paste exits with `config: required key "ISCC_MONITOR_REALM" is missing`.
-  - **[normal, NEW]** the snippets mount a fresh `root:root` named volume (`monitor-data:/data`) without
-    a chown/init, so uid 65532 cannot create `/data/monitor.db` — contradicting the doc's own
-    uid-65532-writable requirement two sections earlier (`:56-59`).
-  Because the doc cannot be deployed correctly as written, it does **not** yet close the three iscc-infra
-  `critical`s (persistence / exposure / egress).
+  at `/etc/iscc-monitor/realm.txt` (`Dockerfile:46`) and now ENV-pointed, `registry.Parse`-accepted by
+  the non-vacuous golden `TestParseCanonicalDeployRealm`. CLAUDE.md's env table names the three masthead
+  identity keys.
+- **Operability doc — CLOSED (substance + booting quick-start).** `deploy/OPERATING.md` exists, its
+  substance is accurate and well-sourced (uid 65532, bind `:9464`/no host-publish, baked realm path, OTS
+  calendar host, WAL siblings, single-writer, `GET /version` shape, SIGTERM drain, `:develop`+
+  `:sha-<short>` tags, the `/metrics` exposure decision, the "recreate-volume-on-schema-change" interim
+  migration policy). The phantom-default wording is corrected — the doc now says the image **sets** the
+  var via `ENV` — and a uid-65532 volume-prep note was added. **Residual `normal`:** the volume-prep
+  `chown` literal-names `monitor-data`, but the headline Compose fragment declares the volume with no
+  `name:`/`external:`, so `docker compose up` mounts a project-prefixed volume the chown never touched —
+  the Compose path still fails permission-denied at `store.Open`. Doc-correctness gap, not a code defect;
+  does not block progress.
 - **No root `README.md`** — the "Done When" requirement is still open (`normal`). The only README is the
-  loop-internal `.claude/context/README.md`; `CLAUDE.md` is agent-facing.
+  loop-internal `.claude/context/README.md`; `CLAUDE.md` is agent-facing. **This is the last code/doc-
+  closable "Done When" gate.**
 - **Carried `normal` traps:** the on-disk DB migration hazard (`store.Open` = `CREATE TABLE IF NOT
   EXISTS` only, no `PRAGMA user_version`) — the doc states the interim "recreate the volume on schema
   change" policy; `publish.yml`'s publish job has no ref guard (`workflow_dispatch` from a non-develop
   ref would move the floating `:develop` tag; immutable `:sha-<short>` unaffected). **Carried `low`:**
   the `.dockerignore` secret/sidecar globs are slashless (root-level only, not recursive).
+- **The 3 iscc-infra `critical`s** (persistence / `/metrics` exposure / egress footprint) are answered
+  in substance by `deploy/OPERATING.md`'s now-booting deploy, but remain OPEN entries in `issues.md`.
+  They must be confirmed closed (or pruned) before DONE; the Compose chown `normal` is the one residual
+  doc gap on the persistence ask.
 
 ## Quality gates
-**Status**: **GREEN** (carried — no code touched this window, so the last green gate stands; review will
-re-confirm green on the doc-fix increment).
+**Status**: **GREEN.**
 - `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.26.1`; toolchain `go = "1.26.4"`);
-  `mise run check` runnable. This window's change was doc-only (`deploy/OPERATING.md`); the review
-  confirmed `mise run check` green (28 packages `ok`) and `gofmt -l .` clean.
+  `mise run check` runnable. This window's change was Dockerfile + CI workflow + deploy doc (no Go
+  source); the review confirmed `mise run check` green (28 packages `ok`) and `gofmt -l .` clean.
 - **CI**: `.github/workflows/` is `ci.yml` (`mise run check` + `notecheck` oracle + docker `/healthz`
-  smoke) + `pages.yml` (the `.codes` verifier site) + `publish.yml` (GHCR image push). Last fully-CI'd
-  commit `89660150`: **CI `success`, Pages `success`, Publish `success`** (the Publish run that the prior
-  state recorded as `in_progress` has now completed green). **HEAD `b8638603` is 4 commits AHEAD of
-  `origin/develop` (unpushed); these 4 are all doc/context-only, so no CI has run on them yet** — push
-  to re-gate.
-- **Latest `review` verdict: NEEDS_WORK / CONTINUE** (`deploy/OPERATING.md` — quick-start does not boot:
-  omits required `ISCC_MONITOR_REALM`; fresh volume not uid-65532-writable). The doc substance is
-  correct; two precise corrections are needed, not a rewrite. Gate stayed green (doc-only).
-- **Open issues: 4 critical, 7 normal, 15 low.** The four `critical`: (1) the NEW non-booting
-  `OPERATING.md` quick-start (the active step's own deliverable); (2-4) the three iscc-infra ops asks
+  smoke) + `pages.yml` (the `.codes` verifier site) + `publish.yml` (GHCR image push). **HEAD `0753b65`
+  is pushed (level with `origin/develop`) and ALL THREE workflows are `success`: CI `success`, Pages
+  `success`, Publish `success`.**
+- **Latest `review` verdict: PASS_WITH_NOTES / CONTINUE** (realm-bake — the quick-start now boots,
+  CI-proven by the realm-less docker smoke). The NEW non-booting-quickstart `critical` is closed; one
+  residual `normal` (Compose volume-prefix chown mismatch).
+- **Open issues: 3 critical, 7 normal, 15 low.** The three `critical`s are the iscc-infra ops asks
   (DB-volume persistence contract; public-route `/metrics` exposure; egress/footprint sizing) — answered
-  in substance by the doc but not confirmed closed while the quick-start is non-booting. The `normal`s
+  in substance by the now-booting operability doc but not yet confirmed closed/pruned. The `normal`s
   include the DB-migration hazard, the `/` "recent declarers checked" footer, the WASM signature-half
-  gap, the per-hub-Anchor design-honesty question, the missing root README, the `publish.yml`
-  ref-guard, and the new uid-65532 volume-prep note. DONE requires 0 critical AND 0 normal, so the loop
-  stays CONTINUE.
+  gap, the per-hub-Anchor design-honesty question, the missing root README, the `publish.yml` ref-guard,
+  and the Compose volume-prep chown mismatch. DONE requires 0 critical AND 0 normal, so the loop stays
+  CONTINUE.
 
 ## Next Milestone
-**M-Deploy is the gate. The operability doc is the active step but its quick-start does not boot — fix
-that FIRST (it is the smallest correct change and a NEW `critical`).** In priority order:
-1. **Fix `deploy/OPERATING.md`'s quick-start so it boots.** Smallest correct change: set
-   `ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt` explicitly in BOTH the Compose and `docker run`
-   snippets and correct the "valid out of the box" sentence (the FILE is baked; the VAR is not), OR add
-   `ENV ISCC_MONITOR_REALM=/etc/iscc-monitor/realm.txt` to the Dockerfile (makes the "out of the box"
-   claim true, but that is a Dockerfile change). Also add a one-line volume-prep note (pre-`chown
-   65532:65532` / a 65532-writable bind mount) so the named-volume mount is writable. Once the doc boots
-   correctly it closes the three iscc-infra `critical`s (persistence, exposure, egress).
+**M-Deploy is the gate. The quick-start now boots; the immediate next code/doc-closable work is the root
+`README.md` (the last `target.md` "Done When" requirement) and closing/pruning the three iscc-infra
+`critical`s.** In priority order:
+1. **Confirm/prune the three iscc-infra `critical`s.** The now-booting `deploy/OPERATING.md` states the
+   persistence contract (DB path + volume + uid-65532 + interim migration policy), the `/metrics`
+   exposure decision, and the egress/footprint — verify each ask is satisfied and prune it (the
+   persistence ask still has the Compose volume-prep chown `normal` caveat to settle first).
 2. **Add the public-facing root `README.md`** ("Done When" requirement) — what it is (verifiable cache),
    the stack, a build/run snippet, spec pointers; link CLAUDE.md as the authoritative env source.
 
-Fold-in candidate whenever a workflow file is next touched: the `publish.yml` (and `pages.yml`)
-`workflow_dispatch` ref-guard (`if: github.ref == 'refs/heads/develop'`).
+Fold-in candidates whenever the relevant file is next touched: fix the Compose volume-prep `chown`
+(`OPERATING.md` — pin `name: monitor-data` or a Compose-native prep); the `publish.yml`/`pages.yml`
+`workflow_dispatch` ref-guard (`if: github.ref == 'refs/heads/develop'`); the `pages.yml` Node-20 action
+bumps.
 
-Subsequent / parallel (all `normal`/`low`, none gate DONE once the doc-fix + README land except where
+Subsequent / parallel (all `normal`/`low`, none gate DONE once the README + criticals land except where
 noted): the proofserve-trio masthead slice + the shared `Resolve` leaf consolidation; the design-first
 pass on the WASM signature half (`normal`); the realm-index per-hub-vs-per-checkpoint Anchor honesty pass
 (`normal`); the OTS "upgrades to Bitcoin-confirmed" half (offline-unprovable); the on-disk DB migration
