@@ -45,6 +45,12 @@ const DefaultCalendarURL = "https://alice.btc.calendar.opentimestamps.org"
 // backs off and retries on a deadline-exceeded error like any other transport fault.
 const upgradeTimeout = 30 * time.Second
 
+// stampTimeout bounds one calendar stamp submit so a stalled calendar POST can never
+// hang the OTS goroutine indefinitely (starving later pending rows). It is a
+// best-effort transport bound, not a safety gate — OTS is best-effort and the loop
+// backs off and retries on a deadline-exceeded error like any other transport fault.
+const stampTimeout = 30 * time.Second
+
 // seqUpgrade upgrades one pending calendar sequence against its calendar, returning
 // the lengthened sequence. It is the injectable network seam: production wires
 // opentimestamps.UpgradeSequence (which does the calendar HTTP GET), while tests
@@ -111,20 +117,36 @@ func buildUpgrader(upgrade seqUpgrade) follower.Upgrader {
 	}
 }
 
+// stampFn submits a digest to a calendar and returns the initial pending sequence.
+// It is the injectable network seam mirroring seqUpgrade: production wires
+// opentimestamps.Stamp (which does the calendar HTTP POST), while tests inject a fake
+// so the Stamp helper's serialize path runs fully offline.
+type stampFn func(ctx context.Context, calendarURL string, digest [32]byte) (opentimestamps.Sequence, error)
+
 // Stamp submits digest to calendarURL and returns the serialized initial pending
 // OpenTimestamps proof bytes. It wraps opentimestamps.Stamp, builds the single-
 // sequence File{Digest, Sequences}, and returns file.SerializeToFile() — the bytes
-// a future stampRoot will persist into OTSRecord.OTSBytes so the Upgrader can later
-// upgrade them. It is exposed now and called by stampRoot in a follow-up sub-step;
-// the follower does not call it yet. A calendar transport fault is returned wrapped
-// (best-effort, the caller backs off, never freezes).
+// stampRoot persists into OTSRecord.OTSBytes so the Upgrader can later upgrade them.
+// A calendar transport fault is returned wrapped (best-effort, the caller backs off,
+// never freezes). The calendar call is routed through safeStamp (timeout + panic
+// guard), mirroring the upgrade path.
 func Stamp(ctx context.Context, calendarURL string, digest [32]byte) ([]byte, error) {
-	seq, err := opentimestamps.Stamp(ctx, calendarURL, digest)
-	if err != nil {
-		return nil, fmt.Errorf("otsclient.Stamp: %q: %w", calendarURL, err)
+	return buildStamper(opentimestamps.Stamp)(ctx, calendarURL, digest)
+}
+
+// buildStamper builds the Stamp helper over an injectable calendar-stamp function so
+// the serialize path is testable offline. It routes the calendar call through
+// safeStamp (per-request timeout + panic recover, mirroring buildUpgrader/safeUpgrade),
+// then assembles the single-sequence File{Digest, Sequences} and serializes it.
+func buildStamper(stamp stampFn) func(ctx context.Context, calendarURL string, digest [32]byte) ([]byte, error) {
+	return func(ctx context.Context, calendarURL string, digest [32]byte) ([]byte, error) {
+		seq, err := safeStamp(ctx, stamp, calendarURL, digest)
+		if err != nil {
+			return nil, fmt.Errorf("otsclient.Stamp: %q: %w", calendarURL, err)
+		}
+		file := opentimestamps.File{Digest: digest[:], Sequences: []opentimestamps.Sequence{seq}}
+		return file.SerializeToFile(), nil
 	}
-	file := opentimestamps.File{Digest: digest[:], Sequences: []opentimestamps.Sequence{seq}}
-	return file.SerializeToFile(), nil
 }
 
 // recoverRead calls opentimestamps.ReadFromFile and converts any panic it raises on
@@ -164,4 +186,26 @@ func safeUpgrade(ctx context.Context, upgrade seqUpgrade, seq opentimestamps.Seq
 		}
 	}()
 	return upgrade(ctx, seq, digest)
+}
+
+// safeStamp runs one calendar stamp submit under a bounded deadline and a panic guard,
+// symmetric with safeUpgrade at this external-library boundary. It derives a per-request
+// context.WithTimeout(ctx, stampTimeout) so a stalled calendar POST returns rather than
+// hangs the OTS goroutine (opentimestamps.Stamp honors ctx deadlines on its POST),
+// cancelling it before return. It recovers any panic the library raises while parsing
+// the calendar response (the panic-prone parseCalendarServerResponse/parseTimestamp
+// family) into a wrapped fail-closed error, so a malformed calendar response can never
+// crash the monitor (ADR-0004: OTS never crashes the follower). Both guards surface the
+// fault as a returned error the caller wraps and treats as a best-effort back-off —
+// never a //nolint or swallow.
+func safeStamp(ctx context.Context, stamp stampFn, calendarURL string, digest [32]byte) (seq opentimestamps.Sequence, err error) {
+	ctx, cancel := context.WithTimeout(ctx, stampTimeout)
+	defer cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			seq = nil
+			err = fmt.Errorf("otsclient.Stamp: %q panicked: %v", calendarURL, r)
+		}
+	}()
+	return stamp(ctx, calendarURL, digest)
 }

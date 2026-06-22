@@ -199,6 +199,59 @@ func TestUpgradeBoundsContext(t *testing.T) {
 	}
 }
 
+// TestStampPanicRecovered confirms a calendar stamp submit that PANICS (the
+// opentimestamps library parses the calendar response through the same panic-prone
+// parseCalendarServerResponse/parseTimestamp family recoverRead guards on the upgrade
+// side) surfaces as a wrapped fail-closed error rather than crashing the monitor
+// (ADR-0004: OTS never crashes the follower). The fake panics like the library would on
+// a malformed response. Removing the recover() in safeStamp makes this test panic the
+// binary.
+func TestStampPanicRecovered(t *testing.T) {
+	digest := [32]byte{}
+	panicStamp := func(context.Context, string, [32]byte) (opentimestamps.Sequence, error) {
+		panic("malformed calendar response")
+	}
+	out, err := buildStamper(panicStamp)(context.Background(), DefaultCalendarURL, digest)
+	if err == nil {
+		t.Fatalf("Stamp(panic): want wrapped error, got nil")
+	}
+	if out != nil {
+		t.Errorf("Stamp(panic): bytes = %x on recovered panic, want nil (fail-closed)", out)
+	}
+	if !strings.Contains(err.Error(), "otsclient.Stamp") {
+		t.Errorf("Stamp(panic): error %q does not carry the otsclient.Stamp wrap", err)
+	}
+	if !strings.Contains(err.Error(), "panicked") {
+		t.Errorf("Stamp(panic): error %q does not name the recovered panic", err)
+	}
+}
+
+// TestStampBoundsContext confirms the calendar stamp submit carries a bounded
+// deadline: safeStamp derives a context.WithTimeout before invoking the seam, so a
+// stalled calendar POST returns rather than hangs the OTS goroutine. The fake captures
+// the ctx it is handed; after driving the Stamp helper the captured ctx must report a
+// deadline. Reverting safeStamp to the bare ctx makes this FAIL (the parent
+// context.Background() carries no deadline).
+func TestStampBoundsContext(t *testing.T) {
+	digest := [32]byte{}
+	var gotDeadline bool
+	var sawCall bool
+	captureCtx := func(ctx context.Context, _ string, _ [32]byte) (opentimestamps.Sequence, error) {
+		sawCall = true
+		_, gotDeadline = ctx.Deadline()
+		return opentimestamps.Sequence{{Attestation: &opentimestamps.Attestation{CalendarServerURL: DefaultCalendarURL}}}, nil
+	}
+	if _, err := buildStamper(captureCtx)(context.Background(), DefaultCalendarURL, digest); err != nil {
+		t.Fatalf("Stamp(bounded ctx): unexpected error: %v", err)
+	}
+	if !sawCall {
+		t.Fatalf("Stamp(bounded ctx): stamp seam never called")
+	}
+	if !gotDeadline {
+		t.Errorf("Stamp(bounded ctx): stamp ctx carried no deadline, want a bounded timeout")
+	}
+}
+
 // TestStampSerializesRoundTrip checks the Stamp helper's File assembly /
 // serialization in isolation: a synthesized single-sequence File serializes and
 // reparses with the same digest, the round-trip Stamp performs after a calendar
