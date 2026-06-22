@@ -1,70 +1,88 @@
-## 2026-06-22 — WASM verifier entrypoint — `cmd/wasm` exporting `verify.VerifyInclusion` to JS
+## 2026-06-22 — Review of: WASM verifier entrypoint — `cmd/wasm` exporting `verify.VerifyInclusion` to JS
 
-**Done:** Laid the WASM verifier entrypoint: a `//go:build js && wasm` `cmd/wasm/main.go` that wraps the
-pure adapter in a `js.FuncOf` and exposes it as `globalThis.isccVerifyInclusion`, plus the pure,
-linux-testable marshaling adapter (`VerifyJSON`) that base64-Std-decodes the monitor's proof-bundle
-fields into the shared `internal/proof/verify`.`VerifyInclusion` args and folds the three-way verdict
-into a flat `(verified, errMsg)` JS result. The adapter is proven WASM-vs-server verdict-parity against
-the SAME 4-leaf golden vector the core test pins.
+**Verdict:** PASS_WITH_NOTES
+**Loop:** CONTINUE
 
-**Files changed:**
-- `cmd/wasm/main.go` (new): `js && wasm`-tagged entrypoint; thin `syscall/js` shim pulling `(record,
-  root, proofArray, index, size)` off `[]js.Value` and calling the adapter, returning
-  `{verified, error}`; `select{}` keeps the runtime alive; defensive arg-count guard → error result.
-- `cmd/wasm/verifyadapter/verify_adapter.go` (new): the untagged, **non-main** pure adapter package.
-  `VerifyJSON(record, root string, proofB64 []string, index, size uint64) (verified bool, errMsg
-  string)` — base64-Std-decodes inputs, calls the shared core, maps base64/precondition errors to
-  `errMsg!=""` and a negative Merkle verdict to `verified=false, errMsg==""`. Imports only
-  `encoding/base64` + `fmt` + `internal/proof/verify` (stays WASM-pure).
-- `cmd/wasm/verifyadapter/verify_adapter_test.go` (new): table-driven golden test reusing the verbatim
-  `goldenRoot`/`goldenProof` literals + `leaf-1`/index 1/size 4 from `internal/proof/verify`. Five
-  cases: positive → `verified=true,errMsg==""`; wrong record + tampered root → `verified=false,
-  errMsg==""`; malformed base64 + `index>=size` → `errMsg!=""`.
+**Summary:** The advance lays the `GOOS=js GOARCH=wasm` WASM verifier entrypoint exactly as the milestone
+arc requires: a tagged `cmd/wasm/main.go` `syscall/js` shim exposing `globalThis.isccVerifyInclusion`,
+plus a pure, linux-testable `cmd/wasm/verifyadapter` package that base64-Std-decodes the proof-bundle
+fields into the shared `internal/proof/verify` core and folds the three-way verdict into `(verified,
+errMsg)`. All gates are green, the adapter is WASM-pure and its golden-vector parity test is
+mutation-proven non-vacuous. One Codex P2 (a real but currently-unreachable JS-number truncation gotcha
+in the untagged shim) is confirmed and filed as a `normal` issue for the sub-step that wires the first
+caller; it does not block this increment.
 
-**Verification:** `mise run check` → **green** (`go build ./...`, `go vet ./...`, `go test ./...` all
-exit 0; `gofmt -l .` excl. `cauldron/` empty; `go mod tidy -diff` clean — no new dep, `syscall/js` is
-stdlib). Per-criterion:
-- [x] `GOOS=js GOARCH=wasm go build -o /tmp/iscc-verify.wasm ./cmd/wasm` → exit 0 (2.9 MB artifact, not
-  committed).
-- [x] `go build ./...` / `go vet ./...` (the wildcard forms the gate runs) → exit 0; `cmd/wasm` is
-  silently skipped on linux (no Go files for the platform after the tag excludes `main.go`).
-- [x] `go test -count=1 -run TestVerifyJSON ./cmd/wasm/verifyadapter` → PASS, all 5 cases.
-- [x] Golden assertion: `VerifyJSON("bGVhZi0x"=b64("leaf-1"), goldenRoot, goldenProof, 1, 4)` →
-  `verified=true, errMsg==""` — same verdict as the server core for the same vector (parity at the
-  marshaling boundary).
-- [x] Mutation-proven non-vacuous: forcing the adapter to always return `verified=true` fails exactly
-  `wrong_record` + `tampered_root`; reverted → green.
+**Verification:**
+- [x] `mise run check` (build + vet + test) — green; all 24 packages `ok`, including
+  `cmd/wasm/verifyadapter`.
+- [x] `gofmt -l .` (excl. `cauldron/`) — empty.
+- [x] `GOOS=js GOARCH=wasm go build -o /tmp/iscc-verify.wasm ./cmd/wasm` — exit 0 (2.9 MB artifact, not
+  committed, per Not-In-Scope).
+- [x] `go vet ./cmd/wasm` on linux — exit 1 "build constraints exclude all Go files". This is the
+  EXPECTED response to a platform-empty package (it is NOT a `syscall/js` compile error); next.md's exact
+  wording ("does NOT error on the syscall/js import") assumed the adapter lived in `package main`, which
+  it no longer does (see deviation below). The gate uses `go vet ./...` (wildcard) which skips it; check
+  is green.
+- [x] `go test -count=1 -run TestVerifyJSON ./cmd/wasm/verifyadapter` — PASS, all 5 cases (positive;
+  wrong-record + tampered-root → `verified=false, errMsg==""`; malformed base64 + `index>=size` →
+  `errMsg!=""`). Run via the subpackage path, not `./cmd/wasm`.
+- [x] Golden-vector WASM-vs-server parity: `VerifyJSON("bGVhZi0x", goldenRoot, goldenProof, 1, 4)` →
+  `verified=true` — the SAME verdict the core test pins for the SAME 4-leaf vector; literals copied
+  verbatim from `internal/proof/verify/verify_test.go`.
+- [x] Mutation-proven non-vacuous: forcing `verified=true` fails `tampered_root`/`wrong_record`;
+  collapsing the error channel fails `index>=size`; reverted byte-identical, green.
+- [x] Adapter WASM-pure: imports only `encoding/base64`, `fmt`, `internal/proof/verify`;
+  `GOOS=js GOARCH=wasm go build ./cmd/wasm/verifyadapter` exit 0.
+- [x] `go mod tidy -diff` clean; `go.mod`/`go.sum` untouched by the commit (`syscall/js` is stdlib).
+- [x] Gate-integrity scan over unpushed commits — no `//nolint`, `t.Skip`, build-tag exclusions (beyond
+  the legitimate `js && wasm` tag), swallowed errors, or deleted assertions.
+- [x] Oracle gate — N/A as a *modification*: the diff does not touch `internal/proof/verify`, signature/
+  Merkle/consistency logic, `internal/didweb`, or fork/shrink/equivocation; it only *consumes* the
+  verify core. The relevant oracle (the pinned 4-leaf golden vector, identical on both sides) is green
+  inside `mise run check`.
+
+**Issues found:** One filed (Codex-sourced, see below). No reviewer-independent defects beyond it.
+
+**Codex second opinion:** One [P2] finding, reviewer-CONFIRMED and filed as a `normal` issue.
+- [P2] `cmd/wasm/main.go:39-40` — `js.Value.Int()` truncates a non-integer JS `index`/`size` (it is
+  `int(v.Float())`, so `1.9 → 1`), so malformed bundle metadata could read as `verified` against the
+  truncated leaf. Independently confirmed (`int(1.9)==1`). Real, but (a) lives only in the untagged glue
+  shim — the tested, parity-proven `verifyadapter.VerifyJSON` takes `uint64` and is correct; (b) there is
+  no caller yet (the wiring is explicitly Not-In-Scope), and the real callers emit server-computed
+  integer indexes. So it does not block this increment's goal. Filed for the sub-step that wires the
+  first caller (where the JS→Go arg contract belongs) rather than fixed in review (it adds a behavioral
+  validation contract, beyond a minor review fix).
+
+**Visual check:** n/a — no SSR surface changed (the diff is entirely under `cmd/wasm/`; no
+`internal/dashboard`/`dossier`/`web`/`certificate` or template touched).
+
+**Design deviation (reviewer-VERIFIED, accepted):** advance moved the pure adapter out of `package main`
+(next.md's literal layout) into a non-main subpackage `cmd/wasm/verifyadapter`. Independently reproduced
+in a scratch module AND this repo: an untagged file in `package main` whose only `func main()` is in a
+`js && wasm`-tagged file makes `go build ./...` FAIL on linux with `runtime.main_main·f: function main is
+undeclared in the main package`. next.md's scoping claim that `go build ./...` "silently skips" such a
+package is incorrect — only a package with *no* Go files for the platform is skipped. The subpackage fix
+is the idiomatic, minimal, in-scope correction (3 new files, all under `cmd/wasm/`); all other next.md
+intent (untagged+linux-tested marshaling, exported verify-to-JS, same golden vector, three-way verdict
+mapping) is preserved. Captured in the new `learnings/cmd-wasm.md` so the next WASM step does not retrip
+it.
 
 **Next:** The WASM side is now callable. The natural next sub-step is the **tier-2 progressive
-enhancement** wiring it into the certificate/dossier (embed `wasm_exec.js` from `$(go env
-GOROOT)/lib/wasm/wasm_exec.js`, a `<script>` that loads the `.wasm` and calls `isccVerifyInclusion`
-with the base64-Std fields the surface already emits), followed by the standalone `monitor.iscc.codes`
-Independent Verification app (Surface C) and the reproducible-build / published-hash / SRI pin +
-`mise run build:wasm` task. A `VerifyConsistency` sibling export waits for a caller and needs its own
-arg-order wrapper (proof-verify learning).
+enhancement** wiring it into the certificate/dossier (embed `wasm_exec.js` from
+`$(go env GOROOT)/lib/wasm/wasm_exec.js`, a `<script>` that loads the `.wasm` and calls
+`isccVerifyInclusion` with the base64-Std fields the surface already emits) — and that is the right place
+to land the `js.Value.Int()` integer/safe-integer validation the Codex P2 issue tracks, since it wires
+the first real caller. After that: the standalone `monitor.iscc.codes` Independent Verification app
+(Surface C) and the reproducible-build / published-hash / SRI pin + `mise run build:wasm` task. A
+`VerifyConsistency` sibling export still waits for a caller and needs its own arg-order wrapper
+(proof-verify learning).
 
 **Notes:**
-- **DESIGN DEVIATION from next.md's exact file layout (flagged, not silent):** next.md's Scope placed
-  the untagged `verify_adapter.go` **inside `package main` alongside the tagged `main.go`**. That does
-  NOT work on linux: an untagged file in `package main` makes `cmd/wasm` a buildable command with no
-  `main` function on linux, and **`go build ./...` fails to link** it (`function main is undeclared in
-  the main package`). next.md's scoping note (lines 106-110) claimed `go build ./...` "silently skips"
-  such a package — that is **incorrect**; I reproduced the link failure in both this repo and a scratch
-  module. `go vet`/`go test` pass, but `go build ./...` (part of `mise run check`) does not. The
-  idiomatic, in-scope fix: move the pure adapter into its own **non-main subpackage**
-  `cmd/wasm/verifyadapter` (a library — always builds on linux) and leave `cmd/wasm` with ONLY the
-  tagged `main.go`, so `go build ./...` correctly skips it as "no Go files for the platform" while the
-  WASM gate compiles `main.go` + the imported adapter. All other next.md intent is preserved verbatim
-  (untagged-and-linux-tested marshaling, exported `VerifyInclusion` to JS, same golden vector, same
-  three-way verdict mapping). 3 new files, all within `cmd/wasm/`. **Action for review:** consider
-  correcting the scoping note in the proof-verify / a cmd-wasm learning so the next WASM step does not
-  re-trip the "untagged file in `package main` breaks `go build ./...`" assumption.
-- The exported Go function symbol is `VerifyJSON` (capitalized) because it now crosses a package
-  boundary (main.go imports verifyadapter); next.md wrote it lowercase `verifyJSON` assuming same-package.
-- `go vet ./cmd/wasm` (explicitly naming the package) returns exit 1 "build constraints exclude all Go
-  files" — this is NOT a `syscall/js` compile error; it is the expected response to explicitly targeting
-  a package with no files for the host platform. The gate uses `go vet ./...` (wildcard), which skips
-  it; `mise run check` is green.
-- No `.wasm` artifact committed; no `mise` WASM task; no HTML/DS/`internal/web` change — all correctly
-  deferred to later sub-steps per Not In Scope.
-- Standing `normal`/`low` hardening defects untouched (none on these new files), per next.md.
+- Scope discipline clean: 3 new files (1 non-test `verify_adapter.go`, 1 tagged shim, 1 test), all under
+  `cmd/wasm/`. Nothing in `## Not In Scope` was touched — no HTML/DS/`internal/web`, no committed `.wasm`,
+  no `mise` WASM task, no `VerifyConsistency`, no fold-in of the standing `normal`/`low` hardening defects.
+- `learnings.md` index gained one pointer row (`cmd/wasm`); new `learnings/cmd-wasm.md` detail file
+  created. No promotion to the always-loaded section — these are package-local mechanics, not
+  cross-cutting. No detail file exceeded the rotation budget.
+- Standing OTS / registry / certificate `normal`/`low` issues remain open and untouched (correctly out of
+  scope for this WASM step).

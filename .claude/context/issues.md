@@ -280,3 +280,29 @@ filed it and does **not** affect priority.
   Cosmetic locality only.
 - **Spec:** `internal/tilesserve` `writeReadError` pattern; no spec contract.
 
+## WASM shim `js.Value.Int()` truncates a non-integer JS `index`/`size`, risking a false verified verdict
+- **Priority:** normal
+- **Source:** [review] (Codex P2, reviewer-confirmed against `syscall/js` semantics)
+- **What / where / how to verify:** `cmd/wasm/main.go:39-40` pulls the proof-bundle `index`/`size` off
+  the JS args with `args[3].Int()` / `args[4].Int()`. `js.Value.Int()` is defined as `int(v.Float())`,
+  so a JS Number passed as `1.9` TRUNCATES to `1` before the `uint64` conversion and the bundle then
+  verifies against leaf index 1 — i.e. malformed (non-integer) bundle metadata can be reported as
+  `verified` instead of an error. Values beyond JS's 2^53 safe-integer range round similarly.
+  Reviewer-confirmed the truncation: `int(1.9)==1` (Go `int(float64)` truncates toward zero, the exact
+  coercion `Value.Int()` performs). NOT currently exploitable: there is no caller yet (the tier-2
+  certificate/dossier enhancement and the standalone `monitor.iscc.codes` app are explicitly later
+  sub-steps), and the eventual real callers emit server-computed integer `(index, size)` from the proof
+  bundle, never arbitrary floats. The bug is also only in the untagged glue `main.go` — the tested,
+  parity-proven `verifyadapter.VerifyJSON` takes `uint64` and is correct. So it does NOT block this
+  increment's stated goal (the WASM side is callable with verified parity at the marshaling boundary).
+  Fix when the FIRST real caller is wired (the natural place to enforce the JS→Go arg contract): before
+  calling `VerifyJSON`, validate that `index`/`size` are integral and within the safe-integer range
+  (e.g. reject when `args[i].Float() != math.Trunc(args[i].Float())` or `> 2^53`), folding a violation
+  into the same `{verified:false, error:...}` result the arg-count guard uses; or parse decimal strings
+  instead of accepting JS Numbers. Verify fixed: a shim-level test (or the wired caller's test) passes
+  `index=1.9` against the golden vector and asserts `verified=false, error!=""`; reverting the validation
+  makes it report `verified=true`.
+- **Spec:** target.md WASM milestone "identical vectors yield identical verdicts (WASM vs server)" — a
+  truncated input is NOT an identical vector; learnings.md always-loaded "a built proof is not a verified
+  proof / fail closed"; `learnings/cmd-wasm.md` JS-call-boundary truncation gotcha.
+
