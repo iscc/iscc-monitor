@@ -83,8 +83,13 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   The PNG is a committed, pre-downscaled artifact (199×76 gray+alpha, ~3 KB) — the downscale ran ONCE at
   commit time, never in a build/`mise` step (no image toolchain on the build path; ADR-0003 pure-Go). The
   same-origin `/_ds/` src passes `noExternalCDN` + the dashboard body ban (no `http(s)://`/`cdn.`/`jsdelivr`).
-  Remaining FOUR mastheads (`certificate/cert.html`, `proofserve/{browser,record,records}.html`) reuse this
-  route with the identical one-line `<img>` edit — the serve infra is now in place.
+  settled: the logo now renders on ALL SIX SSR mastheads — `dashboard.html`, `dossier.html`, plus
+  `certificate/cert.html` + `proofserve/{browser,record,records}.html` (the same `.chrome-brand`/`.chrome-logo`/
+  `.chrome-divider` block + the one-line `<img>`, copied verbatim). Each surface's handler test asserts
+  `src="/_ds/iscc-logo-black.png"` (mutation-proven on cert + browser). Forward rule when adding a NEW SSR
+  surface: copy the same masthead block and add the same src assertion to its handler test — OR, if the
+  six-way copy-paste is finally consolidated, a single `html/template` chrome partial (deferred KISS move).
+  Never let an SSR masthead ship without the logo (target.md:148 "every surface").
 - **Residual whitespace-prefixed hole (open `low` issue, Codex P2):** the same predicate still treats a
   `//` preceded by whitespace as a comment, so the (rare, mostly-invalid) whitespace-before-URL forms
   `<script src = //cdn...>` and CSS `url( //cdn...)` are stripped and the ban misses them. This is NOT a

@@ -18,36 +18,6 @@ filed it and does **not** affect priority.
 
 ---
 
-## Add the ISCC logo to the remaining FOUR mastheads (serve route + `/` + dossier already landed)
-- **Priority:** critical
-- **Source:** [human]
-- **What / where / how to verify:** PARTIALLY DONE (advance `7e3fe44`, reviewer-confirmed): the
-  self-hosted grayscale logo is now embedded (`internal/web/iscc-logo-black.png`, 199×76 gray+alpha,
-  ~3 KB) and served at `LogoPath` `/_ds/iscc-logo-black.png` (`image/png`, sibling no-cache+strong-ETag+304
-  policy) via `internal/web/web.go`'s `case LogoPath: writeAsset(...)` — verified live (`200 image/png`,
-  byte-verbatim, `TestLogoServed`) AND rendered as `<img src="/_ds/iscc-logo-black.png">` + a 1px divider
-  beside the text `.chrome-mark` on the **two** surfaces the verify bar measured — `/` (dashboard) and the
-  hub dossier — both asserted by handler tests (`TestDashboardRendersHeroAndNavigation`,
-  `TestDossierRendersCoveredHub`, mutation-proven: drop the `<img>` → FAIL) and confirmed by the ADR-0012
-  visual pass (the logo renders, no remaining "no logo" delta on `/`). REMAINING (this issue's open scope):
-  the other FOUR SSR mastheads still render the text-only `.chrome-mark` with no logo —
-  `internal/certificate/cert.html`, `internal/proofserve/browser.html`, `internal/proofserve/record.html`,
-  `internal/proofserve/records.html` (reviewer grep-confirmed: NO LOGO in all four). **How:** the serve
-  route exists, so this is now a pure one-line-per-template edit — add the identical
-  `<img class="chrome-logo" src="/_ds/iscc-logo-black.png" alt="ISCC">` + `<span class="chrome-divider">`
-  inside a `.chrome-brand` flex wrapper beside each `.chrome-mark` (copy the `dashboard.html` masthead
-  block + its `.chrome-brand`/`.chrome-logo`/`.chrome-divider` CSS verbatim), and extend each surface's
-  existing handler test to assert `src="/_ds/iscc-logo-black.png"`. Optional KISS factoring of the now
-  six near-identical mastheads into a shared chrome partial is still a deferred `advance`-call (not
-  required). **Verify fixed:** all four remaining served mastheads carry `<img src="/_ds/iscc-logo-black.png">`
-  (a handler test asserts the `<img>` on at least the certificate surface), `mise run check` green, and the
-  ADR-0012 visual pass vs each `.dc.html` mockup files no remaining "no logo" delta on any SSR surface.
-- **Spec:** target.md:148 "Document chrome + instance identity" (the ISCC logo + "Trust &amp; Transparency
-  Monitor" mark on **every** surface); the no-CDN / grayscale-safe / self-hosted hard constraints; ADR-0010
-  Evidence-Ledger handoff. (Sub-item (1) "No logo" of the "`/` realm-index sub-region deltas" issue below
-  is now CLOSED for `/` — that issue's remaining scope is the instance-identity, Checkpoint/Anchor, and
-  recent-declarers sub-deltas only.)
-
 ## Certificate §5 BITCOIN ANCHOR does not bind the OTS proof's committed digest to §2's accepted root
 - **Priority:** normal
 - **Source:** [review] (Codex P2, reviewer-confirmed against the library + the OTS write path)
@@ -394,10 +364,9 @@ filed it and does **not** affect priority.
   dossier link, instance-identity masthead) now render and the lone `critical` is closed — but the
   ADR-0012 visual pass against `.claude/design/ISCC Monitor - Realm Index.dc.html` shows four remaining
   sub-region deltas the parity step deferred as constraint-wins (all flagged in that handoff):
-  (1) **No logo** — **EXTRACTED to the critical "Add the ISCC logo to the nav-bar masthead chrome" issue
-  above; track and verify it there, not here.** (Summary: the mockup masthead has the ISCC logo, the live
-  chrome renders a text-only `.chrome-mark` because no logo asset is served and no-CDN bans external
-  origins; the fix is the self-hosted `internal/web` `go:embed`+serve step.)
+  (1) **No logo** — **CLOSED (reviewer-confirmed `6a442b4`).** The self-hosted logo now renders on ALL SIX
+  SSR mastheads (`/`, dossier, certificate, the three proofserve surfaces); the ADR-0012 visual pass shows no
+  remaining "no logo" delta on any surface. No further action — kept here only as a resolved sub-item record.
   (2) **Static instance identity + realm name** — the mockup shows `monitor.iscc.id` / "instance operated
   by ISCC Foundation · ISCC mainnet" and a "REALM REGISTER · ISCC MAINNET" subtitle; the live page renders
   generic static copy ("monitor instance" / "independent Trust & Transparency service" and a bare "Realm
