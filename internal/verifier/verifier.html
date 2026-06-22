@@ -417,15 +417,17 @@
       <!-- Independence statement: both origins named, .codes ↔ .id visible. -->
       <p class="independence">A WASM verifier from the independent origin <span class="mono">monitor.iscc.codes</span> recomputes this proof in your browser. The result below is produced <strong>here</strong> — the monitor instance <span class="mono">monitor.iscc.id</span> is not in the trust path. The audited checker is controlled by no monitor.</p>
 
-      <!-- Verification-record block: the steps the verifier WILL run. With no target
-           (or no JS) it renders the honest baseline — it describes the procedure and
-           asserts NO un-run verdict ("not yet run"). With ?monitor=&id= present, the
-           end-of-body loader fetches the target's proof bundle, runs the WASM checker,
-           and gates the verdict region below on a genuine re-VERIFICATION. -->
+      <!-- Verification-record block: the steps the verifier WILL run. The static body
+           always renders the honest baseline — it describes the procedure and asserts
+           NO un-run verdict ("not yet run"). The end-of-body loader reads
+           ?monitor=&id= CLIENT-side from location.search; when a valid target is
+           present it fetches the target's proof bundle, runs the WASM checker, and
+           gates the verdict region below on a genuine re-VERIFICATION (never a static
+           render). With no/invalid target (or no JS) the baseline stays untouched. -->
       <div class="vrecord">
         <div class="vrecord-head">
           <span class="vrecord-title">Verification record</span>
-          <span id="run-label" class="vrecord-runlabel">{{if .HasTarget}}verifying in your browser…{{else}}not yet run{{end}}</span>
+          <span id="run-label" class="vrecord-runlabel">not yet run</span>
         </div>
         <div class="vrecord-body">
           <div class="vstep">
@@ -448,15 +450,16 @@
             <span class="vstep-dot"></span>
             <span class="vstep-label">Check the signature against the hub's did:web key</span>
           </div>
-          <!-- The run affordance / verdict region. With ?monitor=&id= the loader at
-               the end of <body> instantiates /_ds/wasm_exec.js + /_ds/verify.wasm and
-               runs isccVerifyInclusion against the fetched bundle, gating the verdict
-               below on a genuine re-VERIFICATION (never a status flag). With no target
-               (or no JS) it stays the honest no-verdict default — no ✓ and no mismatch
-               is claimed. The script flips data-state to verified / failed / error. -->
+          <!-- The run affordance / verdict region. When location.search carries a
+               valid ?monitor=&id= the loader at the end of <body> instantiates
+               /_ds/wasm_exec.js + /_ds/verify.wasm and runs isccVerifyInclusion
+               against the fetched bundle, gating the verdict below on a genuine
+               re-VERIFICATION (never a status flag). With no/invalid target (or no JS)
+               it stays the honest no-verdict default — no ✓ and no mismatch is
+               claimed. The script flips data-state to verified / failed / error. -->
           <div id="verdict" class="verdict" data-state="default">
             <span class="verdict-dot"></span>
-            <span id="verdict-text">{{if .HasTarget}}Re-verifying this inclusion proof in your browser against the hub-signed checkpoint…{{else}}The in-browser WASM checker (<span style="font-family:var(--font-mono)">/_ds/verify.wasm</span>, loaded via <span style="font-family:var(--font-mono)">/_ds/wasm_exec.js</span>) recomputes the steps above locally; until it runs, no verdict is claimed.{{end}}</span>
+            <span id="verdict-text">The in-browser WASM checker (<span style="font-family:var(--font-mono)">/_ds/verify.wasm</span>, loaded via <span style="font-family:var(--font-mono)">/_ds/wasm_exec.js</span>) recomputes the steps above locally; until it runs, no verdict is claimed.</span>
           </div>
         </div>
       </div>
@@ -501,34 +504,53 @@
     <p class="footnote">This verifier app is a static site on monitor.iscc.codes — a different origin from any monitor instance. It takes the instance to audit as a parameter and recomputes every proof locally, so the instance you point it at is never in the trust path. One audited checker serves the whole federation.</p>
   </main>
 
-  {{if .HasTarget}}
-  <!-- Live re-verification target, passed as a JSON data island (NOT interpolated
-       into executable JS): html/template JSON-context-escapes the values, so a
-       monitor URL or ISCC:-prefixed id survives intact and a user-supplied target
-       cannot break out of the JSON string. Surface C is cross-origin, so the island
-       carries only the TARGET ({monitor, id}); the loader fetches the proof bundle
-       itself (cf. the certificate, which is same-origin and bakes the bundle in). -->
-  <script id="verify-target" type="application/json">{"monitor":{{.Monitor}},"id":{{.ID}}}</script>
-  <!-- Tier-2 progressive enhancement: load the audited Go WASM runtime
-       (/_ds/wasm_exec.js) then the verifier module (/_ds/verify.wasm), fetch the
-       target instance's proof bundle, and re-run the inclusion proof IN THE BROWSER.
-       The rendered verdict is gated on this genuine re-VERIFICATION — never a flag.
-       Three distinct data-states: error (broken input / fetch failed) ≠ failed (a
-       real negative VERDICT — the proof did not rebuild the hub-signed root, the
-       split-view signal) ≠ verified. Only a `failed` verdict reveals the guided
-       mismatch alert; an `error` stays in the verdict region. A no-JS reader loses
-       only this panel — the §steps + honest baseline are already server-rendered. -->
+  <!-- Tier-2 progressive enhancement (ALWAYS emitted — this is a single STATIC
+       artifact served byte-for-byte by a static host, so the target is read
+       CLIENT-side from location.search, never server-rendered). Load the audited Go
+       WASM runtime (/_ds/wasm_exec.js) then the verifier module (/_ds/verify.wasm),
+       read ?monitor=&id= from the URL, fetch the target instance's proof bundle, and
+       re-run the inclusion proof IN THE BROWSER. The rendered verdict is gated on
+       this genuine re-VERIFICATION — never a flag. Three distinct data-states: error
+       (broken input / fetch failed) ≠ failed (a real negative VERDICT — the proof did
+       not rebuild the hub-signed root, the split-view signal) ≠ verified. Only a
+       `failed` verdict reveals the guided mismatch alert; an `error` stays in the
+       verdict region. With no/invalid target (or no JS) the honest baseline stays
+       untouched — no verdict is claimed. -->
   <script src="/_ds/wasm_exec.js"></script>
   <script>
     (async function () {
-      var island = document.getElementById("verify-target");
       var verdict = document.getElementById("verdict");
       var verdictText = document.getElementById("verdict-text");
       var runLabel = document.getElementById("run-label");
       var mismatch = document.getElementById("mismatch");
       var mismatchBody = document.getElementById("mismatch-body");
-      if (!island || !verdict || !verdictText) {
+      if (!verdict || !verdictText) {
         return;
+      }
+      // readTarget mirrors the former server-side parseTarget as a CLIENT-side
+      // usability guard (NOT a trust boundary — the browser re-fetches and re-verifies
+      // the bundle regardless). It requires a non-empty id and a monitor that parses
+      // via new URL() with an http/https scheme, a non-empty host, and no fragment.
+      // On no/invalid target it returns null so the loader leaves the honest baseline
+      // untouched (graceful degradation, never an `error` render). new URL throws on an
+      // unparseable URL, so it is wrapped in try/catch.
+      function readTarget() {
+        var params = new URLSearchParams(location.search);
+        var monitor = params.get("monitor");
+        var id = params.get("id");
+        if (!monitor || !id) {
+          return null;
+        }
+        var u;
+        try {
+          u = new URL(monitor);
+        } catch (e) {
+          return null;
+        }
+        if ((u.protocol !== "http:" && u.protocol !== "https:") || !u.host || u.hash) {
+          return null;
+        }
+        return { monitor: monitor, id: id };
       }
       // setVerdict centralizes the three-way render so error/failed/verified never
       // blur: only `failed` reveals the guided mismatch alert as a live verdict.
@@ -553,8 +575,16 @@
         var lines = String(checkpoint).split("\n");
         return lines.length >= 3 ? lines[2] : "";
       }
+      // No/invalid target: leave the honest no-verdict baseline in place.
+      var target = readTarget();
+      if (!target) {
+        return;
+      }
+      // A valid target is present: announce the in-progress run before fetching, so
+      // the present-tense copy (never in the static body) appears only once it runs.
+      runLabel.textContent = "verifying in your browser…";
+      verdictText.textContent = "Re-verifying this inclusion proof in your browser against the hub-signed checkpoint…";
       try {
-        var target = JSON.parse(island.textContent);
         var bundleURL = target.monitor.replace(/\/+$/, "") + "/inclusion/" + encodeURIComponent(target.id) + ".bundle";
         var resp = await fetch(bundleURL);
         if (!resp.ok) {
@@ -609,6 +639,5 @@
       }
     })();
   </script>
-  {{end}}
 </body>
 </html>

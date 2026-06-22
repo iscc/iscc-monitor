@@ -5,35 +5,47 @@
 // step labels, the guided split-view mismatch alert + its "do not discard either"
 // guidance), the shared no-CDN DS shell wiring (token/font links, self-hosted logo,
 // the audited /_ds/verify.wasm artifact reference), and the no-CDN body ban matching
-// the sibling SSR seam tests. The oracle gate is N/A: no signature, RFC-6962, Merkle,
-// did:web, fsck, or proof path — this is a pure static HTML render.
+// the sibling SSR seam tests. The page is a single STATIC artifact: the ?monitor=&id=
+// target is read CLIENT-side from location.search by the always-emitted loader, never
+// by the handler, so every request renders the same bytes — the tests assert the
+// always-present loader, that no query value is reflected into the body, and that the
+// static body claims no un-run verdict. The oracle gate is N/A: no signature,
+// RFC-6962, Merkle, did:web, fsck, or proof path — this is a pure static HTML render.
 package verifier
 
 import (
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 )
 
-// serve renders the verifier page over a no-query GET request (the no-target
-// baseline) and returns the recorder.
-func serve(t *testing.T) *httptest.ResponseRecorder {
-	t.Helper()
-	return serveTarget(t, "")
+// scriptBlock matches an end-of-body <script>…</script> block (incl. its contents),
+// used to isolate the DISPLAYED no-JS body from the always-emitted loader's JS string
+// literals. The present-tense verdict copy ("verifying…", "Your (size, root) does not
+// match") legitimately lives inside the loader's setVerdict() as runtime textContent,
+// so the honesty contract is about what the no-JS render DISPLAYS, not raw substring
+// presence anywhere in the file. The loader is the only multi-line script and runs
+// no display until a valid target is found.
+var scriptBlock = regexp.MustCompile(`(?s)<script\b[^>]*>.*?</script>`)
+
+// displayedBody returns the body with every <script>…</script> block removed — the
+// static markup a no-JS reader actually sees. The honesty assertions run against this
+// so they catch an un-run verdict in DISPLAYED text without false-positiving on the
+// loader's JS string literals (which set textContent only at runtime, post-target).
+func displayedBody(body string) string {
+	return scriptBlock.ReplaceAllString(body, "")
 }
 
-// serveTarget renders the verifier page over a GET request whose URL carries the
-// given raw query (e.g. "monitor=https://monitor.iscc.id&id=ISCC:…") and returns the
-// recorder. An empty query is the no-target baseline.
-func serveTarget(t *testing.T, rawQuery string) *httptest.ResponseRecorder {
+// serve renders the verifier page over a plain no-query GET request and returns the
+// recorder. The page is a single static artifact rendered identically for every
+// request (the ?monitor=&id= target is read CLIENT-side from location.search by the
+// loader, never by the handler), so this one render is the whole observable surface.
+func serve(t *testing.T) *httptest.ResponseRecorder {
 	t.Helper()
-	target := "/"
-	if rawQuery != "" {
-		target = "/?" + rawQuery
-	}
 	rec := httptest.NewRecorder()
-	Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	return rec
 }
 
@@ -53,8 +65,8 @@ func TestVerifierRendersNamedRegions(t *testing.T) {
 	body := rec.Body.String()
 
 	// The shared no-CDN DS shell: token + font stylesheets, the self-hosted ISCC
-	// logo img, the DS font tokens, and the audited WASM artifacts the deferred
-	// live-wiring sub-step instantiates.
+	// logo img, the DS font tokens, and the audited WASM artifacts the always-emitted
+	// client-side loader instantiates.
 	for _, want := range []string{
 		`href="/_ds/tokens.css"`,
 		`href="/_ds/fonts.css"`,
@@ -146,103 +158,119 @@ func TestVerifierGuidedMismatchAlert(t *testing.T) {
 	}
 }
 
-// TestVerifierNoTargetBaselineIsHonest asserts the no-target baseline asserts NO
-// un-run verdict: with no ?monitor=&id= the body must NOT contain the present-tense
-// negative-verdict assertion "Your (size, root) does not match" (that copy lives only
-// inside the {{if .HasTarget}} loader, revealed only on a real `failed` verdict),
-// while the honest named regions + the "not yet run" run-label still render. This is
-// the honesty fix the advance mutation-proves: it closes the open `normal` issue
-// where the mismatch alert claimed an un-run negative verdict.
-func TestVerifierNoTargetBaselineIsHonest(t *testing.T) {
+// TestVerifierStaticBodyAlwaysCarriesLoader asserts the static-artifact contract: a
+// plain no-query GET ALWAYS carries the client-side live-verification loader — the
+// /_ds/wasm_exec.js + /_ds/verify.wasm scripts, the isccVerifyInclusion call, and the
+// URLSearchParams(location.search) read that resolves the ?monitor=&id= target in the
+// browser. Because GitHub Pages serves the one pre-generated index.html byte-for-byte
+// for every path, the loader must be present on every render so that loading the same
+// artifact at /?monitor=…&id=… runs the WASM verdict client-side.
+func TestVerifierStaticBodyAlwaysCarriesLoader(t *testing.T) {
 	rec := serve(t)
-	body := rec.Body.String()
-
-	// The un-run present-tense negative verdict must be absent from the baseline.
-	if strings.Contains(body, "Your (size, root) does not match") {
-		t.Errorf("no-target baseline asserts an un-run negative verdict (found present-tense \"Your (size, root) does not match\")\n%s", body)
-	}
-	// The honest no-verdict markers still render: the run-label and the explicit
-	// no-verdict-claimed copy, plus the illustrative framing on the mismatch example.
-	for _, want := range []string{
-		"not yet run",
-		"no verdict is claimed",
-		"Illustrative — what a real mismatch shows",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("no-target baseline missing honest marker %q\n%s", want, body)
-		}
-	}
-	// The baseline wires no live target: no data-island, no end-of-body WASM loader.
-	for _, absent := range []string{
-		`id="verify-target"`,
-		`<script src="/_ds/wasm_exec.js">`,
-		"isccVerifyInclusion",
-	} {
-		if strings.Contains(body, absent) {
-			t.Errorf("no-target baseline unexpectedly wired live verification (found %q)\n%s", absent, body)
-		}
-	}
-}
-
-// TestVerifierConfiguredTargetWiresLiveVerification asserts that a well-formed
-// ?monitor=&id= renders the live re-verification wiring: the type="application/json"
-// data-island, the /_ds/wasm_exec.js + /_ds/verify.wasm loader, the isccVerifyInclusion
-// call, and the three distinct tier-2 data-states (error / failed / verified). The
-// target URL is reflected ONLY inside the JSON data-island, never in the static body.
-func TestVerifierConfiguredTargetWiresLiveVerification(t *testing.T) {
-	const monitor = "https://monitor.iscc.id"
-	const id = "ISCC:MAIGKSETI7MJ4EAB"
-	rec := serveTarget(t, "monitor="+monitor+"&id="+id)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
 
 	for _, want := range []string{
-		`<script id="verify-target" type="application/json">`,
 		`<script src="/_ds/wasm_exec.js">`,
 		"/_ds/verify.wasm",
 		"isccVerifyInclusion",
+		"URLSearchParams",
+		"location.search",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("static body missing always-emitted loader marker %q\n%s", want, body)
+		}
+	}
+}
+
+// TestVerifierNoServerSideTarget asserts the handler reflects NO ?monitor=/?id= into
+// the body and emits no server-rendered data-island: the target is resolved entirely
+// CLIENT-side from location.search, so a query-bearing request renders byte-for-byte
+// the same artifact as a plain one (the static-deployment contract). This replaces the
+// former server-side parse-and-reflect contract (parseTarget / the verify-target
+// island), which no longer exists.
+func TestVerifierNoServerSideTarget(t *testing.T) {
+	const monitor = "https://monitor.iscc.id"
+	const id = "ISCC:MAIGKSETI7MJ4EAB"
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?monitor="+monitor+"&id="+id, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// No server-emitted data-island remains.
+	if strings.Contains(body, `id="verify-target"`) {
+		t.Errorf("body unexpectedly carries a server-emitted data-island\n%s", body)
+	}
+	// The handler does not reflect the query into the body.
+	for _, leaked := range []string{monitor, id} {
+		if strings.Contains(body, leaked) {
+			t.Errorf("body reflected query value %q (target must be read client-side, not server-rendered)\n%s", leaked, body)
+		}
+	}
+	// The query-bearing render is byte-identical to the plain baseline render.
+	if body != serve(t).Body.String() {
+		t.Errorf("query-bearing render differs from the plain baseline render (the static artifact must be identical for every path)")
+	}
+}
+
+// TestVerifierNoTargetBaselineIsHonest asserts the DISPLAYED no-JS body asserts NO
+// un-run verdict: the markup a no-JS reader sees (the body with the loader's <script>
+// blocks stripped) must NOT contain the present-tense negative-verdict assertion "Your
+// (size, root) does not match" nor the "verifying…" in-progress copy. Those strings
+// legitimately live inside the loader's setVerdict() as runtime textContent (set only
+// after a valid target is found and a real `failed`/in-progress state runs) — moving
+// them OUT of the static markup and into the JS is exactly what keeps the static
+// artifact honest. The honest no-verdict markers ("not yet run", "no verdict is
+// claimed", the illustrative mismatch example) still render in the displayed body.
+// This is the honesty fix the advance mutation-proves: it keeps the open `normal`
+// honesty fix intact under the new client-side contract.
+func TestVerifierNoTargetBaselineIsHonest(t *testing.T) {
+	rec := serve(t)
+	shown := displayedBody(rec.Body.String())
+
+	// The un-run present-tense verdicts must be absent from the DISPLAYED body (they
+	// are set only by the loader's JS, after a valid target is found).
+	for _, banned := range []string{
+		"Your (size, root) does not match",
+		"verifying in your browser…",
+		"Re-verifying this inclusion proof in your browser",
+	} {
+		if strings.Contains(shown, banned) {
+			t.Errorf("displayed (no-JS) body asserts an un-run verdict (found present-tense %q)\n%s", banned, shown)
+		}
+	}
+	// The honest no-verdict markers still render in the displayed body: the run-label
+	// and the explicit no-verdict-claimed copy, plus the illustrative mismatch example.
+	for _, want := range []string{
+		"not yet run",
+		"no verdict is claimed",
+		"Illustrative — what a real mismatch shows",
+	} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("displayed (no-JS) body missing honest marker %q\n%s", want, shown)
+		}
+	}
+}
+
+// TestVerifierLoaderHasThreeDistinctStates asserts the loader keeps the three render
+// states strictly distinct (error / failed / verified): the verdict CSS keys all
+// three, and only `failed` is the split-view signal that lifts the guided mismatch
+// alert. A transport/parse fault must surface as `error`, never masquerade as a
+// mismatch.
+func TestVerifierLoaderHasThreeDistinctStates(t *testing.T) {
+	body := serve(t).Body.String()
+
+	for _, want := range []string{
 		`data-state="error"`,
 		`data-state="failed"`,
 		`data-state="verified"`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("configured target missing live-wiring marker %q\n%s", want, body)
-		}
-	}
-
-	// The target is reflected only inside the JSON data-island. The island content is
-	// the only place the monitor URL / id appears, so it survives JSON-context-escaped
-	// (the url.URL fragment/scheme guard in parseTarget already rejected an unusable
-	// target before render).
-	if !strings.Contains(body, `"monitor":"`+monitor+`"`) {
-		t.Errorf("data-island missing the monitor target %q\n%s", monitor, body)
-	}
-	if !strings.Contains(body, `"id":"`+id+`"`) {
-		t.Errorf("data-island missing the id target %q\n%s", id, body)
-	}
-}
-
-// TestVerifierRejectsMalformedTarget asserts parseTarget fails CLOSED to the
-// no-target baseline on an unusable ?monitor=: a non-http(s) scheme, a missing host,
-// a fragment, or a missing id all render the baseline (no data-island, no loader),
-// never a half-wired live page.
-func TestVerifierRejectsMalformedTarget(t *testing.T) {
-	for _, q := range []string{
-		"monitor=ftp://x.example&id=ISCC:AAA",        // wrong scheme
-		"monitor=https://&id=ISCC:AAA",               // empty host
-		"monitor=https://x.example%23frag&id=A",      // fragment (encoded #)
-		"monitor=https://monitor.iscc.id",            // no id
-		"id=ISCC:AAA",                                // no monitor
-		"monitor=https://x.example#frag&id=ISCC:AAA", // explicit fragment
-	} {
-		rec := serveTarget(t, q)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("query %q: status = %d, want 200", q, rec.Code)
-		}
-		if strings.Contains(rec.Body.String(), `id="verify-target"`) {
-			t.Errorf("query %q wired a live target but should fall back to the baseline", q)
+			t.Errorf("static body missing distinct verdict state %q\n%s", want, body)
 		}
 	}
 }

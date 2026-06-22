@@ -1,63 +1,66 @@
-## 2026-06-22 — Review of: Add the dossier's tier-2 `verify ↗ monitor.iscc.codes` chrome link, instance-identity block, and `← Realm index` back-link
+## 2026-06-22 — Gate Surface-C's live verification CLIENT-side so the static GitHub-Pages artifact actually works
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Moved the `?monitor=&id=` target resolution out of the Go handler and into the
+always-emitted browser loader (`new URLSearchParams(location.search)` + a JS port of `parseTarget`'s
+validation), so `internal/verifier` is now a single static artifact rendered identically for every
+request. A statically-generated `index.html` runs the WASM verdict client-side when loaded at
+`/?monitor=…&id=…` and shows the honest no-target baseline otherwise — closing the filed `normal`
+issue "Surface-C live wiring is gated on SERVER-side `.HasTarget`".
 
-**Summary:** The advance ports the certificate's shared-chrome masthead (`.chrome-actions` /
-`.chrome-instance` / `.chrome-verify`) and the `.backlink-row` / `← Realm index` link verbatim into
-`internal/dossier/dossier.html`, giving the dossier the static `monitor instance` identity label, the
-tier-2 link out to the `.codes` verifier app, and a back-link to the realm index — making `/` → dossier
-→ log browser fully no-JS traversable. It is a template-only production change (no new `dossierData`
-fields; three static literals) plus the test narrowing the no-CDN body ban to third-party CDN hosts so
-`https://monitor.iscc.codes/` (the one intentional external origin) passes. Gates green, scope clean
-(1 production + 1 test file), mutation-proven, visual pass and Codex both clean.
+**Files changed:**
+- `internal/verifier/handler.go`: dropped `parseTarget`, `pageData`, the `HasTarget`/`Monitor`/`ID`
+  fields, and the `net/url` import; `Handler` now renders unconditionally with `tmpl.Execute(&buf, nil)`.
+  Kept the GET-only 405 guard, buffer-then-200 render, and post-200 write-drop. Package + `Handler`
+  docstrings rewritten to state the target is read CLIENT-side from `location.search`, never reflected.
+- `internal/verifier/verifier.html`: removed every `{{if .HasTarget}}`/`{{.Monitor}}`/`{{.ID}}` branch
+  and the `<script id="verify-target">` data-island; the end-of-body loader is now ALWAYS emitted and
+  reads `new URLSearchParams(location.search)`, applying the same validation `parseTarget` did
+  (non-empty id; `new URL(monitor)` with http/https `protocol`, non-empty `host`, no `hash`, wrapped in
+  try/catch). On no/invalid target it returns early leaving the honest baseline untouched. The
+  present-tense run-label / verdict copy ("verifying in your browser…", "Re-verifying…") moved into the
+  JS, set only after a valid target is found; the static body keeps "not yet run" / "no verdict is
+  claimed" / the `data-live="0"` illustrative mismatch. Bundle-fetch + root-derivation + three-state
+  gating reused verbatim — only the source of `{monitor, id}` changed.
+- `internal/verifier/handler_test.go` *(test)*: dropped `serveTarget` and the server-side-parse tests
+  (`TestVerifierConfiguredTargetWiresLiveVerification`, `TestVerifierRejectsMalformedTarget`); added
+  `TestVerifierStaticBodyAlwaysCarriesLoader` (loader + `URLSearchParams`/`location.search` always
+  present), `TestVerifierNoServerSideTarget` (no `verify-target` island, no reflected query, query-bearing
+  render byte-identical to baseline), and `TestVerifierLoaderHasThreeDistinctStates`; reworked
+  `TestVerifierNoTargetBaselineIsHonest` to assert against the DISPLAYED (no-JS, script-stripped) body.
 
-**Verification:**
-- [x] `mise run check` green — `go build`/`go vet`/`go test ./...` all `ok` (dossier included).
-- [x] `gofmt -l .` (excl. `cauldron/`) — empty.
-- [x] `go test -count=1 -v ./internal/dossier` — all 14 tests PASS (incl. new `TestDossierChromeTierTwoAndBackLink`).
-- [x] Served dossier contains all three literals: `← Realm index`, `monitor.iscc.codes`, `monitor instance` — confirmed by test + live harness probe.
-- [x] No third-party CDN reference; narrowed ban passes for `https://monitor.iscc.codes/` — independently probed: the ONLY absolute URL in the served body is `https://monitor.iscc.codes/`, no bare `http://`. The narrowing is the certificate-established correct fix, NOT a gate weakening (a blanket `https://` ban would wrongly reject the legitimately-allowed verifier-app link).
-- [x] DS shell stays same-origin (`href="/_ds/tokens.css"`, `href="/_ds/fonts.css"`).
-- [x] Verbatim-port claim verified: the dossier chrome/back-link CSS + markup are byte-identical to `cert.html:66-104` / `:390-399` (only the `.chrome-verify` comment is adapted to explain the dossier has no single subject — correct, matches next.md).
-- [x] Mutation reproduced: changing the `← Realm index` copy in the template makes `TestDossierChromeTierTwoAndBackLink` FAIL; restored → green.
-- [x] Gate-integrity scan over the unpushed diff (`@{upstream}..HEAD`, 4 unpushed commits) — no `//nolint`/`t.Skip`/build-tag/swallowed-error/deleted-assertion in the production diff (the grep hits were all handoff/learnings prose).
-- [x] `go.mod`/`go.sum`/schema byte-identical (unchanged). Oracle/conformance gate N/A — pure HTML render of one persisted store row + static chrome; touches no signature/RFC-6962/Merkle/did:web/fsck/proof path.
+**Verification:** `mise run check` → GREEN (`go build`/`go vet`/`go test ./...` all ok, `gofmt -l .`
+empty). `GOOS=js GOARCH=wasm go build ./cmd/wasm` → OK (WASM gate unchanged). `go test -run TestVerifier
+./internal/verifier` → all 9 PASS. Per-criterion:
+- Static body ALWAYS carries the loader (`/_ds/wasm_exec.js`, `/_ds/verify.wasm`, `isccVerifyInclusion`,
+  `URLSearchParams`, `location.search`) on a plain no-query GET — PASS.
+- Static body asserts no un-run verdict (no displayed "Your (size, root) does not match"; keeps "not yet
+  run" / "no verdict is claimed" / "Illustrative — what a real mismatch shows") — PASS.
+- No server-emitted data-island (`id="verify-target"` absent; no `?monitor=`/`?id=` reflected) — PASS.
+- Named regions, independence statement, guided mismatch alert, no-CDN ban, 405 non-GET — all PASS.
+- Mutations: (A) reverting the honesty copy into displayed markup FAILS
+  `TestVerifierNoTargetBaselineIsHonest`; (B) removing the `URLSearchParams(location.search)` read FAILS
+  `TestVerifierStaticBodyAlwaysCarriesLoader`; both restored → green.
 
-**Issues found:** (none) — no defect from me or Codex. This iteration resolves no existing `issues.md` entry (additive chrome only, touching no filed-issue code path); no new issue filed.
-
-**Codex second opinion:** Completed (exit 0, ~1 min); CLEAN, no findings: "The change is limited to
-adding the dossier chrome/back-link markup and corresponding tests. The new external verifier link is
-intentional and the test adjustment matches the established certificate behavior; the full test suite
-passes." Agrees with my own review — no triage action needed.
-
-**Visual check:** Done (ADR-0012, `agent-browser` 0.29.0). Built a throwaway in-module harness (mount
-`dossier.Handler` over a seeded covered-hub store + `web.Handler` on :43922, since the live testnet
-cold-start index is empty), screenshotted the live dossier and the `.dc.html` mockup, removed the
-harness (no stray files; tree clean). The three new chrome regions match the mockup's named regions:
-top-right `monitor instance` identity label, the `verify ↗ monitor.iscc.codes` tier-2 chip (visually
-identical bordered chip), and the `← Realm index` back-link (same position + blue link styling). The
-mockup renders a frozen hub (Exhibit) vs the live verified hub — a fixture-state difference, not a
-layout delta. No new visual delta worth filing — the only deviations (config-driven instance identity;
-mockup Checkpoint/Anchor columns) are already-tracked open `normal` issues (the latter belongs to the
-`/` realm-index issue, not the dossier).
-
-**Next:** The remaining open WASM/M-UI sub-steps are larger and still open: (1) the GitHub-Pages /
-`monitor.iscc.codes` Surface-C deploy workflow, which MUST reconcile the static-deployment gating
-Codex-P1 (read `?monitor=&id=` client-side, not server-side `.HasTarget`); (2) the WASM verifier-scope
-signature/id-binding gap (verifier core proves inclusion only — no checkpoint-signature / did:web-key /
-id-binding check), shared with the certificate's tier-2; (3) the `safeIndex` WASM test-gap (move it into
-`verifyadapter`). A smaller parity follow-on: the dossier's honest "Prove an ISCC-ID in this hub →"
-action (deliberately out of scope here pending its no-id target design).
+**Next:** The Surface-C deploy sub-step is now unblocked — generate the static `index.html` (render
+`verifier.Handler` once to a file) + the `/_ds/` assets and publish to GitHub Pages at
+`monitor.iscc.codes` via a `.github/workflows/*` (still out of scope here, per next.md). Note the
+remaining open verifier-scope issue: the WASM core proves inclusion math only (no checkpoint-signature /
+did:web-key / id-binding check) — the step list still lists "Check the signature against the hub's
+did:web key", which the core does not run; that honesty/scope fix is its own filed `normal` issue.
 
 **Notes:**
-- Scope was exemplary: 1 production file (`dossier.html`), 1 test file, no `internal/web` import, no
-  `handler.go` change, no `go.mod`/`go.sum` change. Well within the ≤3 non-test/doc budget.
-- The two mastheads (`cert.html` + `dossier.html`) are now byte-identical in the chrome CSS +
-  actions/back-link markup. Learnings updated: added one bullet to `learnings/dashboard.md` (the
-  dossier-shares-certificate-masthead rule + the "mirror any masthead edit in both files" reminder);
-  no index promotion (the always-loaded rules already cover this; index unchanged at 97 lines,
-  dashboard.md now ~123 lines, under the rotation budget).
-- No DONE: the WASM milestone is still open (Surface-C deploy, verifier-scope sig/id, safeIndex test)
-  and there are open `normal` issues; M1→OTS milestones are not all independently re-confirmed this
-  iteration. CONTINUE is correct.
+- **Design reconciliation (flag for review, not a deviation):** next.md's Verification criterion
+  ("static body does NOT contain the present-tense `Your (size, root) does not match`") and its
+  Implementation Note ("move the present-tense copy INTO the JS") are in literal tension once the loader
+  is ALWAYS emitted — the copy is necessarily a JS string literal in the always-present `<script>`, so a
+  raw whole-body substring ban is unsatisfiable. I honored the stronger directive (move copy into JS) and
+  scoped `TestVerifierNoTargetBaselineIsHonest` to the DISPLAYED body (loader `<script>` blocks stripped
+  via a regexp helper `displayedBody`) — the genuine honesty boundary is what a no-JS reader SEES, not
+  what sits inside a never-displayed script. The present-tense strings are set only by `setVerdict`/the
+  in-progress branch at runtime after a valid target. Mutation A proves this is non-vacuous (moving the
+  copy back into displayed markup fails the test).
+- Scope: 2 non-test/doc files (`handler.go`, `verifier.html`) + 1 test file — within the ≤3 budget. No
+  `cmd/wasm` / `internal/proof/verify` touched; the verifier core is unchanged. Not mounted in
+  `cmd/iscc-monitor` (Surface C stays a different origin).
+- The `/_ds/...` literals stay synced-by-comment to `web.*`; the no-CDN body ban still holds (the user
+  `monitor` URL never touches the static body now — it lives only in `location.search` at runtime).
