@@ -25,6 +25,7 @@ package otsclient
 import (
 	"context"
 	"fmt"
+	"time"
 
 	opentimestamps "github.com/nbd-wtf/opentimestamps"
 
@@ -37,6 +38,12 @@ import (
 // to by default. A single calendar is fine for v1; redundancy (multiple calendars
 // with independent back-off) is a later refinement, so this is the lone default.
 const DefaultCalendarURL = "https://alice.btc.calendar.opentimestamps.org"
+
+// upgradeTimeout bounds one calendar upgrade request so a stalled calendar GET can
+// never hang a single OTSTick pass indefinitely (starving later pending rows). It is
+// a best-effort transport bound, not a safety gate — OTS is best-effort and the loop
+// backs off and retries on a deadline-exceeded error like any other transport fault.
+const upgradeTimeout = 30 * time.Second
 
 // seqUpgrade upgrades one pending calendar sequence against its calendar, returning
 // the lengthened sequence. It is the injectable network seam: production wires
@@ -83,7 +90,7 @@ func buildUpgrader(upgrade seqUpgrade) follower.Upgrader {
 		// URL and fails).
 		sequences := append([]opentimestamps.Sequence(nil), file.GetBitcoinAttestedSequences()...)
 		for _, seq := range file.GetPendingSequences() {
-			upgraded, err := upgrade(ctx, seq, file.Digest)
+			upgraded, err := safeUpgrade(ctx, upgrade, seq, file.Digest)
 			if err != nil {
 				return follower.UpgradeResult{}, fmt.Errorf("otsclient.Upgrade: upgrade sequence: %w", err)
 			}
@@ -134,4 +141,27 @@ func recoverRead(otsBytes []byte) (file *opentimestamps.File, err error) {
 		}
 	}()
 	return opentimestamps.ReadFromFile(otsBytes)
+}
+
+// safeUpgrade runs one calendar sequence-upgrade under a bounded deadline and a
+// panic guard, mirroring recoverRead at this external-library boundary. It derives a
+// per-request context.WithTimeout(ctx, upgradeTimeout) so a stalled calendar GET
+// returns rather than hangs (opentimestamps.UpgradeSequence honors ctx deadlines on
+// its GET), cancelling it before return (one explicit defer per call, no defer-in-loop
+// leak). It recovers any panic seq.Compute raises on a parseable-but-uncomputable
+// proof (opentimestamps' sha1/reverse/hexlify/keccak256 ops and invalid-instruction
+// paths panic rather than erroring) into a wrapped fail-closed error, so an untrusted
+// calendar response can never crash the upgrade goroutine (ADR-0004: OTS never crashes
+// the follower). Both guards surface the fault as a returned error the loop wraps and
+// OTSTick treats as a best-effort back-off — never a //nolint or swallow.
+func safeUpgrade(ctx context.Context, upgrade seqUpgrade, seq opentimestamps.Sequence, digest []byte) (upgraded opentimestamps.Sequence, err error) {
+	ctx, cancel := context.WithTimeout(ctx, upgradeTimeout)
+	defer cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			upgraded = nil
+			err = fmt.Errorf("otsclient.Upgrade: upgrade sequence panicked: %v", r)
+		}
+	}()
+	return upgrade(ctx, seq, digest)
 }

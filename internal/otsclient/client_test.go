@@ -14,6 +14,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	opentimestamps "github.com/nbd-wtf/opentimestamps"
@@ -142,6 +143,59 @@ func TestUpgradeGarbageProof(t *testing.T) {
 	}
 	if res.Confirmed {
 		t.Errorf("Upgrade(garbage): Confirmed = true on parse error, want false (fail-closed)")
+	}
+}
+
+// TestUpgradePanicRecovered confirms a calendar upgrade that PANICS (the
+// opentimestamps library panics on parseable-but-uncomputable proofs:
+// sha1/reverse/hexlify/keccak256 ops and invalid-instruction paths) surfaces as a
+// wrapped fail-closed error rather than crashing the upgrade goroutine (ADR-0004: OTS
+// never crashes the follower). The fake panics like the library would on an
+// unimplemented op; the merkle1 fixture has a pending sequence so the closure reaches
+// safeUpgrade. Removing the recover() in safeUpgrade makes this test panic the binary.
+func TestUpgradePanicRecovered(t *testing.T) {
+	panicSeq := func(context.Context, opentimestamps.Sequence, []byte) (opentimestamps.Sequence, error) {
+		panic("op not implemented")
+	}
+	up := buildUpgrader(panicSeq)
+	res, err := up(context.Background(), store.OTSRecord{OTSBytes: readFixture(t, "merkle1.txt.ots")})
+	if err == nil {
+		t.Fatalf("Upgrade(panic): want wrapped error, got nil")
+	}
+	if !strings.Contains(err.Error(), "upgrade sequence") {
+		t.Errorf("Upgrade(panic): error %q does not carry the upgrade-sequence wrap", err)
+	}
+	if !strings.Contains(err.Error(), "panicked") {
+		t.Errorf("Upgrade(panic): error %q does not name the recovered panic", err)
+	}
+	if res.Confirmed {
+		t.Errorf("Upgrade(panic): Confirmed = true on recovered panic, want false (fail-closed)")
+	}
+}
+
+// TestUpgradeBoundsContext confirms each calendar upgrade call carries a bounded
+// deadline: safeUpgrade derives a context.WithTimeout before invoking the seam, so a
+// stalled calendar GET returns rather than hangs one OTSTick pass. The fake captures
+// the ctx it is handed; after driving the closure over a pending-sequence fixture the
+// captured ctx must report a deadline. Reverting safeUpgrade to the bare ctx makes
+// this FAIL (the parent context.Background() carries no deadline).
+func TestUpgradeBoundsContext(t *testing.T) {
+	var gotDeadline bool
+	var sawCall bool
+	captureCtx := func(ctx context.Context, seq opentimestamps.Sequence, _ []byte) (opentimestamps.Sequence, error) {
+		sawCall = true
+		_, gotDeadline = ctx.Deadline()
+		return seq, nil // unchanged → still pending, no further upgrade needed
+	}
+	up := buildUpgrader(captureCtx)
+	if _, err := up(context.Background(), store.OTSRecord{OTSBytes: readFixture(t, "merkle1.txt.ots")}); err != nil {
+		t.Fatalf("Upgrade(bounded ctx): unexpected error: %v", err)
+	}
+	if !sawCall {
+		t.Fatalf("Upgrade(bounded ctx): upgrade seam never called, pending branch did not run")
+	}
+	if !gotDeadline {
+		t.Errorf("Upgrade(bounded ctx): upgrade ctx carried no deadline, want a bounded timeout")
 	}
 }
 
