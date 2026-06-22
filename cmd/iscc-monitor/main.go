@@ -148,7 +148,7 @@ func run() error {
 
 	m := metrics.New()
 	go serveMetrics(ctx, cfg.Addr, st, routes, hubList, m, logger)
-	go runOTSLoop(ctx, st, otsclient.NewUpgrader(), logger)
+	go runOTSLoop(ctx, st, stampFunc(), otsclient.NewUpgrader(), logger)
 
 	loop := &follower.Loop{
 		Store:   st,
@@ -193,19 +193,22 @@ func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hu
 	}
 }
 
-// runOTSLoop drives the background OpenTimestamps upgrade loop until ctx is
-// cancelled: on every otsUpgradeInterval tick it calls follower.OTSTick(ctx, st,
-// upgrader, t, logger), which asks the calendar (through the real otsclient
-// Upgrader) whether each pending stamped root has been Bitcoin-confirmed and either
-// records the confirmation or backs the row off. It is the first production caller
-// of follower.OTSTick, the sibling of serveMetrics: started in its own background
-// goroutine off the follower's poll path so OTS is best-effort and NEVER blocks the
-// follower (ADR-0004). A non-nil OTSTick result is logged and the loop continues —
-// the documented never-block / log-and-continue discipline (identical to loop.go's
-// Run), so a flaky calendar pass never aborts the loop or freezes a hub. The ticker
-// is defer-stopped and the loop exits cleanly on ctx cancellation (SIGINT). The
-// ticker's t is the injected now, so OTSTick stays wall-clock-free and testable.
-func runOTSLoop(ctx context.Context, st *store.Store, upgrader follower.Upgrader, logger *slog.Logger) {
+// runOTSLoop drives the background OpenTimestamps stamp-then-upgrade loop until ctx
+// is cancelled: on every otsUpgradeInterval tick it calls follower.OTSTick(ctx, st,
+// stamper, upgrader, t, logger), which first submits any not-yet-stamped pending
+// root's digest to a calendar (through the real otsclient Stamper) and then asks the
+// calendar (through the real otsclient Upgrader) whether each stamped root has been
+// Bitcoin-confirmed, either records the confirmation or backs the row off. It is the
+// first production caller of follower.OTSTick, the sibling of serveMetrics: started
+// in its own background goroutine off the follower's poll path so OTS is best-effort
+// and NEVER blocks the follower (ADR-0004) — the calendar HTTP round-trips happen
+// here, never on the poll path. A non-nil OTSTick result is logged and the loop
+// continues — the documented never-block / log-and-continue discipline (identical to
+// loop.go's Run), so a flaky calendar pass never aborts the loop or freezes a hub.
+// The ticker is defer-stopped and the loop exits cleanly on ctx cancellation
+// (SIGINT). The ticker's t is the injected now, so OTSTick stays wall-clock-free and
+// testable.
+func runOTSLoop(ctx context.Context, st *store.Store, stamper follower.Stamper, upgrader follower.Upgrader, logger *slog.Logger) {
 	ticker := time.NewTicker(otsUpgradeInterval)
 	defer ticker.Stop()
 	for {
@@ -213,10 +216,25 @@ func runOTSLoop(ctx context.Context, st *store.Store, upgrader follower.Upgrader
 		case <-ctx.Done():
 			return
 		case t := <-ticker.C:
-			if err := follower.OTSTick(ctx, st, upgrader, t, logger); err != nil {
+			if err := follower.OTSTick(ctx, st, stamper, upgrader, t, logger); err != nil {
 				logger.ErrorContext(ctx, "ots upgrade tick failed", "err", err)
 			}
 		}
+	}
+}
+
+// stampFunc builds the production follower.Stamper: a closure over otsclient.Stamp
+// that submits a root's digest to otsclient.DefaultCalendarURL and returns the
+// serialized initial pending proof bytes plus the calendar URL it used. It is the
+// boundary that keeps internal/follower import-free of any anchoring package — the
+// follower holds only the Stamper func type, while this binary owns the otsclient
+// dependency, exactly as it does for the Upgrader (otsclient.NewUpgrader). A calendar
+// transport fault propagates out as the closure's error so OTSTick records a back-off
+// and retries off the poll path (OTS never blocks the follower, ADR-0004).
+func stampFunc() follower.Stamper {
+	return func(ctx context.Context, root [32]byte) ([]byte, string, error) {
+		b, err := otsclient.Stamp(ctx, otsclient.DefaultCalendarURL, root)
+		return b, otsclient.DefaultCalendarURL, err
 	}
 }
 

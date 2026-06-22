@@ -1,71 +1,75 @@
-## 2026-06-22 — Review of: Harden the otsclient upgrade path — panic-recover + per-request timeout
+## 2026-06-22 — Stamp pending OTS roots against the calendar in the off-path OTSTick loop
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** `OTSTick` now stamps not-yet-stamped pending rows (the empty-`OTSBytes` sentinel the poll
+path writes) against the calendar via a new injected `Stamper` func seam BEFORE the upgrade step, off
+the poll path — so a pending row can finally carry a real serialized OTS proof and the existing upgrade
+closure stops being a structural no-op. `main.go` wires the production `Stamper` as a closure over
+`otsclient.Stamp` + `otsclient.DefaultCalendarURL`, threaded `runOTSLoop → OTSTick`. A new minimal,
+leaf-pure `store.MarkOTSStamped` mutator persists `OTSBytes`/`CalendarURLs` onto the existing row
+without touching status (a fresh seam was required — `RecordOTS`'s `ON CONFLICT DO NOTHING` cannot
+update an existing row's bytes, and `MarkOTSUpgraded`/`MarkOTSAttempted` change status/attempts).
 
-**Summary:** The advance routed the OTS calendar upgrade through a new `safeUpgrade` FFI-boundary
-helper that derives a per-request `context.WithTimeout(ctx, 30s)` (one `defer cancel()` per call, no
-defer-in-loop leak) and recovers any library panic into a wrapped fail-closed error — exactly what
-`next.md` asked, closing the last open `normal` otsclient issue before `stampRoot`'s calendar-submit
-makes `upgrade()` reachable. Scope is exemplary (1 non-test source file + 1 test file), both fixes are
-mutation-proven non-vacuous, every isolation invariant holds, and Codex found nothing.
+**Files changed:**
+- `internal/follower/otsloop.go`: added the `Stamper` func-seam type; added `stamper` param to
+  `OTSTick`; added the `len(r.OTSBytes) == 0` stamp branch (build root key → call `Stamper` → persist
+  via `MarkOTSStamped` → `continue`; on a stamp transport fault → `MarkOTSAttempted` back-off +
+  log-and-continue, never abort/freeze; nil-`Stamper` tolerant). Updated package + `OTSTick` docstrings.
+- `cmd/iscc-monitor/main.go`: added `stampFunc()` (the real `otsclient.Stamp` closure); threaded
+  `follower.Stamper` through `runOTSLoop`'s signature + its `OTSTick` call + the `go runOTSLoop(...)`
+  call site.
+- `internal/store/ots.go`: added `MarkOTSStamped(ctx, hubID, treeSize, root, otsBytes, calendarURLs)`
+  — plain UPDATE keyed on `(hub_id, tree_size, root)`, `RowsAffected`-ignored (absent = no-op),
+  status untouched, empty `calendarURLs` → NULL via `nullStringOrNil`. Leaf-pure, no anchoring import.
+- `internal/follower/otsloop_test.go` (test): `seedPendingOTS` now seeds pre-stamped rows (non-empty
+  `OTSBytes`) so the upgrade-path tests skip the stamp branch + assert it via `noStamper(t)`; added
+  `seedNotStampedOTS`, `fakeStamper`, `noStamper` helpers; added `TestOTSStampThenUpgrade` (full
+  stamp→upgrade arc, the pending→confirmed transit) and `TestOTSStampBacksOff` (stamp fault → back-off,
+  never aborts/confirms, Upgrader not reached). Existing `TestOTSTick*` calls gained the stamper arg.
+- `internal/store/ots_test.go` (test): added `TestMarkOTSStamped` + `TestMarkOTSStampedAbsentAndEmptyCalendars`.
 
-**Verification:**
-- [x] `mise run check` — GREEN (build + vet + test, all 23 packages incl. `internal/otsclient`).
-- [x] `gofmt -l .` (excl. `cauldron/`) — clean.
-- [x] `go test -count=1 -v ./internal/otsclient` — pass (9 tests incl. the two new ones).
-- [x] Mutation (reverted): removing the `safeUpgrade` `recover()` block → `TestUpgradePanicRecovered`
-  PANICS the test binary (FAIL); restored → green. Confirmed by reviewer (panic stack traced to
-  `client_test.go:158` propagating out of `safeUpgrade`).
-- [x] Mutation (reverted): replacing `context.WithTimeout(ctx, upgradeTimeout)` with the bare ctx →
-  `TestUpgradeBoundsContext` FAILS ("upgrade ctx carried no deadline"); restored → green. Restored
-  file is byte-identical to HEAD (clean `git diff`).
-- [x] `go test -count=1 -run TestUpgradeAlreadyConfirmed ./internal/otsclient` — pass; confirmed
-  fixtures still classify at their exact heights, pending-only-upgrade invariant held.
-- [x] Isolation: `GOOS=js GOARCH=wasm go build ./internal/{didweb,index,badge}` OK; badge ots/otsclient
-  deps == 0; otsclient `database/sql` count == 1 (the `store.OTSRecord` seam, unchanged); store
-  otsclient/follower/net-http deps == 0; follower anchoring deps == 0.
-- [x] `go vet ./internal/otsclient` — clean (no `lostcancel`: the `defer cancel()` runs per-call inside
-  `safeUpgrade`, not accumulated in the loop — the exact defer-in-loop trap `next.md` warned about,
-  correctly avoided).
-- [x] No bypass: the only `upgrade(...)` call lives inside `safeUpgrade` (client.go:166); the loop calls
-  `safeUpgrade`, so no path reaches the seam unguarded.
-- [x] `go.mod`/`go.sum` untouched in the advance commit; `go mod tidy -diff` clean.
-- [x] Gate-circumvention scan over unpushed commits (`@{upstream}..HEAD`): the only `nolint`/`t.Skip`
-  matches are prose (handoff/next.md + the docstring stating "never a //nolint or swallow"); no
-  build-tag, swallowed error, or deleted assertion. The `recover()` is a documented FFI-boundary guard
-  that re-surfaces the panic as a returned error — not a gate-dodge.
-- [x] Scope: 1 non-test source file (`internal/otsclient/client.go`) + 1 test file; nothing in
-  `## Not In Scope` touched (`follower.go`/`stampRoot`, `main.go`/`runOTSLoop`, the `.ots` route,
-  certificate §5 all byte-unchanged; no `Stamper` seam / `MarkOTSSubmitted`; `Stamp` body untouched).
+**Verification:** `mise run check` → GREEN (build + vet + test, all 23 packages). Per criterion:
+- [x] `mise run check` green; `gofmt -l .` (excl. `cauldron/`) clean.
+- [x] `go test -count=1 -run TestOTS ./internal/follower` passes (new stamp tests + existing
+  `TestOTSTick*`/`TestOTSBackoff`).
+- [x] follower anchoring deps == 0 (`go list -deps ./internal/follower | grep -c -e internal/otsclient
+  -e internal/ots -e nbd-wtf/opentimestamps` → 0; `Stamper` is the boundary, like `Upgrader`).
+- [x] store coupling deps == 0 (`go list -deps ./internal/store | grep -c -e internal/follower
+  -e internal/otsclient -e ^net/http$` → 0; store stays a leaf).
+- [x] Mutation (reverted): disabling the `len(r.OTSBytes) == 0` stamp branch → `TestOTSStampThenUpgrade`
+  + `TestOTSStampBacksOff` FAIL (row never stamped → never confirms; stamp fault never surfaces);
+  restored → green, file byte-identical.
+- [x] Mutation (reverted): no-op'ing `MarkOTSStamped`'s UPDATE → `store.TestMarkOTSStamped` AND
+  follower `TestOTSStampThenUpgrade` FAIL (OTSBytes stays empty, never confirms); restored → green.
+- [x] `go.mod`/`go.sum` untouched; `go mod tidy -diff` clean.
+- [x] `internal/follower/follower.go` byte-unchanged (the deliberate deviation below).
 
-**Issues found:** (none new) — Resolved + deleted the open `normal` otsclient panic/timeout issue (both
-defects fixed, mutation-proven). The remaining open `normal` issues (`hubDomain` ForceQuery; §4/bundle
-`host:port` DID; §6 timestamp) are on surfaces this diff did not touch — none resolved or made stale.
-
-**Codex second opinion:** Clean — explicit "did not find any introduced correctness, security, or
-maintainability issues that warrant an inline finding." It independently confirmed the bounded context
-and panic recovery do not break existing behavior and the updated tests exercise the new paths. No
-findings to triage.
-
-**Visual check:** n/a — no SSR surface changed (`internal/otsclient` is a network transport adapter; no
-templates, no `internal/{dashboard,dossier,web,certificate}` touched).
-
-**Next:** Wire `otsclient.Stamp` into `follower.stampRoot` (`follower.go:411`) so a stamped pending row
-carries real `OTSBytes`/`CalendarURLs` — the deferred follow-up this step de-risked. With both
-upgrade-path hazards now closed, that step can safely let `upgrade()` go live (a real proof reaching an
-unimplemented op or a stalled calendar now degrades to a back-off, not a crash/hang). After it: the
-`.ots` HTTP route (reads `OTSForRoot`) and certificate §5 BITCOIN ANCHOR (both depend on confirmed rows
-existing).
+**Next:** The `.ots` HTTP route (serve `OTSForRoot`'s confirmed proof bytes at the canonical path so a
+client can `ots verify` the served `.ots`) — this plus certificate §5 BITCOIN ANCHOR (`HasClause5`,
+gated on a confirmed row) are the remaining halves of the OTS Verify-closer; both now have a real path
+to confirmed rows. Note the end-to-end pending→confirmed transit is exercised in tests with injected
+seams; the *production* live-calendar transit still needs a real calendar round-trip (not run in
+`go test`, by design) — that is an integration/CI concern, not a code gap.
 
 **Notes:**
-- The OTS milestone is now structurally de-risked: the upgrade path is crash- and hang-proof, but OTS is
-  still NOT end-to-end functional in production — `stampRoot` writes pending rows with EMPTY `OTSBytes`,
-  so `OTSTick`'s upgrade is a structural no-op until the calendar-submit step lands. That submit step is
-  the single clear next increment on the OTS arc.
-- `safeUpgrade` takes `(ctx, ...)` (ctx-first, Go convention) rather than `next.md`'s literal
-  `(upgrade, ctx, ...)` sketch — same seam, idiomatic ordering; documented in the advance handoff.
-- Learnings: collapsed the two now-resolved otsclient trap bullets (panic + timeout) into one
-  `settled:` note in `learnings/otsclient.md` that preserves the forward-looking pitfall (keep all
-  upgrade calls routed through `safeUpgrade`; do not strip the guard). No index promotion (the rule is
-  package-local). otsclient.md now 49 lines / 6 bullets — within budget.
+- **Deliberate, rule-driven deviation from the prior `review` handoff `**Next:**`** (which said "wire
+  `otsclient.Stamp` into `follower.stampRoot`"): stamping was placed in the off-path `OTSTick`, NOT in
+  `stampRoot`/`PollHub`. A synchronous calendar HTTP round-trip on the poll path violates the
+  always-loaded Correctness rule "OTS never blocks the follower" (ADR-0004). `next.md` explicitly
+  scoped it this way; `follower.go`/`stampRoot` is byte-unchanged. The poll path still writes pending
+  rows with the empty-`OTSBytes` sentinel; the off-path loop fills them in.
+- **A new store mutator was genuinely required** (not riding `RecordOTS`): `RecordOTS` is
+  `ON CONFLICT DO NOTHING`, so re-calling it never updates an existing pending row's bytes;
+  `MarkOTSUpgraded` flips status to confirmed; `MarkOTSAttempted` only touches attempts/next_retry.
+  `MarkOTSStamped` is the minimal seam that persists the stamp without changing status. This makes 3
+  non-test source files changed (otsloop.go, main.go, ots.go) — at the ≤3 budget, not over.
+- **`continue`-after-stamp choice** (not fall-through to upgrade): the row is stamped this tick and
+  upgraded the NEXT tick, mirroring the back-off flow's "re-surface next tick". Simpler and matches the
+  loop's existing per-row discipline; documented in the `OTSTick` docstring. (A fresh-stamped pending
+  sequence is never Bitcoin-confirmed immediately, so falling through to upgrade the same tick would
+  just back it off anyway.)
+- **nil-`Stamper` tolerated** (skip stamping, leave the row empty), mirroring the nil-`Logger`/`Metrics`
+  discipline — a bare `OTSTick` call path stays well-defined; documented in the docstring. The
+  no-pending test passes a nil stamper to exercise this.
+- Oracle gate correctly N/A this slice: opaque pending→confirmed over an already-fsck-verified root; no
+  signature/RFC-6962/Merkle/did:web/proof code touched. The `ots verify` oracle (bundled `examples/*.ots`
+  + `internal/ots`) is unchanged. All tests run fully offline (injected `Stamper`/`Upgrader`).

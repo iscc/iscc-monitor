@@ -235,6 +235,30 @@ func (s *Store) MarkOTSUpgraded(ctx context.Context, hubID int64, treeSize uint6
 	return nil
 }
 
+// MarkOTSStamped persists the serialized OpenTimestamps proof bytes and the
+// calendar URL(s) a calendar submission produced onto an existing pending row,
+// keyed on (hub_id, tree_size, root). The follower writes a pending row with an
+// empty ots_bytes sentinel at observation time (stamping never blocks the poll
+// path, ADR-0004); the off-path upgrade loop fills it in once it has submitted the
+// root's digest to a calendar. It does NOT touch status — the row stays
+// OTSStatusPending so the upgrade loop later transits it pending → confirmed once
+// the calendar attests it to Bitcoin. It is a plain UPDATE and, like
+// MarkOTSAttempted / MarkOTSUpgraded, ignores RowsAffected so an absent row is a
+// silent no-op rather than an error; an empty calendarURLs is written as NULL via
+// nullStringOrNil.
+func (s *Store) MarkOTSStamped(ctx context.Context, hubID int64, treeSize uint64, root []byte, otsBytes []byte, calendarURLs string) error {
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE ots SET ots_bytes = ?, calendar_urls = ? "+
+			"WHERE hub_id = ? AND tree_size = ? AND root = ?",
+		otsBytes, nullStringOrNil(calendarURLs),
+		hubID, int64(treeSize), root,
+	)
+	if err != nil {
+		return fmt.Errorf("store.MarkOTSStamped: hub %d size %d: %w", hubID, treeSize, err)
+	}
+	return nil
+}
+
 // MarkOTSAttempted records a backed-off retry for a still-pending stamped root:
 // the upgrade loop sets attempts to the new count and next_retry to the future
 // instant before which PendingOTS must not re-surface the row. It does NOT touch

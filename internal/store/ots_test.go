@@ -1,11 +1,12 @@
 // Tests for the typed OTS-table CRUD helpers (RecordOTS, OTSForRoot, PendingOTS,
-// MarkOTSUpgraded, MarkOTSAttempted). Each drives the public method against a
-// t.TempDir() database (via openTemp from checkpoints_test.go) and asserts on
-// observable rows / return values — never on Store internals. The assertions are
+// MarkOTSStamped, MarkOTSUpgraded, MarkOTSAttempted). Each drives the public method
+// against a t.TempDir() database (via openTemp from checkpoints_test.go) and asserts
+// on observable rows / return values — never on Store internals. The assertions are
 // mutation-targeted: the dedupe id check breaks if DO NOTHING becomes a plain
 // insert, the pending-order check breaks if ASC becomes DESC, the pending-filter
-// check breaks if the status WHERE is dropped, and the back-off-exclusion check
-// breaks if MarkOTSAttempted is a no-op or PendingOTS drops the next_retry filter.
+// check breaks if the status WHERE is dropped, the back-off-exclusion check breaks if
+// MarkOTSAttempted is a no-op or PendingOTS drops the next_retry filter, and the
+// stamp check breaks if MarkOTSStamped is a no-op or touches status.
 package store
 
 import (
@@ -303,6 +304,107 @@ func TestPendingOTS(t *testing.T) {
 	// The earlier row's stamped_at round-trips through the list read.
 	if !got[0].StampedAt.Equal(earlier) {
 		t.Errorf("got[0].StampedAt = %v, want %v", got[0].StampedAt, earlier)
+	}
+}
+
+// TestMarkOTSStamped confirms MarkOTSStamped fills ots_bytes / calendar_urls on an
+// existing not-yet-stamped pending row, keeps the row pending (status untouched), and
+// so leaves it in PendingOTS for the upgrade loop. (Mutation: a no-op MarkOTSStamped
+// leaves ots_bytes empty; touching status would drop the row from PendingOTS.)
+func TestMarkOTSStamped(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	root := []byte("stamp-target-root-padding-32byte")
+	if _, _, err := s.RecordOTS(ctx, OTSRecord{
+		HubID: hubID, TreeSize: 100, Root: root, Status: OTSStatusPending,
+		// OTSBytes empty (the not-yet-stamped sentinel), CalendarURLs empty.
+		StampedAt: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("RecordOTS: %v", err)
+	}
+
+	proof := []byte("\x00OpenTimestamps\x00\x00InitialPending")
+	const calendars = "https://alice.btc.calendar.opentimestamps.org"
+	if err := s.MarkOTSStamped(ctx, hubID, 100, root, proof, calendars); err != nil {
+		t.Fatalf("MarkOTSStamped: %v", err)
+	}
+
+	got, found, err := s.OTSForRoot(ctx, hubID, 100, root)
+	if err != nil || !found {
+		t.Fatalf("OTSForRoot after stamp: found=%v err=%v", found, err)
+	}
+	if got.Status != OTSStatusPending {
+		t.Errorf("Status = %q, want %q (stamp keeps it pending)", got.Status, OTSStatusPending)
+	}
+	if string(got.OTSBytes) != string(proof) {
+		t.Errorf("OTSBytes = %q, want %q", got.OTSBytes, proof)
+	}
+	if got.CalendarURLs != calendars {
+		t.Errorf("CalendarURLs = %q, want %q", got.CalendarURLs, calendars)
+	}
+
+	// The stamped row stays in PendingOTS for the upgrade loop.
+	pending, err := s.PendingOTS(ctx, time.Unix(1_700_000_000, 0))
+	if err != nil {
+		t.Fatalf("PendingOTS after stamp: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("PendingOTS after stamp returned %d rows, want 1 (still pending)", len(pending))
+	}
+	if string(pending[0].OTSBytes) != string(proof) {
+		t.Errorf("pending OTSBytes = %q, want %q", pending[0].OTSBytes, proof)
+	}
+}
+
+// TestMarkOTSStampedAbsentAndEmptyCalendars confirms MarkOTSStamped is a no-op
+// nil-error for an absent (hub, size, root) (like MarkOTSUpgraded it ignores
+// RowsAffected) and writes an empty calendarURLs as NULL (the nullStringOrNil
+// convention, read back as "").
+func TestMarkOTSStampedAbsentAndEmptyCalendars(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	// Absent row: a no-op, not an error.
+	if err := s.MarkOTSStamped(ctx, hubID, 999, []byte("absent-root-padding-32bytes-here"), []byte("x"), "cal"); err != nil {
+		t.Fatalf("MarkOTSStamped absent: %v", err)
+	}
+
+	// Empty calendarURLs is written as NULL and reads back as "".
+	root := []byte("stamp-empty-cal-root-padding-32b")
+	if _, _, err := s.RecordOTS(ctx, OTSRecord{
+		HubID: hubID, TreeSize: 100, Root: root, Status: OTSStatusPending, StampedAt: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("RecordOTS: %v", err)
+	}
+	if err := s.MarkOTSStamped(ctx, hubID, 100, root, []byte("proof"), ""); err != nil {
+		t.Fatalf("MarkOTSStamped empty calendars: %v", err)
+	}
+	var calendars any
+	if err := s.db.QueryRow(
+		"SELECT calendar_urls FROM ots WHERE hub_id = ? AND tree_size = ? AND root = ?",
+		hubID, 100, root,
+	).Scan(&calendars); err != nil {
+		t.Fatalf("read calendar_urls: %v", err)
+	}
+	if calendars != nil {
+		t.Errorf("calendar_urls = %v, want NULL (empty → NULL)", calendars)
+	}
+	got, found, err := s.OTSForRoot(ctx, hubID, 100, root)
+	if err != nil || !found {
+		t.Fatalf("OTSForRoot: found=%v err=%v", found, err)
+	}
+	if got.CalendarURLs != "" {
+		t.Errorf("CalendarURLs = %q, want \"\" (NULL → empty)", got.CalendarURLs)
 	}
 }
 
