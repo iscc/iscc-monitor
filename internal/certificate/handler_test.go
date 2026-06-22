@@ -1202,6 +1202,11 @@ const (
 	wireSchemaDeletion    = "http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json"
 )
 
+// historyDeclTimestamp is the verbatim note.timestamp the §6 declaration fixture seeds.
+// It is Z-suffixed UTC so the rendered §6 row needs no html.UnescapeString (html/template
+// would entity-escape a non-UTC offset's + as &#43; in the text node).
+const historyDeclTimestamp = "2026-02-14T18:40:00Z"
+
 // fixtureStoreHistory seeds a hub whose subject id has the one-to-many §6 record
 // history: a declaration at declSeq and a LATER deletion at delSeq, both under the
 // SAME ISCC:-prefixed id and both below the accepted checkpoint (LastSize = delSeq+1),
@@ -1232,7 +1237,10 @@ func fixtureStoreHistory(t *testing.T, indexDomain, indexedID string, declSeq, d
 
 	prefixed := "ISCC:" + indexedID
 	if err := st.RecordProjections(ctx, []store.ProjectionRecord{
-		{HubID: target, Seq: declSeq, IsccID: prefixed, NoteSchema: wireSchemaDeclaration},
+		// The declaration carries a Z-suffixed UTC timestamp so the rendered §6 row needs no
+		// html.UnescapeString (a non-UTC offset's + would entity-escape in the text node); the
+		// deletion's empty NoteTimestamp exercises the absent → "" no-render path.
+		{HubID: target, Seq: declSeq, IsccID: prefixed, NoteSchema: wireSchemaDeclaration, NoteTimestamp: historyDeclTimestamp},
 		{HubID: target, Seq: delSeq, IsccID: prefixed, NoteSchema: wireSchemaDeletion},
 	}); err != nil {
 		t.Fatalf("RecordProjections: %v", err)
@@ -1273,13 +1281,20 @@ func TestCertificateRecordHistory(t *testing.T) {
 
 	for _, want := range []string{
 		"§6 RECORD HISTORY",
-		fmt.Sprintf("Declaration · seq %d", declSeq), // the declaration row
-		fmt.Sprintf("Deletion · seq %d", delSeq),     // the later deletion row
-		"A deletion is a new record",                 // the deletion note
+		// The declaration row renders its verbatim note.timestamp after the seq (the · at the mockup
+		// shows). Asserting the full row form makes the timestamp non-vacuous: dropping At: at from the
+		// appended HistoryRow (or {{if .At}}…{{end}} from the template) fails this marker.
+		fmt.Sprintf("Declaration · seq %d · %s", declSeq, historyDeclTimestamp),
+		fmt.Sprintf("Deletion · seq %d", delSeq), // the later deletion row (no timestamp → no · at)
+		"A deletion is a new record",             // the deletion note
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing §6 marker %q\n%s", want, body)
 		}
+	}
+	// The timestamp-less deletion row must NOT render a trailing "· " artifact (the absent → "" path).
+	if strings.Contains(body, fmt.Sprintf("Deletion · seq %d · ", delSeq)) {
+		t.Errorf("§6 deletion row rendered a trailing · for an absent timestamp\n%s", body)
 	}
 	// §1 still certifies the declaration at the earliest seq.
 	if !strings.Contains(body, fmt.Sprintf("position <span class=\"subject-strong\">%d</span>", declSeq)) {

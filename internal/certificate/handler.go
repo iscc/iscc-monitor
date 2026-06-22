@@ -176,8 +176,9 @@ type StatusSource interface {
 
 // HistoryRow is one §6 RECORD HISTORY entry: an accepted-tree leaf the hub indexed
 // under the subject id, with its human-readable kind Label (from the verbatim
-// note.$schema, recordKind) and an IsDeletion flag the clause folds into HasDeletion.
-// Seq is the leaf's absolute index, listed verbatim and never interpreted (ADR-0008).
+// note.$schema, recordKind), an IsDeletion flag the clause folds into HasDeletion,
+// and the row's verbatim note.timestamp At. Seq is the leaf's absolute index, listed
+// verbatim and never interpreted (ADR-0008).
 type HistoryRow struct {
 	// Seq is the leaf's absolute index in the accepted tree (seq < CheckpointSize).
 	Seq uint64
@@ -187,6 +188,9 @@ type HistoryRow struct {
 	// IsDeletion is true only for a deletion record; the clause ORs it into HasDeletion
 	// to decide whether to render the deletion note.
 	IsDeletion bool
+	// At is the record's verbatim note.timestamp (RFC-3339) from the iscc_index projection, or "" when the
+	// note carried none (rendered conditionally). It is displayed verbatim and never parsed (ADR-0008).
+	At string
 }
 
 // certData is the certificate template view-model. For a certifiable id it
@@ -1005,14 +1009,16 @@ func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawI
 			return certData{}, arts, http.StatusInternalServerError
 		}
 		schema := ""
+		at := ""
 		if found {
 			schema = row.NoteSchema
+			at = row.NoteTimestamp
 		}
 		label, isDeletion := recordKind(schema)
 		if isDeletion {
 			deletion = true
 		}
-		history = append(history, HistoryRow{Seq: seq, Label: label, IsDeletion: isDeletion})
+		history = append(history, HistoryRow{Seq: seq, Label: label, IsDeletion: isDeletion, At: at})
 	}
 	data.RecordHistory = history
 	data.HasDeletion = deletion
