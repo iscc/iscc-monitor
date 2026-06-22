@@ -18,36 +18,6 @@ filed it and does **not** affect priority.
 
 ---
 
-## otsclient Upgrader can crash the monitor on a library panic AND hang `OTSTick` on a stalled calendar
-- **Priority:** normal
-- **Source:** [review] (Codex P2 x2, reviewer-confirmed against the library source)
-- **What / where / how to verify:** Two defects on the new production OTS upgrade path, same line
-  (`internal/otsclient/client.go:86`, the `upgrade(ctx, seq, file.Digest)` call), same fix-step.
-  **(1) Unrecovered panic → process crash.** `opentimestamps.UpgradeSequence` calls `seq.Compute(initial)`
-  → `inst.Operation.Apply(...)`, and `opentimestamps@v0.4.0/ots.go:46-54` defines `sha1`/`reverse`/
-  `hexlify`/`keccak256` ops as `panic("… not implemented")` (plus `invalid instruction/attestation` panics
-  at ots.go:175/254/259). A pending `.ots` proof/calendar response that parses but uses an unimplemented op
-  makes `UpgradeSequence` PANIC. The closure's `recoverRead` guards only `ReadFromFile`, NOT `upgrade()`,
-  and `runOTSLoop` (cmd/iscc-monitor/main.go) has no `recover` — so the panic propagates up the goroutine
-  and CRASHES the whole monitor process (ADR-0004: OTS never crashes the follower). **(2) No per-request
-  timeout → `OTSTick` hangs.** `UpgradeSequence` uses `http.DefaultClient` (no `Timeout`) with the
-  deadline-free process context (`signal.NotifyContext(context.Background(), …)`). A stalled calendar GET
-  blocks one `OTSTick` pass indefinitely, starving later pending rows. It never blocks the FOLLOWER
-  (separate goroutine off the poll path), so it is `normal`. **NOT currently exploitable** (so does not
-  block progress): `stampRoot` (`follower.go:411`) writes pending rows with EMPTY `OTSBytes` (the
-  calendar-submit is the deferred next sub-step), so the closure fails at `recoverRead` ("invalid ots file
-  header '': EOF") and `upgrade()` is unreachable today — reviewer-verified with a probe test (`failUpgrade`
-  never called on `OTSBytes: nil`). Both become live the moment `stampRoot` populates `OTSBytes`. Fix
-  BOTH when `stampRoot`'s calendar-submit (or the otsclient closure) is next touched, ideally before that
-  step ships: wrap the upgrade loop body in the same panic-recover as `recoverRead` (a panic → wrapped
-  fail-closed error → `OTSTick` backoff, never a crash), AND derive a per-request `context.WithTimeout`
-  before each `upgrade()` call. Verify fixed: (1) a test feeding a proof with an unimplemented-op sequence
-  returns a wrapped error (not a panic), and removing the recover makes the test panic/FAIL; (2) the upgrade
-  call carries a bounded context (assertable via the injected `seqUpgrade` seam observing a non-zero
-  deadline).
-- **Spec:** ADR-0004 OTS never blocks/crashes the follower (best-effort, backoff); CLAUDE.md "OTS never
-  blocks"; the package's own untrusted-input / fail-closed docstring contract.
-
 ## Hub-List `hubDomain` accepts a trailing `?` (ForceQuery fail-open against the bare-host contract)
 - **Priority:** normal
 - **Source:** [review] (Codex P2, reviewer-confirmed)

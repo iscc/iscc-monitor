@@ -26,22 +26,17 @@ touching OTS upgrade/stamp code.
   FAILS. So the closure upgrades ONLY `file.GetPendingSequences()` and keeps
   `file.GetBitcoinAttestedSequences()` VERBATIM (the offline confirmed-fixture test would break otherwise).
   Reading "for each sequence call UpgradeSequence" as "every sequence" is wrong against a confirmed root.
-- **`UpgradeSequence` PANICS on a parseable-but-uncomputable proof, and the closure does NOT yet recover
-  it (reviewer-confirmed, open `normal` issue).** `UpgradeSequence` → `seq.Compute(initial)` →
-  `inst.Operation.Apply(...)`, and `opentimestamps/ots.go:46-54` defines `sha1`/`reverse`/`hexlify`/
-  `keccak256` ops as `panic("… not implemented")` (plus `invalid instruction/attestation` panics at
-  ots.go:175/254/259). `recoverRead` guards only `ReadFromFile`, NOT the `upgrade()` call at `client.go:86`,
-  and `runOTSLoop` has no `recover` — so such a proof would crash the whole monitor process (ADR-0004 says
-  OTS never crashes the follower). NOT exploitable today: `stampRoot` writes pending rows with EMPTY
-  `OTSBytes` (the calendar-submit is deferred), so the closure fails at `recoverRead` ("invalid ots file
-  header '': EOF") and `upgrade()` is unreachable until `OTSBytes` is populated. Wrap the upgrade body in
-  the same panic-recover as `recoverRead` BEFORE/with the `stampRoot` calendar-submit step.
-- **`UpgradeSequence` uses `http.DefaultClient` (no `Timeout`) with the deadline-free process context
-  (open `normal` issue).** `runOTSLoop`'s ctx is `signal.NotifyContext(context.Background(), …)` — no
-  deadline. A stalled calendar GET blocks one `OTSTick` pass indefinitely (starving later pending rows);
-  it never blocks the FOLLOWER (separate goroutine off the poll path) so it is `normal`, not critical.
-  Same exploitability profile as the panic (unreachable until `OTSBytes` populated, since `upgrade()` is
-  where the GET fires). Fix: derive a per-request `context.WithTimeout` before each `upgrade()` call.
+- **settled: the upgrade path is now panic-recovered AND per-request timeout-bounded (`safeUpgrade`,
+  mutation-proven).** The loop calls `safeUpgrade(ctx, upgrade, seq, digest)` — never `upgrade()`
+  directly — which derives `context.WithTimeout(ctx, upgradeTimeout=30s)` (one `defer cancel()` per
+  call, no defer-in-loop leak; `UpgradeSequence` honors ctx deadlines on its GET) and a documented
+  `recover()` that re-surfaces the library panic as a wrapped fail-closed error. `UpgradeSequence` →
+  `seq.Compute` → `inst.Operation.Apply` still panics on uncomputable ops (`sha1`/`reverse`/`hexlify`/
+  `keccak256`, ots.go:46-54) and invalid-instruction paths (175/254/259), and uses a timeout-less
+  `http.DefaultClient` against the deadline-free process ctx — `safeUpgrade` is the only thing standing
+  between that and a crashed/hung upgrade goroutine. **Keep ALL upgrade calls routed through
+  `safeUpgrade`** (a new caller that hits `upgrade()` directly re-opens both hazards); the guard is an
+  FFI-boundary `recover()` that returns an `err`, not a gate-dodge — do not strip it.
 - **Fixtures are the same bundled `examples/*.ots` `internal/ots` uses, copied VERBATIM into
   `testdata/`** (reviewer cmp-verified byte-identical). The closure's confirmed verdict is pinned to the
   same external ground truth (`hello-world`→358391, `empty`→129405); a wrong height fails the assertion.
