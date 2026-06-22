@@ -6,3 +6,12 @@ cauldron/
 # root (and in the command dir); never commit the 15MB artifact.
 /iscc-monitor
 /cmd/iscc-monitor/iscc-monitor
+
+# Local secrets / state — never commit (public-repo safety).
+.env
+.env.*
+.claude/settings.local.json
+**/auth.json
+*.db
+*.sqlite
+*.sqlite3
