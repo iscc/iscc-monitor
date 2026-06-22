@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	opentimestamps "github.com/nbd-wtf/opentimestamps"
 	"github.com/transparency-dev/merkle/compact"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/merkle/testonly"
@@ -1492,18 +1493,50 @@ func otsFixture(t *testing.T, name string) []byte {
 	return data
 }
 
+// otsFixtureDigest returns the 32-byte SHA-256 digest a bundled .ots fixture commits
+// to (its opentimestamps.File.Digest). The §5 digest binding (ots.ConfirmedFor)
+// renders the anchor only when §2's accepted root EQUALS this value, so the
+// confirmed/pending render tests drive the accepted checkpoint at this digest. It is
+// the fixture's own ground truth (parsed from the file), not derived from monitor code.
+func otsFixtureDigest(t *testing.T, name string) []byte {
+	t.Helper()
+	file, err := opentimestamps.ReadFromFile(otsFixture(t, name))
+	if err != nil {
+		t.Fatalf("parse OTS fixture %q for digest: %v", name, err)
+	}
+	return file.Digest
+}
+
 // seedOTS records an OpenTimestamps row for the accepted (hubID, LastSize, root) of the
 // certifiable hub the tiled fixture seeded, mirroring the (hub_id, tree_size, root) key
 // the §5 read (and the .ots route / stamp loop) use. The root is the tree's own
 // tree.Hash() (the clean fixture's accepted root) and the size its leaf count, matching
 // what AdvanceAccepted committed. upgradedAt is the confirmation instant the §5 clause
 // renders when the proof is Bitcoin-confirmed (zero → no time chip).
+//
+// Because the §5 binding (ots.ConfirmedFor) requires the proof's committed digest to
+// equal the row's root, a row seeded HERE at tree.Hash() carries a Merkle root the
+// bundled .ots fixture never commits to — so this is the digest-MISMATCH seam (the
+// confirmed/pending render tests use seedOTSAtRoot instead, where the row root IS the
+// fixture's digest).
 func seedOTS(t *testing.T, st *store.Store, domain string, tree *testonly.Tree, otsBytes []byte, upgradedAt time.Time) {
+	t.Helper()
+	seedOTSAtRoot(t, st, domain, tree.Size(), tree.Hash(), otsBytes, upgradedAt)
+}
+
+// seedOTSAtRoot records an OpenTimestamps row at an ARBITRARY (treeSize, root) for the
+// hub's domain, decoupling the row root from the mirrored tree's tree.Hash(). The §5
+// confirmed/pending render tests seed at the fixture's COMMITTED digest (its own
+// SHA-256) and drive §2 with an accepted checkpoint whose root EQUALS that digest (via
+// fixtureStoreTiled's acceptedRoot override), so ots.ConfirmedFor's digest binding holds
+// and §5 renders. upgradedAt is the confirmation instant the §5 clause renders when the
+// proof is Bitcoin-confirmed (zero → no time chip).
+func seedOTSAtRoot(t *testing.T, st *store.Store, domain string, treeSize uint64, root, otsBytes []byte, upgradedAt time.Time) {
 	t.Helper()
 	if _, _, err := st.RecordOTS(context.Background(), store.OTSRecord{
 		HubID:      hubIDForDomain(t, st, domain),
-		TreeSize:   tree.Size(),
-		Root:       tree.Hash(),
+		TreeSize:   treeSize,
+		Root:       root,
 		Status:     store.OTSStatusConfirmed,
 		OTSBytes:   otsBytes,
 		StampedAt:  time.Unix(1700000000, 0),
@@ -1513,19 +1546,27 @@ func seedOTS(t *testing.T, st *store.Store, domain string, tree *testonly.Tree, 
 	}
 }
 
-// TestCertificateBitcoinAnchorConfirmed is the §5 confirmed path: a certifiable id whose
-// accepted root has a mirrored OTS row carrying a Bitcoin-confirmed proof renders the §5
-// BITCOIN ANCHOR clause with the confirming block height (358391, the external `ots
-// verify` oracle's ground-truth height for hello-world.txt.ots) and the confirmation
-// time, while §1-§4/§6 still render (regression). The height is the oracle literal, not
+// TestCertificateBitcoinAnchorConfirmed is the §5 confirmed path with the digest binding
+// (ots.ConfirmedFor): a certifiable id whose accepted root EQUALS the bundled proof's
+// committed digest, and whose mirrored OTS row carries that Bitcoin-confirmed proof,
+// renders the §5 BITCOIN ANCHOR clause with the confirming block height (358391, the
+// external `ots verify` oracle's ground-truth height for hello-world.txt.ots) and the
+// confirmation time, while §1-§2/§6 still render. The height is the oracle literal, not
 // derived from the certificate code.
+//
+// To make the binding hold, §2's accepted root is driven to the fixture's committed
+// digest (fixtureStoreTiled's acceptedRoot override) and the OTS row is seeded at that
+// same digest. That deliberately makes the accepted root diverge from the mirrored
+// tree's tree.Hash(), so §3 declines (mirror root ≠ accepted root) — this test does NOT
+// assert §3; the §3 inclusion path is covered by the clean-tree tests.
 func TestCertificateBitcoinAnchorConfirmed(t *testing.T) {
 	const seq = 0
 	const leaves = 5
 	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
-	st, tree := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, raw)
+	digest := otsFixtureDigest(t, "hello-world.txt.ots")
+	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, digest, false, raw)
 	upgradedAt := time.Date(2026, 2, 14, 18, 40, 0, 0, time.UTC)
-	seedOTS(t, st, "sb1.amlet.id", tree, otsFixture(t, "hello-world.txt.ots"), upgradedAt)
+	seedOTSAtRoot(t, st, "sb1.amlet.id", leaves, digest, otsFixture(t, "hello-world.txt.ots"), upgradedAt)
 
 	h := Handler(testnetHubList(), st, nil)
 	rec := get(t, h, goldenID)
@@ -1537,7 +1578,6 @@ func TestCertificateBitcoinAnchorConfirmed(t *testing.T) {
 	for _, want := range []string{
 		"§1 SUBJECT",
 		"§2 CHECKPOINT",
-		"§3 INCLUSION PROOF",
 		"§5 BITCOIN ANCHOR",
 		"block 358391", // the external oracle's ground-truth confirmed height
 		"§6 RECORD HISTORY",
@@ -1556,18 +1596,21 @@ func TestCertificateBitcoinAnchorConfirmed(t *testing.T) {
 	}
 }
 
-// TestCertificateBitcoinAnchorPending is the §5 honest pending path: a certifiable id
-// whose accepted root has a mirrored OTS row carrying a calendar-only (not yet
-// Bitcoin-confirmed) proof renders §5 BITCOIN ANCHOR in the "pending" state — never an
-// error and never a block height (target.md: a not-yet-anchored root renders the normal
-// "pending" state). merkle1.txt.ots is the bundled calendar-only vector ots.Confirmed
-// classifies (false, 0, nil).
+// TestCertificateBitcoinAnchorPending is the §5 honest pending path with the digest
+// binding: a certifiable id whose accepted root EQUALS the bundled proof's committed
+// digest, and whose mirrored OTS row carries a calendar-only (not yet Bitcoin-confirmed)
+// proof, renders §5 BITCOIN ANCHOR in the "pending" state — never an error and never a
+// block height (target.md: a not-yet-anchored root renders the normal "pending" state).
+// merkle1.txt.ots is the bundled calendar-only vector ots.ConfirmedFor classifies
+// (false, 0, nil) under its own digest. Like the confirmed test, the accepted root is
+// driven to the fixture digest so the binding holds; §3 declines and is not asserted.
 func TestCertificateBitcoinAnchorPending(t *testing.T) {
 	const seq = 0
 	const leaves = 5
 	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
-	st, tree := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, raw)
-	seedOTS(t, st, "sb1.amlet.id", tree, otsFixture(t, "merkle1.txt.ots"), time.Time{})
+	digest := otsFixtureDigest(t, "merkle1.txt.ots")
+	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, digest, false, raw)
+	seedOTSAtRoot(t, st, "sb1.amlet.id", leaves, digest, otsFixture(t, "merkle1.txt.ots"), time.Time{})
 
 	h := Handler(testnetHubList(), st, nil)
 	rec := get(t, h, goldenID)
@@ -1586,6 +1629,49 @@ func TestCertificateBitcoinAnchorPending(t *testing.T) {
 	// which would imply a confirmation it does not have).
 	if strings.Contains(body, "block ") {
 		t.Errorf("a pending anchor rendered a confirmed block height\n%s", body)
+	}
+}
+
+// TestCertificateBitcoinAnchorDigestMismatch is the load-bearing §5 binding test: a
+// certifiable id whose accepted root has a mirrored OTS row carrying a Bitcoin-confirmed
+// proof whose committed digest does NOT equal §2's accepted root (the row is seeded at
+// the mirrored tree's tree.Hash() while the bundled proof commits to its own digest, the
+// realistic mis-stamped case). §5 BITCOIN ANCHOR must be OMITTED — ots.ConfirmedFor
+// returns a non-nil error on the digest mismatch, so the certifying surface never vouches
+// "block N" for a root the proof does not commit to — while §1-§3 + §6 still render.
+//
+// Mutation (non-vacuity): reverting §5's call to ots.Confirmed(rec.OTSBytes) (the
+// digest-agnostic primitive) renders §5 for this mismatched row and FAILS this test.
+func TestCertificateBitcoinAnchorDigestMismatch(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
+	// Clean tree (accepted root == tree.Hash()), so §1-§3 + §6 render normally.
+	st, tree := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, raw)
+	// seedOTS keys the row on tree.Hash(), which the bundled proof never commits to —
+	// exactly the (root, proof) digest mismatch the binding must decline.
+	seedOTS(t, st, "sb1.amlet.id", tree, otsFixture(t, "hello-world.txt.ots"), time.Date(2026, 2, 14, 18, 40, 0, 0, time.UTC))
+
+	h := Handler(testnetHubList(), st, nil)
+	rec := get(t, h, goldenID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := html.UnescapeString(rec.Body.String())
+
+	// The rest of the certificate is unaffected (§1-§3 + §6 still render).
+	for _, want := range []string{"§1 SUBJECT", "§2 CHECKPOINT", "§3 INCLUSION PROOF", "§6 RECORD HISTORY"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("digest-mismatch certificate missing %q (the page must still render §1-§3+§6)\n%s", want, body)
+		}
+	}
+	// §5 must be ABSENT — a proof that does not commit to §2's root is declined, never a
+	// fabricated anchor; and certainly no "block " height.
+	if strings.Contains(body, "§5 BITCOIN ANCHOR") {
+		t.Errorf("a digest-mismatched proof rendered a §5 BITCOIN ANCHOR clause\n%s", body)
+	}
+	if strings.Contains(body, "block ") {
+		t.Errorf("a digest-mismatched proof rendered a confirmed block height\n%s", body)
 	}
 }
 

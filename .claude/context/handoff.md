@@ -1,63 +1,64 @@
-## 2026-06-22 — Review of: Reject a trailing `?` (ForceQuery) in the Hub-List `hubDomain` bare-host guard
+## 2026-06-22 — Bind the §5 OTS proof's committed digest to §2's accepted root before rendering BITCOIN ANCHOR
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Added a digest-bound classifier `ots.ConfirmedFor(otsBytes, root)` that fail-closes (wrapped
+error) unless the parsed proof's committed SHA-256 digest equals the caller's root, then certificate §5
+now calls `ots.ConfirmedFor(rec.OTSBytes, root)` instead of the digest-agnostic `ots.Confirmed`. A
+mis-stamped (root, proof) row now declines §5 silently (no fabricated "block N"), exactly like an
+unparseable proof. `Confirmed` and `ConfirmedFor` share one parse (`recoverParse`) and one classify
+(new private `classify` holding the attestation + `>MaxInt64` overflow logic).
 
-**Summary:** The advance added `|| u.ForceQuery` to the single `hubDomain` bare-host reject in
-`internal/registry/registry.go` so a url whose only non-host component is a bare trailing `?` (e.g.
-`https://sb0.iscc.id?`) — which `net/url` records as `ForceQuery == true` with `RawQuery == ""` —
-fails closed with the existing "not a bare host base url" wrapped error instead of round-tripping
-the delimiter into the resolved domain. Scope is exemplary: exactly one production file + one test
-file, no new import, nothing from `## Not In Scope` touched; the docstring + in-line comment were
-updated so the evergreen comment matches the code. The `normal` ForceQuery fail-open is fully closed
-and mutation-proven.
+**Files changed:**
+- `internal/ots/ots.go`: added `ConfirmedFor` (parse → `bytes.Equal(file.Digest, root)` gate → shared
+  `classify`); extracted the attestation+overflow logic into a private `classify(file)` called by both
+  `Confirmed` and `ConfirmedFor` (one parse, one overflow guard); imported `bytes`; updated the package
+  docstring to describe the two-classifier-on-one-core design and the binding.
+- `internal/certificate/handler.go`: §5 now calls `ots.ConfirmedFor(rec.OTSBytes, root)` (the in-scope
+  `root` is §2's raw `CheckpointAt` bytes); the existing `cerr == nil` guard already declines a mismatch
+  silently — no new branch, no new 500. Updated the §5 inline docstring and the three buildData/certData
+  doc references (`handler.go:40`, `:299`, `:341-343`, `:642-646`, `:919-923`) to state the binding.
+- `internal/ots/ots_test.go` (test): added `TestOTSConfirmedForDigestBound` (confirmed/pending under the
+  fixture's own committed digest; mismatch declines with non-nil err; parse error) + a `mustHex` helper.
+  The digest literals (`03ba20…`, `d32fee…`) are the fixtures' own committed SHA-256 (verified via
+  `opentimestamps.File.Digest`), pinned with a ground-truth comment like the heights.
+- `internal/certificate/handler_test.go` (test): added `seedOTSAtRoot` (records an OTS row at an
+  arbitrary root; `seedOTS` now delegates to it at `tree.Hash()`) and `otsFixtureDigest`. Reworked
+  `TestCertificateBitcoinAnchorConfirmed/Pending` to drive §2's accepted root to the fixture's committed
+  digest (`fixtureStoreTiled` acceptedRoot override) and seed the row at that same digest, so the binding
+  holds and §5 renders; these no longer assert §3 (a forced `acceptedRoot != tree.Hash()` makes §3
+  decline — documented in the test). Added `TestCertificateBitcoinAnchorDigestMismatch` (row seeded at
+  `tree.Hash()`, which the bundled proof never commits to → §5 OMITTED, §1-§3+§6 still render).
 
-**Verification:**
-- [x] `mise run check` — green (build + vet + `go test ./...`, all 27 packages ok; exit 0 reconfirmed
-      independently).
-- [x] `gofmt -l .` — empty (no formatting failures).
-- [x] `go test -count=1 -v -run TestParseHubListErrors ./internal/registry` — PASS; `-v` lists the new
-      `trailing_question_mark_(ForceQuery)` subtest among the 8 cases.
-- [x] Mutation (independent) — reverting `|| u.ForceQuery` makes
-      `TestParseHubListErrors/trailing_question_mark_(ForceQuery)` FAIL; the failure dump shows the exact
-      fail-open it guards (a parsed `HubList` retaining `URL:"https://sb0.iscc.id?"`). `registry.go`
-      restored byte-identical (`git diff --stat` empty).
-- [x] Clean-domain regression — `TestParseHubListGolden` (`https://sb0.iscc.id` / `sb1.amlet.id`) still
-      parses unchanged.
-- [x] `go.mod`/`go.sum` byte-identical vs HEAD~1 (no dependency drift). `GOOS=js GOARCH=wasm go build
-      ./internal/registry` builds — leaf stays WASM-shareable / import-clean.
-- [x] Oracle/conformance gate — N/A: no proof/verify/didweb/merkle/signature/fork-shrink-equivocation
-      path touched; `internal/registry` is a pure leaf.
-- [x] Gate-circumvention scan over all unpushed commits (`@{upstream}..HEAD`) — no `//nolint`, `t.Skip`,
-      build-tag exclusion, swallowed error, or deleted assertion in added Go lines. The only Go diff in
-      the unpushed range is the two scoped registry files (27+/7-); the other two unpushed commits are
-      cid context-doc commits.
+**Verification:** `mise run check` → green (build + vet + `go test ./...`, all 28 packages ok; `gofmt -l
+.` empty).
+- `go test -run TestOTSConfirmedFor -v ./internal/ots` → PASS (lists confirmed/pending/mismatch/parse
+  subcases).
+- `go test -run TestCertificateBitcoinAnchor -v ./internal/certificate` → PASS (Confirmed, Pending,
+  DigestMismatch, Unanchored, EmptySentinel).
+- Mutation 1 (ots): removing the `bytes.Equal` gate from `ConfirmedFor` → `…DigestBound/mismatch_declines`
+  FAILS ("want digest-mismatch error, got nil"). Restored byte-identical.
+- Mutation 2 (certificate): reverting §5 to `ots.Confirmed(rec.OTSBytes)` → `…DigestMismatch` FAILS
+  (renders §5 for the mismatched row). Restored byte-identical.
+- WASM-pure invariant: `go list -deps` of `internal/{didweb,index,badge}` + `internal/proof/verify` each
+  show 0 hits on `internal/ots`; all four still `GOOS=js GOARCH=wasm go build`. No `go.mod`/`go.sum` drift.
 
-**Issues found:** (none new). Resolved + deleted the `normal` "Hub-List `hubDomain` accepts a trailing
-`?` (ForceQuery fail-open)" issue after independently mutation-verifying the fix.
-
-**Codex second opinion:** Clean — "The change narrowly rejects bare trailing query delimiters in
-Hub-List URLs and adds a regression test for that case. I found no introduced correctness, security,
-or maintainability issues." Independently corroborates the reviewer's verification; no findings to
-triage.
-
-**Visual check:** n/a — no SSR surface changed. The diff touches only the `internal/registry` pure
-leaf (URL-shape guard + its test); no `dashboard`/`dossier`/`web`/`certificate`/template surface and no
-rendered output is affected.
-
-**Next:** Continue closing code-closable `normal`s in handoff-named order. Remaining: (1) the §5
-OTS-digest-binding `bytes.Equal` gap (`internal/certificate/handler.go:843-845` + `internal/ots`); (2)
-the certificate tier-2 honesty-copy overstatement (`cert.html:465`). The §6 `· at` timestamp needs a
-store schema column (larger). The front-of-queue WASM-verifier signature half remains design-first / a
-STOP-candidate (browser did:web resolution) — do a design pass before touching `verifier.html` copy.
+**Next:** Two §5/§6-adjacent `normal`s remain in the named-order queue: (1) the §6 `· at` timestamp
+`normal` needs a store schema column on `RecordRow` (larger, store-touching — define carefully). (2) the
+certificate tier-2 honesty-copy overstatement (`cert.html:465`). The §5 OTS-digest-binding `normal` this
+step closed should be deleted from issues.md by `review` after independent mutation re-verification. The
+front-of-queue WASM-verifier signature half remains design-first / a STOP-candidate (browser did:web
+resolution).
 
 **Notes:**
-- Scope held exactly to `next.md`: the change is purely additive (one operand on one condition + an
-  evergreen-comment update + one table case). Nothing from `## Not In Scope` (no `u.Opaque`/`u.User`/
-  `#`-only fragment reject, no live-wiring of `ParseHubList`/`Resolve`, no public-shape change).
-- The registry detail learnings now records all three landed fail-open guards as `settled (landed)`;
-  the `ForceQuery` trap moved from "open issue" to settled. No new durable cross-cutting rule to promote
-  to the index (the `url.URL` shape-field enumeration rule already lives in the detail file).
-- 1 advance commit ahead of `origin/develop` (plus the 2 cid context commits). Pushing on PASS. The
-  known `Pages` workflow failure on develop is the human-blocked custom-domain repo-settings step, not
-  a code regression.
+- Scope: 2 non-test/doc files (`ots.go`, `handler.go`) within budget, plus 2 test files. Nothing from
+  `## Not In Scope` touched — `.ots` fixtures unchanged (byte-verbatim oracle), no OTS write path
+  (`otsloop.go`/`otsclient`/`store/ots.go`), `Confirmed`'s signature + its `.ots`-route / upgrade-loop
+  callers (`otsclient/client.go:109`) unchanged.
+- Followed plan option (A): confirmed/pending tests now drive `acceptedRoot == fixture digest`, which
+  intentionally diverges from the mirrored `tree.Hash()`, so §3 declines in those two tests — they no
+  longer assert §3 (covered by the clean-tree §3 tests + the new `…DigestMismatch` which keeps a clean
+  tree so §3 renders). The `…DigestMismatch` test reuses the existing `seedOTS`-at-`tree.Hash()` seam as
+  exactly the mis-stamped case, as the plan noted.
+- The `Confirmed` function docstring was left intact: it still accurately describes `Confirmed`'s observable
+  behavior even though the classification detail now physically lives in the shared `classify` helper. The
+  package docstring carries the new two-classifier description.
+- No backward-incompatible API change: `Confirmed` is unchanged; `ConfirmedFor` is purely additive.

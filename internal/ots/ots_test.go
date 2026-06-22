@@ -11,6 +11,7 @@
 package ots
 
 import (
+	"encoding/hex"
 	"math"
 	"os"
 	"path/filepath"
@@ -18,6 +19,17 @@ import (
 
 	opentimestamps "github.com/nbd-wtf/opentimestamps"
 )
+
+// mustHex decodes a hex literal pinned in a test (a fixture's committed digest or a
+// synthetic root) or fails loudly, so a typo surfaces rather than passing vacuously.
+func mustHex(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatalf("decode hex %q: %v", s, err)
+	}
+	return b
+}
 
 // readFixture loads one bundled .ots vector from testdata, failing the test if it
 // is missing so a dropped fixture surfaces loudly rather than as a vacuous pass.
@@ -60,6 +72,66 @@ func TestOTSConfirmed(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestOTSConfirmedForDigestBound pins ConfirmedFor's digest binding against the
+// bundled vectors, the positive coverage living here where the fixture's committed
+// digest is ground truth (the file's own SHA-256, like its height). With the
+// MATCHING root it reproduces Confirmed's verdict — hello-world.txt.ots → (true,
+// 358391) and the calendar-only merkle1.txt.ots → (false, 0) — and with ANY other
+// 32-byte root it fail-closes with a non-nil error and (false, 0), so a mis-stamped
+// (root, proof) row never reports confirmed. The digest/height literals are external
+// ground truth, NOT derived from this code.
+//
+// Mutation anchor (non-vacuity): removing the bytes.Equal gate from ConfirmedFor
+// makes the mismatch subcase return (true, 358391, nil) and FAIL this test.
+func TestOTSConfirmedForDigestBound(t *testing.T) {
+	// The fixtures' committed SHA-256 digests (the value every sequence is evaluated
+	// on top of), ground truth like the heights — verified via opentimestamps.File.Digest.
+	helloDigest := mustHex(t, "03ba204e50d126e4674c005e04d82e84c21366780af1f43bd54a37816b6ab340")
+	merkleDigest := mustHex(t, "d32fee9a827f5a0d580f80beb7edce662dd99fcd6591e4ef8a6244403df0b7c9")
+	// A 32-byte root that is NOT either fixture's digest (the all-0xAB pattern).
+	otherRoot := mustHex(t, "abababababababababababababababababababababababababababababababab")
+
+	t.Run("confirmed matching digest", func(t *testing.T) {
+		confirmed, height, err := ConfirmedFor(readFixture(t, "hello-world.txt.ots"), helloDigest)
+		if err != nil {
+			t.Fatalf("ConfirmedFor(hello-world, its digest): unexpected error: %v", err)
+		}
+		if !confirmed || height != 358391 {
+			t.Errorf("ConfirmedFor(hello-world, its digest) = (%v, %d), want (true, 358391)", confirmed, height)
+		}
+	})
+
+	t.Run("pending matching digest", func(t *testing.T) {
+		confirmed, height, err := ConfirmedFor(readFixture(t, "merkle1.txt.ots"), merkleDigest)
+		if err != nil {
+			t.Fatalf("ConfirmedFor(merkle1, its digest): unexpected error: %v", err)
+		}
+		if confirmed || height != 0 {
+			t.Errorf("ConfirmedFor(merkle1, its digest) = (%v, %d), want (false, 0)", confirmed, height)
+		}
+	})
+
+	t.Run("mismatch declines", func(t *testing.T) {
+		confirmed, height, err := ConfirmedFor(readFixture(t, "hello-world.txt.ots"), otherRoot)
+		if err == nil {
+			t.Fatalf("ConfirmedFor(hello-world, other root): want digest-mismatch error, got nil")
+		}
+		if confirmed || height != 0 {
+			t.Errorf("ConfirmedFor(hello-world, other root) = (%v, %d), want (false, 0) on mismatch", confirmed, height)
+		}
+	})
+
+	t.Run("parse error", func(t *testing.T) {
+		confirmed, height, err := ConfirmedFor([]byte("not an ots proof"), helloDigest)
+		if err == nil {
+			t.Fatalf("ConfirmedFor(garbage): want parse error, got nil")
+		}
+		if confirmed || height != 0 {
+			t.Errorf("ConfirmedFor(garbage) = (%v, %d), want (false, 0) on parse error", confirmed, height)
+		}
+	})
 }
 
 // TestOTSConfirmedParseError confirms the adapter fails closed on unparseable
