@@ -1,9 +1,9 @@
 # Target — iscc-monitor v1
 
 > Authoritative specs: `.claude/prd/0001-iscc-monitor-v1.md`, `.claude/plans/cosmic-baking-octopus.md`,
-> `.claude/adr/0001`–`0011`, glossary in `CLAUDE.md`. Where this file and an ADR/PRD disagree, the
-> ADR/PRD wins. This file is the *fixed target* the CID loop advances toward — the desired end-state
-> plus the bar every increment is verified against.
+> `.claude/adr/0001`–`0013` (deployment/packaging = ADR-0013), glossary in `CLAUDE.md`. Where this file
+> and an ADR/PRD disagree, the ADR/PRD wins. This file is the *fixed target* the CID loop advances toward
+> — the desired end-state plus the bar every increment is verified against.
 
 ## Stack (locked — ADR-0003, ADR-0011)
 
@@ -61,6 +61,10 @@ number, which would force brittle tests on wiring / `main` and tempt the interna
 PRD forbids. Revisit only if the testing strategy itself changes.
 
 ## Milestones (advance in ADR-0004 / ADR-0010 order)
+
+> **M-Deploy** (below) is **order-independent**: it depends on no feature milestone and may be advanced
+> at any time. It is the standing source of code-closable work when the feature milestones are design- or
+> human-blocked.
 
 ### M1 — Read-only Monitor  `[not started]`
 
@@ -202,6 +206,44 @@ stamp each distinct observed root daily (`UNIQUE(hub, tree_size, root)`) + backg
 (pending → Bitcoin-confirmed) + serve `.ots`; **never blocks the follower**. **Verify:** a stamped
 root upgrades to Bitcoin-confirmed and the served `.ots` verifies with the standard `ots` client.
 
+### M-Deploy — Packaged & operable instance  `[not started]`  (ADR-0013, PRD story 13)
+
+The repo produces a **deployable artifact**, not just a source tree: a container image on GHCR plus the
+operability contract a real instance needs (graceful stop, a canonical realm doc, build provenance, and
+the volume/egress/exposure docs). PRD story 13 ("a single static binary **plus a container image**")
+makes this v1 scope; ADR-0013 is the authoritative decision. **Order-independent** — depends on no
+feature milestone, so `define-next` may pick it up at any time, and it is the standing source of
+code-closable work while M-UI/WASM/OTS are design- or human-blocked. The first real consumer is a testnet
+**test instance at `monitor-test.iscc.io`** stood up by iscc-infra.
+
+**Out of the loop's scope (human / infra, NOT loop-gating — mirrors the WASM Pages-enable step):**
+making the GHCR package public (or issuing a `read:packages` token), DNS for `monitor-test.iscc.io`, the
+Caddy labels / Compose stack, box selection, and the per-instance `/metrics` exposure choice all live in
+**iscc-infra**. They never gate DONE here.
+
+**Verify** (checked in-repo / CI against observable outputs; only the doc-presence items need a reader):
+- a tracked **`Dockerfile`** builds `cmd/iscc-monitor` as a `CGO_ENABLED=0` static binary into a minimal
+  **non-root** final image (`scratch`/distroless, CA roots present), and a **CI job builds it, runs the
+  container** with a tmp `ISCC_MONITOR_DB` + the baked realm, and asserts `GET /healthz` → `200`;
+- a **publish workflow** pushes `ghcr.io/iscc/iscc-monitor` on push to `develop`, tagged BOTH `develop`
+  (floating) AND `sha-<short>` (immutable, for pin/rollback) — asserted by inspecting the workflow trigger
+  + tag template;
+- **SIGTERM** cancels the run context: the process drains the in-flight poll, runs the deferred
+  `store.Close()`, and exits `0` within the grace window — asserted by a test (start the binary, send
+  `SIGTERM`, assert clean exit + store closed); reverting the SIGTERM registration in
+  `signal.NotifyContext` makes that test FAIL;
+- a **canonical realm document** lives at a fixed non-testdata path (e.g. under `deploy/`), is baked into
+  the image at a documented path, and `registry.Parse` accepts it (test); and CLAUDE.md's env table lists
+  the masthead identity keys `ISCC_MONITOR_INSTANCE` / `ISCC_MONITOR_OPERATOR` / `ISCC_MONITOR_REALM_NAME`;
+- the binary is **version-stamped** (git SHA via `-ldflags`, default `dev` when unset) and reports it on
+  `/healthz` JSON or `GET /version` — an HTTP-seam test asserts a non-empty version field;
+- a tracked **deployment/operability doc** states, for an operator: the SQLite **volume path + single-file
+  backup unit + non-root uid**, the **interim "recreate the volume on a schema change" migration policy**
+  (until the on-disk migration mechanism lands — its own open item), the **egress endpoints** (hub
+  `/log`, did:web `/.well-known/did.json`, the OTS calendar), the **reverse-proxy contract** (binds
+  `:9464`, publishes no host port), and the **`/metrics` exposure** decision;
+- `mise run check` stays green and no quality gate is weakened.
+
 ### M7 — DEFERRED (out of v1)
 
 multi-monitor gossip + cosigning (C2SP witness cosignatures) + witness endpoint
@@ -209,5 +251,10 @@ multi-monitor gossip + cosigning (C2SP witness cosignatures) + witness endpoint
 
 ## Done When
 
-Every v1 milestone (M1 → M2 → M3 → M-UI → WASM → OTS) meets its **Verify** criteria with `mise run
-check` green and no open `critical` or `normal` issue in `issues.md`. M7 is explicitly out of scope.
+Every v1 milestone (M1 → M2 → M3 → M-UI → WASM → OTS → **M-Deploy**) meets its **Verify** criteria with
+`mise run check` green and no open `critical` or `normal` issue in `issues.md`, **and a public-facing
+root `README.md` exists** — a human-facing project overview + build/run instructions + pointers to the
+specs, distinct from the agent-facing `CLAUDE.md` and the CID context pack's `.claude/context/README.md`.
+M-Deploy's human/infra steps (GHCR-package visibility, DNS, reverse-proxy config, box selection, the
+per-instance `/metrics` exposure choice) live in **iscc-infra** and do **not** gate DONE here — only its
+in-repo Verify bar does. M7 is explicitly out of scope.

@@ -280,6 +280,20 @@ filed it and does **not** affect priority.
 ## Pages custom domain is not bound by the artifact CNAME under Actions-based deploy — needs a one-time repo-settings step (else `/_ds/` asset paths break on the project URL)
 - **Priority:** normal
 - **Source:** [review] (Codex P2, reviewer-confirmed against the GitHub Pages Actions mechanism)
+- **RESOLVED (2026-06-22, end-to-end, live-verified):** The repo is now PUBLIC, Pages source = "GitHub
+  Actions", and the `monitor.iscc.codes` custom domain is bound in Settings → Pages (human). The one
+  remaining gap — the `github-pages` environment deployment-branch policy allowed only `main` while
+  `pages.yml` triggers on `develop` (the loop's develop-only working branch), which rejected the `deploy`
+  job in ~2s with zero steps — was fixed by adding `develop` to the environment's allowed deployment
+  branches (`POST …/environments/github-pages/deployment-branch-policies {"name":"develop"}`; allowed set
+  is now `{develop, main}`). Verified: dispatched run `27965858770` on `develop` went fully green (both
+  `render verifier-site` AND `deploy to monitor.iscc.codes`), and the live apex serves
+  `https://monitor.iscc.codes/` → 200 `text/html`, `/_ds/tokens.css` → 200 `text/css`,
+  `/_ds/verify.wasm` → 200 `application/wasm` (3,514,750 bytes) — root-absolute `/_ds/` paths resolve, so
+  the chrome-less/404 failure mode this issue feared is gone. This whole issue is now closed; prune it.
+  **Milestone implication for `update-state` to assess:** the WASM "published" half (target.md "the
+  verifier artifact hash matches the published value") is now no longer human-blocked — the byte-pinned
+  `verify.wasm` is publicly served from a public commit, which was the gating dependency.
 - **What / where / how to verify:** `.github/workflows/pages.yml:49-50` copies the tracked
   `.github/pages/CNAME` to `dist/CNAME` to set the `monitor.iscc.codes` custom domain — but with the
   modern Actions-based Pages deploy (`actions/deploy-pages@v4`), GitHub IGNORES a `CNAME` in the uploaded
@@ -304,6 +318,22 @@ filed it and does **not** affect priority.
   source = "GitHub Actions" and custom domain = `monitor.iscc.codes` + the DNS CNAME on first deploy.)
 - **Spec:** ADR-0003 "Pages-from-repo ties the deployed WASM to a public commit" + `.codes` custom domain;
   target.md WASM "the verifier artifact … published value"; `learnings/ci.md` Pages-CNAME-no-op nuance.
+
+## `pages.yml` actions target deprecated Node 20 — bump to current major versions
+- **Priority:** low
+- **Source:** [human] (deprecation warning surfaced on Pages run `27965858770`, 2026-06-22)
+- **What / where / how to verify:** the live Pages deploy run annotated: "Node.js 20 is deprecated. The
+  following actions target Node.js 20 but are being forced to run on Node.js 24: `actions/checkout@v4`,
+  `actions/configure-pages@v5`, `actions/setup-go@v5`, `actions/upload-artifact@v4`." The deploy is GREEN
+  today (GitHub force-runs them on Node 24), so this does NOT block — but the warning will become a hard
+  failure once GitHub removes the Node 20 shim (see github.blog/changelog/2025-09-19-deprecation-of-node-20).
+  Fix when `pages.yml` is next touched: bump the pinned action majors to their current Node-24 releases
+  (`actions/checkout@v5`, `actions/setup-go@v6`, `actions/upload-artifact@v5`, `actions/configure-pages` +
+  `actions/deploy-pages` to their latest), confirming each new major's inputs still match this workflow's
+  usage. Verify fixed: a dispatched `pages.yml` run on `develop` is green with NO Node-20 deprecation
+  annotation. (Also re-check `ci.yml` for the same pinned actions while there.)
+- **Spec:** CLAUDE.md "Building the Surface-C verifier site" (`.github/workflows/pages.yml` is the publish
+  workflow); `learnings/ci.md`.
 
 ## `cmd/verifier-site` `generate` writes non-atomically — a mid-run error leaves a partial deploy tree
 - **Priority:** low
