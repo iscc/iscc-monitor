@@ -8,7 +8,11 @@
 // malformed base64 and an index >= size precondition are errors (errMsg!="").
 package verifyadapter
 
-import "testing"
+import (
+	"math"
+	"strings"
+	"testing"
+)
 
 // goldenRoot is the base64-Std root of the 4-leaf golden tree, copied verbatim
 // from internal/proof/verify/verify_test.go.
@@ -98,6 +102,50 @@ func TestVerifyJSON(t *testing.T) {
 			}
 			if gotErr := errMsg != ""; gotErr != tc.wantErr {
 				t.Errorf("errMsg = %q, want non-empty=%v", errMsg, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestSafeIndex exercises the JS→Go integer guard that protects the WASM-vs-server
+// vector parity: a truncated / non-integer / out-of-safe-range JS Number is NOT an
+// identical vector, so SafeIndex must fail closed before the float64→uint64 narrowing
+// silently truncates. The table covers each reject branch (the issue's named cases),
+// the accept branch, and the boundary precisely — maxSafeInteger (2^53 - 1) is
+// ACCEPTED, 2^53 is REJECTED (the guard is > maxSafeInteger). The NaN/Inf cases pin
+// the specific "not a finite number" message via wantMsg because NaN also fails the
+// fractional check and Inf also fails the range check — without the message assertion
+// dropping the finite-number branch would leave the test green (vacuous). Reverting
+// any single reject branch makes this test fail (non-vacuity is mutation-verified).
+func TestSafeIndex(t *testing.T) {
+	cases := []struct {
+		name    string
+		v       float64
+		want    uint64
+		wantErr bool   // true => errMsg must be non-empty; false => errMsg must be ""
+		wantMsg string // if non-empty, errMsg must contain this substring (pins the branch)
+	}{
+		{name: "fractional is rejected", v: 1.9, want: 0, wantErr: true, wantMsg: "not an integer"},
+		{name: "NaN is rejected", v: math.NaN(), want: 0, wantErr: true, wantMsg: "not a finite number"},
+		{name: "positive infinity is rejected", v: math.Inf(1), want: 0, wantErr: true, wantMsg: "not a finite number"},
+		{name: "negative is rejected", v: -1, want: 0, wantErr: true, wantMsg: "out of safe-integer range"},
+		{name: "2^53 (just above the cap) is rejected", v: float64(1 << 53), want: 0, wantErr: true, wantMsg: "out of safe-integer range"},
+		{name: "zero is accepted", v: 0, want: 0, wantErr: false},
+		{name: "small integer is accepted", v: 5, want: 5, wantErr: false},
+		{name: "maxSafeInteger (2^53 - 1) is accepted", v: float64(1<<53 - 1), want: 1<<53 - 1, wantErr: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, errMsg := SafeIndex(tc.v, "index")
+			if got != tc.want {
+				t.Errorf("got = %d, want %d (errMsg=%q)", got, tc.want, errMsg)
+			}
+			if gotErr := errMsg != ""; gotErr != tc.wantErr {
+				t.Errorf("errMsg = %q, want non-empty=%v", errMsg, tc.wantErr)
+			}
+			if tc.wantMsg != "" && !strings.Contains(errMsg, tc.wantMsg) {
+				t.Errorf("errMsg = %q, want it to contain %q", errMsg, tc.wantMsg)
 			}
 		})
 	}
