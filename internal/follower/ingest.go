@@ -107,11 +107,12 @@ func projectEntryBundle(ctx context.Context, st *store.Store, hubID int64, bundl
 	recs := make([]store.ProjectionRecord, len(projections))
 	for i, p := range projections {
 		recs[i] = store.ProjectionRecord{
-			HubID:        hubID,
-			Seq:          p.Seq,
-			IsccID:       p.IsccID,
-			NoteSchema:   p.NoteSchema,
-			RecordSHA256: p.RecordSHA256,
+			HubID:         hubID,
+			Seq:           p.Seq,
+			IsccID:        p.IsccID,
+			NoteSchema:    p.NoteSchema,
+			NoteTimestamp: p.Timestamp,
+			RecordSHA256:  p.RecordSHA256,
 		}
 	}
 	if err := st.RecordProjections(ctx, recs); err != nil {

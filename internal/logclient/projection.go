@@ -1,6 +1,6 @@
 // This file is the pure projection fold: it decodes one tlog-tiles entry bundle
-// into per-leaf projection records {Seq, IsccID, NoteSchema, RecordSHA256} for the
-// schema-agnostic iscc_index (ADR-0008). Each entry is the JCS canonicalization of
+// into per-leaf projection records {Seq, IsccID, NoteSchema, Timestamp,
+// RecordSHA256} for the schema-agnostic iscc_index (ADR-0008). Each entry is the JCS canonicalization of
 // the canonical log-entry envelope {$schema, iscc_id, note}; this fold extracts the
 // committed iscc_id and the RAW inner note.$schema discriminator (declaration vs
 // deletion vs any future/unknown note type) and the record-content SHA-256, without
@@ -31,26 +31,33 @@ import (
 // table (ADR-0008). Seq is the leaf's absolute index in the tree; IsccID is the
 // raw ISCC:-prefixed iscc_id string from the envelope; NoteSchema is the verbatim
 // inner note.$schema discriminator (never interpreted, never validated against a
-// known list); RecordSHA256 is the SHA-256 of the canonical record bytes — the
-// record-content hash for fsck/debug cross-reference, NOT the RFC-6962 leaf hash
-// (no 0x00 prefix).
+// known list); Timestamp is the verbatim optional inner note.timestamp RFC-3339
+// string (the record's own creation/signing time, "" when absent — read as a raw
+// string, never parsed, per ADR-0008); RecordSHA256 is the SHA-256 of the canonical
+// record bytes — the record-content hash for fsck/debug cross-reference, NOT the
+// RFC-6962 leaf hash (no 0x00 prefix).
 type Projection struct {
 	Seq          uint64
 	IsccID       string
 	NoteSchema   string
+	Timestamp    string
 	RecordSHA256 [32]byte
 }
 
 // recordEnvelope is the minimal view of the canonical log-entry envelope this fold
 // reads (iscc-log.md §5.1): the top-level committed iscc_id and the inner
-// note.$schema discriminator. The envelope's own top-level $schema (the log-entry
-// schema) is deliberately ignored — the projection keys on the INNER note schema
-// (ADR-0008 Declaration vs Deletion). Unknown members are dropped by the standard
-// unmarshal.
+// note.$schema discriminator plus the optional inner note.timestamp. The envelope's
+// own top-level $schema (the log-entry schema) is deliberately ignored — the
+// projection keys on the INNER note schema (ADR-0008 Declaration vs Deletion). The
+// inner note.timestamp is the record's own RFC-3339 creation/signing time (optional
+// for both declarations and deletions, schema.py IsccNote/IsccNoteDelete.timestamp);
+// it is read verbatim as a string ("" when absent), never parsed. Unknown members
+// are dropped by the standard unmarshal.
 type recordEnvelope struct {
 	IsccID string `json:"iscc_id"`
 	Note   struct {
-		Schema string `json:"$schema"`
+		Schema    string `json:"$schema"`
+		Timestamp string `json:"timestamp"`
 	} `json:"note"`
 }
 
@@ -79,6 +86,7 @@ func BundleProjections(bundle []byte, baseSeq uint64) ([]Projection, error) {
 			Seq:          seq,
 			IsccID:       env.IsccID,
 			NoteSchema:   env.Note.Schema,
+			Timestamp:    env.Note.Timestamp,
 			RecordSHA256: sha256.Sum256(e),
 		})
 	}

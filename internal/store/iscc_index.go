@@ -34,14 +34,18 @@ import (
 // 1:1 to the columns: HubID is the owning hub; Seq is the leaf's absolute index (the
 // PRIMARY KEY); IsccID is the raw ISCC:-prefixed iscc_id string (stored into both the
 // iscc_id BLOB and iscc_id_str TEXT columns); NoteSchema is the verbatim inner
-// note.$schema discriminator (never validated); RecordSHA256 is the record-content
-// hash. The follower copies logclient.Projection into this struct at the call site.
+// note.$schema discriminator (never validated); NoteTimestamp is the verbatim optional
+// inner note.timestamp RFC-3339 string (the record's own creation/signing time,
+// stored as nullable TEXT — "" → SQL NULL, never parsed, ADR-0008); RecordSHA256 is
+// the record-content hash. The follower copies logclient.Projection into this struct
+// at the call site.
 type ProjectionRecord struct {
-	HubID        int64
-	Seq          uint64
-	IsccID       string
-	NoteSchema   string
-	RecordSHA256 [32]byte
+	HubID         int64
+	Seq           uint64
+	IsccID        string
+	NoteSchema    string
+	NoteTimestamp string
+	RecordSHA256  [32]byte
 }
 
 // RecordProjections upserts a batch of projection records into iscc_index, one row
@@ -50,19 +54,22 @@ type ProjectionRecord struct {
 // UPDATE (the same row count, the latest values win), mirroring RecordTile's
 // composite-PK upsert. iscc_id is bound as both UTF-8 bytes (the BLOB) and the raw
 // string (the TEXT column); an empty IsccID writes an empty BLOB + empty string, not
-// NULL. An empty slice is a no-op returning nil. Single-writer discipline holds
-// (ADR-0005/0007): plain ExecContext per row on the capped pool, no explicit
-// transaction (matching RecordTile).
+// NULL. note_timestamp is bound via nullStringOrNil so an absent timestamp ("") is a
+// true SQL NULL distinct from a present empty string (mirroring the key-cache
+// nullable-TEXT idiom). An empty slice is a no-op returning nil. Single-writer
+// discipline holds (ADR-0005/0007): plain ExecContext per row on the capped pool, no
+// explicit transaction (matching RecordTile).
 func (s *Store) RecordProjections(ctx context.Context, recs []ProjectionRecord) error {
 	for _, r := range recs {
 		_, err := s.db.ExecContext(ctx,
-			"INSERT INTO iscc_index (hub_id, seq, iscc_id, iscc_id_str, note_schema, record_sha256) "+
-				"VALUES (?, ?, ?, ?, ?, ?) "+
+			"INSERT INTO iscc_index (hub_id, seq, iscc_id, iscc_id_str, note_schema, note_timestamp, record_sha256) "+
+				"VALUES (?, ?, ?, ?, ?, ?, ?) "+
 				"ON CONFLICT(seq) DO UPDATE SET "+
 				"hub_id = excluded.hub_id, iscc_id = excluded.iscc_id, "+
 				"iscc_id_str = excluded.iscc_id_str, note_schema = excluded.note_schema, "+
-				"record_sha256 = excluded.record_sha256",
-			r.HubID, int64(r.Seq), []byte(r.IsccID), r.IsccID, r.NoteSchema, r.RecordSHA256[:],
+				"note_timestamp = excluded.note_timestamp, record_sha256 = excluded.record_sha256",
+			r.HubID, int64(r.Seq), []byte(r.IsccID), r.IsccID, r.NoteSchema,
+			nullStringOrNil(r.NoteTimestamp), r.RecordSHA256[:],
 		)
 		if err != nil {
 			return fmt.Errorf("store.RecordProjections: seq %d: %w", r.Seq, err)
@@ -75,12 +82,15 @@ func (s *Store) RecordProjections(ctx context.Context, recs []ProjectionRecord) 
 // plain value the HTML record-list page renders. Seq is the leaf's absolute index;
 // IsccID is the verbatim ISCC:-prefixed string (read from iscc_id_str, the empty
 // string for a NULL/empty column); NoteSchema is the verbatim inner note.$schema
-// discriminator. Both strings are listed verbatim and never interpreted (ADR-0008):
-// the record list decodes nothing about the id or the schema.
+// discriminator; NoteTimestamp is the verbatim optional inner note.timestamp RFC-3339
+// string (read from note_timestamp, "" for a NULL/empty column). All strings are
+// listed verbatim and never interpreted (ADR-0008): the record list decodes nothing
+// about the id, the schema, or the time.
 type RecordRow struct {
-	Seq        uint64
-	IsccID     string
-	NoteSchema string
+	Seq           uint64
+	IsccID        string
+	NoteSchema    string
+	NoteTimestamp string
 }
 
 // ListRecords reads a newest-first (ORDER BY seq DESC) window of a hub's indexed
@@ -103,12 +113,13 @@ type RecordRow struct {
 // ceiling) from an explicit from cursor (start at the inclusive upper-bound seq from
 // and walk down) — seq 0 is a valid cursor, so from is NOT overloaded as the
 // start-at-newest sentinel. n bounds the page size and must be > 0 (the handler clamps
-// it before calling). iscc_id_str / note_schema are read through sql.NullString so a
-// NULL column degrades to "" rather than an error, and seq is scanned as int64 then
-// uint64(seq) (symmetric with RecordProjections' int64(r.Seq) write). A hub with no
-// indexed records returns an empty slice, total 0, and a nil error (an empty index is
-// not an error — the empty-log case the record list must render). The id and schema
-// are listed verbatim and never interpreted (ADR-0008).
+// it before calling). iscc_id_str / note_schema / note_timestamp are read through
+// sql.NullString so a NULL column degrades to "" rather than an error, and seq is
+// scanned as int64 then uint64(seq) (symmetric with RecordProjections' int64(r.Seq)
+// write). A hub with no indexed records returns an empty slice, total 0, and a nil
+// error (an empty index is not an error — the empty-log case the record list must
+// render). The id, schema, and timestamp are listed verbatim and never interpreted
+// (ADR-0008).
 func (s *Store) ListRecords(ctx context.Context, hubID int64, last uint64, hasFrom bool, from uint64, n int) ([]RecordRow, int, error) {
 	var total int
 	if err := s.db.QueryRowContext(ctx,
@@ -117,7 +128,7 @@ func (s *Store) ListRecords(ctx context.Context, hubID int64, last uint64, hasFr
 		return nil, 0, fmt.Errorf("store.ListRecords: count hub %d: %w", hubID, err)
 	}
 
-	query := "SELECT seq, iscc_id_str, note_schema FROM iscc_index WHERE hub_id = ? AND seq < ? "
+	query := "SELECT seq, iscc_id_str, note_schema, note_timestamp FROM iscc_index WHERE hub_id = ? AND seq < ? "
 	args := []any{hubID, int64(last)}
 	if hasFrom {
 		query += "AND seq <= ? "
@@ -135,17 +146,19 @@ func (s *Store) ListRecords(ctx context.Context, hubID int64, last uint64, hasFr
 	var records []RecordRow
 	for rows.Next() {
 		var (
-			seq        int64
-			isccID     sql.NullString
-			noteSchema sql.NullString
+			seq           int64
+			isccID        sql.NullString
+			noteSchema    sql.NullString
+			noteTimestamp sql.NullString
 		)
-		if err := rows.Scan(&seq, &isccID, &noteSchema); err != nil {
+		if err := rows.Scan(&seq, &isccID, &noteSchema, &noteTimestamp); err != nil {
 			return nil, 0, fmt.Errorf("store.ListRecords: scan: %w", err)
 		}
 		records = append(records, RecordRow{
-			Seq:        uint64(seq),
-			IsccID:     isccID.String,
-			NoteSchema: noteSchema.String,
+			Seq:           uint64(seq),
+			IsccID:        isccID.String,
+			NoteSchema:    noteSchema.String,
+			NoteTimestamp: noteTimestamp.String,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -155,29 +168,30 @@ func (s *Store) ListRecords(ctx context.Context, hubID int64, last uint64, hasFr
 }
 
 // RecordAt is the single-row reader for the single-record page: it returns the one
-// projection row (the verbatim iscc_id_str and note.$schema) a hub indexed at the
-// absolute seq, with found reporting whether a row exists. It is a leaf read scoped
-// to one (hub, seq) via QueryRowContext on the PRIMARY KEY, returning a plain
-// RecordRow (store stays a leaf).
+// projection row (the verbatim iscc_id_str, note.$schema, and note.timestamp) a hub
+// indexed at the absolute seq, with found reporting whether a row exists. It is a leaf
+// read scoped to one (hub, seq) via QueryRowContext on the PRIMARY KEY, returning a
+// plain RecordRow (store stays a leaf).
 //
 // An absent row is the no-row case, not an error: sql.ErrNoRows maps to (RecordRow{},
 // found=false, nil err) so the caller treats "no projection indexed for this seq" as
 // a plain miss (the leaf's mirrored bytes are the source of truth; the projection is
-// only a derived view, ADR-0008). iscc_id_str / note_schema are read through
-// sql.NullString so a NULL column degrades to "" rather than an error, and seq is
-// scanned as int64 then uint64(seq) (symmetric with RecordProjections' int64(r.Seq)
-// write). The id and schema are read verbatim and never interpreted. Only a real
-// query/scan fault returns a non-nil error.
+// only a derived view, ADR-0008). iscc_id_str / note_schema / note_timestamp are read
+// through sql.NullString so a NULL column degrades to "" rather than an error, and seq
+// is scanned as int64 then uint64(seq) (symmetric with RecordProjections' int64(r.Seq)
+// write). The id, schema, and timestamp are read verbatim and never interpreted. Only
+// a real query/scan fault returns a non-nil error.
 func (s *Store) RecordAt(ctx context.Context, hubID int64, seq uint64) (RecordRow, bool, error) {
 	var (
-		rowSeq     int64
-		isccID     sql.NullString
-		noteSchema sql.NullString
+		rowSeq        int64
+		isccID        sql.NullString
+		noteSchema    sql.NullString
+		noteTimestamp sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx,
-		"SELECT seq, iscc_id_str, note_schema FROM iscc_index WHERE hub_id = ? AND seq = ?",
+		"SELECT seq, iscc_id_str, note_schema, note_timestamp FROM iscc_index WHERE hub_id = ? AND seq = ?",
 		hubID, int64(seq),
-	).Scan(&rowSeq, &isccID, &noteSchema)
+	).Scan(&rowSeq, &isccID, &noteSchema, &noteTimestamp)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RecordRow{}, false, nil
 	}
@@ -185,9 +199,10 @@ func (s *Store) RecordAt(ctx context.Context, hubID int64, seq uint64) (RecordRo
 		return RecordRow{}, false, fmt.Errorf("store.RecordAt: hub %d seq %d: %w", hubID, seq, err)
 	}
 	return RecordRow{
-		Seq:        uint64(rowSeq),
-		IsccID:     isccID.String,
-		NoteSchema: noteSchema.String,
+		Seq:           uint64(rowSeq),
+		IsccID:        isccID.String,
+		NoteSchema:    noteSchema.String,
+		NoteTimestamp: noteTimestamp.String,
 	}, true, nil
 }
 

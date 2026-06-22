@@ -7,10 +7,12 @@
 -- testnet.db) per ADR-0007, so the file IS the network namespace.
 --
 -- Time convention: all timestamps are stored as INTEGER unix-seconds (the
--- simplest form for `observed_at`-style ordering and comparisons). Booleans are
--- INTEGER 0/1. Tree roots, raw record/checkpoint bytes, ISCC-IDs, and OTS proof
--- bytes are BLOB. The column lists match the build plan's "SQLite schema (core
--- tables)" block exactly.
+-- simplest form for `observed_at`-style ordering and comparisons). The one
+-- exception is iscc_index.note_timestamp — the record's own RFC-3339 string
+-- (note.timestamp), stored VERBATIM as TEXT and never parsed (ADR-0008: index the
+-- raw value, never interpret). Booleans are INTEGER 0/1. Tree roots, raw
+-- record/checkpoint bytes, ISCC-IDs, and OTS proof bytes are BLOB. The column lists
+-- match the build plan's "SQLite schema (core tables)" block exactly.
 
 -- hubs — the followed logs and the monitor's verdict on each (status glossary in
 -- CLAUDE.md). monitored_since_{size,time} record the coverage start (ADR-0001).
@@ -99,14 +101,18 @@ CREATE TABLE IF NOT EXISTS entry_bundles (
 -- iscc_index — the schema-agnostic record index (ADR-0008). seq is the leaf
 -- index PK; iscc_id → seq is ONE-TO-MANY (declarations, deletions, future note
 -- types share an id). note_schema stores the raw note.$schema string so unknown
--- types are indexed and proof-able without ever being interpreted.
+-- types are indexed and proof-able without ever being interpreted. note_timestamp
+-- stores the raw, optional note.timestamp RFC-3339 string verbatim (NULL when the
+-- record carries none) — the one RFC-3339-TEXT exception to the unix-seconds time
+-- convention above, never parsed.
 CREATE TABLE IF NOT EXISTS iscc_index (
-    hub_id        INTEGER NOT NULL REFERENCES hubs(hub_id),
-    seq           INTEGER PRIMARY KEY,
-    iscc_id       BLOB,
-    iscc_id_str   TEXT,
-    note_schema   TEXT,
-    record_sha256 BLOB
+    hub_id         INTEGER NOT NULL REFERENCES hubs(hub_id),
+    seq            INTEGER PRIMARY KEY,
+    iscc_id        BLOB,
+    iscc_id_str    TEXT,
+    note_schema    TEXT,
+    note_timestamp TEXT,
+    record_sha256  BLOB
 );
 
 -- Lookups go iscc_id → []seq, so index the (non-unique) iscc_id column.

@@ -11,6 +11,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"reflect"
 	"testing"
 )
@@ -30,6 +31,22 @@ func readProjectionRow(t *testing.T, s *Store, seq uint64) (isccIDStr, noteSchem
 	return isccIDStr, noteSchema, sha
 }
 
+// readNoteTimestampNull reads the raw note_timestamp column for one seq as a
+// sql.NullString, so a test can prove an absent timestamp is a true SQL NULL (Valid
+// == false) rather than a present empty string — the nullStringOrNil distinction the
+// writer makes.
+func readNoteTimestampNull(t *testing.T, s *Store, seq uint64) sql.NullString {
+	t.Helper()
+	var ts sql.NullString
+	err := s.db.QueryRow(
+		"SELECT note_timestamp FROM iscc_index WHERE seq = ?", int64(seq),
+	).Scan(&ts)
+	if err != nil {
+		t.Fatalf("read note_timestamp seq %d: %v", seq, err)
+	}
+	return ts
+}
+
 // TestRecordProjectionsRoundTrip confirms a stored projection reads its columns back
 // verbatim, including the iscc_id BLOB driving SeqsForISCCID and the iscc_id_str /
 // note_schema / record_sha256 columns.
@@ -39,11 +56,12 @@ func TestRecordProjectionsRoundTrip(t *testing.T) {
 	hub := newHub(t, s)
 
 	rec := ProjectionRecord{
-		HubID:        hub,
-		Seq:          256,
-		IsccID:       "ISCC:MAAGZTFQTTVIZ3IS",
-		NoteSchema:   "iscc-note-0.8.0.json",
-		RecordSHA256: [32]byte{1, 2, 3, 4},
+		HubID:         hub,
+		Seq:           256,
+		IsccID:        "ISCC:MAAGZTFQTTVIZ3IS",
+		NoteSchema:    "iscc-note-0.8.0.json",
+		NoteTimestamp: "2026-06-21T12:34:56Z",
+		RecordSHA256:  [32]byte{1, 2, 3, 4},
 	}
 	if err := s.RecordProjections(ctx, []ProjectionRecord{rec}); err != nil {
 		t.Fatalf("RecordProjections: %v", err)
@@ -60,12 +78,64 @@ func TestRecordProjectionsRoundTrip(t *testing.T) {
 		t.Errorf("record_sha256 = %x, want %x", gotSha, rec.RecordSHA256[:])
 	}
 
+	// The present note.timestamp round-trips verbatim, both as a true NOT-NULL column
+	// and through the RecordAt reader.
+	if ts := readNoteTimestampNull(t, s, 256); !ts.Valid || ts.String != rec.NoteTimestamp {
+		t.Errorf("note_timestamp column = %#v, want non-NULL %q", ts, rec.NoteTimestamp)
+	}
+	row, found, err := s.RecordAt(ctx, hub, 256)
+	if err != nil || !found {
+		t.Fatalf("RecordAt(256) found = %v, err = %v, want true / nil", found, err)
+	}
+	if row.NoteTimestamp != rec.NoteTimestamp {
+		t.Errorf("RecordAt NoteTimestamp = %q, want %q", row.NoteTimestamp, rec.NoteTimestamp)
+	}
+
 	seqs, err := s.SeqsForISCCID(ctx, hub, rec.IsccID)
 	if err != nil {
 		t.Fatalf("SeqsForISCCID: %v", err)
 	}
 	if !reflect.DeepEqual(seqs, []uint64{256}) {
 		t.Errorf("SeqsForISCCID = %v, want [256]", seqs)
+	}
+}
+
+// TestRecordProjectionsNoTimestamp confirms an absent note.timestamp ("") is written
+// as a true SQL NULL (distinct from a present empty string, via nullStringOrNil) and
+// reads back as "" through both RecordAt and ListRecords (NULL → ""). The optional
+// note.timestamp is tolerated end-to-end (ADR-0008).
+func TestRecordProjectionsNoTimestamp(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hub := newHub(t, s)
+
+	rec := ProjectionRecord{
+		HubID: hub, Seq: 3, IsccID: "ISCC:MAAGZTFQTTVIZ3IS",
+		NoteSchema: "iscc-note-0.8.0.json", NoteTimestamp: "",
+	}
+	if err := s.RecordProjections(ctx, []ProjectionRecord{rec}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+
+	// The absent timestamp is a true SQL NULL, not a present empty string.
+	if ts := readNoteTimestampNull(t, s, 3); ts.Valid {
+		t.Errorf("note_timestamp column = %#v, want NULL for an absent timestamp", ts)
+	}
+
+	// Both readers degrade the NULL column to "" rather than an error.
+	row, found, err := s.RecordAt(ctx, hub, 3)
+	if err != nil || !found {
+		t.Fatalf("RecordAt(3) found = %v, err = %v, want true / nil", found, err)
+	}
+	if row.NoteTimestamp != "" {
+		t.Errorf("RecordAt NoteTimestamp = %q, want \"\" (NULL → \"\")", row.NoteTimestamp)
+	}
+	rows, _, err := s.ListRecords(ctx, hub, 4, false, 0, 10)
+	if err != nil {
+		t.Fatalf("ListRecords: %v", err)
+	}
+	if len(rows) != 1 || rows[0].NoteTimestamp != "" {
+		t.Errorf("ListRecords NoteTimestamp = %+v, want one row with \"\" (NULL → \"\")", rows)
 	}
 }
 
@@ -161,11 +231,13 @@ func TestRecordProjectionsIdempotent(t *testing.T) {
 
 	first := ProjectionRecord{
 		HubID: hub, Seq: 256, IsccID: "ISCC:MAAGZTFQTTVIZ3IS",
-		NoteSchema: "iscc-note-0.8.0.json", RecordSHA256: [32]byte{0x11},
+		NoteSchema: "iscc-note-0.8.0.json", NoteTimestamp: "2026-06-21T00:00:00Z",
+		RecordSHA256: [32]byte{0x11},
 	}
 	second := ProjectionRecord{
 		HubID: hub, Seq: 256, IsccID: "ISCC:MAAGZTFQTTVIZ3IS",
-		NoteSchema: "iscc-note-delete-0.8.0.json", RecordSHA256: [32]byte{0x22},
+		NoteSchema: "iscc-note-delete-0.8.0.json", NoteTimestamp: "2026-06-22T09:09:09Z",
+		RecordSHA256: [32]byte{0x22},
 	}
 	if err := s.RecordProjections(ctx, []ProjectionRecord{first}); err != nil {
 		t.Fatalf("first RecordProjections: %v", err)
@@ -188,6 +260,11 @@ func TestRecordProjectionsIdempotent(t *testing.T) {
 	}
 	if !bytes.Equal(gotSha, second.RecordSHA256[:]) {
 		t.Errorf("record_sha256 after re-ingest = %x, want %x", gotSha, second.RecordSHA256[:])
+	}
+	// note_timestamp must also win on the upsert path: dropping it from the
+	// ON CONFLICT DO UPDATE SET leaves the stale first value here.
+	if ts := readNoteTimestampNull(t, s, 256); ts.String != second.NoteTimestamp {
+		t.Errorf("note_timestamp after re-ingest = %q, want %q (second write wins)", ts.String, second.NoteTimestamp)
 	}
 }
 

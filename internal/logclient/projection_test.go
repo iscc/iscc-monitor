@@ -39,11 +39,15 @@ func TestBundleProjections(t *testing.T) {
 	// JCS-style envelopes: top-level {$schema, iscc_id, note}. The envelope's own
 	// $schema is the log-entry schema; note.$schema is the discriminator the
 	// projection must key on. Record 0 is a declaration, record 1 a deletion, so the
-	// decoder must read the INNER schema to tell them apart.
+	// decoder must read the INNER schema to tell them apart. The declaration carries
+	// an inner note.timestamp (its own creation time) and the deletion OMITS it, so
+	// the fold must read the per-record value and yield "" for the absent (optional)
+	// case (ADR-0008: read verbatim, never parse, tolerate absence).
 	declID := "ISCC:MAIGIIFJRDGEQQAA"
 	delID := "ISCC:KUABKF53JEQIDQQ7YU7LB4VHCHGWU"
+	const declTime = "2026-06-21T12:34:56Z"
 	declRecord := []byte(`{"$schema":"log-entry","iscc_id":"` + declID +
-		`","note":{"$schema":"` + declSchema + `"}}`)
+		`","note":{"$schema":"` + declSchema + `","timestamp":"` + declTime + `"}}`)
 	delRecord := []byte(`{"$schema":"log-entry","iscc_id":"` + delID +
 		`","note":{"$schema":"` + delSchema + `"}}`)
 	records := [][]byte{declRecord, delRecord}
@@ -66,6 +70,8 @@ func TestBundleProjections(t *testing.T) {
 
 	wantIDs := []string{declID, delID}
 	wantSchemas := []string{declSchema, delSchema}
+	// The declaration's own timestamp is read verbatim; the deletion omits it → "".
+	wantTimes := []string{declTime, ""}
 	for i := range records {
 		p := got[i]
 		if p.Seq != baseSeq+uint64(i) {
@@ -77,6 +83,10 @@ func TestBundleProjections(t *testing.T) {
 		if p.NoteSchema != wantSchemas[i] {
 			t.Errorf("projection[%d].NoteSchema = %q, want %q (verbatim inner note schema)",
 				i, p.NoteSchema, wantSchemas[i])
+		}
+		if p.Timestamp != wantTimes[i] {
+			t.Errorf("projection[%d].Timestamp = %q, want %q (verbatim inner note.timestamp)",
+				i, p.Timestamp, wantTimes[i])
 		}
 		want := sha256.Sum256(records[i])
 		if p.RecordSHA256 != want {

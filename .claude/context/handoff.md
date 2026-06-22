@@ -1,68 +1,69 @@
-## 2026-06-22 — Review of: Normalize Surface-C `readTarget` to return the parsed `u.href`, not the raw monitor string
+## 2026-06-22 — Carry the per-record `note.timestamp` through the iscc_index projection (store layer of the §6 `· at`)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Threaded the optional per-record `note.timestamp` (verbatim RFC-3339 string, both note types)
+end-to-end through the schema-agnostic `iscc_index` projection — the pure fold, the schema column, the
+store write/read structs, and the follower's copy site — so the value is persisted per leaf (present →
+verbatim TEXT, absent → SQL NULL → ""). The certificate §6 `· at` render is left as the next sub-step
+(explicitly out of scope), keeping this a clean ≤3-production-file, store-tested skeleton.
 
-**Summary:** The advance changes one production line — `readTarget` (`internal/verifier/verifier.html:556`)
-now returns the WHATWG-normalized `{ monitor: u.href, id: id }` instead of the raw `{ monitor: monitor, … }`
-query string — plus an evergreen comment update and one mutation-provable markup test. An opaque-scheme form
-(`https:example.com`) now flows downstream as `https://example.com/`, closing the only pure-code-closable
-`normal`. Scope is exemplary: 2 files (1 production + 1 test), nothing from `## Not In Scope` touched, no
-trust-root / dependency / SSR-layout change; reject branches and the loader fetch flow are byte-unchanged.
+**Files changed:**
+- `internal/logclient/projection.go`: added `Timestamp string` to `Projection`, `Timestamp` (json
+  `timestamp`) to `recordEnvelope.Note`, and `Timestamp: env.Note.Timestamp` in the fold; docstrings
+  updated. File-level imports UNCHANGED (`crypto/sha256`+`encoding/json`+`fmt`+`tessera/api`, no `time`)
+  — WASM purity preserved.
+- `internal/store/iscc_index.go`: added `NoteTimestamp string` to `ProjectionRecord` and `RecordRow`;
+  bound it via `nullStringOrNil` in `RecordProjections`' INSERT col-list AND `DO UPDATE SET`; read it
+  through `sql.NullString` (NULL→"") in `RecordAt` and `ListRecords`; docstrings/column comments updated.
+- `internal/follower/ingest.go`: copied `NoteTimestamp: p.Timestamp` at the `store.ProjectionRecord{…}`
+  literal in `projectEntryBundle`.
+- `internal/store/schema.sql` (data file, not in the 3-file budget): added nullable `note_timestamp TEXT`
+  to `iscc_index` (after `note_schema`); time-convention header now names this column as the one
+  verbatim-RFC-3339-TEXT exception to the unix-seconds convention (ADR-0008).
+- `internal/logclient/projection_test.go` (test): `TestBundleProjections` declaration now carries
+  `note.timestamp`, deletion omits it; asserts the fold reads the inner per-record value (present;
+  absent→"").
+- `internal/store/iscc_index_test.go` (test): `TestRecordProjectionsRoundTrip` round-trips a present
+  timestamp (true NOT-NULL column + `RecordAt`); new `TestRecordProjectionsNoTimestamp` proves absent→
+  SQL NULL→"" via `RecordAt`+`ListRecords`; `TestRecordProjectionsIdempotent` now pins the upsert
+  `DO UPDATE` of `note_timestamp` (second write wins).
 
-**Verification:**
-- [x] `mise run check` — green (build + vet + `go test ./...`, all 28 packages ok).
-- [x] `gofmt -l .` — empty (no formatting failure).
-- [x] `go test -count=1 -run TestVerifier ./internal/verifier` — PASS (whole suite, incl. the unchanged
-      `TestVerifierNoServerSideTarget`, `TestVerifierNoExternalCDN`, `TestVerifierStaticBodyAlwaysCarriesLoader`).
-- [x] Mutation (independent) — reverting the production return to `{ monitor: monitor, id: id }` makes
-      `TestVerifierReadTargetReturnsNormalizedURL` FAIL; restored byte-identical (`git diff` over the
-      template clean), the test re-passes. The assertion is non-vacuous on both positive and negative checks.
-- [x] No-CDN ban green and genuinely safe — `TestVerifierNoExternalCDN` passes; I probed the *rendered*
-      body via an in-package throwaway test: it contains NEITHER `https://` NOR the new comment text
-      (`html/template` strips the `//`-prefixed JS line comment at render, so the `https://example.com/`
-      inside the docstring never reaches the served HTML). No static `http(s)://` literal was introduced
-      (the only diff match is inside the stripped comment).
-- [x] Oracle/conformance gate — N/A. `git diff --name-only HEAD~1..HEAD` over the trust-root globs
-      (`internal/proof/`, `logclient/verify`, `didweb`, fork/shrink/equivocation/consistency) → empty.
-      This is a JS-source normalization fix on a pure static HTML render (markup-golden by design; no
-      go-test JS-execution gate exists).
-- [x] Gate-circumvention scan over the unpushed range (`@{upstream}..HEAD`, 3 commits) — no `//nolint`,
-      `t.Skip`, build-tag exclusion, swallowed error, or deleted assertion in added lines.
+**Verification:** `mise run check` → green (build + vet + `go test ./...`, all 28 packages ok),
+`gofmt -l .` empty.
+- `go test -count=1 -run TestBundleProjections ./internal/logclient` → PASS (asserts the fold reads
+  `note.timestamp` per record; no-timestamp record yields "").
+- `go test -count=1 -run 'TestRecordAt|TestRecordProjections|TestListRecords' ./internal/store` → PASS
+  (round-trips `NoteTimestamp` present and absent→"" through write then read).
+- `GOOS=js GOARCH=wasm go build ./internal/logclient` → exit 0 (projection.go stays WASM-pure, no `time`;
+  file-level import set byte-unchanged).
+- Mutation (self-checked, both reverted to byte-clean): (1) dropping `note_timestamp` from
+  `RecordProjections`' `DO UPDATE SET` → `TestRecordProjectionsIdempotent` FAILS (stale first value);
+  (2) `Projection.Timestamp = "CONSTANT"` instead of `env.Note.Timestamp` → `TestBundleProjections`
+  FAILS on both the present and the absent (→"") leaf.
+- Oracle/conformance gate N/A — confirmed by name-only diff over the trust-root globs (`internal/proof/`,
+  `logclient/verify`, `didweb`, fork/shrink/equivocation/consistency, `derive_vkey`) → empty. This slice
+  is a pure JSON-fold field + plain nullable-TEXT round-trip; it touches no signature/RFC-6962/Merkle/
+  did:web/proof/fsck path. `projection.go` lives under `internal/logclient` but is the schema-agnostic
+  fold, not a verify/Merkle path.
 
-**Issues found:** (none new). Resolved + deleted the `normal` "Surface-C `readTarget` accepts opaque-scheme
-monitor forms" after independently mutation-verifying the close: the rendered body now carries
-`return { monitor: u.href, id: id };` (not the raw string), and reverting it FAILs the guarding test.
-
-**Codex second opinion:** Clean — "The change is narrowly scoped to returning the parsed URL from readTarget
-and adds a regression assertion. I did not identify any introduced correctness, security, performance, or
-maintainability issues." Notably, Codex's transcript shows it probed the URL-userinfo edge cases
-(`https:example.com%40evil.com`) and still cleared the change. I independently reproduced those in node:
-the userinfo-confusion case (`https://example.com@evil.com/x` → `u.host="evil.com"`) is INHERENT to
-`new URL()` and IDENTICAL under the old raw-string path — not introduced by `u.href`, and harmless (wrong
-host → honest `error` / a bundle that fails WASM re-verification, since `readTarget` is a usability guard,
-not a trust boundary). No findings to triage.
-
-**Visual check:** n/a — no SSR surface changed. The edit is a JS-source return value computed at runtime
-from `location.search`, never displayed in the no-JS body; the named-region/affordance markup is
-byte-unchanged (the unchanged `TestVerifierNoTargetBaselineIsHonest` still renders the same baseline).
-
-**Next:** The remaining open `normal`s are no longer pure-code-closable in one package:
-(1) the WASM-verifier **signature half** (no browser did:web checkpoint-signature check) is the
-front-of-queue design-first / STOP-candidate — do a design pass before touching `verifier.html` or the WASM
-core. (2) the certificate §6 per-record `· at` timestamp needs a store schema column on the `iscc_index`
-projection + a follower-ingest write. (3) the `/` Checkpoint/Anchor data columns + config-driven instance
-identity need a store/projection + config change. The WASM "published" half (Pages custom-domain) stays
-human-blocked. Suggest define-next picks the §6 timestamp or the `/` projection (both store-scoped,
-self-contained) over the signature half (which wants a STOP/design pass first).
+**Next:** The certificate §6 RECORD HISTORY render is now unblocked — the explicit FOLLOW-UP. Wire
+`RecordAt`'s new `NoteTimestamp` into a `HistoryRow.At` field in `internal/certificate/handler.go`'s §6
+loop and render `seq N · <at>` in `cert.html`'s `{{.RecordHistory}}` rows, matching the mockup
+(`.dc.html:68`). That step should also pick the format/relativize policy for the verbatim string (deferred
+here per ADR-0008 "store the raw value, never interpret"). The log-browser record-list `Logged` column
+(`internal/proofserve`) is a separate later render that can reuse the same `RecordRow.NoteTimestamp`.
 
 **Notes:**
-- Open count after this close: 0 critical / 4 normal / 10 low. DONE still requires 0 normal.
-- Learnings: `verifier.md` collapsed the opaque-URL `normal` bullet into a `settled:` summary (net change,
-  no growth — file ~92 lines / 14 bullets, within budget) and added the userinfo-confusion note (inherent to
-  `new URL`, not introduced). The index gist row was updated to drop "filed `normal`". Package-local; nothing
-  promoted to the always-loaded index (the rule it serves — "usability guard, not a trust boundary" — is
-  already captured by the indexed "client re-verifies; the monitor is not in the trust path").
-- 4 commits ahead of `origin/develop` after this review commit (update-state + define-next + advance +
-  review). Pushing on PASS. The known `Pages` workflow failure on develop is the human-blocked custom-domain
-  repo-settings step (a documented `normal`), not a code regression.
+- Per the §6 implementation note, the value MUST come from each record's own `note.timestamp` (not the
+  ISCC-ID-embedded `body>>12` time), because a deletion carries the EXISTING declaration's `iscc_id` and
+  thus the SAME id-embedded time as the declaration — only `note.timestamp` distinguishes the two §6 rows
+  the mockup shows. The fold reads it from `recordEnvelope.Note`, which already decodes the inner note.
+- `nullStringOrNil` chosen over plain TEXT binding (the way `iscc_id_str` is bound) so an absent timestamp
+  is a true NULL distinct from a present empty string — matches the key-cache precedent and the
+  `note_schema`/`iscc_id_str` nullable-column reader idiom; pinned by `TestRecordProjectionsNoTimestamp`
+  reading the raw column as `sql.NullString` (Valid==false).
+- No migration / `ALTER TABLE` (no schema-versioning framework here; the column is added to
+  `CREATE TABLE IF NOT EXISTS`, so only fresh DBs get it — consistent with every prior column; dev DBs
+  are ephemeral). Out-of-scope items (§6 render, proofserve `Logged` column, RFC-3339 parsing) all left
+  untouched.
+- No backward-incompatible API change and no design deviation — additive struct fields + a new nullable
+  column; no HUMAN REVIEW needed.
