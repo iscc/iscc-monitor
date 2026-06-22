@@ -112,14 +112,18 @@ marshaling adapter). Durable cross-cutting rules live in the index
   verify with `strings internal/web/verify.wasm | grep -c "<a new message you added>"` (must be 1), not
   just the source build exiting 0.
 - **TRAP — `mise run build:wasm` and a bare `go build` use DIFFERENT Go toolchains, so they emit
-  DIFFERENT artifact bytes (the wasm embeds the toolchain version string).** On this devcontainer the
-  bare-PATH `go` is `go1.26.1` (→ SHA `96b2a40d…`, the committed pin) but `mise` resolves
-  `mise.toml`'s `go = "1.26"` constraint to its installed `go1.26.4` (→ SHA `2c91e61f…`). The two
-  artifacts are behaviorally IDENTICAL (same 6-arg shim + `RecordCommitsID`); only the embedded version
-  stamp differs, so each is independently deterministic — the `2c91e61f…` the prior handoff called a
-  "transient cache artifact" was actually the mise-toolchain output, not nondeterminism. The published
-  pin MUST be reproducible from the DOCUMENTED canonical command (`mise run build:wasm`, per `web.go` +
-  `mise.toml`), so always rebuild + pin via `mise run build:wasm` (NOT a bare `go build`) and verify
-  with `mise run build:wasm && sha256sum internal/web/verify.wasm == WasmVerifyHash`. To make the pin
-  stable across machines, `mise.toml` should pin the EXACT patch (`go = "1.26.4"`), not the minor
-  `1.26` (which floats to whatever patch mise has installed).
+  DIFFERENT artifact bytes (the wasm embeds the toolchain version string).** The two artifacts are
+  behaviorally IDENTICAL (same shim); only the embedded version stamp differs, so each is independently
+  deterministic — a re-pinned hash that differs from a bare build is NOT nondeterminism, it is the other
+  toolchain's output. ALWAYS rebuild + pin via `mise run build:wasm` (NOT a bare `go build` on PATH),
+  because mise is the gate runner and the only canonical source for the artifact bytes. Verify the pin is
+  reproducible-from-command with `mise run build:wasm && git status` showing `verify.wasm` clean (NOT just
+  `mise run check` green — that only checks committed-bytes-vs-const, never reproducibility from the
+  documented command).
+- **settled (`dc657f8`): `mise.toml` pins the EXACT patch `go = "1.26.4"` (not the floating minor
+  `1.26`), and `WasmVerifyHash = 2c91e61f…` is that toolchain's deterministic output.** Reviewer-confirmed
+  reproducible: two consecutive `mise run build:wasm` both emit `2c91e61f…` and leave the tree clean; the
+  artifact embeds `go1.26.4`; `TestWasmVerifyHashPinned` green. Keep the patch pinned to an EXACT version
+  when bumping — a floating minor reintroduces the divergence (whatever patch mise happens to have
+  installed wins, drifting the pin off the documented build). On a Go bump: change `mise.toml` to the new
+  exact patch, `mise run build:wasm`, re-pin `WasmVerifyHash` to the new SHA, in ONE increment.

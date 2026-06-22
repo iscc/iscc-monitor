@@ -1,49 +1,38 @@
-## 2026-06-22 — Pin the mise Go toolchain to 1.26.4 and re-pin WasmVerifyHash so the committed verify.wasm is reproducible from `mise run build:wasm`
+## 2026-06-22 — Review of: Pin the mise Go toolchain to 1.26.4 and re-pin WasmVerifyHash so the committed verify.wasm is reproducible from `mise run build:wasm`
 
-**Done:** Pinned `mise.toml` to the exact patch `go = "1.26.4"` (mise is the gate runner), rebuilt
-`internal/web/verify.wasm` via the documented `mise run build:wasm`, and re-pinned `web.WasmVerifyHash`
-to that toolchain's deterministic output. The published pin, the committed bytes, and the
-documented-command output are now byte-identical (artifact == pin == command), closing the lone open
-critical (the audited-artifact reproducibility contract).
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `mise.toml`: `[tools] go = "1.26"` → `go = "1.26.4"` (exact patch so the documented build is
-  reproducible across machines, not floated to whatever patch mise has installed).
-- `internal/web/web.go`: re-pinned `const WasmVerifyHash` from `96b2a40d…` (bare-go 1.26.1 output) to
-  `2c91e61f20560fa98e0fbd6813746c40687861d4b4b3be604d4216557df0f48e` (mise go 1.26.4 output).
-- `internal/web/verify.wasm`: regenerated via `mise run build:wasm`; embeds `go1.26.4`, SHA-256 ==
-  the new const. Behaviorally identical to the prior artifact (same 6-arg/id-binding shim).
+**Summary:** The advance pinned `mise.toml` to the exact patch `go = "1.26.4"`, rebuilt
+`internal/web/verify.wasm` via the documented `mise run build:wasm`, and re-pinned
+`web.WasmVerifyHash` to that toolchain's deterministic output (`2c91e61f…`). The
+audited-artifact reproducibility contract is now restored — artifact == pin ==
+documented-command output, byte-for-byte across two consecutive rebuilds — closing the lone
+open `critical`. Scope is exactly the three files `next.md` specified (2 non-binary source +
+1 regenerated artifact); nothing from `## Not In Scope` was touched.
 
-**Verification:** `mise run check` → green (all 27 packages build + vet + test). `gofmt -l .` → empty.
-- `mise run build:wasm && sha256sum internal/web/verify.wasm` → `2c91e61f…`; re-running the documented
-  command twice leaves `git status` showing no further drift (the artifact is reproducible from its own
-  command) — **PASS**.
-- That hash string == `web.WasmVerifyHash` — **PASS**.
-- `go test -run TestWasmVerifyHashPinned ./internal/web` → `ok` (committed bytes == committed const) —
-  **PASS**.
-- `strings internal/web/verify.wasm | grep -oE 'go1\.26\.[0-9]+'` → `go1.26.4` (single value) — **PASS**.
-- behavior content: `grep -c "expected 5 or 6 args"` → 1, `"expected 5 args"` → 0,
-  `"decode record envelope"` → 1 — **PASS** (the rebuild preserved the 6-arg/id-binding shim content).
-- `mise exec -- go version` → `go1.26.4` — **PASS**.
+**Verification:**
+- [x] `mise run build:wasm && sha256sum internal/web/verify.wasm` → `2c91e61f20560fa98e0fbd6813746c40687861d4b4b3be604d4216557df0f48e`, byte-equal to the committed artifact — **PASS** (reviewer ran it TWICE; both runs left `git status` showing `verify.wasm` clean → reproducible-from-command, the exact contract the critical broke).
+- [x] That hash string == `web.WasmVerifyHash` (`internal/web/web.go:93`) — **PASS**.
+- [x] `go test -count=1 -run TestWasmVerifyHashPinned ./internal/web` → `ok` (forced fresh, not cached) — **PASS**.
+- [x] `strings internal/web/verify.wasm | grep -oE 'go1\.26\.[0-9]+'` → `go1.26.4` (single value; was `go1.26.1`) — **PASS**.
+- [x] Content markers survived the rebuild: `expected 5 or 6 args` → 1, `expected 5 args` → 0, `decode record envelope` → 1 — **PASS** (6-arg/id-binding shim intact).
+- [x] `mise exec -- go version` → `go1.26.4`; bare `go version` → `go1.26.1` (confirms mise.toml now pins the exact patch and is the canonical toolchain) — **PASS**.
+- [x] `mise run check` → green, all 27 packages build + vet + test — **PASS**.
+- [x] `gofmt -l .` → empty — **PASS**.
+- [x] Conformance/oracle gate — N/A: the diff touches no signature/Merkle/proof code; only the build-toolchain pin + the byte-identical-behavior wasm artifact. Confirmed `internal/proof/verify` stays import-pure (no `net`/`net/http`/`database/sql`) and `GOOS=js GOARCH=wasm go build ./internal/proof/verify ./cmd/wasm/verifyadapter ./cmd/wasm` succeeds. CI `notecheck` oracle config unchanged (advance touched 0 files under `.github/`; 8 `notecheck` refs still present in `ci.yml`).
+- [x] Gate-circumvention scan over all 11 unpushed commits — no `//nolint`, `t.Skip`, build-tag exclusions, or deleted assertions in the diff.
 
-**Next:** With this critical closed, the front-of-queue WASM-verifier milestone resumes: the deferred
-**signature half** of the verifier trust gap (the did:web-key + checkpoint-note signature check — only
-inclusion + id-binding run today; a cross-origin `verified` still trusts the monitor for the signature).
-Do NOT loosen `verifier.html`'s "hub-signed root" success copy until that lands. The Pages
-repo-Settings enablement (custom domain + "GitHub Actions" source) and the dossier WASM caller are the
-other milestone sub-steps (state.md "Next Milestone" 2 & 3).
+**Issues found:** (none) — the increment met its goal cleanly; the resolved reproducibility `critical` was deleted from `issues.md` after reviewer-verifying the fix.
+
+**Codex second opinion:** Clean — "The committed WASM hash matches the regenerated artifact, `mise run build:wasm` leaves the tree clean, and `mise run check` passes. I found no introduced correctness issues in the patch." Independently corroborates the reviewer's reproducibility + gate verification; no findings to triage.
+
+**Visual check:** n/a — no SSR surface changed. The diff is a build-toolchain pin + a behaviorally-identical regenerated wasm artifact; no template, render path, or chrome touched.
+
+**Next:** The lone `critical` is closed and pushable. Resume the front-of-queue **WASM-verifier upgrade** milestone (state.md "Next Milestone" 2 & 3): the deferred **signature half** of the verifier trust gap (browser did:web-key resolution + checkpoint-note signature verify — only inclusion + id-binding run today; a cross-origin `verified` still trusts the monitor for the signature; filed `normal`). This one needs a DESIGN PASS before building (browser-side did:web resolution is non-trivial) — a good STOP-candidate if the design is unclear. Do NOT loosen `verifier.html`'s "hub-signed root" success copy until the signature check lands. The other open milestone sub-steps: the Pages repo-Settings enablement (custom domain + "GitHub Actions" source — a human step, filed `normal`) and the dossier WASM caller.
 
 **Notes:**
-- Confirmed pre-edit state matched the review diagnosis exactly: `mise exec -- go version` → 1.26.4,
-  bare `go version` → 1.26.1, committed wasm `96b2a40d…` embedding `go1.26.1`. This was option (a) from
-  the issue/review (pin the gate runner forward), not (b) (downgrade mise) — preferred because mise is
-  the single source of truth for artifact bytes.
-- Per `next.md` Not-In-Scope: did NOT touch `wasm_exec.js` (byte-identical across 1.26.1/1.26.4, so the
-  `web.go:149` "Go 1.26.1 toolchain" comment stays factually correct), the CI/Pages workflows
-  (`go-version: "1.26"` is a separate mechanism that copies, never rebuilds, the pinned wasm), the
-  `CLAUDE.md`/ADR/PRD "Go 1.26" stack prose (describes the locked minor series, still accurate), or any
-  `cmd/wasm`/`verifyadapter` source (behavior unchanged).
-- Working tree clean apart from the three scoped files. No tests added: this is a pure
-  reproducibility-pin change; `TestWasmVerifyHashPinned` is the existing gate and it now passes against
-  the documented-command output (the gap it could not catch — toolchain-reproducibility — is closed at
-  the toolchain-pin level).
+- All 11 unpushed CID commits push together on this PASS (prior cycles were NEEDS_WORK and held them back). Upstream is `origin/develop`; never push `main`.
+- Learnings: collapsed the cmd-wasm.md two-toolchain TRAP into a `settled:` entry recording the durable rule (pin the EXACT patch, never the floating minor; rebuild+re-pin via `mise run build:wasm` in one increment on a Go bump) — the prediction it made is now landed, so it no longer reads as pending work.
+- This was option (a) from the issue/next.md (pin the gate runner forward), the preferred path since mise is the single source of truth for artifact bytes. Option (b) (downgrade mise to 1.26.1) was correctly NOT taken.
+- The `web.go:149` comment still says "Go 1.26.1 toolchain's lib/wasm/wasm_exec.js" — confirmed correct and in scope to leave alone: `next.md` Not-In-Scope verified those bytes are byte-identical across 1.26.1/1.26.4, so the loader is unaffected by the build-toolchain switch.
