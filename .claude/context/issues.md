@@ -18,32 +18,6 @@ filed it and does **not** affect priority.
 
 ---
 
-## Adopt the iscc-lib Go codec + bump the toolchain to Go 1.26 (ADR-0011)
-- **Priority:** normal
-- **Source:** [human]
-- **What / where / how to verify:** Land ADR-0011's adoption — reuse `iscc/iscc-lib` for ISCC
-  en/decoding instead of owning a second hand-rolled codec. Sequence it **before** more M-UI feature
-  work (it is a foundational stack change). Steps:
-  1. **Bump the locked toolchain Go 1.24 → 1.26** across `mise.toml` (`go = "1.26"`), `go.mod` (`go
-     1.26.x`, plus a `toolchain` line only if the pinned patch needs it), `.github/workflows/ci.yml`,
-     and `.devcontainer/` — `iscc-lib`'s `packages/go/go.mod` requires `go 1.26.1`.
-  2. **Add `github.com/iscc/iscc-lib/packages/go` (pinned v0.5.0)** to `go.mod` / `go.sum`.
-  3. **Make the dependency real + encode the migration trigger** with ONE tripwire/parity test in
-     `internal/index` (a `_test.go` / sibling test package — NOT `iscc.go`) that imports iscc-lib and
-     asserts `IsccDecode` currently **rejects** a known ISCC-IDv1 (`"MAIGHFECJMOPMIAB"`, Version 1)
-     with a Version error. When [iscc/iscc-lib#43](https://github.com/iscc/iscc-lib/issues/43) lands,
-     that assertion flips RED and signals: migrate `internal/index.Decode` to iscc-lib and delete the
-     port. Production `internal/index/iscc.go` must stay a **pure stdlib-only leaf** (no iscc-lib
-     import) so `GOOS=js GOARCH=wasm go build ./internal/index` still succeeds — only the test imports
-     iscc-lib.
-  - **Verify fixed:** `go.mod` requires Go 1.26 and `iscc-lib/packages/go` v0.5.0; the tripwire test
-    is present and green (asserts today's rejection); `mise run check` is green under a Go 1.26
-    toolchain; `GOOS=js GOARCH=wasm go build ./internal/index` still succeeds.
-  - **Toolchain caveat:** local dev at filing time is Go 1.24; this increment must run where mise can
-    provision Go 1.26. Do **not** flip `go.mod`'s `go` directive without the 1.26 toolchain present —
-    it reds the gate for the whole module.
-- **Spec:** ADR-0011; target.md "Stack (locked — ADR-0003, ADR-0011)"; iscc/iscc-lib#43.
-
 ## Hub-List `hubDomain` accepts a trailing `?` (ForceQuery fail-open against the bare-host contract)
 - **Priority:** normal
 - **Source:** [review] (Codex P2, reviewer-confirmed)

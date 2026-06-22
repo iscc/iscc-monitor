@@ -34,3 +34,12 @@ path: a wrong decode resolves the wrong hub and proves the wrong leaf. WASM-shar
 
 - **`encode` is a test-only round-trip helper (unexported, YAGNI).** The monitor only ever decodes ids
   it is handed; do not export an encoder. Keep the public surface to `Decode` + `ISCCID`.
+
+- **ADR-0011 tripwire lives here, NOT in `iscc.go` (`iscclib_tripwire_test.go`).** iscc-lib v0.5.0
+  `IsccDecode` rejects every ISCC-IDv1 (Version=1) with the literal error `"iscc: invalid Version: 1"`
+  (`codec.go:268`), so the in-repo `Decode` stays the interim ISCC-IDv1 codec until iscc/iscc-lib#43.
+  The test imports iscc-lib; `iscc.go` must NOT (the WASM build excludes `_test.go`, so the import never
+  leaks — guard with `GOOS=js GOARCH=wasm go build ./internal/index`, and `go list -deps ./internal/index`
+  must show iscc-lib absent from the non-test build closure). When the tripwire flips RED, iscc-lib decodes
+  ISCC-IDv1 → migrate `Decode` to it and delete the port. Assert the bare golden form; the prefixed form
+  hits the same Version reject after `TrimPrefix("ISCC:")` so it adds nothing.
