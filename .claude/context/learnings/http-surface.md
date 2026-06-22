@@ -23,14 +23,12 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   (Detail in git history pre-2026-06-21.) Durable trap: strip discipline is `"/"+Origin`, NOT `+"/"`, so
   the inner `ServeMux` keeps its leading slash, exact mounts beat the `/` subtree, and a nested mux does
   not 301-redirect.
-- **Default seq is `seqs[0]`, the lowest committed seq** (`SeqsForISCCID` is `ORDER BY seq` ASC, so the
-  "first committed seq" default is deterministic). An explicit `&index=<n>` must equal a committed seq
-  (else 400 via `selectSeq`); `parseUint` rejects non-digits → 400; `leafIndex >= size` → 404 (never
-  500/panic) on a stale/racing size.
-- **Dep direction holds: `proofserve → {store, logclient}`, never the reverse.** `go list -deps
-  ./internal/store | grep -E 'proofserve|net/http'` and `go list -deps ./internal/logclient | grep
-  proofserve` both empty, so `net/http` stays out of the store/logclient closures. Proof is built from
-  the LOCAL mirror only (`f.ReadTile`), never re-hitting the hub.
+- **Default seq is `seqs[0]`, the lowest committed seq** (`SeqsForISCCID` is `ORDER BY seq` ASC →
+  deterministic). Explicit `&index=<n>` must equal a committed seq (else 400 via `selectSeq`); non-digit
+  → 400; `leafIndex >= size` → 404 (never 500/panic) on a stale size.
+- **Dep direction holds: `proofserve → {store, logclient}`, never the reverse** (`net/http` stays out of
+  the store/logclient closures — both `go list -deps … | grep proofserve` empty). Proof is built from the
+  LOCAL mirror only (`f.ReadTile`), never re-hitting the hub.
 
 ## Computed consistency proof HTTP surface (`internal/proofserve` + `CheckpointAt ORDER BY rowid`)
 
@@ -40,11 +38,10 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `from == 0`/`from == LastSize` → 200 with empty proof (`from == 0` SKIPS the `CheckpointAt(from)` row
   requirement, `from == LastSize` still REQUIRES it). Status: missing/non-numeric → 400; `LastSize==0` →
   404; `from>LastSize` → 400; unrecorded `from`/tile-miss → 404. (Detail in git history pre-2026-06-21.)
-- **`CheckpointAt`'s `ORDER BY rowid LIMIT 1` is correct because `id INTEGER PRIMARY KEY` aliases `rowid`
-  in SQLite — rowid is monotonic by insertion, so the first-recorded (prior accepted) row wins over a
-  later same-`tree_size` contradicting-evidence row** (`RecordCheckpoint` dedupes on
-  `UNIQUE(hub_id, tree_size, root)`, so two roots at one size are two rows = the fork-evidence case).
-  Mutation `DESC` → `TestCheckpointAtDeterministicOnFork` FAILS, reverted. Store stays a leaf.
+- **`CheckpointAt`'s `ORDER BY rowid LIMIT 1` is load-bearing: `id INTEGER PRIMARY KEY` aliases `rowid`
+  (monotonic by insertion), so the first-recorded (prior accepted) row wins over a later same-`tree_size`
+  contradicting-evidence row** (two roots at one size = two rows = the fork-evidence case). `DESC` would
+  pick the fork row — keep ASC. (Mutation-proven `TestCheckpointAtDeterministicOnFork`; git history.)
 
 ## Computed record-bytes HTTP surface (`/entries` + `internal/logclient/entries.go`)
 
@@ -67,14 +64,20 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 ## HTML record list at `/records` (`serveRecords` + `store.ListRecords`)
 
 - **settled:** the no-JS, `seq DESC`, seq-cursor-paginated record list is landed + correct (DS shell, no
-  `<table>`/CDN, unquoted `[data-status=…]` CSS, buffer-then-200, pure store-read). (Detail at-2026-06-21.)
-  The mockup head is the 4-col `Seq · Type · ISCC-ID · Logged`; the **`Logged`** col is landed (verbatim
-  `RecordRow.NoteTimestamp` RFC-3339, em-dash `&mdash;` fallback for the NULL-timestamp common case,
-  template-only, no handler/struct change). **`Type`** col is still deferred — keep the rendered head
-  listing ONLY columns that have a data cell (`Seq · ISCC-ID · Logged`), never promising a head a row
-  lacks. Test grounding: `buildMirror` seeds NO timestamps, so a Logged-col test must build a fresh
-  `store.Open` fixture with a HARDCODED literal `NoteTimestamp` (constant-vs-constant goes vacuous);
-  assert the `&mdash;` ENTITY string (html/template passes it through verbatim).
+  `<table>`/CDN, unquoted `[data-status=…]` CSS, buffer-then-200, pure store-read), and the full 4-col
+  mockup head `Seq · Type · ISCC-ID · Logged` is COMPLETE: `Logged` = verbatim `RecordRow.NoteTimestamp`
+  RFC-3339 (`&mdash;` ENTITY fallback for the NULL-timestamp common case); `Type` = per-row badge mapped
+  from the verbatim `note.$schema` (Declaration/Deletion/Unknown record type) via a handler-local
+  `recordRowVM` (embeds `store.RecordRow`, adds render-time `Kind`+`KindKey`) since `RecordRow` has no
+  `Kind` — projection lives in the VM, NOT a store column (no DB-migration trigger). `recordKind` (label)
+  + `recordKindKey` (CSS token) switch on the SAME schema constants so they cannot drift; derive the key
+  from the schema, never from the label. All template/VM only, store stays a leaf. (Detail at-2026-06-22.)
+  Durable rules this surface bakes in: (1) **a rendered head lists ONLY columns with a data cell** (never
+  promise a head a row lacks); (2) badge CSS uses the UNQUOTED `[data-kind=…]` selector (the quoted form
+  leaks a `data-kind="…"` literal into `<style>` and trips a negative body assert — same trap as
+  `[data-status=…]`); (3) **test grounding uses HARDCODED literal `note.$schema`/`NoteTimestamp`**, NOT the
+  package constants — `buildMirror` seeds neither, and a constant-vs-constant test goes vacuous (the open
+  `record_test.go` trap); reverting a constant must FAIL the test (reviewer mutation-proven here).
   **Durable lessons for any seq-cursor pagination here:** never overload `0` as both a cursor value and a
   sentinel (carry a `has-from` bool or a `+1` cursor); clamp page size while still `uint64` BEFORE the
   `int()` conversion (a huge `n` wraps `int(n)` negative and modernc SQLite reads a negative `LIMIT` as
