@@ -166,10 +166,14 @@ Per-surface landmark regions (each keyed to its mockup file under `.claude/desig
   dossier**, and frozen rows visibly tinted; the coverage footnote.
 - **hub dossier** — `ISCC Monitor - Hub Dossier.dc.html`: `← Realm index` back-link; the trust-document
   head (eyebrow "Hub dossier", hub name + domain, `md` `HubStatusBadge`, "Compiled by <instance> ·
-  <time>"); the numbered sections **§1 Identity** (did:web), **§2 Coverage** (since + size), **§3 Latest
-  checkpoint** (size + time), **§4 Bitcoin anchor** (dot + label + "run `ots verify`"); the **§5
-  observation log**; the frozen **Exhibit** (required above) above the sections; the two actions ("Prove
-  an ISCC-ID in this hub →" certificate, "Browse the log →").
+  <time>"); the numbered sections **§1 Identity** (did:web), **§2 Coverage** (since + size + "N
+  observed"), **§3 Latest checkpoint** (size + observed time), **§4 Bitcoin anchor** (dot + label +
+  Bitcoin block height when confirmed + "run `ots verify`"); the **§5 observation log** — rendering
+  **only events the monitor actually recorded** (checkpoint size transitions, freezes, anchor
+  confirmations), **never a synthesized per-poll "consistent" verdict** (the follower logs no such
+  per-poll check, so emitting one would assert an un-run verification); the frozen **Exhibit** (required
+  above) above the sections; the two actions ("Prove an ISCC-ID in this hub →" certificate, "Browse the
+  log →").
 - **log browser / record list** — `ISCC Monitor - Log Browser.dc.html`: `← <hub> dossier` back-link; the
   head (eyebrow "Log browser", hub name, "<domain> · N records mirrored"); the **plain-link pager**
   (newer/older + "seq X–Y of Z" range, disabled at the ends — the no-JS `?from=…` form of the mockup's
