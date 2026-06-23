@@ -25,10 +25,12 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"fmt"
 	"html/template"
 	"net/http"
+	"strings"
 
 	"github.com/iscc/iscc-monitor/internal/badge"
 	"github.com/iscc/iscc-monitor/internal/store"
@@ -79,13 +81,26 @@ type row struct {
 	AnchorDot   string
 }
 
+// recentDecl is one entry of the hero's "Recently declared" row: a recently
+// indexed declaration the user can click straight through to its Certificate of
+// Inclusion, so the page ships a working example without typing. IsccID is the
+// verbatim ISCC:-prefixed id (the link text); Body is that id without the "ISCC:"
+// prefix, used for the /inclusion/<body> path so no colon ever enters the URL path
+// (the certificate handler re-adds the prefix, accepting either form).
+type recentDecl struct {
+	IsccID string
+	Body   string
+}
+
 // pageData is the whole template context: the rendered hub rows, the count of
-// followed hubs (HubCount == len(Hubs)) the masthead/ledger heading reports, and
-// the resolved instance-identity strings the masthead/ledger render (Instance and
-// Operator on the chrome, Realm in the "Realm register · <realm>" subtitle).
+// followed hubs (HubCount == len(Hubs)) the masthead/ledger heading reports, the
+// recently-declared ids for the hero shortcut row, and the resolved
+// instance-identity strings the masthead/ledger render (Instance and Operator on
+// the chrome, Realm in the "Realm register · <realm>" subtitle).
 type pageData struct {
 	Hubs     []row
 	HubCount int
+	Recent   []recentDecl
 	Instance string
 	Operator string
 	Realm    string
@@ -171,10 +186,16 @@ func Handler(st *store.Store, statuses StatusSource, id Identity) http.Handler {
 			return
 		}
 		rows := buildRows(summaries, statuses)
+		recent, err := buildRecent(r.Context(), st)
+		if err != nil {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 		var buf bytes.Buffer
 		data := pageData{
 			Hubs:     rows,
 			HubCount: len(rows),
+			Recent:   recent,
 			Instance: id.Instance,
 			Operator: id.Operator,
 			Realm:    id.Realm,
@@ -223,6 +244,56 @@ func buildRows(summaries []store.HubSummary, statuses StatusSource) []row {
 		})
 	}
 	return rows
+}
+
+// schemaDeclaration is the verbatim note.$schema URI of a declaration record (the
+// default subject of an inclusion proof, CLAUDE.md "Declaration"). The dashboard
+// interprets it to pick the hero's "recently declared" ids; the store stays
+// schema-agnostic (ADR-0008), so this interpretation lives here in the view layer
+// (the "projection" pattern). It MUST equal the value the indexer stores verbatim —
+// the same literal internal/certificate and internal/proofserve already carry; a
+// shared constant for all three is a documented future cleanup.
+const schemaDeclaration = "http://purl.org/iscc/schema/iscc-note-0.8.0.json"
+
+// recentFetch over-fetches recent records from the store so filtering to
+// declarations (skipping past deletions / duplicates) can still reach recentDisplay;
+// recentDisplay caps how many ids the hero row renders — one working example is
+// enough to click straight through to a Certificate of Inclusion.
+const (
+	recentFetch   = 60
+	recentDisplay = 1
+)
+
+// buildRecent fetches the most recent realm-wide records and folds them into the
+// hero's "recently declared" shortcut list: the newest declarations (note.$schema ==
+// schemaDeclaration), de-duplicated by id and capped at recentDisplay, each carrying
+// both its verbatim ISCC:-prefixed id (link text) and its prefix-stripped body (the
+// /inclusion/<body> path). It interprets note_schema here in the view layer because
+// the store is schema-agnostic (ADR-0008). A record with an empty id is skipped (it
+// cannot link). An empty index yields an empty slice, so the template renders no row
+// — never an empty "Recently declared:" label. The store read error is surfaced to
+// the caller, which fails the page like any other store error.
+func buildRecent(ctx context.Context, st *store.Store) ([]recentDecl, error) {
+	recs, err := st.RecentRecords(ctx, recentFetch)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, recentDisplay)
+	out := make([]recentDecl, 0, recentDisplay)
+	for _, rec := range recs {
+		if rec.NoteSchema != schemaDeclaration || rec.IsccID == "" || seen[rec.IsccID] {
+			continue
+		}
+		seen[rec.IsccID] = true
+		out = append(out, recentDecl{
+			IsccID: rec.IsccID,
+			Body:   strings.TrimPrefix(rec.IsccID, "ISCC:"),
+		})
+		if len(out) == recentDisplay {
+			break
+		}
+	}
+	return out, nil
 }
 
 // anchorLabel maps a hub's stored OTS status to its display label and the

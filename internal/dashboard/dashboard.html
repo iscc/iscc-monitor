@@ -147,11 +147,17 @@
       min-width: 240px;
       font-family: var(--font-mono);
       font-size: var(--text-base);
-      color: var(--text-body);
-      background: var(--surface-page);
-      border: var(--border-width) solid var(--border-default);
+      color: var(--surface-card);
+      background: var(--iscc-coral-red);
+      border: var(--border-width) solid var(--iscc-coral-red);
       border-radius: var(--radius-xs) 0 0 var(--radius-xs);
       padding: var(--space-3) var(--space-4);
+    }
+    /* The placeholder is the example ISCC-ID shown on the coral bar; a pale
+       translucent white reads clearly as a placeholder (not a filled-in value)
+       on coral (no DS token for translucent white, so the rgba is a local literal). */
+    .hero-input::placeholder {
+      color: rgba(255, 255, 255, 0.5);
     }
     .hero-submit {
       font-family: var(--font-sans);
@@ -164,6 +170,25 @@
       padding: var(--space-3) var(--space-6);
       white-space: nowrap;
       cursor: pointer;
+    }
+    /* "Recently declared" shortcut row: live, clickable example ids so the user can
+       reach a Certificate of Inclusion without typing one in. */
+    .hero-recent {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: var(--space-2) var(--space-4);
+      margin-top: var(--space-4);
+    }
+    .hero-recent-label {
+      font-size: var(--text-xs);
+      font-weight: var(--weight-light);
+      color: var(--text-muted);
+    }
+    .hero-recent-id {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-link);
     }
 
     /* Realm-ledger heading row. */
@@ -375,12 +400,20 @@
          falls back to the query param when the path id is empty. -->
     <section class="hero">
       <div class="hero-eyebrow">ISCC · ISO 24138:2024 · Transparency Log Monitor</div>
-      <h1 class="hero-title">Prove a specific ISCC declaration is in the log.</h1>
+      <h1 class="hero-title">ISCC-ID Verification</h1>
       <p class="hero-lede">Enter an ISCC-ID to retrieve a self-contained evidence record — the hub-signed checkpoint, the inclusion proof, the record bytes and the Bitcoin timestamp — that stands without trusting the hub or this monitor.</p>
       <form class="hero-form" method="get" action="/inclusion/">
         <input class="hero-input" type="text" name="iscc_id" placeholder="ISCC:MEAJU5BQXK7QKMC3" aria-label="ISCC-ID">
         <button class="hero-submit" type="submit">Find evidence →</button>
       </form>
+      {{if .Recent}}
+      <!-- Recently declared: live, clickable example ids straight to their Certificate
+           of Inclusion (/inclusion/<id-body>), so the page ships a working example. -->
+      <div class="hero-recent">
+        <span class="hero-recent-label">Recently declared:</span>
+        {{range .Recent}}<a class="hero-recent-id" href="/inclusion/{{.Body}}">{{.IsccID}}</a>{{end}}
+      </div>
+      {{end}}
     </section>
 
     <div class="ledger-head">

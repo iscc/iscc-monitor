@@ -593,3 +593,93 @@ func TestSeqsForISCCIDScopedByHub(t *testing.T) {
 		t.Errorf("hubA SeqsForISCCID = %v, want [10] (hub-scoped)", seqs)
 	}
 }
+
+// TestRecentRecords confirms the realm-wide recent-records read is newest-first by
+// the global seq, aggregates across hubs, caps at each hub's accepted tree size (the
+// follow_state.last_size ceiling, via the JOIN), excludes a hub with no follow_state
+// row, stays schema-agnostic (every note_schema passes through verbatim), and honors
+// the limit. seq is the global PRIMARY KEY, so the seeded seqs are distinct across
+// hubs (matching real ingest, which writes absolute leaf indices).
+func TestRecentRecords(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hubA := newHub(t, s)
+	hubB, err := s.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub hubB: %v", err)
+	}
+	hubC, err := s.UpsertHub(ctx, "sb2.iscc.id", "sb2.iscc.id/log", "https://sb2.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub hubC: %v", err)
+	}
+
+	const decl = "http://purl.org/iscc/schema/iscc-note-0.8.0.json"
+	const del = "http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json"
+	if err := s.RecordProjections(ctx, []ProjectionRecord{
+		{HubID: hubA, Seq: 0, IsccID: "ISCC:A0", NoteSchema: decl},
+		{HubID: hubA, Seq: 1, IsccID: "ISCC:A1", NoteSchema: del}, // a deletion is still returned (schema-agnostic)
+		{HubID: hubA, Seq: 2, IsccID: "ISCC:A2", NoteSchema: decl},
+		{HubID: hubA, Seq: 5, IsccID: "ISCC:A5", NoteSchema: decl}, // above hubA's ceiling (3) -> excluded
+		{HubID: hubB, Seq: 10, IsccID: "ISCC:B10", NoteSchema: decl},
+		{HubID: hubB, Seq: 11, IsccID: "ISCC:B11", NoteSchema: decl},
+		{HubID: hubC, Seq: 20, IsccID: "ISCC:C20", NoteSchema: decl}, // hubC has NO follow_state -> excluded
+	}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+	// Accepted-tree ceilings: hubA accepts seq < 3, hubB accepts seq < 12. hubC is
+	// followed-but-unpolled (no follow_state row), so it contributes nothing.
+	if err := s.AdvanceFollowState(ctx, hubA, 3); err != nil {
+		t.Fatalf("AdvanceFollowState hubA: %v", err)
+	}
+	if err := s.AdvanceFollowState(ctx, hubB, 12); err != nil {
+		t.Fatalf("AdvanceFollowState hubB: %v", err)
+	}
+
+	rows, err := s.RecentRecords(ctx, 10)
+	if err != nil {
+		t.Fatalf("RecentRecords: %v", err)
+	}
+	// Realm-wide, newest-first by global seq, with seq 5 (above hubA's ceiling) and
+	// hubC's seq 20 (no follow_state) both excluded.
+	if got := seqsOf(rows); !reflect.DeepEqual(got, []uint64{11, 10, 2, 1, 0}) {
+		t.Errorf("RecentRecords seqs = %v, want [11 10 2 1 0]", got)
+	}
+	// Schema-agnostic: the deletion at seq 1 passes through with its schema verbatim.
+	for _, r := range rows {
+		if r.Seq == 1 && r.NoteSchema != del {
+			t.Errorf("seq 1 NoteSchema = %q, want the verbatim deletion URI", r.NoteSchema)
+		}
+	}
+	// The id round-trips verbatim on the newest row.
+	if rows[0].IsccID != "ISCC:B11" {
+		t.Errorf("newest IsccID = %q, want ISCC:B11", rows[0].IsccID)
+	}
+
+	// The limit caps the window to the n newest.
+	rows, err = s.RecentRecords(ctx, 2)
+	if err != nil {
+		t.Fatalf("RecentRecords n=2: %v", err)
+	}
+	if got := seqsOf(rows); !reflect.DeepEqual(got, []uint64{11, 10}) {
+		t.Errorf("RecentRecords n=2 seqs = %v, want [11 10]", got)
+	}
+}
+
+// TestRecentRecordsEmpty confirms an empty index is not an error: a followed hub with
+// no indexed records returns an empty slice and a nil error (the dashboard renders no
+// "recently declared" row in that case).
+func TestRecentRecordsEmpty(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hub := newHub(t, s)
+	if err := s.AdvanceFollowState(ctx, hub, 5); err != nil {
+		t.Fatalf("AdvanceFollowState: %v", err)
+	}
+	rows, err := s.RecentRecords(ctx, 10)
+	if err != nil {
+		t.Fatalf("RecentRecords: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("RecentRecords on empty index = %v, want empty", rows)
+	}
+}

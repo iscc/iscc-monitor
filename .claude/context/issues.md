@@ -238,11 +238,18 @@ filed it and does **not** affect priority.
   mockup confirms column order + naming; mutation-proven non-vacuous; store stays a leaf. The per-hub
   (vs per-checkpoint) honesty design question Codex raised is its own `normal` below — kept here only as a
   resolved sub-item record.
-  (4) **"Recent declarers checked" hero footer omitted** — needs a recent-lookup history the store does
-  not track. None of these block progress (the headline-region parity Verify criteria are met); they are
-  the named sub-steps to finish full `/` design-parity at the M-UI exit. Verify fixed: the served `/`
-  carries config-driven instance identity + realm name and honest Checkpoint/Anchor columns (the logo is
-  verified in its own extracted critical issue); the visual pass files no remaining sub-region delta.
+  (4) **"Recent declarers checked" hero footer** — **CLOSED (direct human design tweak, out-of-loop,
+  2026-06-23).** Shipped with a twist that sidesteps the missing lookup-history: instead of "recent
+  declarers *checked*" (which needs a lookup log the store does not track), the hero now renders a
+  **"Recently declared:"** row — the newest *declarations* the monitor has indexed (which the store DOES
+  have: `store.RecentRecords`, realm-wide, accepted-tree-bounded, schema-agnostic), filtered to
+  declarations + de-duped + capped in the dashboard view layer, each a click-through link to its
+  Certificate of Inclusion (`/inclusion/<id-body>`). Empty index → the row is omitted (honest empty
+  state). Tests: `store.TestRecentRecords`/`TestRecentRecordsEmpty`,
+  `dashboard.TestDashboardRecentlyDeclared`/`TestDashboardNoRecentRowWhenIndexEmpty`. The hero copy was
+  also changed in the same tweak ("Prove a specific ISCC declaration is in the log." → "ISCC-ID
+  Verification") and the input placeholder made paler. **All four sub-items of this issue are now CLOSED**
+  — the next `update-state` may prune this entry.
 - **Spec:** target.md M-UI design-parity "named-region" bar (the `/` realm-index region) + "Document chrome
   + instance identity"; ADR-0010 Evidence-Ledger handoff; ADR-0012 visual-pass.
 
@@ -483,3 +490,39 @@ filed it and does **not** affect priority.
   "Coverage" (never imply a guarantee the data does not support — including a fabricated sizing number);
   the (pruned) egress+footprint critical's disk-growth-rate Verify clause.
 
+
+## `iscc_index.seq` is a single global PRIMARY KEY but ingest writes per-hub absolute leaf indices — multi-hub PK collision
+- **Priority:** normal
+- **Source:** [out-of-loop UI work] (surfaced while adding `store.RecentRecords` for the dashboard "Recently declared" row, 2026-06-23)
+- **What / where / how to verify:** `schema.sql` declares `iscc_index(seq INTEGER PRIMARY KEY, …)` — a
+  single global rowid — yet `follower/ingest.go` folds projections at the per-hub ABSOLUTE leaf index
+  (`logclient.BundleProjections(raw, bundleIndex*tiles.TileWidth)`), which restarts at 0 for each hub. So
+  two followed hubs whose logs share a leaf index (every realm with ≥2 active hubs: both have seq 0, 1, …)
+  COLLIDE on the PK, and `RecordProjections`' `ON CONFLICT(seq) DO UPDATE SET hub_id = excluded.hub_id, …`
+  silently OVERWRITES the earlier hub's row with the later hub's. The index therefore cannot faithfully
+  hold both hubs' low leaves; per-hub readers (`ListRecords`/`SeqsForISCCID`/`RecordAt`) still filter by
+  `hub_id` so they only ever see the surviving (last-written) rows, and the realm-wide `RecentRecords`
+  inherits the same clobbered set. Likely fix: composite PK `(hub_id, seq)` (and update the BLOB index +
+  the `ON CONFLICT` target accordingly), with a migration story (see the existing no-migration issue).
+  Verify fixed: two hubs can both index seq 0 without one clobbering the other (a store test seeding
+  `{hubA,0}` and `{hubB,0}` then reading both back per hub). NOT introduced by the dashboard work — that
+  feature only reads what is there; this is a pre-existing data-model bug it surfaced. Normal: it is a
+  multi-hub correctness limitation, not a current crash, and the testnet realm is small.
+- **Spec:** ADR-0008 schema-agnostic record index; ADR-0007 one-file-per-network; CLAUDE.md "Mirror" /
+  "Projection". Pairs with the existing "No on-disk DB migration story" issue (a PK change needs one).
+
+## `schemaDeclaration`/`schemaDeletion` note-schema URIs are now triplicated (certificate + proofserve + dashboard)
+- **Priority:** low
+- **Source:** [out-of-loop UI work] (2026-06-23, adding the dashboard's declaration filter)
+- **What / where / how to verify:** the full wire URIs `http://purl.org/iscc/schema/iscc-note-0.8.0.json`
+  (declaration) / `…iscc-note-delete-0.8.0.json` (deletion) are defined as unexported consts in BOTH
+  `internal/certificate/handler.go` and `internal/proofserve/handler.go`, and the dashboard's "Recently
+  declared" filter added a THIRD copy of the declaration URI in `internal/dashboard/handler.go`. Three
+  copies of a version-bearing URI is a DRY/drift risk: an `iscc-note-0.9.0` bump must touch three files,
+  and the store deliberately stays schema-agnostic (ADR-0008) so it is NOT the home. Fix when next
+  touching any of the three: hoist a shared, exported constants leaf (e.g. `internal/notes` with
+  `SchemaDeclaration`/`SchemaDeletion`) and have all three view packages reference it; keep the store
+  schema-agnostic. Verify fixed: exactly one definition of each URI, referenced by cert + proofserve +
+  dashboard. Low — skipped by the loop until one of those files is next edited.
+- **Spec:** DRY (CLAUDE.md code standards); ADR-0008 (schema interpretation lives in the view layer, not
+  the store); no spec contract.

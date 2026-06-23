@@ -206,6 +206,62 @@ func (s *Store) RecordAt(ctx context.Context, hubID int64, seq uint64) (RecordRo
 	}, true, nil
 }
 
+// RecentRecords reads up to n most-recently-indexed leaves across ALL hubs
+// (realm-wide), newest first by the global seq PRIMARY KEY, bounded to each hub's
+// accepted tree. It is the realm-wide read behind the dashboard's "recently
+// declared" row — a single JOIN + ORDER BY query rather than a per-hub fan-out.
+//
+// The accepted-tree ceiling is the same seq < FollowState.LastSize cap ListRecords
+// applies per hub, expressed here as a JOIN to follow_state with seq < last_size: a
+// hub with no follow_state row, or a NULL/zero last_size (followed-but-unpolled, or
+// projections written ahead of AdvanceAccepted on a freeze/fault), contributes
+// nothing — so the row never surfaces a leaf the accepted checkpoint does not cover
+// (coverage honesty, ADR-0001), and every id it returns resolves under /inclusion.
+//
+// It is schema-agnostic (ADR-0008): it filters NOTHING on note_schema or the id and
+// interprets nothing — rows carry iscc_id_str / note_schema / note_timestamp verbatim
+// for the caller (the dashboard view layer) to interpret which are declarations. n
+// must be > 0 (the caller passes a fixed positive limit). iscc_id_str / note_schema /
+// note_timestamp are read through sql.NullString so a NULL column degrades to ""
+// rather than an error, and seq is scanned as int64 then uint64(seq) (symmetric with
+// the RecordProjections write). An empty index returns a nil slice with a nil error
+// (an empty index is not an error — the dashboard simply renders no row).
+func (s *Store) RecentRecords(ctx context.Context, n int) ([]RecordRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT i.seq, i.iscc_id_str, i.note_schema, i.note_timestamp "+
+			"FROM iscc_index i JOIN follow_state f ON f.hub_id = i.hub_id "+
+			"WHERE i.seq < f.last_size ORDER BY i.seq DESC LIMIT ?",
+		n,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store.RecentRecords: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var records []RecordRow
+	for rows.Next() {
+		var (
+			seq           int64
+			isccID        sql.NullString
+			noteSchema    sql.NullString
+			noteTimestamp sql.NullString
+		)
+		if err := rows.Scan(&seq, &isccID, &noteSchema, &noteTimestamp); err != nil {
+			return nil, fmt.Errorf("store.RecentRecords: scan: %w", err)
+		}
+		records = append(records, RecordRow{
+			Seq:           uint64(seq),
+			IsccID:        isccID.String,
+			NoteSchema:    noteSchema.String,
+			NoteTimestamp: noteTimestamp.String,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.RecentRecords: rows: %w", err)
+	}
+	return records, nil
+}
+
 // SeqsForISCCID is the one-to-many reader: it returns every seq a hub indexed under
 // an iscc_id, ascending (a declaration and its later deletion share an id and come
 // back as two seqs). It queries the iscc_id BLOB column with the id's UTF-8 bytes so

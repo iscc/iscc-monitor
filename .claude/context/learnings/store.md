@@ -39,6 +39,24 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   reads `iscc_id_str`/`note_schema` through `sql.NullString` (NULL→""); scans `seq` int64→uint64.
   Hub-scoping is load-bearing for both readers (mutation dropping `hub_id` → scope test FAILS). (Detail
   in git history at-2026-06-21.) One durable trap below.
+- **`RecentRecords(ctx, n) ([]RecordRow, error)` is the realm-wide recent reader** (added 2026-06-23 for
+  the dashboard "Recently declared" row): newest-first by the global `seq`, `JOIN follow_state f ON
+  f.hub_id = i.hub_id WHERE i.seq < f.last_size` so the accepted-tree ceiling is applied per hub and a
+  hub with no `follow_state` row (or NULL/zero `last_size`) contributes nothing. It is SCHEMA-AGNOSTIC
+  (ADR-0008): NO `note_schema` filter — rows carry the verbatim schema for the caller (the dashboard view
+  layer) to interpret which are declarations. Tests: `TestRecentRecords` (realm-wide order + cap + no-
+  follow_state exclusion + limit + schema passthrough) / `TestRecentRecordsEmpty`.
+- **Two PRE-EXISTING facts confirmed while wiring `RecentRecords` (NOT introduced by it, NOT fixed here):**
+  (a) The `iscc_index.go` package-docstring's "RecordProjections has no production caller yet" is STALE —
+  `follower/ingest.go:118` calls it on every verified poll, so the index IS populated in production. (b)
+  `seq` is a SINGLE global `INTEGER PRIMARY KEY`, but ingest writes the per-hub ABSOLUTE leaf index
+  (`bundleIndex*TileWidth + offset`) — so two hubs whose logs share a leaf index (e.g. both seq 0) COLLIDE
+  on the PK and the later write clobbers the earlier (`ON CONFLICT(seq) DO UPDATE` overwrites `hub_id`).
+  For a multi-hub realm this means `iscc_index` cannot faithfully hold both hubs' low leaves; it likely
+  should be a composite PK `(hub_id, seq)`. `RecentRecords` ordering-by-`seq` is the only monotonic signal
+  available (there is no observed-at/declared-at column to order by) and is consistent with `ListRecords`'
+  newest-first convention — but the cross-hub recency is only as honest as the clobber allows. Filed as a
+  finding for the loop (see issues.md), out of scope for the out-of-loop UI tweak that surfaced it.
 - **The stored `note.$schema` is the VERBATIM wire value — a full URI, NOT a short name.** Production
   records carry `http://purl.org/iscc/schema/iscc-note-0.8.0.json` (declaration) /
   `…iscc-note-delete-0.8.0.json` (deletion); the golden `projection_test.go` and `follower/fsck_test.go`

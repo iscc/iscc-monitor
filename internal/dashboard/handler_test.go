@@ -447,3 +447,85 @@ func TestOverlayStatusPrecedence(t *testing.T) {
 		})
 	}
 }
+
+// TestDashboardRecentlyDeclared confirms the hero's "Recently declared" row renders
+// exactly ONE id — the single newest declaration the monitor has indexed within the
+// accepted tree — as a click-through link to its Certificate of Inclusion. It proves
+// the selection skips a newer deletion to reach the declaration, excludes records
+// above the accepted ceiling, and emits the prefix-stripped id in the /inclusion/
+// path (no colon in the URL) while showing the full ISCC:-prefixed id as link text.
+func TestDashboardRecentlyDeclared(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "recent.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	hubID, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	// Accepted tree size 4: seq 0..3 are accepted, seq 4 sits above the ceiling.
+	if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+		HubID:      hubID,
+		TreeSize:   4,
+		Root:       []byte("root-recent-checkpoint-padding!!"),
+		Raw:        []byte("raw-checkpoint-bytes"),
+		ObservedAt: time.Unix(1_700_000_000, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("AdvanceAccepted: %v", err)
+	}
+	const decl = "http://purl.org/iscc/schema/iscc-note-0.8.0.json"
+	const del = "http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json"
+	if err := st.RecordProjections(ctx, []store.ProjectionRecord{
+		{HubID: hubID, Seq: 0, IsccID: "ISCC:DECLAAAA", NoteSchema: decl},
+		{HubID: hubID, Seq: 1, IsccID: "ISCC:DECLBBBB", NoteSchema: decl},
+		{HubID: hubID, Seq: 2, IsccID: "ISCC:DECLCCCC", NoteSchema: decl}, // newest declaration within the ceiling -> the one shown
+		{HubID: hubID, Seq: 3, IsccID: "ISCC:DELYYYYY", NoteSchema: del},  // newest accepted record, but a deletion -> skipped
+		{HubID: hubID, Seq: 4, IsccID: "ISCC:DECLZZZZ", NoteSchema: decl}, // above the ceiling (size 4) -> excluded
+	}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "Recently declared:") {
+		t.Errorf("body missing the Recently declared row\n%s", body)
+	}
+	// Exactly the single newest declaration (seq 2, CCCC) renders — skipping the newer
+	// deletion at seq 3 — linking to its Certificate of Inclusion at /inclusion/<body>
+	// (the id with the ISCC: prefix stripped, so no colon enters the URL path); the link
+	// text shows the full ISCC:-prefixed id.
+	if want := `<a class="hero-recent-id" href="/inclusion/DECLCCCC">ISCC:DECLCCCC</a>`; !strings.Contains(body, want) {
+		t.Errorf("body missing the newest recent link %q\n%s", want, body)
+	}
+	// Only one shortcut link renders (recentDisplay == 1).
+	if got := strings.Count(body, `class="hero-recent-id"`); got != 1 {
+		t.Errorf("recent links rendered = %d, want 1\n%s", got, body)
+	}
+	// Older declarations, the newer deletion, and the above-ceiling record are all
+	// excluded — only the single newest accepted declaration is shown.
+	for _, absent := range []string{"DECLAAAA", "DECLBBBB", "DELYYYYY", "DECLZZZZ"} {
+		if strings.Contains(body, absent) {
+			t.Errorf("unexpected id %q in Recently declared (only the single newest declaration should show)\n%s", absent, body)
+		}
+	}
+}
+
+// TestDashboardNoRecentRowWhenIndexEmpty confirms the hero omits the entire "Recently
+// declared" row when no records are indexed — the honest empty state, no dangling
+// label. The fixture store seeds hubs and checkpoints but no iscc_index projections.
+func TestDashboardNoRecentRowWhenIndexEmpty(t *testing.T) {
+	st := fixtureStore(t)
+	rec := httptest.NewRecorder()
+	Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if body := rec.Body.String(); strings.Contains(body, "Recently declared:") {
+		t.Errorf("empty index should omit the Recently declared row\n%s", body)
+	}
+}

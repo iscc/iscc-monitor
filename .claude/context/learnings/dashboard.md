@@ -71,6 +71,35 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   counts dossier links specifically (`href="/<domain>"`, not bare `<a `) so the masthead verify link +
   hero button don't inflate the count; mutation-proven (drop the row `<a>` → count 0; drop the hero
   `<section>` → `<form` missing).
+- **The claim-lookup `.hero-input` is the coral "live ISCC code bar" — `background`+`border` both
+  `var(--iscc-coral-red)` (#f56169), `color: var(--surface-card)` (white), `::placeholder` translucent
+  white `rgba(255,255,255,.72)`.** Matches the `.dc.html` design source (`background:var(--iscc-coral-red)`,
+  `color:#fff`, borderless). The border is set to the coral bg (not removed) on purpose — mirrors
+  `.hero-submit`'s `border = bg` trick so the 1px box-model is preserved and the input stays height-aligned
+  with the bordered submit button. Set as a direct human design tweak on 2026-06-23, OUTSIDE the loop; this
+  is the ratified styling — do NOT revert it to the old `surface-page`/`text-body`/`border-default` neutral
+  look. No test asserts the input CSS (tests pin only `name="iscc_id"` and the form structure).
+- **The hero ships a "Recently declared:" shortcut row (`buildRecent` → `pageData.Recent`, rendered under
+  `{{if .Recent}}`).** It is the mockup's "Recent declarers checked" footer reimagined with a twist: the
+  store cannot track which ids were *checked* (no lookup history), but it CAN list what was recently
+  *declared*, so the row links the single newest indexed declaration straight to its Certificate of
+  Inclusion — one working example without typing. Data path: `store.RecentRecords(n)` (realm-wide,
+  newest-first by the global seq, accepted-tree-bounded, SCHEMA-AGNOSTIC) → dashboard filters to
+  `schemaDeclaration`, de-dupes by id, caps at `recentDisplay` (**1** — one example is enough; per Titusz),
+  over-fetching `recentFetch` (60) so the filter can skip past deletions/dups to reach it. The cap is a
+  one-line change to show more. The link is `/inclusion/{{.Body}}` (id with the `ISCC:` prefix STRIPPED so no colon enters the
+  URL path — the cert handler re-adds it), link text shows the full `{{.IsccID}}`. Empty index → the whole
+  row is omitted (honest empty state, no dangling label). Note: schema interpretation lives HERE in the
+  view layer, not the store (ADR-0008 keeps the store schema-agnostic — the "projection" pattern); the
+  `schemaDeclaration` URI is a 3rd literal copy (cert + proofserve have the other two — a documented
+  shared-constant cleanup, see issues.md). Tests: `TestDashboardRecentlyDeclared` (order/dedup/filter/cap/
+  link-form) + `TestDashboardNoRecentRowWhenIndexEmpty`. Set as a direct human design tweak 2026-06-23,
+  OUTSIDE the loop — ratified, do not revert.
+- **Hero copy + placeholder (same 2026-06-23 out-of-loop tweak):** the `<h1 class="hero-title">` reads
+  **"ISCC-ID Verification"** (was "Prove a specific ISCC declaration is in the log."), and the coral
+  `.hero-input::placeholder` is paler at `rgba(255,255,255,.5)` (was .72) so it reads clearly as a
+  placeholder, not a filled value. The `.dc.html` design source was updated to match both the new h1 and
+  the "Recently declared:" label. No test pins the h1 copy.
 - **The no-CDN ban is now narrowed to third-party hosts (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`), NOT a
   blanket `https://` ban** — the masthead's intentional `https://monitor.iscc.codes/` tier-2 verify link
   must pass, so the test now ALSO positively asserts `monitor.iscc.codes` is present. This mirrors the
