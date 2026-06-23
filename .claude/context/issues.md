@@ -527,59 +527,60 @@ filed it and does **not** affect priority.
 - **Spec:** DRY (CLAUDE.md code standards); ADR-0008 (schema interpretation lives in the view layer, not
   the store); no spec contract.
 
-## Hub dossier renders a flat key/value ledger, not the design's numbered "trust document" — increment 1 of 2 (layout + §1–§4)
-- **Priority:** critical
-- **Source:** [human] (Titusz, design-parity review 2026-06-23; scope decisions captured this session — see "Decisions" below)
-- **What / where / how to verify:** `internal/dossier/dossier.html` renders ONE hub as a flat 5-row
-  ledger card (Domain / Origin / Status / Coverage / Observed size) + a single "Mirrored log" link. The
-  ratified mockup `.claude/design/ISCC Monitor - Hub Dossier.dc.html` (handoff "Surface A"; target.md
-  M-UI dossier named-region bar) is a numbered **trust document**: trust-document head (eyebrow "Hub
-  dossier", hub name H1 + domain, `md` `HubStatusBadge`, "Compiled by <instance> · <time>"), then a 2×2
-  numbered grid **§1 Identity** (`did:web:<domain>`), **§2 Coverage** (since + size + "N observed"),
-  **§3 Latest checkpoint** (size + observed time), **§4 Bitcoin anchor** (dot + label + block height when
-  confirmed + "run `ots verify`"), the unresolvable/unverified caution note, the frozen **Exhibit**
-  (already built — keep), and the two actions ("Prove an ISCC-ID in this hub →", "Browse the log →"). The
-  masthead chrome (instance identity + `verify ↗`) ALREADY renders on the dossier — keep it.
-  **Decisions (this session, ratified by Titusz):** (a) §3/§4 at FULL detail — observed time + Bitcoin
-  block height; (b) §5 honest observation log + richer Exhibit are **increment 2** (the sibling critical
-  below) — this increment renders §5 as an honest minimal placeholder only; (c) two increments.
-  **Scope of THIS increment:**
-  - Backend (additive — mirror the existing `Anchor` correlated-subselect in `internal/store/hubs.go`
-    `ListHubs`): add to `store.HubSummary` (1) the accepted/latest checkpoint's `observed_at` (§3 time,
-    from `checkpoints.observed_at`) and (2) the confirmed anchor's `btc_height` (§4 height, from
-    `ots.btc_height` for the accepted root), each as a NULL-safe correlated subselect. No new round-trip;
-    dashboard/proofserve readers are untouched (additive fields).
-  - View-model (`internal/dossier/handler.go`): expand `dossierData` with observed time, anchor label +
-    dot-state + block height, derived "N days observed" from `Coverage.Since`, the caution-note copy, and
-    the two action hrefs. Map vocabulary `fork → "split view"` at render — the store emits `Kind="fork"`,
-    which is on the design's BINDING avoid-list (CLAUDE.md Language: "split view").
-  - "Prove an ISCC-ID in this hub →" has no single subject id → link to the `/` claim-lookup hero (the
-    realm index already foregrounds it), NOT a fabricated per-hub form. "Browse the log →" → `/<origin>/log/`.
-  - **Honesty (the recurring SSR-verdict trap — see learnings):** every field comes from store/config; no
-    fabricated timestamps, sizes, or anchor states. A not-anchored root renders the normal "pending" /
-    "not anchored yet" state, never an error (ADR-0001). Absent §3/§4 data renders an honest placeholder,
-    not a zero passed off as real.
-  - **Verify** (HTTP seam vs a fixture store, golden — observable no-JS HTML, never handler internals):
-    `GET /<domain>` → `200 text/html`, no external/CDN URL in the body, complete with JS disabled; the
-    served HTML carries the dossier landmarks — `← Realm index` back-link, trust-document head (eyebrow +
-    hub name + domain + `md` badge + "Compiled by … · <time>"), and **§1–§4** each present with label +
-    value; the two action links resolve to the `/` lookup and `/<origin>/log/`; §4 renders dot + label and
-    (confirmed fixture) the block height, (pending/absent fixture) the honest pending copy with no 5xx /
-    no error styling; a frozen fixture still renders the non-dismissable Exhibit above the sections; an
-    unresolvable/unverified fixture renders the soft caution note, visibly distinct from the Exhibit;
-    mutation-proven non-vacuous; `mise run check` green; store stays a leaf (no `net/http`/web import).
-- **Spec:** target.md M-UI design-parity dossier named-region bar + "Document chrome + instance identity"
-  + "Navigation closure"; ADR-0010 Evidence-Ledger; ADR-0001 coverage honesty; CLAUDE.md Language
-  ("split view", "Bitcoin anchoring"). Related but SEPARATE (do not fold in): the 3× hub-status
-  overlay-precedence dup ("Hub-status overlay precedence … now 3x") and the per-hub-vs-per-checkpoint
-  Anchor honesty note.
+## Dossier §3 latest-checkpoint size and observed-time can come from different rows on a FROZEN hub
+- **Priority:** normal
+- **Source:** [review] (Codex P2, reviewer-confirmed against `follower.freeze`)
+- **What / where / how to verify:** The §3 observed-time subselect added in `internal/store/hubs.go:69-70`
+  picks the newest `checkpoints` row by `tree_size DESC, id DESC`, but §3 renders its SIZE from `.LastSize`
+  (= accepted `follow_state.last_size`). For a verified hub these agree. For a FROZEN hub they can diverge:
+  `follower.freeze` (`internal/follower/follower.go:475`) calls `RecordCheckpoint` for the contradictory
+  (often HIGHER-tree-size) checkpoint WITHOUT advancing `last_size` (reviewer-confirmed: `RecordCheckpoint`
+  never writes `last_size`; only `AdvanceAccepted`/`AdvanceFollowState` do). So a frozen hub whose rejected
+  checkpoint is larger renders the accepted size (`§3 N entries`) paired with the REJECTED checkpoint's
+  `observed_at` — an accepted size with a rejected timestamp. Confined to the frozen edge state, where the
+  loud non-dismissable Exhibit already renders "do not trust new state from this hub" ABOVE §3, and a
+  `shrink` violation cannot trigger it (the rejected size is smaller, so `tree_size DESC` still picks the
+  accepted row). Does NOT block this increment — all gates green, the verified/pending/confirmed primary
+  paths are correct, and increment 2 reworks §3 + the Exhibit. Fix when §3 is next touched (likely
+  increment 2): select `observed_at` for the row whose `tree_size = f.last_size` (or render §3 size + time
+  from ONE checkpoint row), so the two halves always describe the same checkpoint. Verify fixed: a frozen
+  fixture whose rejected checkpoint has a higher tree_size renders §3 size + observed-time from the SAME
+  (accepted) checkpoint; reverting makes the time track the rejected row.
+- **Spec:** CLAUDE.md "Coverage" / "Self-consistency violation" (never imply a guarantee the data does not
+  support); ADR-0001 coverage honesty; learnings.md always-loaded SSR-honesty rule; `learnings/dossier.md`
+  §3 size/time-decouple note.
+
+## Dossier §1 unconditionally says "Key resolved from did:web:…" even on the `unresolvable` overlay path
+- **Priority:** normal
+- **Source:** [review] (Codex P2, reviewer-confirmed)
+- **What / where / how to verify:** `internal/dossier/dossier.html:490` renders §1 Identity as "Key resolved
+  from did:web:{{.Domain}}" UNCONDITIONALLY (§1 is static-derived, no network/store read — per next.md's
+  Implementation Note + the mockup line 88, which use this phrasing because §1 is about WHERE the key comes
+  from = domain ownership, not a per-request verdict). But when the live overlay reports `unresolvable`, the
+  soft caution copy on the SAME page says "the monitor cannot currently fetch or parse this hub's did:web
+  document, so its signing key is unresolved" — so §1 asserts a successful key resolution exactly on the
+  failed-resolution path. A self-contradiction confined to the `unresolvable` state; it overstates §1 but
+  does not falsely claim verification of any proof/signature. Does NOT block this increment — the advance
+  followed next.md + the mockup literally, all gates green. This is design-rooted (the mockup specifies the
+  static "resolved" phrasing), so do NOT silently rewrite the mockup-specified copy without a design pass.
+  Fix when §1 is next touched / a design pass runs: use neutral source wording ("Key source: did:web:<domain>")
+  OR gate the word "resolved" off the `unresolvable` status (e.g. render "Key source unresolved" in §1 when
+  `ShowCaution` for `unresolvable`). Verify fixed: a fixture hub with a live `unresolvable` verdict does NOT
+  render "Key resolved from" in §1; reverting makes it reappear.
+- **Spec:** CLAUDE.md "Hub status" (unresolvable = can't resolve the key) + "did:web key resolution";
+  ADR-0010 Evidence-Ledger honesty; learnings.md always-loaded SSR-honesty rule; `.claude/design/ISCC
+  Monitor - Hub Dossier.dc.html` §1 static phrasing; `learnings/dossier.md` §1 note.
 
 ## Hub dossier §5 honest observation log + richer frozen Exhibit (size before → presented, evidence ref) — increment 2 of 2
 - **Priority:** critical
 - **Source:** [human] (Titusz, design-parity review 2026-06-23)
-- **What / where / how to verify:** **GATED — do NOT pick until increment 1 (the numbered-document layout
-  above) has landed:** this increment fills §5 + the Exhibit detail INTO the structure increment 1
-  creates (which ships §5 as an honest minimal placeholder). Then:
+- **What / where / how to verify:** **NOW PICKABLE — increment 1 (the numbered-document layout) LANDED in
+  advance `a15a213`, review-verified PASS_WITH_NOTES (gate-green, mutation-proven, visual pass confirmed):**
+  this increment fills §5 + the Exhibit detail INTO the structure increment 1 created (which ships §5 as an
+  honest minimal placeholder + a 2-row Exhibit). **Fold in the two §3/§1 honesty fixes review filed
+  alongside increment 1** (the §3 frozen size/time-decouple `normal` and, if a design call is made, the §1
+  "resolved"-vs-unresolvable `normal`) — increment 2 already reworks §3 + the Exhibit, so the §3 fix is a
+  natural co-resident. Then:
   - **§5 observation log:** there is NO store query for an observation history today (only
     `ListViolations`; `checkpoints` has no list accessor). Add a `ListCheckpoints(hubID, n)`-style read
     (newest-first over `checkpoints`, carrying `tree_size` + `observed_at`; join `ots` for confirmations)

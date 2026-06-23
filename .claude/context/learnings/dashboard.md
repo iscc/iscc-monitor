@@ -140,16 +140,9 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   to dashboard/dossier. STILL PENDING: the three proofserve mastheads (`browser.html`/`records.html`/`record.html`)
   — `internal/verifier` stays EXCLUDED (its `.codes` chrome is the verifier-app identity). If you edit any
   masthead, mirror it in all three SSR HTML files.
-- **Config-driven masthead identity LANDED on the dossier too (`Handler(st, hubID, statuses, id dashboard.Identity)`).**
-  The dossier REUSES `dashboard.Identity` (imports `internal/dashboard`) rather than redefining it, but applies its
-  OWN private `resolveIdentity` fail-safe + dossier-local `instanceFallback`/`operatorFallback` consts (literal
-  copies, byte-identical to dashboard's, with a comment that they MUST match — neither package can import the
-  other's unexported consts). This dossier-side helper was chosen over exporting `dashboard.resolve` to keep the
-  edit at ≤3 prod files. The dossier masthead has NO Realm slot (its title is the realm-subtitle-free "Hub
-  dossier") — thread only `Instance`/`Operator`. `TestDossierRendersInstanceIdentity` pins both populated +
-  zero-value paths; reviewer mutation-confirmed non-vacuous on BOTH the template `{{.Instance}}` binding AND the
-  wiring (`resolveIdentity` dropping the supplied value → FAIL). The duplicated fallback consts are tracked `low`
-  for consolidation when the masthead arc finishes across all surfaces (a shared identity-resolve leaf).
+- settled: config-driven masthead identity landed on the dossier too (`Handler(st, hubID, statuses, id
+  dashboard.Identity)`) — reuses `dashboard.Identity` with its OWN private `resolveIdentity` + byte-identical
+  fallback consts (no Realm slot; thread only `Instance`/`Operator`). Now in `learnings/dossier.md`.
 - **The status cell renders through the `hubStatusBadge` partial, not the bare word.** The partial is
   associated into the page set once at init (`template.Must(template.New("dashboard").Parse(pageTemplate))`
   then `template.Must(t.Parse(badge.Source))`, wrapped in an init closure since `template.Must` returns
@@ -160,18 +153,12 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   taxonomy — that is the pending `metrics.Registry` thread-through. `TestDashboardRendersEveryHub` asserts
   the badge markup (`class="hub-status-badge"` + `>Verified<`/`M8.4 12.3` + `>Frozen<`/`M8.2 3.3h7.6`),
   so a regression to `{{.Status}}` fails the test (reviewer mutation-confirmed).
-- **Config-driven masthead identity LANDED on `/` (the `dashboard.Identity` view value).** Three
-  operator-supplied strings flow env → binary → page: `Identity{Instance, Operator, Realm}`, passed as the
-  3rd arg to `Handler(st, statuses, id)`. **The fail-safe fallback lives in `Identity.resolve()` INSIDE the
-  package (not main.go)** — a blank `Instance`/`Operator` falls back to the `instanceFallback`/`operatorFallback`
-  consts (today's static copy), a blank `Realm` stays "" so the template's `Realm register{{if .Realm}} · {{.Realm}}{{end}}`
-  renders the bare subtitle with NO trailing separator. Keeping the default in the handler is what makes the
-  fallback golden-testable at the HTTP seam regardless of env. `TestDashboardRendersInstanceIdentity` pins
-  BOTH the populated path (exact operator strings present, static placeholder ABSENT) and the zero-value
-  fallback path; reviewer mutation-confirmed non-vacuous on BOTH the template binding (`{{.Instance}}`→literal
-  FAILS) AND the wiring (`resolve` ignoring the supplied value FAILS). Visual pass: live binary renders
-  `monitor.iscc.id` / `instance operated by ISCC Foundation · ISCC mainnet` / `REALM REGISTER · ISCC MAINNET`
-  exactly matching the Realm-Index mockup.
+- **Config-driven masthead identity on `/`: the fail-safe fallback lives in `Identity.resolve()` INSIDE the
+  package (not main.go)** so it is golden-testable at the HTTP seam regardless of env. `Identity{Instance,
+  Operator, Realm}` is the 3rd arg to `Handler(st, statuses, id)`; a blank `Instance`/`Operator` falls back
+  to the `instanceFallback`/`operatorFallback` consts, a blank `Realm` stays "" so the template renders the
+  bare subtitle with NO trailing separator. `TestDashboardRendersInstanceIdentity` pins both populated +
+  zero-value paths (mutation-confirmed on the template binding AND the wiring).
 - **The realm-name env var is `ISCC_MONITOR_REALM_NAME`, NOT `ISCC_MONITOR_REALM`.** `ISCC_MONITOR_REALM`
   is ALREADY the REQUIRED realm-document filesystem PATH in `internal/config` — overloading it would leak a
   filename (`…/realm.txt`) into the ledger subtitle. The masthead needs the human realm NAME, so it uses a

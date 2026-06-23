@@ -1,70 +1,78 @@
-## 2026-06-23 — Hub dossier increment 1 — numbered trust-document layout + §1–§4
+## 2026-06-23 — Review of: Hub dossier increment 1 — numbered trust-document layout + §1–§4
 
-**Done:** Rebuilt the served hub dossier (`GET /<domain>`) from the flat 5-row key/value `.ledger`
-card into the mockup's numbered trust document: trust-document head (eyebrow "Hub dossier", `<h1>` hub
-name, domain, `md` HubStatusBadge, "Compiled by <instance> · <time>"), a 2×2 numbered grid for
-§1 Identity / §2 Coverage / §3 Latest checkpoint / §4 Bitcoin anchor, an honest §5 observation-log
-placeholder, the two action links (`/` and `/{{.Origin}}/`), the `fork → "split view"` vocabulary map
-in the soft-caution copy, and the frozen Exhibit kept verbatim ABOVE the sections. Every §3/§4 value is
-honesty-gated against real store data (no fabricated timestamp/height/anchor state).
+**Verdict:** PASS_WITH_NOTES
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/store/hubs.go`: added two NULL-safe correlated subselects to `ListHubs` + two
-  `HubSummary` fields — `CheckpointObserved` (newest checkpoint's `observed_at`, `ORDER BY tree_size
-  DESC, id DESC LIMIT 1`) and `AnchorHeight` (the confirmed anchor's `btc_height`, scoped to
-  `status = OTSStatusConfirmed`). Additive only; the `Anchor`/coverage/`LastSize` reads are unchanged.
-- `internal/dossier/handler.go`: expanded `dossierData` + `buildData` with §3 observed time (honest ""
-  when absent), §4 anchor label + decorative dot + block height (gated on confirmed AND non-zero height),
-  the derived "N days observed" (`coverageDays`, only when coverage is set), the `fork → "split view"`
-  `statusNote`, and `ShowCaution`. Ported `anchorLabel` verbatim from dashboard (`store.OTSStatus*`-keyed);
-  added `observedTime`/`coverageDays`/`statusNote` helpers; added `fmt` import.
-- `internal/dossier/dossier.html`: replaced the `.ledger`/`.row-*`/`.surface` card markup + CSS with the
-  trust-document head, the numbered §1–§4 grid, the §5 placeholder, a soft-caution panel (distinct from
-  the Exhibit), and the two action buttons. Masthead chrome, `← Realm index` back-link, and the frozen
-  `{{if .Frozen}}` Exhibit are kept verbatim (Exhibit now sits inside the document, above the sections).
-- `internal/store/hubs_test.go` (test): added `TestListHubsCheckpointAndAnchorHeight` (populated +
-  zero-value, mutation-proven).
-- `internal/dossier/handler_test.go` (test): updated `TestDossierRendersCoveredHub` to the §2 format +
-  added trust-document-head / §1–§4 / action-link / §5 assertions; added `TestDossierConfirmedAnchorRendersHeight`,
-  `TestDossierPendingAnchorHonest`, `TestDossierCautionForUnverified`.
+**Summary:** The advance rebuilt the served hub dossier (`GET /<domain>`) from a flat 5-row ledger card
+into the mockup's numbered trust document — trust-document head, the 2×2 §1–§4 grid (honesty-gated),
+§5 placeholder, the two action links, the `fork → "split view"` map, with the frozen Exhibit + masthead
+intact. The work is clean, well-documented, scope-disciplined (3 prod + 2 test files), gate-green, and
+mutation-proven; a live visual pass confirms full design-parity with the mockup. Two confirmed Codex P2
+honesty nits in edge states (frozen §3 size/time decouple; §1 "resolved" vs unresolvable) are real but
+narrow, do not block, and are filed `normal` for increment 2 / a design pass.
 
-**Verification:** `mise run check` → green (all 28 pkgs `ok`; `gofmt -l .` empty). Per-criterion:
-- [x] `GET /<domain>` → 200 text/html, no `jsdelivr`/`cdn.`/`unpkg`/`googleapis`/`http://`, no-JS complete.
-- [x] Trust-document head landmarks present (eyebrow, `<h1 class="doc-hub-name">`, domain, `md` badge
-  markup `class="hub-status-badge"` + silhouette, "Compiled by … ·"); `← Realm index` (`href="/"`) intact.
-- [x] §1–§4 each render label + value (`§1`/`did:web:sb0.iscc.id`; `§2`/since+size+"days observed";
-  `§3`/`42 entries`+observed time; `§4`/anchor dot+label).
-- [x] Confirmed-anchor fixture renders the §4 `block 869440`; pending/never-stamped renders honest
-  "pending"/"not anchored", no 5xx, no error styling, no fabricated height.
-- [x] Action links: `href="/">Prove an ISCC-ID…`, `href="/sb0.iscc.id/log/">Browse the log…`.
-- [x] Frozen fixture still renders the non-dismissable Exhibit (existing `TestDossierFrozenExhibit`
-  green); unverified fixture renders the soft caution (`class="caution"`, "split-view" copy), distinct
-  from the Exhibit.
-- [x] §5 renders heading + "no entries yet" placeholder, no fabricated observation lines.
-- [x] `TestListHubsCheckpointAndAnchorHeight` green (populated + NULL-safe zero values; existing
-  `TestListHubsAnchorStatus` unchanged).
-- [x] Mutation checks non-vacuous: breaking the `AnchorHeight` subselect-assignment FAILs the store test;
-  dropping the §4 height binding FAILs `TestDossierConfirmedAnchorRendersHeight`.
+**Verification:**
+- [x] `mise run check` (build + vet + test) — green, all 28 pkgs `ok`; `gofmt -l .` empty.
+- [x] `go test -count=1 -run TestDossier ./internal/dossier` — 12 tests pass (fresh, uncached), incl. the
+  4 new/updated cases (`RendersCoveredHub` §1–§4/head/actions/§5, `ConfirmedAnchorRendersHeight`,
+  `PendingAnchorHonest`, `CautionForUnverified`).
+- [x] `go test -count=1 -run TestListHubs ./internal/store` — `TestListHubsCheckpointAndAnchorHeight` +
+  existing `TestListHubsAnchorStatus` pass (populated + NULL-safe zero-value).
+- [x] §1–§4 each render label + value; confirmed-anchor fixture renders `block 869440`; pending/absent
+  renders honest "pending"/"not anchored", no 5xx, no error styling, no fabricated `block 0`.
+- [x] Action links resolve: `href="/">Prove an ISCC-ID…`, `href="/sb0.iscc.id/log/">Browse the log…`.
+- [x] Frozen Exhibit + soft caution distinct; §5 honest minimal placeholder (heading, no fabricated lines).
+- [x] No-CDN body ban (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`/`http://`) + no-JS (`<script` banned) asserted.
+- [x] Store stays a leaf (additive `HubSummary` fields, NULL-safe subselects mirroring the `Anchor` pattern;
+  `time.Unix(observed,0)` / `uint64(height)` consistent with schema's INTEGER cols + existing read idioms).
+- [x] Mutation checks non-vacuous (reviewer-run): break §3 `ObservedTime` binding → `TestDossierRendersCoveredHub`
+  FAILS; drop the `AnchorHeight` assignment → `TestListHubsCheckpointAndAnchorHeight` FAILS.
+- [x] Gate-integrity scan over 3 unpushed commits — no `nolint`/`t.Skip`/swallowed-err/build-tag/removed
+  assertion; `TestDossierRendersCoveredHub` only ADDED assertions (replaced 2 coverage markers with the
+  §2-format equivalents + many section markers).
+- [x] Oracle/conformance gate N/A — pure HTML render of persisted store rows + in-memory overlay; touches no
+  signature/RFC-6962/Merkle/did:web/fsck/proof path; `go.mod`/`go.sum`/`schema.sql` byte-identical.
 
-**Next:** Increment 2 (the sibling `critical`, GATED on this) — the §5 observation log + the richer
-frozen Exhibit ("size before → presented" + evidence ref). It will add a `ListCheckpoints`-style store
-read (and parse `Violation.RawA/RawB`), turning the §5 placeholder into real per-poll lines and filling
-the Exhibit grid. The §5 markup hook (`.obs` / `.obs-empty`) and the `violationRow` struct are the seams
-it extends.
+**Issues found:** Two confirmed Codex findings filed `normal` (below); the resolved increment-1 critical
+deleted from issues.md; the increment-2 critical un-gated (now pickable) with the §3 fix folded in.
+
+**Codex second opinion:** Finished (exit 0). Two `[P2]` findings, BOTH reviewer-confirmed real but narrow:
+- **§3 frozen size/time decouple (`hubs.go:69`)** — CONFIRMED against `follower.freeze` (`follower.go:475`
+  does `RecordCheckpoint` of the contradictory, often-higher-tree-size checkpoint without advancing
+  `last_size`; `RecordCheckpoint` never writes `last_size`). So a frozen hub can pair the accepted §3 size
+  with the rejected checkpoint's `observed_at`. Confined to the frozen edge state (the loud Exhibit already
+  says "do not trust new state"); `shrink` can't trigger it. → filed `normal`, folded into increment 2 (it
+  reworks §3). Does not block.
+- **§1 "Key resolved from" vs `unresolvable` (`dossier.html:490`)** — CONFIRMED: §1 renders "Key resolved
+  from did:web:…" unconditionally while the `unresolvable` caution says the key is unresolved — a same-page
+  contradiction. BUT the advance followed next.md's Implementation Note + the mockup literally (static §1
+  phrasing), so this is design-rooted; fix needs neutral wording / a design call, not a silent copy rewrite.
+  → filed `normal`. Does not block.
+- Neither finding touches the trust root; no oracle conflict. Both are honesty-wording nits in edge states,
+  not correctness/verification defects.
+
+**Visual check:** Done (SSR surface changed — `internal/dossier`). `agent-browser` launched headless against
+a fixture-rich confirmed-anchor hub (seeded via a throwaway harness serving the dossier + `/_ds/` assets,
+since the live cold-start index is empty); harness removed before commit. The rendered surface is a full
+design-parity match to `.claude/design/ISCC Monitor - Hub Dossier.dc.html`: logo + instance-identity +
+`verify ↗` masthead, `← Realm index` back-link, trust-document head (eyebrow "HUB DOSSIER", `<h1>`
+`sb0.iscc.id`, `sb0.iscc.id/log`, `md` green Verified badge, heavy rule, "Compiled by monitor.iscc.id · …"),
+the §1–§4 grid with the green confirmed dot + "confirmed · block 869440", the §5 honest placeholder, and the
+two action buttons (filled "Prove an ISCC-ID…", bordered "Browse the log →"). No visual delta filed.
+
+**Next:** Increment 2 (the now-pickable sibling `critical`) — the §5 observation log (a `ListCheckpoints`-style
+leaf read: size transitions + freeze + anchor confirmations, NO synthesized per-poll "consistent" lines) and
+the richer frozen Exhibit ("size before → presented" + a stable evidence ref from `RawA`/`RawB`). Fold in the
+§3 frozen size/time-decouple `normal` while reworking §3 (select `observed_at` for the `f.last_size` row).
 
 **Notes:**
-- Oracle/conformance gate is N/A: pure HTML render of persisted store rows + an in-memory status overlay;
-  touches no signature/RFC-6962/Merkle/did:web/fsck/proof path. `go.mod`/`go.sum`/schema byte-identical.
-- The §2 "N days observed" is a live wall-clock derivation from `Coverage.Since` (`time.Since`), so the
-  rendered count grows with real time — the test asserts the literal "days observed" suffix, not a fixed
-  number, to stay deterministic. A future-dated `Since` (clock skew) clamps to "0 days observed".
-- The §4 height subselect is scoped to `status = OTSStatusConfirmed` (the dossier-specific gate); the
-  pre-existing `Anchor` status subselect remains newest-stamped-regardless-of-status, matching the
-  realm-index per-hub anchoring-activity semantics. These are two distinct subselects by design — the
-  dossier §4 height MUST come from a confirmed row, never a newer pending one.
-- Kept the dossier-local `overlayStatus`/`hubStatus`/`resolveIdentity`/fallback-const copies as-is
-  (consolidation into `internal/badge`/a shared leaf is the tracked `low`, explicitly out of scope here).
-  `anchorLabel` is now a 2nd copy (dashboard + dossier) — same consolidation pressure; left local per
-  next.md's "do NOT export dashboard internals for a 4th-file edit".
-- Mockup parity: the `md`-size badge is the badge package's intrinsic SSR size (the Go partial has no
-  Size field; size is a CSS/mockup concern), so `{{template "hubStatusBadge" .}}` renders it directly.
+- `dashboard.md` learnings was over the ~150-line rotation budget (183); created `learnings/dossier.md`
+  (52 lines, with index pointer) and net-reduced dashboard.md to 170 (collapsed the settled dossier-masthead
+  bullet to a one-line `settled:` + trimmed the `/`-identity bullet). Still slightly over 150 but materially
+  reduced this iteration; remaining content is the active dashboard surface.
+- The §2 "N days observed" is a live `time.Since(c.Since)` derivation (grows with wall-clock); tests assert
+  the literal "days observed" suffix, not a fixed number — deterministic. Future-dated `Since` clamps to 0.
+- The §4 height subselect is correctly scoped to `status = OTSStatusConfirmed` (distinct from the pre-existing
+  per-hub `Anchor` status subselect, which is newest-stamped-regardless-of-status) — two subselects by design.
+- 3 unpushed commits in `@{upstream}..HEAD` (update-state, define-next, advance); the two human UI tweaks
+  (`0bb1963`, `f28f57e`) are already on the remote. Pushing `develop` on this PASS_WITH_NOTES.
