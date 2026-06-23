@@ -1,113 +1,97 @@
 # Next Work Package
 
-## Step: Finish the dossier §3 honesty fix — `ORDER BY c.id ASC` so a same-size fork reads the accepted row's time
+## Step: Repoint the dossier's "Browse the log →" at the record-list browser (close the no-JS dead-end)
 
 ## Advances
-M-UI Verify (coverage / checkpoint honesty): "the coverage window (`monitored_since` size + RFC-3339
-time …) shows for **every** hub on the index + dossier and a pre-coverage state never renders as a
-guarantee (ADR-0001)". Concretely it closes the still-open `normal` **"Dossier §3 observed-time still
-tracks the REJECTED row for a same-size FORK violation (equivocation/higher-size case CLOSED)"**
-(`issues.md`) — the remainder the prior increment (`820a831`) opened against itself: it closed the
-equivocation / higher-tree-size decouple but left the same-size fork case, where §3 pairs the accepted
-`last_size` with the *rejected* fork checkpoint's later timestamp. This is the review handoff's recorded
-`**Next:**` and the sole code-closable convergence move; every other open `normal` is design- or
-human-blocked.
+The reopened **M-UI** Verify criterion — "Navigation closure" — and the lone `critical` issue
+"Hub-dossier 'Browse the log →' lands on a dead-end checkpoint page" (`issues.md`, `[human]` host-machine
+finding). target.md M-UI, "Navigation closure":
+
+> the dossier's **"Browse the log →"** action — which must land on the **log-browser record list**
+> (`ISCC Monitor - Log Browser.dc.html`), **never** the `/<domain>/log/` checkpoint-summary /
+> proof-link landing, which carries no link to the record list and is therefore a no-JS dead end for a
+> human browsing the log.
+
+A `critical` issue preempts everything (issues.md priority semantics), and this is the code-closable,
+no-new-wiring half: the dossier handler already knows its `Origin`, so the forward repoint is a
+self-contained href change. The record-list *dressing* (part 2 of the critical) needs the hub domain +
+`dashboard.Identity` threaded through `proofserve.Handler` and is the explicit follow-on (Not In Scope).
 
 ## Goal
-Make the hub-dossier "§3 Latest checkpoint" observed-time read the ACCEPTED checkpoint's time on a frozen
-hub even when the violation is a same-size fork, so the trust document never pairs the accepted `(size)`
-with a rejected checkpoint's timestamp. This completes the §3 size/time-honesty `normal` end-to-end.
+Make the dossier's "Browse the log →" action link to `/<domain>/log/records` (the paginated record-list
+log browser, where every row already links to its single record) instead of `/<domain>/log/` (the
+checkpoint-summary page that carries no link to the record list). This restores the forward leg of the
+no-JS navigation chain dossier → record list → single record, which is currently a dead end with
+JavaScript disabled.
 
 ## Scope
-- **Create**: (none)
-- **Modify**:
-  - `internal/store/hubs.go` — in the §3 `observed_at` correlated subselect (currently
-    `AND c.tree_size = f.last_size ORDER BY c.id DESC LIMIT 1`, line ~77), change `ORDER BY c.id DESC` →
-    `ORDER BY c.id ASC`. Update the `HubSummary.CheckpointObserved` field doc (lines ~27-34) and the
-    `ListHubs` doc comment (lines ~62-69) so they state the tiebreak rationale (evergreen — the accepted
-    row at a size is the EARLIEST `id`; a later same-size row is a fork's rejected evidence). One source file.
-  - `internal/store/hubs_test.go` *(test — does not count against the ≤3 budget)* — add a same-size-fork
-    regression test, mutation-pinned.
+- **Modify**: `internal/dossier/dossier.html` — the single href on the "Browse the log →"
+  `action-secondary` anchor (line ~573): `href="/{{.Origin}}/"` → `href="/{{.Origin}}/records"`.
+- **Modify** (test, not counted against the ≤3 budget): `internal/dossier/handler_test.go` — the existing
+  assertion (~line 319) `href="/sb0.iscc.id/log/">Browse the log →` must become
+  `href="/sb0.iscc.id/log/records">Browse the log →`; add the no-JS chain assertion (see Verification).
 - **Reference**:
-  - `.claude/context/learnings/store.md` — the TRAP bullet (lines ~173-179: "`id DESC` is BACKWARDS for a
-    same-size FORK … the fix is `id ASC`"), the `RecordCheckpoint` dedupe bullet (lines ~106-109), and the
-    coverage set-once / leaf-purity notes.
-  - `.claude/context/learnings/dossier.md` — the §3 size/time-decouple note (Read before touching §3 honesty;
-    confirms the §1-resolved + realm-Anchor siblings are DESIGN-BLOCKED, NOT to touch).
-  - `internal/store/hubs_test.go:158-226` — the existing `TestListHubsFrozenObservedTracksAcceptedSize`
-    (higher-size case) to mirror its shape (`UpsertHub` → `AdvanceAccepted` → `RecordCheckpoint` → `Freeze`).
-  - `internal/store/checkpoints.go:108-141` (`RecordCheckpoint` `ON CONFLICT(hub_id,tree_size,root) DO
-    NOTHING`) and `:143-166` (`CheckpointAt` `ORDER BY rowid LIMIT 1` — the "earliest row is the accepted
-    one" precedent this change matches).
+  - `.claude/context/learnings/dossier.md` — the "Browse the log →" link is `/{{.Origin}}/` today;
+    masthead + overlay are byte-identical 3× ports — do NOT touch them here.
+  - `.claude/context/learnings/http-surface.md` — §"HTML record list at `/records`": `serveRecords` is
+    mounted at `/<domain>/log/records` via the inner path switch; each row already links
+    `record?index=<seq>` to its single record.
+  - `.claude/design/ISCC Monitor - Hub Dossier.dc.html:103` — the mockup's "Browse the log →" →
+    `ISCC Monitor - Log Browser.dc.html`, NOT the checkpoint page.
+  - `internal/proofserve/handler.go:199-205` — the inner `switch r.URL.Path`: `/records` → `serveRecords`
+    (confirms the repointed href resolves to a live 200 record list).
 
 ## Not In Scope
-- Do NOT touch the §3 renderer (`internal/dossier`), the `ListCheckpoints` §5 observation-log query, or the
-  `Anchor` / `AnchorHeight` subselects in `ListHubs` — only the `observed_at` subselect's `ORDER BY` changes.
-- Do NOT touch the design-blocked `normal`s: the §1 "Key resolved from did:web:…" wording on the
-  `unresolvable` path, the realm-index `/` per-hub-vs-per-checkpoint Anchor honesty, the WASM cross-origin
-  signature half, the proofserve-trio masthead identity.
-- Do NOT consolidate the 3x hub-status overlay precedence, the masthead-identity fallback consts, or any
-  other `low` locality issue — skipped by the loop.
-- Do NOT add an index, column, migration, or `user_version` change — this is a query-shape change inside the
-  existing `ListHubs` statement, no DDL.
-- Pruning the stale resolved issue entries (the realm-index hero, the 4 M-API entries) is
-  `update-state`/`review` bookkeeping, not an advance code change.
+- **Dressing `records.html` to the Log-Browser mockup** (part 2 of the critical): the
+  `← <hub> dossier` breadcrumb, the eyebrow "Log browser" + hub name + "<domain> · N records mirrored"
+  head, the instance-identity + `verify ↗ monitor.iscc.codes` masthead chrome, the top+bottom
+  "seq X–Y of Z" range pager (replacing the bottom-only "showing N of M"), and dropping the Status badge
+  row the mockup omits. These need the hub **domain string** + `dashboard.Identity` threaded from
+  `cmd/iscc-monitor` (`hubHandler` → `mirrorHandler` → `buildMux`) through `proofserve.Handler` →
+  `serveRecords`, plus every `Handler(...)`/`buildMux(...)` test callsite — a multi-file follow-on step.
+- **The back-breadcrumb leg** (record list → dossier; single record → record list): both `records.html`
+  and `record.html` lack any `←` back-link, and a correct dossier back-link needs the threaded domain.
+  Add it with the dressing step above.
+- Do **not** delete or alter the `/<domain>/log/` checkpoint-summary page
+  (`internal/proofserve/browser.html`) — it is M3-functional and CLAUDE.md-documented; this step only
+  stops the dossier from *sending a human there as the "log browser"*.
+- Do **not** touch the dossier masthead / overlay / `§1–§5` (the 3× duplicated identity+overlay code), or
+  any `low` locality issue (skipped by the loop).
 
 ## Implementation Notes
-- **The fix is one token.** In `ListHubs` (`internal/store/hubs.go:76-77`) the §3 subselect today reads
-  ```sql
-  (SELECT c.observed_at FROM checkpoints c WHERE c.hub_id = h.hub_id
-   AND c.tree_size = f.last_size ORDER BY c.id DESC LIMIT 1)
-  ```
-  Change `ORDER BY c.id DESC` → `ORDER BY c.id ASC`. Nothing else in the query, the scan path
-  (`sql.NullInt64 observedAt` → `time.Unix`), or the NULL-safe fallback changes.
-- **Why `id ASC` is correct (taxonomy, `learnings/store.md`):** a re-observed ACCEPTED checkpoint (same
-  root) is deduped by `RecordCheckpoint`'s `ON CONFLICT(hub_id, tree_size, root) DO NOTHING`, so the ONLY
-  way two rows share `tree_size = f.last_size` is a FORK (different root). The accepted row was recorded
-  FIRST → it has the EARLIEST `id`; the fork's contradictory row has a LATER `id`. So `ORDER BY c.id ASC
-  LIMIT 1` deterministically selects the accepted row — the same selection `store.CheckpointAt` already
-  makes with `ORDER BY rowid LIMIT 1`. `id DESC` is exactly backwards: it picks the later fork row.
-- **No regression on the existing higher-size test.** `TestListHubsFrozenObservedTracksAcceptedSize`
-  records its rejected checkpoint at `tree_size = 200 ≠ last_size = 100`, so the `AND c.tree_size =
-  f.last_size` clause already excludes it — only one row matches the subselect and ordering is irrelevant
-  there. It must stay green; run it to confirm. The verified-hub and bare-hub assertions in
-  `TestListHubsCheckpointAndAnchorHeight` likewise see a single matching row (or none → NULL) and are
-  unaffected.
-- **New regression test** (e.g. `TestListHubsFrozenObservedTracksAcceptedSameSizeFork`): mirror the
-  existing frozen test but make the contradictory checkpoint a SAME-SIZE fork —
-  `UpsertHub` → `AdvanceAccepted{TreeSize: 100, Root: acceptedRoot, ObservedAt: tAccepted}` →
-  `RecordCheckpoint{TreeSize: 100, Root: forkedRoot (DIFFERENT bytes), ObservedAt: tForkRejected}` with
-  `tForkRejected > tAccepted` (so the assertion is sharp) → `Freeze`. The two roots MUST differ, else
-  `ON CONFLICT(hub_id, tree_size, root)` dedupes and no fork row exists. Assert `frozen.Frozen`,
-  `frozen.LastSize == 100`, and `frozen.CheckpointObserved.Equal(tAccepted)` (NOT `tForkRejected`). Use
-  distinct 32-ish-byte root literals exactly as the existing test does.
-- **Mutation-proof the test (state it in the test docstring + the advance).** With `id ASC` it passes;
-  reverting the subselect to `ORDER BY c.id DESC` makes the new test report `tForkRejected` and FAIL while
-  the existing higher-size test stays green; restoring `ASC` makes both pass.
-- **Store-leaf discipline (always-loaded rule):** stays a pure read in `internal/store` — no new import, no
-  `net/http`, plain Go types out. The renderer (`internal/dossier`) is correct; the query was picking the
-  wrong row.
-- **Relevant Correctness rule:** learnings.md always-loaded **Coverage honesty (ADR-0001)** — "state
-  guarantees from coverage start; never imply a guarantee the data does not support". Pairing the accepted
-  size with a rejected checkpoint's timestamp is exactly that dishonest pairing; `id ASC` removes it. The
-  frozen Exhibit still shouts "do not trust new state" above §3, but §3 must not assert a false specific time.
-- **Oracle/conformance gate: N/A** — touches no signature / RFC-6962 / Merkle / did:web / proof path; it is
-  a pure `checkpoints` read-order change. State the N/A in the advance.
+- The single source change is the `href` on the `action action-secondary` anchor in `dossier.html`
+  (currently `href="/{{.Origin}}/"`). `.Origin` is `<domain>/log` (e.g. `sb0.iscc.id/log`), so
+  `/{{.Origin}}/records` renders `/sb0.iscc.id/log/records` — the absolute path `serveRecords` is mounted
+  at. Keep the visible text " →" and the `action-secondary` class unchanged; only the path suffix changes
+  (`/` → `/records`).
+- The dossier test (handler_test.go ~lines 316-319) asserts the OLD dead-end href verbatim; update that
+  literal to `/sb0.iscc.id/log/records`. This makes the change mutation-proven — a revert to `/{{.Origin}}/`
+  fails the assertion.
+- For the no-JS chain assertion, exercise the SAME fixture store through BOTH handlers (the dossier
+  `Handler` and a `proofserve.Handler` read the same `*store.Store`). Render the dossier for the seeded
+  hub, confirm its "Browse the log →" href equals `/<origin>/records`, then request `GET /records` against
+  `proofserve.Handler(st, hubID, nil)` and assert `200 text/html` (a real record list, not a 404 dead-end).
+  The dossier test's `coveredHub` helper seeds the hub; if seeding records into that store is awkward in
+  the dossier test, the equivalent proof is: assert the dossier href in `internal/dossier/handler_test.go`
+  AND rely on the existing `internal/proofserve` `TestRecords*` tests (which already prove `GET /records`
+  → 200) — together they show the leg is unbroken.
+- M-UI hard constraint (always-loaded): the surface stays "complete with JavaScript disabled" — the
+  forward link is a plain `<a href>`, no script. The repointed path is same-origin relative-of-root, so no
+  external CDN/host enters the body.
+- No crypto/proof/Merkle/did:web path is touched — the oracle/conformance gate is **N/A** (a pure SSR href
+  + test-literal change). State the N/A in the advance.
 
 ## Verification
 - `mise run check` is green (build + vet + test across all packages; `gofmt -l .` empty).
-- `go test -count=1 -run TestListHubs ./internal/store` passes — the new same-size-fork test plus the
-  existing `TestListHubsFrozenObservedTracksAcceptedSize`, `TestListHubsCheckpointAndAnchorHeight`,
-  `TestListHubsAnchorStatus` all green.
-- Mutation check: reverting `internal/store/hubs.go`'s §3 subselect `ORDER BY c.id ASC` → `ORDER BY c.id
-  DESC` makes the new same-size-fork test FAIL (reports the rejected time) while the higher-size test stays
-  green; restoring `ASC` makes both pass.
-- Store leaf purity intact: `go list -deps ./internal/store | grep '^net/http$'` is empty.
-- Assertion: for a frozen hub with accepted `tree_size = last_size = 100 @ tAccepted` and a recorded
-  SAME-SIZE fork `tree_size = 100` (different root) `@ tForkRejected`,
-  `ListHubs(...)[hub].CheckpointObserved == tAccepted`.
+- `go test -count=1 -run TestDossier ./internal/dossier` passes, including the updated href assertion.
+- Assertion: the rendered dossier's "Browse the log →" href equals `/<origin>/records` (e.g.
+  `/sb0.iscc.id/log/records`); reverting `dossier.html` to `href="/{{.Origin}}/"` makes the dossier test
+  FAIL (mutation-proven).
+- `go test -count=1 -run TestRecords ./internal/proofserve` passes — the repointed path is live
+  (`GET /records` → `200 text/html` record list), so the dossier no longer links to a dead end.
 
 ## Done When
-`mise run check` is green, the new mutation-proven same-size-fork test passes asserting §3 observed-time
-tracks the accepted row, the existing higher-size / verified-hub / bare-hub assertions still hold, and
-reverting the `id ASC` tiebreak makes the new test fail — closing the §3 size/time-decouple `normal`.
+`mise run check` is green and the dossier's "Browse the log →" href resolves to the live
+`/<domain>/log/records` record list (asserted at the HTTP seam, mutation-proven), closing the no-JS
+navigation-closure dead-end that the `critical` issue's part (1) names — leaving the record-list mockup
+dressing (part 2) as the next step.
