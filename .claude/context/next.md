@@ -1,115 +1,106 @@
 # Next Work Package
 
-## Step: Stop the verifier app from claiming an un-run did:web signature check
+## Step: Prune the 4 resolved-but-unpruned issues and surface the human/design gate
 
 ## Advances
-Closes the **code-closable (copy-honesty) half** of the open `normal` issue *"The WASM verifier never
-checks the checkpoint signature against the hub's did:web key … the copy overstates this: `verifier.html:451`
-lists 'Check the signature against the hub's did:web key' as a step the verifier WILL run, and
-`verifier.html:637` reports it '… re-verified this inclusion proof against the **hub-signed** checkpoint
-root' — but neither the signature nor a did:web resolution runs."* The issue itself authorizes this interim
-narrowing: *"until then, **narrow the success copy** + drop the unrun did:web step from the record block so
-the page does not claim a signature/key check it skips."*
+No `target.md` milestone Verify criterion is open: **M1, M2, M3, M-UI code-halves, the WASM target
+criteria, OTS observable halves, M-Deploy, and M-API (4/4) are all MET.** This step therefore advances
+no Verify criterion — and that is correct here, because **the loop is out of autonomous code-closable
+work** (`state.md` "Next Milestone" + auto-memory `loop-stalls-on-human-blocked-done`):
 
-This serves the **target.md WASM verifier** milestone honesty bar and the always-loaded learnings rule:
-*"On a self-verifiable surface, gate a rendered `✓` … on a re-VERIFICATION, not a status flag. A built proof
-is not a verified proof"* — and, equally, a page must not list a verification step (signature/did:web) it
-never runs. The full in-browser signature + did:web resolution (the **other**, design-blocked half) stays
-out of scope.
-
-**Why this, not the handoff's `Next:`** The handoff/`state.md`/`issues.md` steer to "M-API contract-accuracy
-doc fixes (phantom `index` param on `/verify`; checkpoint media type)". Those are **already done and
-committed** (commit `53ee328`, an ancestor of HEAD) and gated by per-op tests
-(`TestContractVerifyHasNoIndexParam`, `TestContractCheckpointMediaType`, `TestContractHealthzHas503`,
-`TestNoMermaidInContract`). The served `/openapi.json` already shows `verify` with no `index` param and
-`checkpoint` `200` as `application/octet-stream`; `go test ./internal/openapi` is green. That tracking is
-**stale, not open work** — see Not In Scope for the prune note.
+- the lone **`critical`** (dossier→log-browser navigation + record-list parity) is **fully code-closed
+  and human-blocked** on the M-UI exit sign-off (ADR-0012) — the protocol forbids re-attempting it;
+- the two genuinely-open `normal`s (WASM cross-origin signature half, realm-index per-hub-vs-per-checkpoint
+  Anchor honesty) are both **design-blocked** — each issue body itself says "needs a design pass," so a
+  blind code attempt is forbidden;
+- the remaining four open issues are **resolved-but-unpruned bookkeeping** — I re-verified at the
+  served-spec seam (not on faith) that their fixes already landed (the OpenAPI verify/checkpoint fixes in
+  `53ee328`; the `/` realm-index sub-items in `b74931f`/`b30b84e`/`6a442b4` + the human design tweak).
+  Pruning them is the one concrete, mechanically-verifiable action available that does **not** manufacture
+  a cosmetic refactor. Preempting milestone work is justified because there is no open milestone Verify
+  criterion and no code-closable issue.
 
 ## Goal
-Make the verifier app (`monitor.iscc.codes`, Surface C) state truthfully that its in-browser WASM check
-re-verifies **RFC-6962 inclusion + the id-binding against the committed/accepted root** — and NOT a
-checkpoint signature against the hub's did:web key, which `isccVerifyInclusion` does not run. Removes a
-green-but-overstated claim a skeptical client would otherwise trust.
+Delete the four issues whose fixes have already shipped (so `issues.md` reflects reality and the DONE
+gate's "0 open `normal`" condition is honestly counted), and leave the residual open set — the
+human-blocked `critical` + the two design-blocked `normal`s — as the clear marker that the only remaining
+blockers are the human M-UI exit sign-off and two design passes. Prevents the loop from spinning on
+cosmetic chrome.
 
 ## Scope
-- **Modify**: `internal/verifier/verifier.html` — the verification-step list (the `vstep` at line 451
-  asserting "Check the signature against the hub's did:web key") and the tier-2 verdict copy (the
-  `setVerdict("verified", …)` / `setVerdict("failed", …)` strings at lines 637 / 639, plus the matching
-  vstep label at line 447 — all currently say "hub-signed checkpoint root").
-- **Modify**: `internal/verifier/handler_test.go` — update `TestVerifierRendersNamedRegions` (lines 101–102,
-  which assert the OLD step strings) and add a mutation-provable honesty test (see Verification).
+- **Create**: none
+- **Modify**: `.claude/context/issues.md` (a doc/backlog file — touches **zero** source files; the ≤3
+  non-test/doc code-file budget is unused)
 - **Reference**:
-  - `internal/verifier/verifier.html:438-463` (the four `vstep` labels + the verdict region) and
-    `:625-640` (the `isccVerifyInclusion` call + its own comment confirming it gates on inclusion math + the
-    id-binding only — no signature / no did:web).
-  - `internal/certificate/cert.html:587` — the already-honest sibling tier-2 copy to match:
-    `"✓ Your browser re-verified this inclusion proof against the accepted root."` (note: NOT "hub-signed").
-  - `.claude/context/learnings/verifier.md` — the package-local rules (pure stdlib leaf; no-CDN body ban
-    golden-tested; the illustrative-mismatch honesty already settled; the three distinct render states).
-  - `.claude/context/issues.md` — the issue *"The WASM verifier never checks the checkpoint signature
-    against the hub's did:web key"* (this step closes its copy-honesty half only).
+  - `internal/openapi/openapi.yaml` (verify op lines 220-251 declare only `Domain`+`iscc_id`; checkpoint
+    200 lines 264-270 = `application/octet-stream`) and `internal/openapi/openapi.json` — the proof the
+    two M-API contract-accuracy issues are already fixed.
+  - `.claude/context/state.md` "Convergence" + "Next Milestone" (the prune list + the blocked-gate
+    framing this step executes).
+  - `.claude/context/handoff.md` ("prefer pruning + flagging the human/design gate over manufacturing a
+    `low` refactor").
 
 ## Not In Scope
-- **Do NOT implement in-browser did:web resolution or checkpoint-signature verification** — that is the
-  design-blocked other half of the same `normal` (needs a design pass; the issue says so). This step removes
-  the false claim only; it does not add the missing check.
-- **Do NOT touch `internal/certificate/cert.html`** — its tier-2 copy ("accepted root"; §4 is server-rendered
-  evidence) is already honest; it is the parity reference, not an edit target.
-- **Do NOT re-edit the OpenAPI contract** (`openapi.yaml` / `openapi.json`) — the `verify`-`index` and
-  `checkpoint` media-type fixes are already committed (`53ee328`) and gated; re-doing them is churn. The
-  stale `normal`/`low` entries describing them (and the resolved `/` hero-footer entry, all 4 sub-items
-  closed) are for a future `update-state`/`review` to **prune**, not for this step to fix.
-- Do NOT change the WASM artifact, `cmd/wasm`, or `internal/proof/verify` — the verifier core is unchanged;
-  only the page's prose about what it does changes.
-- Do NOT re-attempt the human-blocked `critical` (dossier→log-browser navigation) in any form.
+- **Do NOT touch any source, test, or template file.** No `.go`, no `.html`, no `openapi.{yaml,json}`
+  edit — the specs are already correct; this is backlog hygiene only.
+- **Do NOT re-attempt the human-blocked `critical`** (M-UI exit sign-off) or the two design-blocked
+  `normal`s (WASM signature half, realm-index Anchor honesty) — they stay OPEN; a code attempt is
+  forbidden until the human/design input lands.
+- **Do NOT delete any `low` issue** — lows are the human-directed backlog; leave all ~22 intact.
+- Do NOT add a new "loop is blocked" prose entry to `issues.md` — that would duplicate `state.md`'s "Next
+  Milestone" and risk drift; the residual open set is itself the marker.
+- Do NOT manufacture a cosmetic/locality `low` refactor to keep the loop busy (auto-memory
+  `loop-stalls-on-human-blocked-done`).
 
 ## Implementation Notes
-- The WASM checker (`globalThis.isccVerifyInclusion`, `verifier.html:631`, comment at `:625-630`) verifies
-  ONLY (a) the RFC-6962 inclusion math (`record`+`proof`+`size`→`root`) and (b) the id-binding (the record
-  commits `target.id`). It does NOT fetch a did:web document or verify the checkpoint note signature. So
-  every page string that implies a signature / key check is the un-run claim to fix.
-- **The fourth `vstep` (lines 449-452)** is the false step. Replace its label so it describes what the
-  browser actually does — bind the record's committed ISCC-ID to the requested id (the id-binding half),
-  e.g. "Confirm the record commits the requested ISCC-ID". Do NOT simply delete the row and leave the list
-  implying a full verification; the page must not imply the signature is checked here. If a phrase is wanted
-  to locate signature trust honestly, point it at the SERVER / certificate §4 (which IS server-verified),
-  not at this in-browser run.
-- **The "hub-signed checkpoint root" phrasing** at `:447`, `:637`, `:639` overstates: the WASM rebuilds the
-  committed root from the inclusion proof; it does not validate the root was hub-signed. Match the
-  certificate's already-honest wording — "the accepted root" / "the committed root" — so the verdict claims
-  only the inclusion + id-binding it actually ran.
-- **Read each remaining "hub-signed" string in context before changing it.** The `#mismatch` body copy
-  (`:500`) and the split-view lede refer to the EVIDENCE the user holds (their own signed checkpoint), not
-  to a check the WASM ran — those may keep "hub-signed". Only change strings that assert the *in-browser run*
-  performed a signature check.
-- Keep this a pure static-template + golden-test edit. Oracle/conformance gate is **N/A** — no signature,
-  RFC-6962, Merkle, did:web, fsck, or proof code is touched (`internal/proof/verify` and `cmd/wasm`
-  untouched; the page only stops claiming a check). The verifier is a pure stdlib leaf
-  (`learnings/verifier.md`): the template parses at init, so a malformed edit fails the build, not a request.
-- The no-CDN body ban is golden-tested (`TestVerifierNoExternalCDN`) — do not introduce any `http://` /
-  `https://` / `cdn.` / `jsdelivr` literal; the bare text "did:web" is fine (no scheme).
-- Relevant learnings rule (always-loaded): a rendered `✓` a reader trusts must reflect an actual
-  re-verification — and, by the same honesty, a listed verification STEP must be one the code runs. This is
-  the recurring "Verdict-UI honesty" pattern (auto-memory): advance keeps shipping UI that asserts an un-run
-  verification, review catches it — fix it at the source here.
+Delete exactly these four `## …` issue sections from `.claude/context/issues.md` (each header is unique —
+grep-verified, current line numbers shown but re-grep before editing). For each, remove the header line
+through the last line before the next `## ` header (or the next `---` / HTML-comment separator), leaving
+no orphan body lines:
+
+1. **`## `/` realm-index: only the "recent declarers checked" hero footer remains …`** (line ~268,
+   `normal`) — the issue's own body ends "**All four sub-items of this issue are now CLOSED** — the next
+   `update-state` may prune this entry."
+2. **`## OpenAPI contract advertises a phantom `index` query param on `/{domain}/log/verify` …`**
+   (line ~638, `normal`) — VERIFIED fixed: the served `verify` operation declares only `Domain` +
+   `iscc_id`, no `index` (openapi.yaml:235-242; json twin confirmed).
+3. **`## OpenAPI contract advertises `text/plain` for `/{domain}/log/checkpoint` …`** (line ~662,
+   `normal`) — VERIFIED fixed: the `checkpoint` 200 content type is `application/octet-stream`
+   (openapi.yaml:264-270; json twin confirmed).
+4. **`## No machine-readable API contract (OpenAPI) and no interactive API docs hosted by the app`**
+   (line ~699, `normal` umbrella) — slices 1-4 all landed; its last code-closable child (#2/#3 above) is
+   resolved and the remaining child is the `low` healthz-503, so the umbrella prunes.
+
+Keep the surrounding structure intact: do **not** remove the `---` separators or the
+`<!-- pre-deployment asks … M-Deploy -->` HTML-comment block; only remove whole issue sections. After the
+deletions the still-open `normal`s in the file are exactly the WASM-signature-half issue and the
+realm-index-Anchor-honesty issue (both design-blocked), plus the human-blocked `critical` at the top and
+the `low`s.
+
+Relevant learnings: the always-loaded `learnings.md` has no rule bearing on backlog editing, and this
+step touches no package detail file. The correctness-relevant fact this step RELIES ON — that the OpenAPI
+contract is the accurate machine surface — was re-verified at the served-spec seam above, not taken on
+faith from `state.md`.
 
 ## Verification
-- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty).
-- `go test -count=1 -run TestVerifier ./internal/verifier` passes (the updated
-  `TestVerifierRendersNamedRegions` no longer asserts the dropped "Check the signature against the hub's
-  did:web key" step string).
-- A NEW mutation-provable honesty test (e.g. `TestVerifierDoesNotClaimSignatureCheck`) asserts the served
-  body: (1) does **not** contain "Check the signature against the hub's did:web key" (the un-run step is
-  gone); (2) the `setVerdict("verified", …)` copy does **not** claim the browser re-verified a "hub-signed
-  checkpoint root"; (3) the `verified` verdict copy asserts only an inclusion / accepted-/committed-root
-  re-verification. Reverting the template change (re-add the did:web step / restore "hub-signed checkpoint
-  root" to the verdict) makes this test FAIL.
-- Assertion: `grep -c "Check the signature against the hub's did:web key" internal/verifier/verifier.html`
-  returns `0`.
-- Assertion: the `setVerdict("verified", …)` line in `internal/verifier/verifier.html` no longer contains
-  the substring `hub-signed` (it claims only the inclusion / accepted-root check the WASM ran).
+- The four pruned headers are **absent** from the tree (each grep exits non-zero, so the negation exits 0):
+  `! grep -qF 'recent declarers checked' .claude/context/issues.md`,
+  `! grep -qF 'advertises a phantom' .claude/context/issues.md`,
+  `! grep -qF 'serves `application/octet-stream`' .claude/context/issues.md`,
+  `! grep -qF 'No machine-readable API contract' .claude/context/issues.md`.
+- The two design-blocked `normal`s **survive** (not over-pruned):
+  `grep -qF 'never checks the checkpoint signature against the hub' .claude/context/issues.md` passes AND
+  `grep -qF 'Anchor column is per-hub' .claude/context/issues.md` passes.
+- The human-blocked `critical` **survives**:
+  `grep -qF 'Browse the log →' .claude/context/issues.md` passes.
+- **No source/test/template changed** — only the two context files are dirty:
+  `git status --porcelain | grep -vE '\.claude/context/(issues|next)\.md$' | grep -q .` exits **non-zero**.
+- `mise run check` is green (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` empty) —
+  confirms the doc-only edit broke nothing.
+- The served OpenAPI is still accurate (the prune did not mask a real defect):
+  `go test -count=1 ./internal/openapi` passes (the per-operation goldens added in `53ee328`).
 
 ## Done When
-`mise run check` is green and the new honesty test (mutation-proven: reverting the template change FAILs it)
-plus the updated `TestVerifierRendersNamedRegions` confirm the verifier app no longer lists or claims an
-in-browser did:web signature check it does not run.
+The four resolved-but-unpruned `normal` issues are removed from `issues.md`; the two design-blocked
+`normal`s, the human-blocked `critical`, and all `low`s remain; no source/test/template file changed; and
+`mise run check` is green.
