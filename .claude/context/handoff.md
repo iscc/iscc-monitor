@@ -1,68 +1,59 @@
-## 2026-06-23 — Review of: Dossier §1 stops claiming "Key resolved from did:web" on the `unresolvable` path
+## 2026-06-23 — Stop the verifier app from claiming an un-run did:web signature check
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Closed the copy-honesty half of the open `normal` "WASM verifier never checks the checkpoint
+signature against the hub's did:web key" issue. The Surface-C verifier page (`monitor.iscc.codes`)
+no longer lists "Check the signature against the hub's did:web key" as a verification step it runs,
+and its tier-2 verdict/in-progress copy no longer claims the browser re-verified a "hub-signed
+checkpoint root" — it now states truthfully that the in-browser WASM re-runs only the RFC-6962
+inclusion math + the id-binding against the **accepted/committed** root, and that the did:web
+signature is verified server-side (certificate §4). No verifier core / WASM / proof code changed.
 
-**Summary:** Tightly-scoped, correct SSR honesty fix: on the `unresolvable` overlay path the dossier §1
-Identity no longer asserts "Key resolved from did:web:<domain>" (which contradicted the same page's
-"signing key is unresolved" caution), rendering neutral "Key source:" wording instead via a new pure
-view-model flag `KeyUnresolved` set at the same site as `ShowCaution`. Exactly 3 files (2 prod + 1 test),
-all in next.md scope; `mise run check` green, gofmt clean, every next.md Verification line met, both
-mutation checks reviewer-reproduced. This code-closes the open `normal` dossier §1-honesty issue.
+**Files changed:**
+- `internal/verifier/verifier.html`: replaced the false 4th `vstep` ("Check the signature against the
+  hub's did:web key") with "Confirm the record commits the requested ISCC-ID" (the id-binding the WASM
+  actually checks); changed the 3rd `vstep` label, the in-progress copy, and both `setVerdict`
+  ("verified"/"failed") strings from "hub-signed checkpoint root" → "committed/accepted root" (matching
+  the certificate's already-honest sibling); updated the loader comment to state the WASM does NOT
+  fetch did:web or verify the signature. Left line 500 (`#mismatch-body`, the user's own signed
+  evidence) and line 579 (descriptive "hub-signed text" comment) unchanged per next.md — those refer
+  to evidence the user holds, not a check the run performed.
+- `internal/verifier/handler_test.go`: updated `TestVerifierRendersNamedRegions` to assert the two new
+  step labels (dropped the old hub-signed/did:web step strings); added mutation-provable honesty test
+  `TestVerifierDoesNotClaimSignatureCheck` (+ `verifiedVerdictLine` helper) asserting the served body
+  drops the did:web step, the `verified`-verdict line carries no `hub-signed`, and the `verified` copy
+  asserts only the inclusion / accepted-root + id-binding check.
 
-**Verification:**
-- [x] `mise run check` green (build + vet + test across all 30 packages) — confirmed.
-- [x] `gofmt -l .` empty — confirmed.
-- [x] `go test -count=1 -run TestDossier ./internal/dossier` — PASS (existing suite unaffected).
-- [x] NEW `TestDossierUnresolvedKeyWordingHonesty` — PASS; asserts the `unresolvable` body drops "Key
-  resolved from", carries "Key source:", and still shows `did:web:sb0.iscc.id`, plus a verified-sibling
-  (nil source) case asserting the mockup's `Key resolved from <span class="mono">did:web:…</span>` copy
-  is unchanged and NOT over-gated.
-- [x] Mutation 1 (revert the §1 template gate → always "Key resolved from") — reviewer-reproduced: the
-  unresolvable assert FAILS; reverted → PASS.
-- [x] Mutation 2 (over-gate: `KeyUnresolved: true` in `buildData`) — reviewer-reproduced: the
-  verified-sibling assert FAILS; reverted → PASS. Gate guards both directions, non-vacuous.
-- [x] Mockup-faithfulness — `.dc.html:88` §1 copy is "Key resolved from did:web:{{ hub.domain }}";
-  the `{{else}}` arm preserves it verbatim for every non-`unresolvable` status.
-- [x] Scope — diff touches exactly the 3 next.md-scoped files (handler.go, dossier.html, handler_test.go)
-  + handoff; nothing in `## Not In Scope` (the `unverified` §1 wording is correctly left as "resolved",
-  since `unverified` DID resolve a key — the caution copy at handler.go:383 confirms).
-- [x] Quality-gate integrity — full unpushed diff (3 commits, `@{upstream}..HEAD`) scanned: no `nolint`,
-  `t.Skip`, swallowed errors, build-tag exclusions, deleted assertions, or loosened gates.
-- Oracle/conformance gate: **N/A** — pure SSR template + view-model flag off the already-resolved status
-  string; no signature, RFC-6962, Merkle, did:web resolution, fsck, or proof path touched; no new store
-  read; `go.mod`/`go.sum` untouched.
+**Verification:** `mise run check` → exit 0 (build + vet + test across all 30 packages green; `gofmt
+-l .` empty). Per next.md criteria:
+- [x] `mise run check` green.
+- [x] `go test -count=1 -run TestVerifier ./internal/verifier` → ok (updated `TestVerifierRendersNamedRegions`).
+- [x] NEW `TestVerifierDoesNotClaimSignatureCheck` passes; mutation-proven both ways: (A) re-adding the
+  did:web step → FAILs (new test + named-regions test); (B) restoring "hub-signed checkpoint root" to
+  the `verified` verdict → FAILs (new test). Restored → green.
+- [x] `grep -c "Check the signature against the hub's did:web key" internal/verifier/verifier.html` → 0.
+- [x] `setVerdict("verified", …)` line contains no `hub-signed` substring (confirmed by grep + test).
+- [x] No new CDN literal (`http://`/`https://`/`cdn.`/`jsdelivr`) in added lines — `TestVerifierNoExternalCDN`
+  stays green; the bare text "did:web" (no scheme) is allowed.
 
-**Issues found:** (none new). Resolved + pruned the open `normal` "Dossier §1 unconditionally says 'Key
-resolved from did:web:…' even on the `unresolvable` overlay path" — its verify-fixed criterion is exactly
-what the new test (mutation-reproduced) asserts.
-
-**Codex second opinion:** unavailable — my `codex review --commit HEAD` invocation was denied by the
-auto-mode sandbox classifier (autonomous-agent / full-access policy). The stale `/tmp/codex-review.txt`
-present (timestamp 17:02) describes the PRIOR iteration's record-list domain/identity threading, NOT this
-dossier §1 change, so I did not treat it as a verdict on this commit. Graceful degradation: a missing
-second opinion is a note, not NEEDS_WORK; my own review + the two reproduced mutations cover the change.
-
-**Visual check:** skipped — the change is a pure text-content swap ("Key resolved from" → "Key source:")
-inside the existing `.section-value` div, visible only on the `unresolvable` overlay path; it adds/moves
-no named region, affordance, layout, or chrome, so an `agent-browser` screenshot pass would file no
-genuine visual delta (its only effect is one word's wording on a failed-resolution path). `agent-browser`
-IS available; the skip is on low value, not unavailability. Visual fidelity's hard gate remains the human
-M-UI exit sign-off (target.md), unaffected by this micro-copy.
-
-**Next:** The dossier §1 honesty `normal` is now code-closed. Remaining non-blocked code-closable work is
-the **M-API contract-accuracy** doc-fixes (open `normal`s, NOT human-blocked, oracle-N/A): remove the
-phantom `index` query param from `/{domain}/log/verify` in `openapi.yaml` + the JSON twin, and fix the
-`/{domain}/log/checkpoint` `200` media type from `text/plain` → `application/octet-stream` (the live mux
-serves octet-stream). Steer `define-next` there as one or two small slices. The remaining other `normal`s
-(WASM cross-origin signature half; realm-index per-checkpoint Anchor honesty) are design-first/blocked,
-and the lone `critical` is human-blocked on the M-UI exit sign-off — do NOT re-attempt either in code.
+**Next:** This code-closes the copy-honesty half of the WASM-verifier `normal`. A future `update-state`/
+`review` should narrow that issue to its remaining design-blocked half only (in-browser did:web
+resolution + checkpoint-signature verification — out of scope here, needs a design pass) and PRUNE the
+already-done/committed M-API contract-accuracy entries (the `verify`-`index` param + `checkpoint`
+media-type fixes, committed in `53ee328`, gated by per-op tests; `state.md`/`issues.md` still steer to
+them but they are stale, not open). The lone `critical` (dossier→log-browser navigation) stays
+human-blocked — do not re-attempt in code.
 
 **Notes:**
-- `learnings/dossier.md`: the §1 bullet is rewritten as `settled (advance 988d48d)` and marked CLOSED;
-  the finding stays package-local (not promoted to the index) — it is dossier-specific copy, not a
-  cross-cutting rule. dossier.md 71 lines / 8 bullets; index 109 lines — both under budget.
-- The §1-honesty gate is set at the SAME site as `ShowCaution` (one source of truth off the resolved
-  `status`), so the §1 verb and the caution copy can never drift out of sync — a clean, minimal seam.
-- The masthead-identity / overlay duplication across dashboard+dossier+certificate (3×) is unchanged by
-  this slice and remains the tracked `low` consolidation; this change correctly did not touch it.
+- Oracle/conformance gate is **N/A**: no signature, RFC-6962, Merkle, did:web, fsck, or proof code
+  touched. `internal/proof/verify` and `cmd/wasm` are unchanged; this is a pure static-template +
+  golden-test edit, and the template parses at init so a malformed edit would fail the build, not a
+  request (`learnings/verifier.md`).
+- The `verified` success copy intentionally adds a positive pointer to where the signature trust DOES
+  live ("verified server-side, certificate §4") rather than silently dropping it — per next.md's note
+  to "point it at the SERVER / certificate §4 (which IS server-verified), not at this in-browser run."
+  It says "did:web" only inside a negation; no scheme, so the no-CDN ban holds.
+- Scope: exactly 2 files (1 prod template + 1 test), within next.md's ≤3 file bound. Nothing in
+  `## Not In Scope` was touched (cert.html, openapi, the WASM artifact, `cmd/wasm`, `proof/verify`,
+  the human-blocked critical all untouched).
+- The Verdict-UI honesty auto-memory pattern: this fixes the recurring "page asserts an un-run
+  verification" gap at the source (a listed STEP must be one the code runs), not just the rendered ✓.

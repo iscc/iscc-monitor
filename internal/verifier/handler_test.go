@@ -93,13 +93,15 @@ func TestVerifierRendersNamedRegions(t *testing.T) {
 	}
 
 	// The five verification-record step labels (the mockup's vSteps) render as
-	// static no-JS list rows.
+	// static no-JS list rows. The fourth/fifth describe what the in-browser WASM run
+	// ACTUALLY does (rebuild the committed root + confirm the id-binding) — it does NOT
+	// list a did:web signature check it never runs (see TestVerifierDoesNotClaimSignatureCheck).
 	for _, want := range []string{
 		"Fetch proof bundle from the monitor",
 		"Recompute the leaf hash from the record bytes",
 		"Walk the Merkle inclusion path",
-		"Rebuild the root and match the hub-signed checkpoint",
-		"Check the signature against the hub's did:web key",
+		"Rebuild the root and match the committed checkpoint root",
+		"Confirm the record commits the requested ISCC-ID",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing verification-record step %q\n%s", want, body)
@@ -118,6 +120,52 @@ func TestVerifierRendersNamedRegions(t *testing.T) {
 			t.Errorf("body missing split-view input marker %q\n%s", want, body)
 		}
 	}
+}
+
+// TestVerifierDoesNotClaimSignatureCheck mutation-proves the copy-honesty fix: the
+// in-browser WASM checker (isccVerifyInclusion) re-runs ONLY the RFC-6962 inclusion
+// math and the id-binding — it does NOT fetch a did:web document or verify the
+// checkpoint signature. So the served page must not (1) list "Check the signature
+// against the hub's did:web key" as a step it runs, nor (2) claim in its `verified`
+// verdict copy that the browser re-verified a "hub-signed checkpoint root". The
+// `verified` copy must instead assert only the inclusion / accepted-root + id-binding
+// check the WASM actually ran. Reverting the template (re-adding the did:web step or
+// restoring "hub-signed checkpoint root" to the verdict) makes this test FAIL.
+func TestVerifierDoesNotClaimSignatureCheck(t *testing.T) {
+	body := serve(t).Body.String()
+
+	// (1) The un-run did:web signature STEP is gone.
+	if strings.Contains(body, "Check the signature against the hub's did:web key") {
+		t.Errorf("body lists an in-browser did:web signature step the WASM never runs\n%s", body)
+	}
+
+	// (2) The verified-verdict copy must not claim the browser re-verified a
+	// "hub-signed checkpoint root" — the WASM rebuilds the committed/accepted root from
+	// the inclusion proof; it does not validate the root was hub-signed.
+	verified := verifiedVerdictLine(t, body)
+	if strings.Contains(verified, "hub-signed") {
+		t.Errorf("verified-verdict copy claims a hub-signed-root check the WASM did not run: %q", verified)
+	}
+
+	// (3) The verified-verdict copy asserts only what the WASM ran: the inclusion proof
+	// against the accepted root (matching the certificate's already-honest sibling copy).
+	if !strings.Contains(verified, "re-verified this inclusion proof against the accepted root") {
+		t.Errorf("verified-verdict copy must claim only the inclusion / accepted-root check: %q", verified)
+	}
+}
+
+// verifiedVerdictLine returns the single setVerdict("verified", …) call's source line
+// from the rendered body, so the honesty assertions inspect exactly the success-copy
+// string (not the in-progress or failed strings that legitimately differ).
+func verifiedVerdictLine(t *testing.T, body string) string {
+	t.Helper()
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, `setVerdict("verified"`) {
+			return line
+		}
+	}
+	t.Fatalf(`no setVerdict("verified", …) line found in body:\n%s`, body)
+	return ""
 }
 
 // TestVerifierIndependenceStatement asserts the .codes ↔ .id independence statement

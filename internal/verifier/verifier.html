@@ -444,11 +444,11 @@
           </div>
           <div class="vstep">
             <span class="vstep-dot"></span>
-            <span class="vstep-label">Rebuild the root and match the hub-signed checkpoint</span>
+            <span class="vstep-label">Rebuild the root and match the committed checkpoint root</span>
           </div>
           <div class="vstep">
             <span class="vstep-dot"></span>
-            <span class="vstep-label">Check the signature against the hub's did:web key</span>
+            <span class="vstep-label">Confirm the record commits the requested ISCC-ID</span>
           </div>
           <!-- The run affordance / verdict region. When location.search carries a
                valid ?monitor=&id= the loader at the end of <body> instantiates
@@ -510,9 +510,12 @@
        WASM runtime (/_ds/wasm_exec.js) then the verifier module (/_ds/verify.wasm),
        read ?monitor=&id= from the URL, fetch the target instance's proof bundle, and
        re-run the inclusion proof IN THE BROWSER. The rendered verdict is gated on
-       this genuine re-VERIFICATION — never a flag. Three distinct data-states: error
-       (broken input / fetch failed) ≠ failed (a real negative VERDICT — the proof did
-       not rebuild the hub-signed root, the split-view signal) ≠ verified. Only a
+       this genuine re-VERIFICATION — never a flag. The WASM checker re-runs the
+       RFC-6962 inclusion math + the id-binding ONLY; it does NOT fetch a did:web
+       document or verify the checkpoint signature (that is server-verified, certificate
+       §4). Three distinct data-states: error (broken input / fetch failed) ≠ failed (a
+       real negative VERDICT — the proof did not rebuild the accepted root, the
+       split-view signal) ≠ verified. Only a
        `failed` verdict reveals the guided mismatch alert; an `error` stays in the
        verdict region. With no/invalid target (or no JS) the honest baseline stays
        untouched — no verdict is claimed. -->
@@ -586,7 +589,7 @@
       // A valid target is present: announce the in-progress run before fetching, so
       // the present-tense copy (never in the static body) appears only once it runs.
       runLabel.textContent = "verifying in your browser…";
-      verdictText.textContent = "Re-verifying this inclusion proof in your browser against the hub-signed checkpoint…";
+      verdictText.textContent = "Re-verifying this inclusion proof in your browser against the committed checkpoint root…";
       try {
         var bundleURL = target.monitor.replace(/\/+$/, "") + "/inclusion/" + encodeURIComponent(target.id) + ".bundle";
         var resp = await fetch(bundleURL);
@@ -634,9 +637,9 @@
           // negative verdict so it never trips the split-view alert.
           setVerdict("error", "In-browser verification could not run: " + out.error);
         } else if (out.verified) {
-          setVerdict("verified", "✓ Your browser re-verified this inclusion proof against the hub-signed checkpoint root.");
+          setVerdict("verified", "✓ Your browser re-verified this inclusion proof against the accepted root and confirmed the record commits this ISCC-ID. It did not check the checkpoint signature — the hub's did:web signature is verified server-side (certificate §4).");
         } else {
-          setVerdict("failed", "✗ In-browser verification did not rebuild the hub-signed root.");
+          setVerdict("failed", "✗ In-browser verification did not rebuild the accepted root.");
         }
       } catch (e) {
         // Graceful degradation: a network/parse fault is broken input, never a
