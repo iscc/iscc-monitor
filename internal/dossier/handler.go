@@ -29,6 +29,7 @@ package dossier
 import (
 	"bytes"
 	_ "embed"
+	"fmt"
 	"html/template"
 	"net/http"
 	"time"
@@ -71,19 +72,37 @@ var tmpl = func() *template.Template {
 // state" panel listing each Violations row. A frozen hub may carry zero Violations
 // (defended against), so the panel header renders even with an empty list, never a
 // broken {{range}}.
+//
+// The numbered trust-document fields are honesty-gated (no fabricated value): §2's
+// CoverageDays is "" unless coverage is set; §3's ObservedTime is "" when the latest
+// checkpoint carries no recorded time; §4's AnchorLabel / AnchorDot come from the
+// store OTS status (the label is the grayscale-safe load-bearing signal, the dot
+// decorative, ADR-0010 inv.4) and AnchorHeight renders only when the anchor is
+// confirmed AND the height is non-zero (HasAnchorHeight), never block 0. StatusNote
+// is the soft-caution copy for a non-frozen unresolvable / unverified hub, with the
+// store's "fork" violation kind mapped to the canonical "split view" vocabulary
+// (CLAUDE.md Language) wherever a kind surfaces outside the Exhibit.
 type dossierData struct {
-	Domain      string
-	Origin      string
-	Status      string
-	Label       string
-	LastSize    uint64
-	HasCoverage bool
-	SinceSize   uint64
-	SinceTime   string
-	Instance    string
-	Operator    string
-	Frozen      bool
-	Violations  []violationRow
+	Domain          string
+	Origin          string
+	Status          string
+	Label           string
+	LastSize        uint64
+	HasCoverage     bool
+	SinceSize       uint64
+	SinceTime       string
+	CoverageDays    string
+	ObservedTime    string
+	AnchorLabel     string
+	AnchorDot       string
+	HasAnchorHeight bool
+	AnchorHeight    uint64
+	ShowCaution     bool
+	StatusNote      string
+	Instance        string
+	Operator        string
+	Frozen          bool
+	Violations      []violationRow
 }
 
 // violationRow is one self-consistency violation rendered into the dossier Exhibit:
@@ -228,19 +247,90 @@ func buildData(s store.HubSummary, status string, violations []store.Violation, 
 	if !ok {
 		label = status
 	}
+	anchorLbl, anchorDot := anchorLabel(s.Anchor)
+	hasHeight := s.Anchor == store.OTSStatusConfirmed && s.AnchorHeight > 0
 	return dossierData{
-		Domain:      s.Domain,
-		Origin:      s.Origin,
-		Status:      status,
-		Label:       label,
-		LastSize:    s.LastSize,
-		HasCoverage: s.Coverage.Set,
-		SinceSize:   s.Coverage.Size,
-		SinceTime:   coverageTime(s.Coverage),
-		Instance:    instance,
-		Operator:    operator,
-		Frozen:      status == "frozen",
-		Violations:  violationRows(violations),
+		Domain:          s.Domain,
+		Origin:          s.Origin,
+		Status:          status,
+		Label:           label,
+		LastSize:        s.LastSize,
+		HasCoverage:     s.Coverage.Set,
+		SinceSize:       s.Coverage.Size,
+		SinceTime:       coverageTime(s.Coverage),
+		CoverageDays:    coverageDays(s.Coverage),
+		ObservedTime:    observedTime(s.CheckpointObserved),
+		AnchorLabel:     anchorLbl,
+		AnchorDot:       anchorDot,
+		HasAnchorHeight: hasHeight,
+		AnchorHeight:    s.AnchorHeight,
+		ShowCaution:     status == "unresolvable" || status == "unverified",
+		StatusNote:      statusNote(status),
+		Instance:        instance,
+		Operator:        operator,
+		Frozen:          status == "frozen",
+		Violations:      violationRows(violations),
+	}
+}
+
+// anchorLabel maps a hub's stored OTS status to its §4 display label and the
+// presentation-only dot keyword, ported verbatim from internal/dashboard so the two
+// surfaces render the same anchor copy: a confirmed root renders "confirmed"; a
+// pending root "pending"; any other value (including the empty never-stamped state)
+// the honest "not anchored" — never implying a Bitcoin anchor exists. It compares
+// against store.OTSStatusConfirmed / store.OTSStatusPending (not hand-typed
+// literals) so the status strings never drift from the store's single source of
+// truth. The dot is decorative; the label carries the meaning grayscale-safe
+// (ADR-0010 inv.4).
+func anchorLabel(status string) (label, dot string) {
+	switch status {
+	case store.OTSStatusConfirmed:
+		return "confirmed", "confirmed"
+	case store.OTSStatusPending:
+		return "pending", "pending"
+	default:
+		return "not anchored", "none"
+	}
+}
+
+// observedTime renders the latest checkpoint's observed-at as RFC 3339 UTC, or the
+// empty string when zero (no recorded time) — the template then shows the honest
+// "observed time unknown" rather than a fabricated instant, the same coverage-honesty
+// discipline coverageTime applies (ADR-0001).
+func observedTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format("2006-01-02T15:04:05Z")
+}
+
+// coverageDays renders the whole-days-observed string for §2 ("N days observed"),
+// derived from the coverage start (ADR-0001). It returns "" when coverage is not set
+// or the start time is unknown — the dossier invents no observation count for an
+// uncovered hub. A start in the future (clock skew) clamps to "0 days observed".
+func coverageDays(c store.CoverageInfo) string {
+	if !c.Set || c.Since.IsZero() {
+		return ""
+	}
+	days := int(time.Since(c.Since).Hours() / 24)
+	if days < 0 {
+		days = 0
+	}
+	return fmt.Sprintf("%d days observed", days)
+}
+
+// statusNote returns the soft-caution copy for a non-frozen hub whose live verdict
+// is unresolvable or unverified, mapping any "fork" wording to the canonical "split
+// view" vocabulary (CLAUDE.md Language) per the binding rule that the avoid-listed
+// "fork" never surfaces in §-level status copy. A status with no caution returns "".
+func statusNote(status string) string {
+	switch status {
+	case "unresolvable":
+		return "The monitor cannot currently fetch or parse this hub's did:web document, so its signing key is unresolved. The mirrored log is preserved; this is not a split-view finding."
+	case "unverified":
+		return "A checkpoint signature did not match any key in this hub's own did:web document — an internally-broken hub. The mirrored log is preserved; this is not a split-view finding."
+	default:
+		return ""
 	}
 }
 

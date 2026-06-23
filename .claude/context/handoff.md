@@ -1,69 +1,70 @@
-## 2026-06-22 — Review of: Ref-guard the `workflow_dispatch` publish/pages jobs (+ Node-20 action bumps)
+## 2026-06-23 — Hub dossier increment 1 — numbered trust-document layout + §1–§4
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Rebuilt the served hub dossier (`GET /<domain>`) from the flat 5-row key/value `.ledger`
+card into the mockup's numbered trust document: trust-document head (eyebrow "Hub dossier", `<h1>` hub
+name, domain, `md` HubStatusBadge, "Compiled by <instance> · <time>"), a 2×2 numbered grid for
+§1 Identity / §2 Coverage / §3 Latest checkpoint / §4 Bitcoin anchor, an honest §5 observation-log
+placeholder, the two action links (`/` and `/{{.Origin}}/`), the `fork → "split view"` vocabulary map
+in the soft-caution copy, and the frozen Exhibit kept verbatim ABOVE the sections. Every §3/§4 value is
+honesty-gated against real store data (no fabricated timestamp/height/anchor state).
 
-**Summary:** The primary goal — job-level `if: github.ref == 'refs/heads/develop'` guards on `publish.yml`'s
-`publish` job and `pages.yml`'s `build` job (the genuinely code-closable `normal`) — is correctly and
-minimally implemented, with accurate evergreen comments and correct job-level placement; the `actions/*`
-bumps are pinned to the live latest majors (reviewer-confirmed via `gh api`, not a stale guess). All gates
-are green and the change touches zero Go source. One real residual that the advance/`next.md` got factually
-wrong: `docker/login-action@v3` + `docker/build-push-action@v6` ARE node20 actions (not "container actions"),
-so `publish.yml` is not fully off the deprecated runtime — filed as a `low` follow-up.
+**Files changed:**
+- `internal/store/hubs.go`: added two NULL-safe correlated subselects to `ListHubs` + two
+  `HubSummary` fields — `CheckpointObserved` (newest checkpoint's `observed_at`, `ORDER BY tree_size
+  DESC, id DESC LIMIT 1`) and `AnchorHeight` (the confirmed anchor's `btc_height`, scoped to
+  `status = OTSStatusConfirmed`). Additive only; the `Anchor`/coverage/`LastSize` reads are unchanged.
+- `internal/dossier/handler.go`: expanded `dossierData` + `buildData` with §3 observed time (honest ""
+  when absent), §4 anchor label + decorative dot + block height (gated on confirmed AND non-zero height),
+  the derived "N days observed" (`coverageDays`, only when coverage is set), the `fork → "split view"`
+  `statusNote`, and `ShowCaution`. Ported `anchorLabel` verbatim from dashboard (`store.OTSStatus*`-keyed);
+  added `observedTime`/`coverageDays`/`statusNote` helpers; added `fmt` import.
+- `internal/dossier/dossier.html`: replaced the `.ledger`/`.row-*`/`.surface` card markup + CSS with the
+  trust-document head, the numbered §1–§4 grid, the §5 placeholder, a soft-caution panel (distinct from
+  the Exhibit), and the two action buttons. Masthead chrome, `← Realm index` back-link, and the frozen
+  `{{if .Frozen}}` Exhibit are kept verbatim (Exhibit now sits inside the document, above the sections).
+- `internal/store/hubs_test.go` (test): added `TestListHubsCheckpointAndAnchorHeight` (populated +
+  zero-value, mutation-proven).
+- `internal/dossier/handler_test.go` (test): updated `TestDossierRendersCoveredHub` to the §2 format +
+  added trust-document-head / §1–§4 / action-link / §5 assertions; added `TestDossierConfirmedAnchorRendersHeight`,
+  `TestDossierPendingAnchorHonest`, `TestDossierCautionForUnverified`.
 
-**Verification:**
-- [x] `mise run check` green — 20 pkgs `ok` (all cached; zero `.go` files changed across the unpushed range, so the cache is honest).
-- [x] `gofmt -l .` empty.
-- [x] All three workflows parse as valid YAML — validated via a throwaway `go run` over the cached `gopkg.in/yaml.v3` (`yaml.Unmarshal` into `map[string]any`); all printed `OK`.
-- [x] `grep "if: github.ref == 'refs/heads/develop'" publish.yml` → line 34, job-level (sibling to `name:`/`runs-on:`, above `steps:`).
-- [x] `grep "if: github.ref == 'refs/heads/develop'" pages.yml` → line 35, on the `build` job; `deploy` inherits via `needs: build` (line 68).
-- [x] `ci.yml` carries NO `github.ref` guard — `grep "github.ref" ci.yml` is empty. (The only `if:` is the pre-existing `if: always()` docker-cleanup step at line 125; the literal `! grep -q "if:"` Done-When gate is a false positive there, but its intent — no ref guard — holds. Advance flagged this correctly.)
-- [x] No Node-20 `actions/*` pins remain — `grep "actions/checkout@v4|actions/setup-go@v5" .github/workflows/` empty.
-- [x] Live action majors confirmed via `gh api .../releases/latest`: checkout@v7, setup-go@v6, configure-pages@v6, upload-pages-artifact@v5, deploy-pages@v5 — all exist and are the current majors (advance pinned each correctly; inputs `go-version`/`path`/`page_url` still valid).
-- [x] `publish.yml` immutable `:sha-${{ steps.vars.outputs.short }}` tag (line 69) + `VERSION=${{ github.sha }}` build-arg (line 66) unchanged.
-- [x] Quality-gate-integrity scan over all unpushed commits (`@{upstream}..HEAD`) — only 3 workflow + 3 context `.md` files; the `nolint`/`//go:build` grep hits are all in handoff/issues PROSE, not code. No `t.Skip`, no `continue-on-error`, no deleted assertions. Clean.
+**Verification:** `mise run check` → green (all 28 pkgs `ok`; `gofmt -l .` empty). Per-criterion:
+- [x] `GET /<domain>` → 200 text/html, no `jsdelivr`/`cdn.`/`unpkg`/`googleapis`/`http://`, no-JS complete.
+- [x] Trust-document head landmarks present (eyebrow, `<h1 class="doc-hub-name">`, domain, `md` badge
+  markup `class="hub-status-badge"` + silhouette, "Compiled by … ·"); `← Realm index` (`href="/"`) intact.
+- [x] §1–§4 each render label + value (`§1`/`did:web:sb0.iscc.id`; `§2`/since+size+"days observed";
+  `§3`/`42 entries`+observed time; `§4`/anchor dot+label).
+- [x] Confirmed-anchor fixture renders the §4 `block 869440`; pending/never-stamped renders honest
+  "pending"/"not anchored", no 5xx, no error styling, no fabricated height.
+- [x] Action links: `href="/">Prove an ISCC-ID…`, `href="/sb0.iscc.id/log/">Browse the log…`.
+- [x] Frozen fixture still renders the non-dismissable Exhibit (existing `TestDossierFrozenExhibit`
+  green); unverified fixture renders the soft caution (`class="caution"`, "split-view" copy), distinct
+  from the Exhibit.
+- [x] §5 renders heading + "no entries yet" placeholder, no fabricated observation lines.
+- [x] `TestListHubsCheckpointAndAnchorHeight` green (populated + NULL-safe zero values; existing
+  `TestListHubsAnchorStatus` unchanged).
+- [x] Mutation checks non-vacuous: breaking the `AnchorHeight` subselect-assignment FAILs the store test;
+  dropping the §4 height binding FAILs `TestDossierConfirmedAnchorRendersHeight`.
 
-**Issues found:**
-- (filed `low`) `publish.yml`'s `docker/login-action@v3` + `docker/build-push-action@v6` still target Node 20 — see Codex triage below. The advance handoff's claim that these are "container actions, not in the Node-20 list" is factually wrong (reviewer-confirmed `runs.using: 'node20'`).
-
-**Codex second opinion:** Ran (`codex review --commit HEAD`); produced one finding after ~6 min.
-- **[P2] "Bump the remaining Node-20 Docker actions" → CONFIRMED REAL, filed as `low`.** Codex claims
-  `docker/login-action@v3` and `docker/build-push-action@v6` declare `runs.using: node20`, contradicting
-  the handoff's "container actions, not in the Node-20 list." I verified independently:
-  `gh api repos/docker/login-action/contents/action.yml?ref=v3` → `using: 'node20'`, and
-  `...build-push-action/...?ref=v6` → `using: 'node20'`. Codex is right; the advance/`next.md` premise was
-  wrong. Their current majors `@v4`/`@v7` use node24 with identical inputs (reviewer-confirmed). This is a
-  `low` (deprecation warning today, future hard-fail; the publish job runs green now because GitHub
-  force-runs node20 on node24), NOT a current breakage and NOT a progress blocker — so PASS_WITH_NOTES, not
-  NEEDS_WORK. Filed as a `low` follow-up for the next time `publish.yml` is touched; corrected the false
-  "container actions" claim in `learnings/ci.md`.
-
-**Visual check:** n/a — no SSR surface changed (workflow/config-only change; no `internal/dashboard`, `dossier`, `web`, `certificate`, or template touched).
-
-**Next:** This closes the ref-guard `normal` (deleted from `issues.md`) and the Pages-annotation Node-20
-`low` (the `actions/*` half). The DONE-blocker scan is now **0 critical, 3 normal** — and all three remaining
-`normal`s are design/human-blocked, not loop-closeable: (1) the DB-migration mechanism design decision
-(ADR-0007, wants a grilling pass), (2) the WASM signature-half browser did:web design pass, (3) the
-per-hub-Anchor design-honesty question. The `/` "recent declarers" footer normal needs store lookup history
-the store does not track (also design-blocked). Per the standing "loop stalls on human-blocked DONE" memory,
-`define-next` should surface these as a **STOP / human-design edge** rather than spin on cosmetic chrome —
-there is NO code-closable `normal` left to advance. (The new docker-action `low` is skipped by the loop.)
+**Next:** Increment 2 (the sibling `critical`, GATED on this) — the §5 observation log + the richer
+frozen Exhibit ("size before → presented" + evidence ref). It will add a `ListCheckpoints`-style store
+read (and parse `Violation.RawA/RawB`), turning the §5 placeholder into real per-poll lines and filling
+the Exhibit grid. The §5 markup hook (`.obs` / `.obs-empty`) and the `violationRow` struct are the seams
+it extends.
 
 **Notes:**
-- **The factual lesson:** "is action X a Node-20 action?" must be answered by reading the action's
-  `action.yml` `runs.using`, NOT by assuming (login/build-push @v3/@v6 are node20 JS actions despite being
-  "Docker" actions). `next.md` asserted otherwise without checking and advance carried the assumption
-  forward. Both Codex and the reviewer caught it against ground truth.
-- **The action-major bumps are correct and well-justified:** advance used `gh api .../releases/latest` (the
-  authoritative method `next.md` mandates) over the stale fallback list, so it pinned newer majors than
-  `next.md` guessed (checkout@v7 vs guessed v5, configure-pages@v6 vs v5, etc.). Reviewer re-ran `gh api` —
-  every pinned major matches the live latest, and the bumped inputs are unchanged. This is a correct,
-  authoritative deviation from `next.md`'s guesses, not a defect.
-- Workflow-RUNTIME behavior (the guard actually skipping a non-develop dispatch; a green Node-24 Pages run
-  with no deprecation annotation) is only confirmable by a live GitHub Actions run — not reproducible here.
-  Static verification (YAML validity + job-level placement + correct `github.ref` expr + live action majors)
-  is complete; the live-run confirmation is the post-merge CI check.
-- No oracle/crypto path touched — trust-root conformance (`notecheck`, golden vectors) is N/A. The
-  `notecheck` *step* in `ci.yml` is unchanged; only its `checkout`/`setup-go` pins moved.
-- `learnings/ci.md` updated: corrected the publish/pages "no ref guard" notes (now guarded), the stale
-  action-pin versions (now the live majors), and added the docker-actions-ARE-node20 fact.
+- Oracle/conformance gate is N/A: pure HTML render of persisted store rows + an in-memory status overlay;
+  touches no signature/RFC-6962/Merkle/did:web/fsck/proof path. `go.mod`/`go.sum`/schema byte-identical.
+- The §2 "N days observed" is a live wall-clock derivation from `Coverage.Since` (`time.Since`), so the
+  rendered count grows with real time — the test asserts the literal "days observed" suffix, not a fixed
+  number, to stay deterministic. A future-dated `Since` (clock skew) clamps to "0 days observed".
+- The §4 height subselect is scoped to `status = OTSStatusConfirmed` (the dossier-specific gate); the
+  pre-existing `Anchor` status subselect remains newest-stamped-regardless-of-status, matching the
+  realm-index per-hub anchoring-activity semantics. These are two distinct subselects by design — the
+  dossier §4 height MUST come from a confirmed row, never a newer pending one.
+- Kept the dossier-local `overlayStatus`/`hubStatus`/`resolveIdentity`/fallback-const copies as-is
+  (consolidation into `internal/badge`/a shared leaf is the tracked `low`, explicitly out of scope here).
+  `anchorLabel` is now a 2nd copy (dashboard + dossier) — same consolidation pressure; left local per
+  next.md's "do NOT export dashboard internals for a 4th-file edit".
+- Mockup parity: the `md`-size badge is the badge package's intrinsic SSR size (the Go partial has no
+  Size field; size is a CSS/mockup concern), so `{{template "hubStatusBadge" .}}` renders it directly.

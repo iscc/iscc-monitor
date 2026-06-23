@@ -220,12 +220,60 @@ func TestDossierRendersCoveredHub(t *testing.T) {
 			t.Errorf("body missing badge markup %q\n%s", want, body)
 		}
 	}
-	// Coverage honesty (ADR-0001): the covered hub shows its recorded start size and
-	// RFC-3339 time, never the observed last_size as a coverage guarantee.
-	for _, want := range []string{"size 42", "at 2023-11-14T22:13:20Z"} {
+	// Coverage honesty (ADR-0001): §2 shows its recorded start time + size and the
+	// derived "N days observed", never the observed last_size as a coverage
+	// guarantee. The "since <time> @ size N" form is the §2 mockup format.
+	for _, want := range []string{
+		"§2 · COVERAGE",
+		"since 2023-11-14T22:13:20Z @ size 42",
+		"days observed",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing coverage window marker %q\n%s", want, body)
 		}
+	}
+	// The trust-document head: the eyebrow "Hub dossier", the hub name in an <h1>,
+	// the domain, and the "Compiled by …" provenance line.
+	for _, want := range []string{
+		"Hub dossier",
+		`<h1 class="doc-hub-name">sb0.iscc.id</h1>`,
+		"Compiled by",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing trust-document head marker %q\n%s", want, body)
+		}
+	}
+	// §1 Identity, §3 Latest checkpoint, §4 Bitcoin anchor each render their
+	// numbered heading + value. §1 derives did:web statically (no network read);
+	// §3 shows accepted size + observed time; §4 shows the anchor dot + label.
+	for _, want := range []string{
+		"§1 · IDENTITY",
+		"did:web:sb0.iscc.id",
+		"§3 · LATEST CHECKPOINT",
+		"42 entries",
+		"observed 2023-11-14T22:13:20Z",
+		"§4 · BITCOIN ANCHOR",
+		`class="anchor-dot"`,
+		"not anchored", // no OTS row → the honest never-anchored label
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing numbered-section marker %q\n%s", want, body)
+		}
+	}
+	// The two action links resolve: "Prove an ISCC-ID in this hub →" → the realm
+	// index claim-lookup hero ("/"), "Browse the log →" → /{{.Origin}}/.
+	for _, want := range []string{
+		`href="/">Prove an ISCC-ID in this hub →`,
+		`href="/sb0.iscc.id/log/">Browse the log →`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing action link %q\n%s", want, body)
+		}
+	}
+	// §5 renders as an honest minimal placeholder: the heading is present but no
+	// fabricated observation line.
+	if !strings.Contains(body, "§5 · OBSERVATION LOG") {
+		t.Errorf("body missing the §5 observation-log placeholder heading\n%s", body)
 	}
 	// The dossier is a card/grid layout, never an HTML <table>.
 	if strings.Contains(body, "<table") {
@@ -239,6 +287,113 @@ func TestDossierRendersCoveredHub(t *testing.T) {
 		if strings.Contains(body, banned) {
 			t.Errorf("body contains external CDN reference %q\n%s", banned, body)
 		}
+	}
+}
+
+// TestDossierConfirmedAnchorRendersHeight asserts the §4 Bitcoin-anchor section of a
+// hub with a confirmed OTS row carrying a btc_height renders "confirmed", the
+// confirmed dot keyword, and the block height — and NEVER a 5xx or error styling.
+// It is the honesty counterpart of the pending case: the height shows ONLY when the
+// anchor is confirmed AND the height is non-zero.
+func TestDossierConfirmedAnchorRendersHeight(t *testing.T) {
+	ctx := context.Background()
+	st, id := coveredHub(t)
+	if _, _, err := st.RecordOTS(ctx, store.OTSRecord{
+		HubID:     id,
+		TreeSize:  42,
+		Root:      []byte("root-verified-32-bytes-padding!!"),
+		Status:    store.OTSStatusConfirmed,
+		StampedAt: time.Unix(1_700_000_000, 0),
+		BTCHeight: 869440,
+	}); err != nil {
+		t.Fatalf("RecordOTS confirmed: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"§4 · BITCOIN ANCHOR",
+		`data-dot="confirmed"`,
+		"confirmed",
+		"block 869440",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing confirmed-anchor marker %q\n%s", want, body)
+		}
+	}
+	// No error styling: the confirmed anchor must not render the "not anchored"
+	// fallback label.
+	if strings.Contains(body, "not anchored") {
+		t.Errorf("confirmed anchor renders the not-anchored fallback label\n%s", body)
+	}
+}
+
+// TestDossierPendingAnchorHonest asserts the §4 section of a hub with only a pending
+// OTS row renders the honest "pending" label + dot and NO fabricated block height
+// (the height shows only for a confirmed anchor with a non-zero height), with no 5xx
+// or error styling. This pins the ADR-0001 / Bitcoin-anchoring honesty discipline.
+func TestDossierPendingAnchorHonest(t *testing.T) {
+	ctx := context.Background()
+	st, id := coveredHub(t)
+	if _, _, err := st.RecordOTS(ctx, store.OTSRecord{
+		HubID:     id,
+		TreeSize:  42,
+		Root:      []byte("root-verified-32-bytes-padding!!"),
+		Status:    store.OTSStatusPending,
+		StampedAt: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("RecordOTS pending: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`data-dot="pending"`, "pending"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing pending-anchor marker %q\n%s", want, body)
+		}
+	}
+	// No fabricated height: a pending anchor must render no "block N" string.
+	if strings.Contains(body, "block ") {
+		t.Errorf("pending anchor renders a fabricated block height\n%s", body)
+	}
+}
+
+// TestDossierCautionForUnverified asserts a store-verified hub whose live verdict is
+// unverified renders the soft caution note (visibly distinct from the frozen
+// Exhibit) and that the "fork → split view" vocabulary map applies: the §-level
+// caution copy uses "split view", never the avoid-listed "fork". The frozen Exhibit
+// must NOT appear for a non-frozen hub.
+func TestDossierCautionForUnverified(t *testing.T) {
+	st, id := coveredHub(t)
+	statuses := fakeStatusSource{id: "unverified"}
+	rec := httptest.NewRecorder()
+	Handler(st, id, statuses, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`class="caution"`,
+		"Note · Unverified",
+		"split-view",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing soft-caution marker %q\n%s", want, body)
+		}
+	}
+	// The caution is NOT the frozen Exhibit, and the avoid-listed "fork" wording must
+	// not leak into the §-level status copy.
+	if strings.Contains(body, `class="exhibit"`) {
+		t.Errorf("unverified (non-frozen) hub renders the frozen Exhibit\n%s", body)
 	}
 }
 

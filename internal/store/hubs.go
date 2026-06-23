@@ -23,15 +23,24 @@ import (
 // implies pre-coverage guarantees (ADR-0001). Anchor is the OTSStatus* string of
 // the hub's most-recently-stamped root, or "" when no root has been stamped — the
 // honest "not anchored yet" state, never a guarantee.
+//
+// CheckpointObserved is the observed_at instant of the hub's newest checkpoint
+// (the §3 "latest checkpoint" time on the dossier), zero when no checkpoint carries
+// a recorded time. AnchorHeight is the Bitcoin block height of the hub's confirmed
+// anchor (the §4 height), zero when no anchor is confirmed or the confirmed row has
+// no recorded height — the dossier renders the height only when it is non-zero, so
+// a zero never reads as block 0.
 type HubSummary struct {
-	HubID    int64
-	Domain   string
-	Origin   string
-	Active   bool
-	LastSize uint64
-	Frozen   bool
-	Coverage CoverageInfo
-	Anchor   string
+	HubID              int64
+	Domain             string
+	Origin             string
+	Active             bool
+	LastSize           uint64
+	Frozen             bool
+	Coverage           CoverageInfo
+	Anchor             string
+	CheckpointObserved time.Time
+	AnchorHeight       uint64
 }
 
 // ListHubs reads one HubSummary per followed hub, ordered by hub_id, in a single
@@ -43,14 +52,27 @@ type HubSummary struct {
 // convention. The Anchor status is a correlated subselect projecting the status of
 // the hub's most-recently-stamped root (newest stamped_at first); a never-stamped
 // hub yields SQL NULL → empty Anchor (the honest "not anchored yet" state).
+//
+// Two further NULL-safe correlated subselects mirror that Anchor pattern for the
+// hub dossier: the newest checkpoint's observed_at (the §3 "latest checkpoint" time,
+// ordered tree_size DESC, id DESC) and the btc_height of the hub's confirmed anchor
+// (the §4 height, scoped to status = OTSStatusConfirmed). A hub with no recorded
+// checkpoint time or no confirmed anchor yields SQL NULL → the zero value, so the
+// renderer shows the honest "unknown" / "not confirmed" state rather than a
+// fabricated instant or block 0.
 func (s *Store) ListHubs(ctx context.Context) ([]HubSummary, error) {
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT h.hub_id, h.domain, h.origin, h.active, "+
 			"f.last_size, f.frozen, h.monitored_since_size, h.monitored_since_time, "+
 			"(SELECT o.status FROM ots o WHERE o.hub_id = h.hub_id "+
-			"ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1) "+
+			"ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1), "+
+			"(SELECT c.observed_at FROM checkpoints c WHERE c.hub_id = h.hub_id "+
+			"ORDER BY c.tree_size DESC, c.id DESC LIMIT 1), "+
+			"(SELECT o.btc_height FROM ots o WHERE o.hub_id = h.hub_id "+
+			"AND o.status = ? ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1) "+
 			"FROM hubs h LEFT JOIN follow_state f ON f.hub_id = h.hub_id "+
 			"ORDER BY h.hub_id",
+		OTSStatusConfirmed,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store.ListHubs: query: %w", err)
@@ -60,16 +82,18 @@ func (s *Store) ListHubs(ctx context.Context) ([]HubSummary, error) {
 	var hubs []HubSummary
 	for rows.Next() {
 		var (
-			h         HubSummary
-			lastSize  sql.NullInt64
-			frozen    sql.NullBool
-			sinceSize sql.NullInt64
-			sinceTime sql.NullInt64
-			anchor    sql.NullString
+			h            HubSummary
+			lastSize     sql.NullInt64
+			frozen       sql.NullBool
+			sinceSize    sql.NullInt64
+			sinceTime    sql.NullInt64
+			anchor       sql.NullString
+			observedAt   sql.NullInt64
+			anchorHeight sql.NullInt64
 		)
 		if err := rows.Scan(
 			&h.HubID, &h.Domain, &h.Origin, &h.Active,
-			&lastSize, &frozen, &sinceSize, &sinceTime, &anchor,
+			&lastSize, &frozen, &sinceSize, &sinceTime, &anchor, &observedAt, &anchorHeight,
 		); err != nil {
 			return nil, fmt.Errorf("store.ListHubs: scan: %w", err)
 		}
@@ -85,6 +109,12 @@ func (s *Store) ListHubs(ctx context.Context) ([]HubSummary, error) {
 			}
 		}
 		h.Anchor = anchor.String // NULL (no stamped root) → ""
+		if observedAt.Valid {
+			h.CheckpointObserved = time.Unix(observedAt.Int64, 0)
+		}
+		if anchorHeight.Valid {
+			h.AnchorHeight = uint64(anchorHeight.Int64)
+		}
 		hubs = append(hubs, h)
 	}
 	if err := rows.Err(); err != nil {

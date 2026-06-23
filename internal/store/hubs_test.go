@@ -86,3 +86,71 @@ func TestListHubsAnchorStatus(t *testing.T) {
 		}
 	}
 }
+
+// TestListHubsCheckpointAndAnchorHeight pins the two dossier subselects: a hub with
+// an accepted checkpoint + a confirmed OTS row carrying a btc_height reports the
+// newest checkpoint's observed_at as CheckpointObserved and the confirmed height as
+// AnchorHeight; a hub with neither reports their zero values (NULL-safe). It is
+// mutation-targeted: dropping either subselect makes the populated assertions FAIL.
+func TestListHubsCheckpointAndAnchorHeight(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	// Anchored hub: an accepted checkpoint (sets observed_at + coverage) plus a
+	// confirmed OTS row carrying a Bitcoin block height.
+	observed := time.Unix(1_700_000_000, 0)
+	anchoredRoot := []byte("anchored-checkpoint-root-pad-32!!")
+	anchoredID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub anchored: %v", err)
+	}
+	if err := s.AdvanceAccepted(ctx, CheckpointRecord{
+		HubID:      anchoredID,
+		TreeSize:   42,
+		Root:       anchoredRoot,
+		Raw:        []byte("raw-checkpoint-bytes"),
+		ObservedAt: observed,
+	}); err != nil {
+		t.Fatalf("AdvanceAccepted anchored: %v", err)
+	}
+	if _, _, err := s.RecordOTS(ctx, OTSRecord{
+		HubID:     anchoredID,
+		TreeSize:  42,
+		Root:      anchoredRoot,
+		Status:    OTSStatusConfirmed,
+		StampedAt: observed,
+		BTCHeight: 869440,
+	}); err != nil {
+		t.Fatalf("RecordOTS anchored: %v", err)
+	}
+
+	// Bare hub: registered only, no checkpoint and no OTS row → zero values.
+	if _, err := s.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id"); err != nil {
+		t.Fatalf("UpsertHub bare: %v", err)
+	}
+
+	hubs, err := s.ListHubs(ctx)
+	if err != nil {
+		t.Fatalf("ListHubs: %v", err)
+	}
+	byDomain := map[string]HubSummary{}
+	for _, h := range hubs {
+		byDomain[h.Domain] = h
+	}
+
+	anchored := byDomain["sb0.iscc.id"]
+	if !anchored.CheckpointObserved.Equal(observed) {
+		t.Errorf("CheckpointObserved = %v, want %v", anchored.CheckpointObserved, observed)
+	}
+	if anchored.AnchorHeight != 869440 {
+		t.Errorf("AnchorHeight = %d, want 869440", anchored.AnchorHeight)
+	}
+
+	bare := byDomain["sb1.amlet.id"]
+	if !bare.CheckpointObserved.IsZero() {
+		t.Errorf("bare CheckpointObserved = %v, want zero", bare.CheckpointObserved)
+	}
+	if bare.AnchorHeight != 0 {
+		t.Errorf("bare AnchorHeight = %d, want 0", bare.AnchorHeight)
+	}
+}
