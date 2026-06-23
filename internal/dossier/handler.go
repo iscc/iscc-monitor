@@ -85,6 +85,14 @@ var tmpl = func() *template.Template {
 // is the soft-caution copy for a non-frozen unresolvable / unverified hub, with the
 // store's "fork" violation kind mapped to the canonical "split view" vocabulary
 // (CLAUDE.md Language) wherever a kind surfaces outside the Exhibit.
+//
+// KeyUnresolved gates the §1 Identity verb against the same honesty discipline: it is
+// true only on the "unresolvable" overlay path, where the monitor cannot fetch/parse
+// the hub's did:web document, so it has NOT resolved a key. The template then renders
+// neutral "Key source:" wording instead of "Key resolved from", which would
+// contradict the unresolvable caution on the same page. For every other status the
+// did:web document resolved (an "unverified" hub fetched a key that simply matched no
+// signature), so the mockup's "Key resolved from" copy stays honest and unchanged.
 type dossierData struct {
 	Domain          string
 	Origin          string
@@ -100,6 +108,7 @@ type dossierData struct {
 	AnchorDot       string
 	HasAnchorHeight bool
 	AnchorHeight    uint64
+	KeyUnresolved   bool
 	ShowCaution     bool
 	StatusNote      string
 	Instance        string
@@ -305,6 +314,7 @@ func buildData(s store.HubSummary, status string, violations []store.Violation, 
 		AnchorDot:       anchorDot,
 		HasAnchorHeight: hasHeight,
 		AnchorHeight:    s.AnchorHeight,
+		KeyUnresolved:   status == "unresolvable",
 		ShowCaution:     status == "unresolvable" || status == "unverified",
 		StatusNote:      statusNote(status),
 		Instance:        instance,

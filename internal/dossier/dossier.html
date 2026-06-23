@@ -530,7 +530,7 @@
       <div class="sections">
         <div class="section">
           <div class="section-no">§1 · IDENTITY</div>
-          <div class="section-value">Key resolved from <span class="mono">did:web:{{.Domain}}</span></div>
+          <div class="section-value">{{if .KeyUnresolved}}Key source: <span class="mono">did:web:{{.Domain}}</span>{{else}}Key resolved from <span class="mono">did:web:{{.Domain}}</span>{{end}}</div>
           <div class="section-sub">Domain ownership is identity. Keys managed in the hub's own did.json.</div>
         </div>
         <div class="section">

@@ -939,6 +939,50 @@ func TestDossierRendersInMemoryStatus(t *testing.T) {
 	}
 }
 
+// TestDossierUnresolvedKeyWordingHonesty proves the §1 Identity verb is honesty-gated
+// against the unresolvable overlay path: a store-verified hub whose live verdict is
+// unresolvable cannot have had its did:web key resolved, so §1 must NOT assert "Key
+// resolved from" (which would contradict the same page's "signing key is unresolved"
+// caution). It renders the neutral "Key source:" wording, still showing the did:web
+// domain so the source stays honest — only the verb is gated. A sibling case asserts a
+// verified hub (overlay miss) STILL renders the mockup's "Key resolved from" copy, so
+// the gate never over-fires onto a status whose key did resolve.
+func TestDossierUnresolvedKeyWordingHonesty(t *testing.T) {
+	st, id := coveredHub(t)
+
+	// Unresolvable overlay: §1 must drop "resolved" and use the neutral source wording.
+	unres := httptest.NewRecorder()
+	Handler(st, id, fakeStatusSource{id: "unresolvable"}, dashboard.Identity{}).ServeHTTP(unres, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if unres.Code != http.StatusOK {
+		t.Fatalf("unresolvable status = %d, want 200", unres.Code)
+	}
+	body := unres.Body.String()
+	if strings.Contains(body, "Key resolved from") {
+		t.Errorf("unresolvable hub still asserts 'Key resolved from' in §1\n%s", body)
+	}
+	if !strings.Contains(body, "Key source:") {
+		t.Errorf("unresolvable hub missing neutral 'Key source:' §1 wording\n%s", body)
+	}
+	if !strings.Contains(body, "did:web:sb0.iscc.id") {
+		t.Errorf("unresolvable hub §1 dropped the did:web domain\n%s", body)
+	}
+
+	// Verified hub (overlay miss): the mockup's "Key resolved from" copy is unchanged,
+	// guarding against over-gating the new wording onto a status whose key did resolve.
+	ver := httptest.NewRecorder()
+	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(ver, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if ver.Code != http.StatusOK {
+		t.Fatalf("verified status = %d, want 200", ver.Code)
+	}
+	verBody := ver.Body.String()
+	if !strings.Contains(verBody, "Key resolved from <span class=\"mono\">did:web:sb0.iscc.id</span>") {
+		t.Errorf("verified hub no longer renders the mockup's 'Key resolved from did:web' copy\n%s", verBody)
+	}
+	if strings.Contains(verBody, "Key source:") {
+		t.Errorf("verified hub over-gated to neutral 'Key source:' wording\n%s", verBody)
+	}
+}
+
 // TestDossierNonGET asserts a non-GET method is a 405 (the shared method gate at the
 // top of Handler covers it).
 func TestDossierNonGET(t *testing.T) {
