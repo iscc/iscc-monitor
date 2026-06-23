@@ -31,13 +31,16 @@ this surface shares live in `learnings/dashboard.md` (read both).
   `last_size` can only be a fork because a same-root re-observation is deduped by
   `ON CONFLICT(hub_id,tree_size,root)`. Mutation-pinned by
   `TestListHubsFrozenObservedTracksAcceptedSize`/`…SameSizeFork`. The §3 size/time honesty `normal` is CLOSED.
-- **§1 Identity is static-derived ("Key resolved from did:web:<domain>"), rendered UNCONDITIONALLY (no
-  network/store read) — so it contradicts the `unresolvable` overlay copy.** The mockup + next.md specify
-  the static phrasing (§1 is about WHERE the key comes from = domain ownership, not a per-request verdict),
-  but on the `unresolvable` path the caution says "signing key is unresolved" while §1 still asserts "Key
-  resolved from". A design-rooted wording-honesty nit (the fix is neutral "Key source:" wording or gating
-  "resolved" off `unresolvable`); do NOT silently rewrite the mockup-specified copy without a design pass.
-  Open `normal`. [Codex P2, reviewer-confirmed.]
+- **settled (advance `988d48d`): §1 Identity's verb is honesty-gated off the `unresolvable` path via the
+  `KeyUnresolved` view-model flag.** §1 is static-derived (no network/store read — it states WHERE the key
+  comes from = domain ownership, not a per-request verdict), so it kept the mockup's "Key resolved from
+  did:web:<domain>" for every status BUT `unresolvable`, where the monitor cannot fetch/parse the did:web
+  doc and the same page's caution says "signing key is unresolved". `KeyUnresolved` is set at the SAME site
+  as `ShowCaution` (`buildData`, `status == "unresolvable"`), and the template renders neutral "Key source:"
+  vs "Key resolved from" — keeping `did:web:<domain>` in both arms. Gate is `unresolvable`-ONLY: `unverified`
+  DID resolve a key (signature just matched none), so "resolved" stays honest there. Mutation-pinned by
+  `TestDossierUnresolvedKeyWordingHonesty` (revert the template gate → unresolvable assert FAILS; over-gate
+  `KeyUnresolved: true` → verified-sibling assert FAILS). The §1-honesty `normal` is CLOSED.
 
 ## Seams shared with dashboard (do not re-derive)
 

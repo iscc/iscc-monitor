@@ -634,27 +634,6 @@ filed it and does **not** affect priority.
 - **Spec:** ADR-0007 per-network store sizing / scaling trip-wire; ADR-0008 schema-agnostic index;
   CLAUDE.md `GET /` "Recently declared" surface; `learnings/store.md` `RecentRecords` ordering note.
 
-## Dossier §1 unconditionally says "Key resolved from did:web:…" even on the `unresolvable` overlay path
-- **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed)
-- **What / where / how to verify:** `internal/dossier/dossier.html:490` renders §1 Identity as "Key resolved
-  from did:web:{{.Domain}}" UNCONDITIONALLY (§1 is static-derived, no network/store read — per next.md's
-  Implementation Note + the mockup line 88, which use this phrasing because §1 is about WHERE the key comes
-  from = domain ownership, not a per-request verdict). But when the live overlay reports `unresolvable`, the
-  soft caution copy on the SAME page says "the monitor cannot currently fetch or parse this hub's did:web
-  document, so its signing key is unresolved" — so §1 asserts a successful key resolution exactly on the
-  failed-resolution path. A self-contradiction confined to the `unresolvable` state; it overstates §1 but
-  does not falsely claim verification of any proof/signature. Does NOT block this increment — the advance
-  followed next.md + the mockup literally, all gates green. This is design-rooted (the mockup specifies the
-  static "resolved" phrasing), so do NOT silently rewrite the mockup-specified copy without a design pass.
-  Fix when §1 is next touched / a design pass runs: use neutral source wording ("Key source: did:web:<domain>")
-  OR gate the word "resolved" off the `unresolvable` status (e.g. render "Key source unresolved" in §1 when
-  `ShowCaution` for `unresolvable`). Verify fixed: a fixture hub with a live `unresolvable` verdict does NOT
-  render "Key resolved from" in §1; reverting makes it reappear.
-- **Spec:** CLAUDE.md "Hub status" (unresolvable = can't resolve the key) + "did:web key resolution";
-  ADR-0010 Evidence-Ledger honesty; learnings.md always-loaded SSR-honesty rule; `.claude/design/ISCC
-  Monitor - Hub Dossier.dc.html` §1 static phrasing; `learnings/dossier.md` §1 note.
-
 ## OpenAPI contract advertises a phantom `index` query param on `/{domain}/log/verify` the handler never reads
 - **Priority:** normal
 - **Source:** [review] (Codex P2, reviewer-confirmed against `serveVerify`)
