@@ -33,23 +33,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   BYTES are the source of truth); reads `iscc_id_str`/`note_schema` through `sql.NullString` (NULL→"");
   scans `seq` int64→uint64. Hub-scoping is load-bearing for every reader (mutation dropping `hub_id` →
   scope test FAILS). (Detail in git history at-2026-06-21.) One durable trap below.
-- **`RecentRecords(ctx, n) ([]RecordRow, error)` is the realm-wide recent reader** (added 2026-06-23 for
-  the dashboard "Recently declared" row): newest-first by the global `seq`, `JOIN follow_state f ON
-  f.hub_id = i.hub_id WHERE i.seq < f.last_size` so the accepted-tree ceiling is applied per hub and a
-  hub with no `follow_state` row (or NULL/zero `last_size`) contributes nothing. It is SCHEMA-AGNOSTIC
-  (ADR-0008): NO `note_schema` filter — rows carry the verbatim schema for the caller (the dashboard view
-  layer) to interpret which are declarations. Tests: `TestRecentRecords` (realm-wide order + cap + no-
-  follow_state exclusion + limit + schema passthrough) / `TestRecentRecordsEmpty`.
-- **settled (landed, migration 0): `iscc_index` is keyed on the composite `(hub_id, seq)` PK.** `seq` is
-  each hub's per-hub ABSOLUTE leaf index (`bundleIndex*TileWidth + offset`, restarts at 0 per hub), so the
-  composite PK lets two hubs both index low leaves (seq 0, 1, …) without colliding — the original single
-  global `seq PRIMARY KEY` clobbered the earlier hub's row on `ON CONFLICT(seq)`. Both the `schema.sql`
-  fresh-DB shape and migration 0's rebuilt table carry `PRIMARY KEY (hub_id, seq)`; the two DDLs MUST stay
-  identical (if either is edited, edit both). `RecentRecords` orders by the global `seq` (the only
-  monotonic signal — no observed-at column), now honest across hubs since the clobber is gone.
-  Mutation-proven (revert to single-PK → `TestRecordProjectionsMultiHubSeqZero` FAILS on the `ON CONFLICT`
-  mismatch). Also confirmed (NOT a defect): the `iscc_index.go` package-docstring's "no production caller
-  yet" is STALE — `follower/ingest.go` calls `RecordProjections` on every verified poll.
+- **settled (landed, detail in git history): `RecentRecords(ctx, n)` realm-wide recent reader + the
+  composite `(hub_id, seq)` PK.** `RecentRecords` is newest-first by the global `seq` with `JOIN follow_state
+  f WHERE i.seq < f.last_size` (per-hub accepted-tree ceiling; a hub with no/NULL `last_size` contributes
+  nothing) and is SCHEMA-AGNOSTIC (no `note_schema` filter — the view layer interprets declarations).
+  `iscc_index` is keyed on `PRIMARY KEY (hub_id, seq)` because `seq` is each hub's per-hub ABSOLUTE leaf
+  index (restarts at 0 per hub) — the old single global `seq PRIMARY KEY` clobbered the earlier hub's row;
+  the `schema.sql` fresh-DB shape and migration-0's rebuilt table carry the composite PK and MUST stay
+  identical (edit both). Mutation-proven (`TestRecentRecords`/`…Empty`, `TestRecordProjectionsMultiHubSeqZero`).
 - **The stored `note.$schema` is the VERBATIM wire value — a full URI, NOT a short name.** Production
   records carry `http://purl.org/iscc/schema/iscc-note-0.8.0.json` (declaration) /
   `…iscc-note-delete-0.8.0.json` (deletion); the golden `projection_test.go` and `follower/fsck_test.go`
@@ -72,14 +63,10 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   released entry** (`migrateISCCIndexCompositePK` is index 0; a fresh DB skips it — `schemaSQL` already
   builds the composite shape and Open jumps straight to `len(migrations)`; only a pre-existing single-PK
   DB runs it). A migration body does NOT bump `user_version` — `applyMigration` does that on the same tx.
-- **settled (landed): the runner now bounds the read-back `user_version` BEFORE the loop** (`if version <
-  0 || version > len(migs)` → wrapped `errUnsupportedSchemaVersion`), so a DB from a NEWER binary
-  (version > len) is rejected fail-closed instead of opening silently, and a corrupt NEGATIVE version
-  returns an error instead of panicking on `migs[-1]`. Match the reject with `errors.Is(err,
-  errUnsupportedSchemaVersion)`, not the message. Mutation-proven (remove the guard →
-  `TestMigrationOutOfRangeVersion` FAILS: future returns nil, negative panics). This is the durable
-  fail-closed posture every future migration index inherits — the guard is the reason a non-empty
-  `migrations` slice is safe.
+  The runner bounds the read-back `user_version` BEFORE the loop (`version < 0 || version > len(migs)` →
+  wrapped `errUnsupportedSchemaVersion`, matched via `errors.Is` not the message) so a newer-binary DB is
+  rejected fail-closed and a negative version can't panic on `migs[-1]` — the fail-closed posture every
+  future index inherits (mutation-proven, `TestMigrationOutOfRangeVersion`).
 
 ## SQLite store (`internal/store`)
 
@@ -170,10 +157,10 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   per-checkpoint attestation — see `dashboard.md` for the honesty rationale and the open design `normal`.
   Store stays a leaf (no new import; `go list -deps … | grep '^net/http$'` empty); schema/go.mod/go.sum
   byte-unchanged; mutation-proven (subselect→`''` FAILS `TestListHubsAnchorStatus`).
-- **TRAP (advance `820a831`): the §3 observed-time subselect now ties to the accepted size
-  (`AND c.tree_size = f.last_size ORDER BY c.id DESC LIMIT 1`) — `id DESC` is BACKWARDS for a same-size
-  FORK.** It closes the equivocation/higher-size decouple but a fork records a contradictory row at
-  `tree_size == last_size` (later `id`), so `id DESC` still picks the rejected row. The accepted row at a
-  size is the EARLIEST (`store.CheckpointAt` uses `ORDER BY rowid`; two rows at `last_size` ⇒ a fork, since
-  same-root re-observation deduped by `ON CONFLICT(hub_id,tree_size,root)`); the fix is `id ASC`. See
-  `dossier.md` + the open `normal`. [Codex P2, reviewer-reproduced.]
+- **settled (advance `244d450`): the §3 observed-time subselect is `AND c.tree_size = f.last_size ORDER BY
+  c.id ASC LIMIT 1` — the accepted row at a size is the EARLIEST `id`.** Two rows at `last_size` can only
+  be a same-size FORK (same-root re-observation is deduped by `ON CONFLICT(hub_id,tree_size,root)`), and
+  `AdvanceAccepted` inserts the accepted row first → lowest `id`, so `id ASC` selects it (matching
+  `store.CheckpointAt`'s `ORDER BY rowid`). `id DESC` was backwards (picked the rejected fork row); both
+  the higher-size and same-size-fork cases are now mutation-pinned
+  (`TestListHubsFrozenObservedTracksAcceptedSize`/`…SameSizeFork`). The §3 honesty `normal` is CLOSED.

@@ -22,18 +22,15 @@ this surface shares live in `learnings/dashboard.md` (read both).
   §4's `AnchorHeight` renders ONLY when `Anchor == OTSStatusConfirmed AND AnchorHeight > 0` (`HasAnchorHeight`)
   so a NULL/zero never reads as "block 0". `anchorLabel` is a verbatim port of dashboard's (switches on
   `store.OTSStatus*` consts, never literals; label is grayscale-safe, dot decorative — ADR-0010 inv.4).
-- **The §3 observed-time subselect is now `AND c.tree_size = f.last_size ORDER BY c.id DESC LIMIT 1` (advance
-  `820a831`) — tied to the accepted size, which CLOSES the higher-size/equivocation decouple but NOT the
-  same-size FORK case.** Violation kinds are size-partitioned (`logclient/checkconsistency.go:35-37`): shrink
-  `next<prev`, fork `next==prev`, equivocation `next>prev`. For an equivocation the rejected checkpoint is
-  LARGER, so `tree_size = last_size` no longer matches it → §3 reads the accepted row (mutation-proven by
-  `TestListHubsFrozenObservedTracksAcceptedSize`). For a FORK, `follower.freeze` records the contradictory
-  checkpoint at `tree_size == last_size` (same size, later `id`), so the subselect matches BOTH rows and
-  `id DESC LIMIT 1` STILL picks the rejected fork row — §3 pairs the accepted size with the fork's
-  `observed_at` (reviewer-reproduced). The durable fix is `ORDER BY c.id ASC` (the accepted row at that size
-  is the EARLIEST — `store.CheckpointAt` already uses `ORDER BY rowid`; a re-observed accepted checkpoint is
-  deduped by `ON CONFLICT(hub_id,tree_size,root)`, so two rows at `last_size` means a fork), OR key by the
-  accepted root. Open `normal` (the fork remainder). [Codex P2, reviewer-confirmed by reproduction.]
+- **settled (advance `244d450`): the §3 observed-time subselect is `AND c.tree_size = f.last_size ORDER BY
+  c.id ASC LIMIT 1` — §3 always reads the ACCEPTED checkpoint's time on a frozen hub, both the
+  equivocation/higher-size case and the same-size FORK.** Violation kinds are size-partitioned
+  (`logclient/checkconsistency.go:35-37`): for an equivocation the rejected checkpoint is LARGER, so
+  `tree_size = last_size` excludes it; for a FORK `follower.freeze` records the contradictory checkpoint at
+  `tree_size == last_size` with a LATER `id`, and `id ASC` selects the EARLIEST (accepted) row — two rows at
+  `last_size` can only be a fork because a same-root re-observation is deduped by
+  `ON CONFLICT(hub_id,tree_size,root)`. Mutation-pinned by
+  `TestListHubsFrozenObservedTracksAcceptedSize`/`…SameSizeFork`. The §3 size/time honesty `normal` is CLOSED.
 - **§1 Identity is static-derived ("Key resolved from did:web:<domain>"), rendered UNCONDITIONALLY (no
   network/store read) — so it contradicts the `unresolvable` overlay copy.** The mockup + next.md specify
   the static phrasing (§1 is about WHERE the key comes from = domain ownership, not a per-request verdict),
