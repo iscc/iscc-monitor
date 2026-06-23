@@ -1,146 +1,127 @@
 # Next Work Package
 
-## Step: Rebuild `iscc_index` under a composite `(hub_id, seq)` PK as migration index 0, with the out-of-range `user_version` guard
+## Step: Tie the dossier §3 observed-time to the accepted `last_size` checkpoint row (frozen-hub honesty fix)
 
 ## Advances
-This step is justified by two open `normal` issues that the loop's scheduled-next handoff
-(`review` 2026-06-23 **Next:**) and `state.md` "Next Milestone" both name as the next deliberate code
-work, now that the code-closable feature/milestone backlog is drained:
+Closes the open `normal` issue "Dossier §3 latest-checkpoint size and observed-time can come from
+different rows on a FROZEN hub" and advances the **M-UI** Verify criterion:
 
-1. **"`iscc_index.seq` is a single global PRIMARY KEY but ingest writes per-hub absolute leaf indices —
-   multi-hub PK collision"** (`normal`, `issues.md`): two followed hubs sharing a leaf index (every realm
-   with ≥2 active hubs: both have seq 0, 1, …) collide on the global PK and `RecordProjections`'
-   `ON CONFLICT(seq) DO UPDATE` silently clobbers the earlier hub's row. This is a multi-hub data-model
-   correctness defect on the M2 `iscc_index` projection (ADR-0008).
-2. **"Migration runner does not bound the read-back `user_version` — future-version silent-accept +
-   negative-version panic (both go live at migration index 0)"** (`normal`, `issues.md`): the moment the
-   `migrations` slice becomes non-empty, a `user_version > len(migs)` opens silently and a `-1` panics on
-   `migs[-1]`. The state, the review handoff, and `learnings/store.md` all say to fix this **with or
-   before** the first real migration — which is exactly this step.
+> "the coverage window (`monitored_since` size + RFC-3339 time, or an explicit … 'no coverage yet')
+> shows for **every** hub on the index + dossier and a pre-coverage state never renders as a guarantee
+> (ADR-0001)"
 
-No milestone Verify criterion is unmet (all M1→M-API bars are MET, carried forward); these two paired
-`normal`s are the standing code-closable work, and they close together because the migration runner is
-the enabling mechanism the prior window deliberately landed (no-op baseline) for precisely this.
+…and the M-UI honesty bar more broadly ("never imply a guarantee the data does not support"). Right now
+§3 renders the ACCEPTED size (`.LastSize`) paired with the time of a DIFFERENT (rejected, higher-tree-size)
+checkpoint on a frozen hub — an accepted size with a rejected timestamp. This is the recurring SSR-honesty
+gap the always-loaded learnings flag, and it is a concrete, code-closable correctness fix — NOT a design
+pass. (Contrast: the sibling §1 "resolved"-wording `normal` and the realm-index Anchor `normal` both
+explicitly need a design decision first, per their issues + `learnings/dossier.md`.)
+
+**Why this and not the handoff's suggestion:** the handoff's `**Next:**` points at "M-API contract-fidelity
+slice 4 (the phantom `verify` `index` param + the `checkpoint` media-type doc fixes)". That work is ALREADY
+DONE in the served doc — I verified `internal/openapi/openapi.{yaml,json}`: the `verify` op carries only
+`Domain` + `iscc_id` (no `index`), `/checkpoint`'s `200` is `application/octet-stream`, and `/healthz`
+documents both `200` and `503`. Those four M-API entries in `issues.md` are stale bookkeeping awaiting a
+prune (state.md §M-API confirms this), not open code work. So the genuinely-open, code-closable `normal` is
+this §3 honesty fix.
 
 ## Goal
-Make `iscc_index` faithfully hold every hub's low leaves in a multi-hub realm by re-keying it on the
-composite `(hub_id, seq)` PK, delivered as the project's FIRST real on-disk migration (index 0) so a
-pre-existing single-PK database upgrades in place; and bound the migration runner's read-back
-`user_version` so the now-non-empty slice stays fail-closed instead of silently accepting a future
-version or panicking on a negative one.
+Make the dossier §3 "latest checkpoint" SIZE and TIME always describe the SAME checkpoint row, so a frozen
+hub no longer shows the accepted size next to a rejected checkpoint's timestamp.
 
 ## Scope
+- **Create**: (none)
 - **Modify**:
-  - `internal/store/schema.sql` — change the `iscc_index` table's `seq INTEGER PRIMARY KEY` to a column
-    `seq INTEGER NOT NULL` plus a table-level `PRIMARY KEY (hub_id, seq)` (mirroring the existing
-    composite PKs on `tiles` / `entry_bundles`). This is the DDL a FRESH database gets directly; the
-    migration below brings a PRE-EXISTING database to the same shape. Update the table's leading comment
-    so it states the composite key (evergreen — describe the current state).
-  - `internal/store/iscc_index.go` — change `RecordProjections`' upsert conflict target from
-    `ON CONFLICT(seq)` to `ON CONFLICT(hub_id, seq)` (the new PK), and update the `RecordProjections` /
-    `ProjectionRecord` / `iscc_index.go` package docstrings that call `seq` "the PRIMARY KEY" to say the
-    composite `(hub_id, seq)`. The four readers (`ListRecords`, `RecordAt`, `RecentRecords`,
-    `SeqsForISCCID`) already scope every query by `hub_id` and select `seq` plainly, so their SQL is
-    unchanged — do not touch their queries.
-  - `internal/store/sqlite.go` — (a) append migration index 0 to the `migrations` slice: a function
-    `func(tx *sql.Tx) error` that rebuilds `iscc_index` under the composite PK via SQLite's standard
-    table-rebuild dance (create the new-shape table under a temp name, `INSERT INTO … SELECT …` to copy
-    existing rows, drop the old table, rename the new one into place, recreate the
-    `iscc_index_by_iscc_id` index); update the `migrations` var docstring + the package/`Open` docstrings
-    that say the list is an "empty no-op baseline" to describe the one entry now present. (b) Add the
-    out-of-range guard in `applyMigrations`: before the loop, `if version < 0 || version > len(migs) {
-    return error }` (wrapped), so an unsupported on-disk version is rejected fail-closed instead of
-    opening silently / panicking on `migs[-1]`.
-
-  That is exactly 3 non-test source files (`schema.sql`, `iscc_index.go`, `sqlite.go`). Test files
-  (`internal/store/sqlite_test.go`, `internal/store/iscc_index_test.go`) and docs are not counted.
+  - `internal/store/hubs.go` — change the §3 `observed_at` correlated subselect in `ListHubs` so it reads
+    the `observed_at` of the checkpoint row whose `tree_size = f.last_size` (the accepted size §3 renders),
+    not the newest-by-`tree_size` row. Update the `CheckpointObserved` doc comment (lines ~27-32) and the
+    in-query comment block (lines ~56-62) so they describe the new "tied to the accepted size" semantics
+    (evergreen — describe the current state).
+  - `internal/store/hubs_test.go` *(test — does not count against the ≤3 budget)* — add a frozen-hub
+    regression test asserting §3 time tracks the accepted-size checkpoint, mutation-pinned.
 - **Reference**:
-  - `.claude/context/learnings/store.md` — the migration-runner note (append-only, never edit/reorder a
-    released entry; the two out-of-range edges to guard) and the `iscc_index` writer/reader settled facts.
-  - `internal/store/schema.sql` `tiles` / `entry_bundles` — the established composite-PK pattern to copy.
-  - `internal/store/sqlite_test.go` — the existing `TestMigration*` harness (`rawOpen`, `userVersion`,
-    synthetic-slice `applyMigrations` calls, `tableSet`) the new tests extend.
-  - `internal/store/iscc_index_test.go` — the existing `RecordProjections` / reader round-trip tests
-    whose multi-hub collision assertion you add.
+  - `.claude/context/learnings/dossier.md` (§3 size/time-decouple rule — the durable fix is "select
+    `observed_at` for the row whose `tree_size = f.last_size`"; the §1-resolved + realm-Anchor design-blocked
+    siblings to NOT touch)
+  - `.claude/context/learnings/store.md` (single-writer leaf; NULL-safe `sql.NullInt64` read-back; the
+    §3 `tree_size DESC` subselect is deliberately distinct from `ListCheckpoints`' chronological order)
+  - `internal/store/hubs.go` lines 63-124 (the `ListHubs` query + scan to edit)
+  - `internal/store/checkpoints.go` — `RecordCheckpoint` (line 113), `AdvanceAccepted` (223), `Freeze`
+    (391-399): the writers the test seeds a frozen-hub fixture with
+  - `internal/store/hubs_test.go` lines 90-156 (`TestListHubsCheckpointAndAnchorHeight` — the existing §3
+    test to keep green and the fixture pattern to copy)
+  - `internal/dossier/handler.go` lines 290-320 + `observedTime` — confirms `CheckpointObserved` →
+    `ObservedTime` is the only §3 consumer (the fix is store-side; the renderer is unchanged)
 
 ## Not In Scope
-- **Do NOT change the four reader queries** (`ListRecords`/`RecordAt`/`RecentRecords`/`SeqsForISCCID`).
-  They already filter by `hub_id`; the composite PK is transparent to them. Touching them risks a
-  regression with no benefit (only docstrings that name `seq` "the PRIMARY KEY" get a wording update).
-- **Do NOT re-key `RecentRecords`' cross-hub ordering.** It orders newest-first by the global `seq`,
-  which is no longer a true global recency once two hubs reuse low seqs — but that is a known, separately
-  filed concern (the store.md note) and the only monotonic signal the store has. Leave its `ORDER BY
-  i.seq DESC` as-is; do not invent an observed-at column.
-- **Do NOT change `follower/ingest.go`** — it already writes the per-hub absolute leaf index as `Seq`;
-  the bug was the PK, not the writer's seq value. The composite PK makes the existing per-hub seq correct.
-- **Do NOT add a second migration or any other schema change.** Exactly one entry (index 0).
-- **Do NOT touch the `iscc_index_by_iscc_id` index definition in `schema.sql`** beyond what the rebuild
-  migration recreates — the BLOB-`iscc_id` lookup index is unchanged.
+- The §1 "Key resolved from did:web:…" wording on the `unresolvable` path — a SEPARATE open `normal` that
+  the issue + `learnings/dossier.md` explicitly say needs a DESIGN PASS (mockup-specified copy); do not touch.
+- The realm-index `/` Anchor per-hub-vs-per-checkpoint honesty `normal` — also design-blocked; leave it.
+- Pruning the 4 stale M-API `normal` issue entries — that is `update-state`/`review` bookkeeping, not an
+  advance code change.
+- The `seq`-index / `user_version`-guard-hoist `low`s — not triggered by this edit (no `iscc_index` schema
+  change, no `Open` change).
+- Any change to `ListCheckpoints` (§5) or the §5 observation-log loop — §5 already correctly skips
+  non-increasing pairs; this step touches ONLY the §3 single-row subselect.
+- Do NOT add a column or migration — this is a query-shape change INSIDE the existing `ListHubs` statement,
+  no `schema.sql` / `user_version` edit.
 
 ## Implementation Notes
-- **SQLite cannot ALTER a PRIMARY KEY in place** — the migration must use the documented table-rebuild
-  (here the simple form, since no FK references `iscc_index.seq`): inside the migration's `*sql.Tx`,
-  `CREATE TABLE iscc_index_new (…composite PK…)`, `INSERT INTO iscc_index_new (hub_id, seq, iscc_id,
-  iscc_id_str, note_schema, note_timestamp, record_sha256) SELECT hub_id, seq, iscc_id, iscc_id_str,
-  note_schema, note_timestamp, record_sha256 FROM iscc_index`, `DROP TABLE iscc_index`,
-  `ALTER TABLE iscc_index_new RENAME TO iscc_index`, then
-  `CREATE INDEX IF NOT EXISTS iscc_index_by_iscc_id ON iscc_index (iscc_id)`. The new-table DDL inside the
-  migration MUST match the `schema.sql` shape a fresh DB gets, so the two converge. Note: a fresh DB never
-  runs this migration (it is created by `schema.sql` already at the composite shape, then `user_version`
-  jumps straight to `len(migrations)`); only a pre-existing single-PK DB runs it. Existing-row copy is
-  safe because a pre-existing DB had a single global PK, so no two copied rows can collide on
-  `(hub_id, seq)` (each old `seq` was globally unique). `PRAGMA foreign_keys=ON` is set on the connection;
-  the drop/rename of a table that nothing references is fine — prefer NOT to toggle `foreign_keys` unless
-  a test forces it (no FK points at `iscc_index`).
-- **The migration runs inside `applyMigration`'s per-step `*sql.Tx` and is fail-closed** — return any
-  error from the `tx.Exec` calls; the runner rolls back and leaves `user_version` unadvanced. Do NOT bump
-  `user_version` inside the migration (the runner does that).
-- **Append-only discipline (store.md, correctness rule):** add the entry at index 0 of `migrations`;
-  never edit or reorder it later. `len(migrations)` becomes 1, so a fresh DB ends at `user_version == 1`.
-  This shifts the existing `TestMigrationFreshDBAtCurrentVersion` assertion from `len(migrations) == 0`
-  to `== 1` — it already asserts `userVersion == len(migrations)`, so it stays green automatically.
-- **The writer conflict target** `ON CONFLICT(hub_id, seq)` must name the exact composite PK columns in
-  that order; SQLite matches the conflict target to the PK's column set. Verify the existing
-  `iscc_index` idempotency test (re-ingesting a bundle overwrites in place) still passes — the
-  `DO UPDATE SET` body is unchanged.
-- **The out-of-range guard** (`learnings/store.md`, the filed `normal`): in `applyMigrations`, after
-  reading `version` and before the loop, `if version < 0 || version > len(migs) { return
-  fmt.Errorf("unsupported on-disk schema version %d (code supports up to %d): %w", version, len(migs),
-  …) }`. Use a sentinel `var` or a plain wrapped error the test can assert on. This makes a future-version
-  DB fail-closed and a `-1` return an error instead of panicking on `migs[-1]`.
-- **Relevant correctness rules:** learnings.md "fail-closed" discipline (the guard); store.md "Append
-  migrations, never edit/reorder a released entry"; ADR-0008 schema-agnostic index (the rebuild copies
-  the verbatim columns, interprets nothing); the store stays a **leaf** — no new imports
-  (`go list -deps ./internal/store | grep '^net/http$'` must stay empty).
-- **Oracle/conformance gate: N/A** — this touches no signature / RFC-6962 / Merkle / did:web / proof
-  path; it is `iscc_index` DDL + `user_version` bookkeeping. State the N/A in the advance.
+- **The fix (one subselect):** in `ListHubs` (`internal/store/hubs.go:69-70`) change
+  ```sql
+  (SELECT c.observed_at FROM checkpoints c WHERE c.hub_id = h.hub_id
+   ORDER BY c.tree_size DESC, c.id DESC LIMIT 1)
+  ```
+  to tie the row to the accepted size:
+  ```sql
+  (SELECT c.observed_at FROM checkpoints c WHERE c.hub_id = h.hub_id
+   AND c.tree_size = f.last_size
+   ORDER BY c.id DESC LIMIT 1)
+  ```
+  `f` is the already-joined `follow_state` (LEFT JOIN, alias `f`). Keep `id DESC LIMIT 1` so a re-observed
+  same-size row is deterministic. The scan path (`sql.NullInt64 observedAt` → `time.Unix`) is UNCHANGED —
+  only the row the subselect selects changes.
+- **Verified-hub path (no regression):** for a VERIFIED hub `f.last_size` equals the accepted tree size and
+  the accepted checkpoint row carries that size, so the subselect picks the same row it picks today →
+  `CheckpointObserved` is identical. The existing `TestListHubsCheckpointAndAnchorHeight` (accepted size 42,
+  `last_size` 42 via `AdvanceAccepted`) must still pass unchanged — confirm it does.
+- **NULL-safety (honest fallback):** when `f.last_size` is NULL (never-polled hub) OR no checkpoint row has
+  `tree_size = last_size`, the subselect yields SQL NULL → `observedAt.Valid == false` → zero `time.Time` →
+  the renderer's `observedTime` shows "observed time unknown". That is the honest state, consistent with the
+  existing `bare`-hub assertion (`CheckpointObserved.IsZero()`), which must still hold.
+- **Frozen-hub regression test (the load-bearing addition):** seed one hub, `AdvanceAccepted` at the
+  accepted size (e.g. `TreeSize: 100`, `ObservedAt: tAccepted`), then `RecordCheckpoint` a rejected
+  higher-size row (`TreeSize: 200`, `ObservedAt: tRejected` — a LATER, distinct instant) WITHOUT advancing
+  `last_size` (this mirrors `follower.freeze`, which `RecordCheckpoint`s the contradictory checkpoint but
+  never writes `last_size`); optionally `Freeze` the hub. Assert `ListHubs` reports
+  `CheckpointObserved == tAccepted` (the accepted-size row's time), NOT `tRejected`. Use distinct
+  `time.Unix` instants so the assertion is sharp.
+- **Mutation check (state it in the advance):** reverting the query to
+  `ORDER BY c.tree_size DESC, c.id DESC LIMIT 1` (dropping the `AND c.tree_size = f.last_size`) must make the
+  new test FAIL — it would report `tRejected`.
+- **Store-leaf discipline (always-loaded rule):** stays a pure read in `internal/store` — no new import, no
+  `net/http`, plain Go types out. Do not move §3 logic into the dossier view; the renderer is correct, the
+  query was picking the wrong row.
+- **Relevant Correctness rule:** learnings.md always-loaded "Coverage honesty (ADR-0001) … state guarantees
+  *from coverage start*" + the SSR-honesty rule (never render data the store cannot support). The frozen-hub
+  Exhibit already shouts "do not trust new state", but §3 must still not pair an accepted size with a
+  rejected time — that is a false specific claim.
+- **Oracle/conformance gate: N/A** — touches no signature / RFC-6962 / Merkle / did:web / proof path; it is a
+  pure `iscc_index`/`checkpoints` read-shape change. State the N/A in the advance.
 
 ## Verification
-- `mise run check` is green (build + vet + test over all packages) and `gofmt -l .` is empty.
-- **Composite-PK multi-hub round-trip (the bug fix):** a new `internal/store/iscc_index_test.go` test
-  seeds two hubs (hub_id 1 and 2, via the same `INSERT INTO hubs …` the existing tests use to satisfy the
-  FK), `RecordProjections` for `{HubID:1, Seq:0, IsccID:"ISCC:A"}` and `{HubID:2, Seq:0, IsccID:"ISCC:B"}`,
-  then `RecordAt(ctx,1,0)` returns `"ISCC:A"` (found) AND `RecordAt(ctx,2,0)` returns `"ISCC:B"` (found) —
-  neither clobbers the other. `go test -run TestRecordProjectionsMultiHubSeqZero ./internal/store` passes;
-  on the OLD single-PK schema (or with `ON CONFLICT(seq)`) one of the two reads would return the wrong id.
-- **Migration upgrade-in-place:** a new test in `internal/store/sqlite_test.go` creates a DB with the
-  OLD single-PK `iscc_index` DDL + a seeded row at `user_version = 0` (drop+recreate the table on a raw
-  handle, or seed via `rawOpen`), then runs the PRODUCTION `migrations` slice via `applyMigrations(db,
-  migrations)` and asserts: the seeded row survives, `user_version == len(migrations)` (== 1), and a
-  subsequent insert of a second hub's `seq` matching the first hub's `seq` succeeds (no PK collision).
-  `go test -run TestMigrationIsccIndexCompositePK ./internal/store` passes.
-- **Out-of-range guard fail-closed:** extend the migration tests so `applyMigrations(db, migs)` with
-  `user_version` set to `len(migs)+1` returns a (wrapped) error, and `user_version = -1` returns an error
-  (not a panic). `go test -run TestMigrationOutOfRangeVersion ./internal/store` passes; reverting the
-  guard makes both FAIL (the future-version case opens silently; the `-1` case panics with a non-empty
-  slice).
-- **All five existing `TestMigration*` tests still pass:**
-  `go test -run TestMigration ./internal/store` is green (the runner change is additive; the fresh-DB
-  test now sees `len(migrations) == 1`).
-- **Store leaf purity intact:** `go list -deps ./internal/store | grep '^net/http$'` is empty.
+- `mise run check` is green (build + vet + test across all packages; `gofmt -l .` empty).
+- `go test -count=1 -run TestListHubs ./internal/store` passes — both the existing
+  `TestListHubsCheckpointAndAnchorHeight` (verified-hub + bare-hub paths unchanged) and the new frozen-hub
+  test.
+- New frozen-hub test is mutation-proven load-bearing: reverting the §3 subselect to
+  `ORDER BY c.tree_size DESC, c.id DESC LIMIT 1` (without `AND c.tree_size = f.last_size`) makes the new test
+  FAIL (it reports the rejected checkpoint's time).
+- Store leaf purity intact: `go list -deps ./internal/store | grep '^net/http$'` is empty.
+- Assertion: for a frozen hub with accepted `tree_size = last_size = 100 @ tAccepted` and a recorded
+  rejected `tree_size = 200 @ tRejected`, `ListHubs(...)[hub].CheckpointObserved == tAccepted`.
 
 ## Done When
-`mise run check` is green and every Verification check passes: `iscc_index` is keyed on the composite
-`(hub_id, seq)` PK (fresh DB via `schema.sql`, pre-existing DB via migration index 0), two hubs can both
-index `seq 0` without clobbering, and the migration runner rejects an out-of-range `user_version`
-fail-closed — closing both paired data-model `normal`s together.
+`mise run check` is green, the new frozen-hub test passes and is mutation-proven, the existing verified-hub
+and bare-hub assertions still hold, and the dossier §3 observed-time is read from the checkpoint row whose
+`tree_size` equals the accepted `last_size` — closing the §3 size/time-decouple `normal`.
