@@ -9,6 +9,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -168,5 +169,212 @@ func TestStoreReopenIdempotent(t *testing.T) {
 	}
 	if err := s2.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// userVersion reads PRAGMA user_version off a raw handle.
+func userVersion(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var v int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
+		t.Fatalf("read user_version: %v", err)
+	}
+	return v
+}
+
+// rawOpen opens path with the single-writer pragmas through a raw database/sql
+// handle, mirroring how the runner reaches the database. Used to drive
+// applyMigrations directly with a synthetic migration slice and to read state
+// back off disk independent of any in-process Store connection.
+func rawOpen(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+// TestMigrationFreshDBAtCurrentVersion confirms a freshly created database is left
+// at the code's current schema version (len(migrations)) after Open — the runner
+// advances user_version to the baseline even when nothing needs migrating.
+func TestMigrationFreshDBAtCurrentVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "testnet.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	db := rawOpen(t, path)
+	if got := userVersion(t, db); got != len(migrations) {
+		t.Errorf("fresh-DB user_version = %d, want len(migrations) = %d", got, len(migrations))
+	}
+}
+
+// TestMigrationUpgradesOldDB feeds the runner a synthetic one-entry migration
+// slice against a version-0 database and confirms it runs the migration exactly
+// once, advances user_version to 1, and the migration's observable effect (a
+// marker row) is present afterward.
+func TestMigrationUpgradesOldDB(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "testnet.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	db := rawOpen(t, path)
+	// Simulate a database created before this migration existed: reset the
+	// stored version below len(migs) so the synthetic step is pending.
+	if _, err := db.Exec("PRAGMA user_version = 0"); err != nil {
+		t.Fatalf("reset user_version: %v", err)
+	}
+
+	calls := 0
+	migs := []func(*sql.Tx) error{
+		func(tx *sql.Tx) error {
+			calls++
+			_, err := tx.Exec("CREATE TABLE migration_marker (id INTEGER PRIMARY KEY)")
+			return err
+		},
+	}
+	if err := applyMigrations(db, migs); err != nil {
+		t.Fatalf("applyMigrations: %v", err)
+	}
+
+	if calls != 1 {
+		t.Errorf("migration ran %d times, want 1", calls)
+	}
+	if got := userVersion(t, db); got != 1 {
+		t.Errorf("user_version after upgrade = %d, want 1", got)
+	}
+	if !tableSet(t, db)["migration_marker"] {
+		t.Error("migration effect missing: marker table not created")
+	}
+}
+
+// TestMigrationIdempotent confirms re-running the runner over an already-migrated
+// database executes zero migrations: user_version already equals len(migs), so the
+// loop body never fires. This is the load-bearing idempotency contract — deleting
+// the user_version bump makes this test fail (the migration re-runs).
+func TestMigrationIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "testnet.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	db := rawOpen(t, path)
+	if _, err := db.Exec("PRAGMA user_version = 0"); err != nil {
+		t.Fatalf("reset user_version: %v", err)
+	}
+
+	calls := 0
+	migs := []func(*sql.Tx) error{
+		func(tx *sql.Tx) error {
+			calls++
+			_, err := tx.Exec("CREATE TABLE migration_marker (id INTEGER PRIMARY KEY)")
+			return err
+		},
+	}
+	if err := applyMigrations(db, migs); err != nil {
+		t.Fatalf("first applyMigrations: %v", err)
+	}
+	if err := applyMigrations(db, migs); err != nil {
+		t.Fatalf("second applyMigrations: %v", err)
+	}
+
+	if calls != 1 {
+		t.Errorf("migration ran %d times across two runs, want 1", calls)
+	}
+	if got := userVersion(t, db); got != 1 {
+		t.Errorf("user_version after second run = %d, want 1", got)
+	}
+}
+
+// TestMigrationFailClosed confirms a migration that returns an error leaves
+// user_version unadvanced and the database unchanged, and the runner returns the
+// wrapped error. The per-step transaction rolls back, so a failed step never
+// leaves a half-migrated database.
+func TestMigrationFailClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "testnet.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	db := rawOpen(t, path)
+	if _, err := db.Exec("PRAGMA user_version = 0"); err != nil {
+		t.Fatalf("reset user_version: %v", err)
+	}
+
+	boom := errors.New("boom")
+	migs := []func(*sql.Tx) error{
+		func(tx *sql.Tx) error {
+			// Write a row, then fail: the rollback must discard it.
+			if _, err := tx.Exec("CREATE TABLE migration_marker (id INTEGER PRIMARY KEY)"); err != nil {
+				return err
+			}
+			return boom
+		},
+	}
+	err = applyMigrations(db, migs)
+	if err == nil {
+		t.Fatal("applyMigrations on a failing migration returned nil, want error")
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("error = %v, want it to wrap %v", err, boom)
+	}
+	if got := userVersion(t, db); got != 0 {
+		t.Errorf("user_version after failed migration = %d, want 0 (unadvanced)", got)
+	}
+	if tableSet(t, db)["migration_marker"] {
+		t.Error("failed migration was not rolled back: marker table present")
+	}
+}
+
+// TestMigrationAppliesInOrder confirms a multi-entry slice over a version-0
+// database runs every step in order and advances user_version to len(migs).
+func TestMigrationAppliesInOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "testnet.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	db := rawOpen(t, path)
+	if _, err := db.Exec("PRAGMA user_version = 0"); err != nil {
+		t.Fatalf("reset user_version: %v", err)
+	}
+
+	var order []int
+	migs := []func(*sql.Tx) error{
+		func(tx *sql.Tx) error { order = append(order, 0); return nil },
+		func(tx *sql.Tx) error { order = append(order, 1); return nil },
+		func(tx *sql.Tx) error { order = append(order, 2); return nil },
+	}
+	if err := applyMigrations(db, migs); err != nil {
+		t.Fatalf("applyMigrations: %v", err)
+	}
+
+	if len(order) != 3 || order[0] != 0 || order[1] != 1 || order[2] != 2 {
+		t.Errorf("migrations ran in order %v, want [0 1 2]", order)
+	}
+	if got := userVersion(t, db); got != 3 {
+		t.Errorf("user_version after three migrations = %d, want 3", got)
 	}
 }

@@ -70,18 +70,27 @@ its own realm document and override `ISCC_MONITOR_REALM` by passing its own var.
 
 ## Migration policy (interim)
 
-`store.Open` applies the schema as `CREATE TABLE IF NOT EXISTS` only — there is **no
-on-disk migration mechanism yet** (it is a tracked open item; see the "No on-disk DB
-migration story" issue). A column added to an existing table in a later image
-**silently never reaches a pre-existing database**: the first `:develop` bump that
-adds a column over a populated volume would fail the new code path with `no such
-column`.
+`store.Open` applies the baseline schema as `CREATE TABLE IF NOT EXISTS`, then runs a
+`PRAGMA user_version`-gated migration runner that applies an ordered, append-only
+list of on-disk deltas the baseline DDL cannot reach (chiefly a column added to an
+existing table) and advances the stored `user_version` to the code's current schema
+version. The mechanism is fail-closed (a failed step rolls back its own transaction
+and aborts `Open`, never leaving a half-migrated database) and idempotent (a database
+already at the code's version runs zero migrations).
 
-**Interim policy: recreate the volume on a schema change.** This is acceptable for a
-throwaway testnet instance, where the data is reconstructable by re-fetch + fsck.
-Operate the testnet instance with this as the explicit assumption until the migration
-mechanism lands; revisit before any deployment that must preserve a populated
-production database across an image bump.
+**The migration list is still an empty no-op baseline today** — no real `ALTER`/
+rebuild step has been added yet. So while the *mechanism* now exists, a column added
+to an existing table in a later image **still silently never reaches a pre-existing
+database** until a migration entry for it is appended: the first `:develop` bump that
+adds a column over a populated volume without also adding its migration would fail the
+new code path with `no such column`.
+
+**Interim policy: recreate the volume on a schema change.** This still holds today,
+because the migration list is a no-op baseline. It is acceptable for a throwaway
+testnet instance, where the data is reconstructable by re-fetch + fsck. Operate the
+testnet instance with this as the explicit assumption until real migration entries
+land (the `iscc_index` composite-PK rebuild is the first planned one); revisit before
+any deployment that must preserve a populated production database across an image bump.
 
 ## Reverse-proxy & port contract
 
