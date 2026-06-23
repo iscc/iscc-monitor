@@ -24,7 +24,10 @@
       background: var(--surface-page);
     }
 
-    /* Document chrome: the masthead identifying this monitor instance. */
+    /* Document chrome: the masthead identifying this monitor instance, with the
+       tier-2 "verify in your browser" link to the monitor-agnostic verifier app.
+       Ported byte-for-byte from the dossier masthead so all three SSR surfaces
+       render the same chrome (the now-3× duplication is a tracked consolidation low). */
     .chrome {
       display: flex;
       align-items: center;
@@ -62,11 +65,87 @@
       color: var(--text-muted);
       font-weight: var(--weight-light);
     }
+    .chrome-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: var(--space-5);
+      flex-wrap: wrap;
+    }
+    /* The instance-identity block: this deployment's domain + operator/realm,
+       config-driven from the masthead Identity (byte-identical to the dashboard). */
+    .chrome-identity {
+      text-align: right;
+      line-height: var(--leading-snug);
+    }
+    .chrome-instance {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-body);
+    }
+    .chrome-operator {
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+      font-weight: var(--weight-light);
+    }
+    /* The tier-2 link to the monitor-agnostic verifier app (monitor.iscc.codes).
+       The record list has no single ISCC-ID subject to re-verify in-browser, so its
+       tier-2 affordance is this cross-surface link, not a baked-in WASM proof island
+       (matching the dossier masthead). The .codes verifier app is same-federation, not
+       a third-party asset CDN, so the no-CDN body ban tolerates the literal host. */
+    .chrome-verify {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-link);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-xs);
+      padding: var(--space-2) var(--space-3);
+    }
 
     .page {
       max-width: 1000px;
       margin: 0 auto;
       padding: var(--space-10) var(--space-8) var(--space-14);
+    }
+
+    /* The back-link row to this hub's dossier (mounted at the SITE ROOT /<domain>,
+       OUTSIDE this /log/ subtree, so the href is an absolute site-root path). */
+    .backlink-row {
+      margin-bottom: var(--space-4);
+    }
+    .backlink {
+      color: var(--text-link);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-semibold);
+    }
+
+    /* Log-browser head: eyebrow "Log browser", the hub name, and the
+       "<domain> · N records mirrored" sub-line. The store carries no human display
+       name (HubSummary has only Domain/Origin), so the head name is the bare domain —
+       the same constraint-win deviation the dossier head already makes; the mockup's
+       prettified hub.name has no store source, so it is NOT fabricated here. */
+    .log-head {
+      margin-bottom: var(--space-4);
+    }
+    .log-eyebrow {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: var(--space-1);
+    }
+    .log-name {
+      font-size: var(--text-2xl);
+      font-weight: var(--weight-bold);
+      letter-spacing: -0.01em;
+      color: var(--text-heading);
+      margin: 0 0 var(--space-1);
+    }
+    .log-sub {
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      color: var(--text-body);
     }
 
     /* Ledger heading row. */
@@ -296,11 +375,27 @@
         <div class="chrome-sub">Evidence of record · ISCC-Hub network</div>
       </div>
     </div>
+    <div class="chrome-actions">
+      <div class="chrome-identity">
+        <div class="chrome-instance">{{.Instance}}</div>
+        <div class="chrome-operator">{{.Operator}}</div>
+      </div>
+      <a class="chrome-verify" href="https://monitor.iscc.codes/">verify ↗ monitor.iscc.codes</a>
+    </div>
   </header>
 
   <main class="page">
+    <div class="backlink-row">
+      <a class="backlink" href="/{{.Domain}}">← {{.Domain}} dossier</a>
+    </div>
+
+    <div class="log-head">
+      <div class="log-eyebrow">Log browser</div>
+      <h1 class="log-name">{{.Domain}}</h1>
+      <div class="log-sub">{{.Domain}} · {{.Total}} records mirrored</div>
+    </div>
+
     <div class="ledger-head">
-      <h1 class="ledger-title">Records</h1>
       <span class="ledger-count">The monitor's mirrored, accepted records for this hub, newest first.</span>
     </div>
 

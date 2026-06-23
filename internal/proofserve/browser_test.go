@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/iscc/iscc-monitor/internal/dashboard"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -27,7 +28,7 @@ import (
 // body contains the accepted size and the base64-Std encoding of the accepted root.
 func TestBrowserExposesAcceptedCheckpoint(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -65,7 +66,7 @@ func TestBrowserExposesAcceptedCheckpoint(t *testing.T) {
 // third-party origin (mirrors dashboard.TestDashboardLinksTokensNoCDN).
 func TestBrowserLinksTokensNoCDN(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -103,7 +104,7 @@ func TestBrowserLinksTokensNoCDN(t *testing.T) {
 // method-gate at the top of Handler covers it).
 func TestBrowserNonGET(t *testing.T) {
 	m := buildMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
@@ -127,7 +128,7 @@ func TestBrowserNoAcceptedCheckpoint(t *testing.T) {
 		t.Fatalf("UpsertHub: %v", err)
 	}
 
-	h := Handler(st, hubID, nil)
+	h := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -160,7 +161,7 @@ func (f fakeStatusSource) Status(hubID int64) (string, bool) {
 func TestBrowserRendersInMemoryStatus(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
 	statuses := fakeStatusSource{m.hubID: "unresolvable"}
-	h := Handler(m.store, m.hubID, statuses)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", statuses, dashboard.Identity{})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))

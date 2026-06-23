@@ -29,6 +29,7 @@ import (
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
 
+	"github.com/iscc/iscc-monitor/internal/dashboard"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -108,7 +109,7 @@ func itoa(n uint64) string {
 // NOT verify against a different prior root.
 func TestConsistencyServedProofVerifies(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	larger := m.size
 	largerRoot := m.tree.HashAt(larger)
 
@@ -164,7 +165,7 @@ func TestConsistencyServedProofVerifies(t *testing.T) {
 // buildMirror already recorded).
 func TestConsistencyDegenerateBoundaries(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 
 	for _, from := range []uint64{0, m.size} {
 		code, ev := getConsistency(t, h, fmtFrom(from))
@@ -183,7 +184,7 @@ func TestConsistencyDegenerateBoundaries(t *testing.T) {
 // TestConsistencyMissingFrom asserts a request without from is a 400.
 func TestConsistencyMissingFrom(t *testing.T) {
 	m := buildMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	code, _ := getConsistency(t, h, "")
 	if code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", code)
@@ -193,7 +194,7 @@ func TestConsistencyMissingFrom(t *testing.T) {
 // TestConsistencyNonNumericFrom asserts a non-numeric from is a 400.
 func TestConsistencyNonNumericFrom(t *testing.T) {
 	m := buildMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	code, _ := getConsistency(t, h, "from=abc")
 	if code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", code)
@@ -204,7 +205,7 @@ func TestConsistencyNonNumericFrom(t *testing.T) {
 // size is a 400 (RFC-6962 requires M <= N).
 func TestConsistencyFromExceedsAccepted(t *testing.T) {
 	m := buildMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	code, _ := getConsistency(t, h, fmtFrom(m.size+1))
 	if code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", code)
@@ -223,7 +224,7 @@ func TestConsistencyNoAcceptedCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertHub: %v", err)
 	}
-	h := Handler(st, hubID, nil)
+	h := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	code, _ := getConsistency(t, h, fmtFrom(1))
 	if code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", code)
@@ -235,7 +236,7 @@ func TestConsistencyNoAcceptedCheckpoint(t *testing.T) {
 // records a checkpoint only at the accepted size, so a mid-tree from has no row.
 func TestConsistencyUnknownFrom(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	code, _ := getConsistency(t, h, fmtFrom(100)) // no checkpoint recorded at 100
 	if code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", code)
@@ -245,7 +246,7 @@ func TestConsistencyUnknownFrom(t *testing.T) {
 // TestConsistencyNonGET asserts a non-GET method is a 405.
 func TestConsistencyNonGET(t *testing.T) {
 	m := buildMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/consistency?from=1", nil))
 	if rec.Code != http.StatusMethodNotAllowed {

@@ -39,6 +39,7 @@ import (
 	"os"
 
 	"github.com/iscc/iscc-monitor/internal/badge"
+	"github.com/iscc/iscc-monitor/internal/dashboard"
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/proof/verify"
 	"github.com/iscc/iscc-monitor/internal/store"
@@ -137,6 +138,35 @@ type StatusSource interface {
 	Status(hubID int64) (string, bool)
 }
 
+// Default masthead identity copy used when an identity field is left empty, so an
+// unconfigured deployment renders today's static placeholder rather than a false
+// claim. These MUST stay byte-identical to internal/dashboard's instanceFallback /
+// operatorFallback consts (and internal/dossier's copies): the dashboard, dossier, and
+// log-browser surfaces are all required to render the same chrome, and no package can
+// import another's unexported consts, so the defaults are duplicated here as literals.
+// The now-4× duplication is a tracked consolidation low, not this slice's concern.
+const (
+	instanceFallback = "monitor instance"
+	operatorFallback = "independent Trust & Transparency service · ISCC-Hub network"
+)
+
+// resolveIdentity applies the masthead identity fail-safe, mirroring
+// dashboard.Identity.resolve / dossier.resolveIdentity semantics so the log-browser
+// chrome stays byte-identical to the dashboard and dossier: a blank Instance or Operator
+// falls back to the static placeholder copy. It is resolved ONCE at Handler construction
+// (outside the request closure), like dossier. Realm has no slot on this masthead, so it
+// is ignored.
+func resolveIdentity(id dashboard.Identity) (instance, operator string) {
+	instance, operator = id.Instance, id.Operator
+	if instance == "" {
+		instance = instanceFallback
+	}
+	if operator == "" {
+		operator = operatorFallback
+	}
+	return instance, operator
+}
+
 // Handler returns an http.Handler that serves one hub's computed inclusion and
 // consistency proofs from the local mirror. It handles GET /inclusion?iscc_id=<id>
 // (optionally &index=<n>) — resolving the leaf seq for the iscc_id, building the
@@ -187,8 +217,18 @@ type StatusSource interface {
 // uses to render the richer unresolvable / unverified verdicts the store cannot
 // prove; only serveBrowser consults it. A nil statuses is tolerated and simply
 // leaves every store-verified hub showing "verified" (the proof routes ignore it).
-func Handler(st *store.Store, hubID int64, statuses StatusSource) http.Handler {
+//
+// domain is the hub's bare domain (e.g. sb0.iscc.id) and id is the operator-supplied
+// instance identity rendered on the record-list chrome; both feed only the HTML
+// surfaces (the record list's masthead, breadcrumb, and head) — the proof / bytes /
+// verdict routes ignore them. The identity is resolved ONCE here (outside the request
+// closure): any empty field falls back to the static placeholder copy
+// (resolveIdentity), so a zero-value Identity renders exactly today's masthead, and it
+// is the SAME dashboard.Identity value the "/" masthead and the dossier receive, so all
+// three mastheads stay byte-identical.
+func Handler(st *store.Store, hubID int64, domain string, statuses StatusSource, id dashboard.Identity) http.Handler {
 	f := store.SQLiteFetcher{Store: st, HubID: hubID}
+	instance, operator := resolveIdentity(id)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -200,7 +240,7 @@ func Handler(st *store.Store, hubID int64, statuses StatusSource) http.Handler {
 		case "/":
 			serveBrowser(w, r, st, hubID, statuses)
 		case "/records":
-			serveRecords(w, r, st, hubID, statuses)
+			serveRecords(w, r, st, hubID, domain, instance, operator, statuses)
 		case "/record":
 			serveRecord(w, r, st, f, hubID, statuses)
 		case "/inclusion":
@@ -797,9 +837,18 @@ type recordRowVM struct {
 // plain no-JS pagination links without doing any arithmetic itself. Records carry the
 // verbatim id / schema (ADR-0008: nothing is interpreted beyond the Type label). When
 // Records is empty the page renders the informative empty state.
+//
+// Domain is the hub's bare domain, rendered as the head name and the page's
+// "<domain> · N records mirrored" sub-line, and targeted by the "← <domain> dossier"
+// breadcrumb (an ABSOLUTE site-root path /<domain>, the dossier mount outside this
+// /log/ subtree). Instance / Operator are the resolved masthead identity (the chrome's
+// instance-identity block + verify link), byte-identical to the dashboard and dossier.
 type recordsData struct {
 	Status    string
 	Label     string
+	Domain    string
+	Instance  string
+	Operator  string
 	Records   []recordRowVM
 	Total     int
 	PageSize  int
@@ -856,7 +905,12 @@ func recordKindKey(noteSchema string) string {
 // 404 — coverage honesty, ADR-0001, mirroring serveBrowser's LastSize==0 → 200 empty
 // page). The page is rendered into a buffer first so a template/store error is a 500
 // BEFORE any 200.
-func serveRecords(w http.ResponseWriter, r *http.Request, st *store.Store, hubID int64, statuses StatusSource) {
+//
+// domain is the hub's bare domain and instance / operator are the resolved masthead
+// identity (resolved once at Handler construction), threaded into the page chrome
+// (instance-identity block + verify link), the "← <domain> dossier" breadcrumb, and the
+// "Log browser" / <domain> / "<domain> · N records mirrored" head.
+func serveRecords(w http.ResponseWriter, r *http.Request, st *store.Store, hubID int64, domain, instance, operator string, statuses StatusSource) {
 	ctx := r.Context()
 
 	fs, err := st.FollowState(ctx, hubID)
@@ -912,6 +966,9 @@ func serveRecords(w http.ResponseWriter, r *http.Request, st *store.Store, hubID
 	data := recordsData{
 		Status:   status,
 		Label:    label,
+		Domain:   domain,
+		Instance: instance,
+		Operator: operator,
 		Records:  rows,
 		Total:    total,
 		PageSize: pageSize,

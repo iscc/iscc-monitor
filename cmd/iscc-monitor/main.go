@@ -380,7 +380,7 @@ func mirrorHandler(st *store.Store, routes []hubRoute, m *metrics.Registry, id d
 	for _, r := range routes {
 		prefix := "/" + r.Origin + "/"
 		strip := "/" + r.Origin // leave the leading slash on the suffix
-		mux.Handle(prefix, http.StripPrefix(strip, hubHandler(st, r.HubID, m)))
+		mux.Handle(prefix, http.StripPrefix(strip, hubHandler(st, r.HubID, r.Domain, m, id)))
 		if !reservedDomain(r.Domain) {
 			mux.Handle("/"+r.Domain, dossier.Handler(st, r.HubID, m, id))
 		}
@@ -418,6 +418,11 @@ func mirrorHandler(st *store.Store, routes []hubRoute, m *metrics.Registry, id d
 // the store cannot prove — the same overlay source the dashboard receives, so the
 // five-status badge taxonomy is consistent across both surfaces.
 //
+// domain (the hub's bare domain) and id (the operator-supplied dashboard.Identity) feed
+// the record list's shared chrome (instance-identity masthead + verify link), its
+// "← <domain> dossier" breadcrumb, and its head — the SAME Identity value the dashboard
+// and dossier mastheads receive, so all three stay byte-identical.
+//
 // /records (the no-JS paginated HTML record list) and /record (the no-JS single-
 // record page each list row links to) are exact mounts like the other proof routes so
 // they beat the "/" subtree dispatch; an unmounted /record would fall through to
@@ -428,9 +433,9 @@ func mirrorHandler(st *store.Store, routes []hubRoute, m *metrics.Registry, id d
 // to tilesserve, which 404s the unknown path. It is a DIFFERENT artifact from the raw
 // /checkpoint signed-note BLOB tilesserve serves under "/": the .ots is the timestamp
 // proof, read by proofserve from the ots table, not a tilesserve mirror BLOB.
-func hubHandler(st *store.Store, hubID int64, m *metrics.Registry) http.Handler {
+func hubHandler(st *store.Store, hubID int64, domain string, m *metrics.Registry, id dashboard.Identity) http.Handler {
 	mux := http.NewServeMux()
-	proofs := proofserve.Handler(st, hubID, m)
+	proofs := proofserve.Handler(st, hubID, domain, m, id)
 	tiles := tilesserve.Handler(store.SQLiteFetcher{Store: st, HubID: hubID})
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {

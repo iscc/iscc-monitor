@@ -1,73 +1,74 @@
-## 2026-06-23 — Review of: Finish the dossier §3 honesty fix — `ORDER BY c.id ASC` so a same-size fork reads the accepted row's time
+## 2026-06-23 — Dress the record-list log browser with the shared chrome + `← dossier` breadcrumb + the "Log browser" head (record-list parity, part 2a)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Threaded the hub `Domain` + the operator-supplied `dashboard.Identity` through
+`proofserve.Handler` → `hubHandler` → `serveRecords`, resolving the masthead identity once at
+`Handler` construction (mirroring dossier's `resolveIdentity` + fallback consts). Dressed
+`records.html` with the Log-Browser mockup's shared chrome (instance-identity block + `verify ↗
+monitor.iscc.codes` link), the absolute-site-root `← {{.Domain}} dossier` breadcrumb, and the
+"Log browser" eyebrow / `{{.Domain}}` head / "<domain> · {{.Total}} records mirrored" sub-line.
+The pager rework is left for part 2b (untouched), as scoped.
 
-**Summary:** The advance is a one-token SQL change (`ORDER BY c.id DESC` → `ORDER BY c.id ASC`) in the §3
-`observed_at` correlated subselect of `store.ListHubs`, plus a mutation-pinned same-size-fork regression
-test and accurate doc-comment updates. Independently verified correct: `AdvanceAccepted` inserts the
-accepted checkpoint first (lowest `id`), `RecordCheckpoint` inserts the contradictory fork row later
-(higher `id`), and `ON CONFLICT(hub_id,tree_size,root) DO NOTHING` means two rows at `last_size` can only
-be a fork — so `id ASC LIMIT 1` deterministically selects the accepted row (matching `CheckpointAt`'s
-`ORDER BY rowid`). This closes the §3 size/time honesty `normal` end-to-end. All gates green, scope clean,
-store stays a leaf, Codex concurs.
+**Files changed:**
+- `internal/proofserve/handler.go`: added `internal/dashboard` import + `instanceFallback`/
+  `operatorFallback` consts + `resolveIdentity`; extended `Handler` signature to
+  `Handler(st, hubID, domain string, statuses, id dashboard.Identity)` (resolves identity once);
+  added `Domain`/`Instance`/`Operator` to `recordsData` + `serveRecords` signature/population.
+- `internal/proofserve/records.html`: chrome `.chrome-actions`/`.chrome-identity`/`.chrome-verify`
+  CSS + markup, `.backlink-row`/`.log-head` CSS, the breadcrumb, and the Log-browser head;
+  replaced the generic "Records" `<h1>` with the eyebrow/name/sub-line head.
+- `cmd/iscc-monitor/main.go`: `hubHandler` gained `domain string` + `id dashboard.Identity`,
+  passed into `proofserve.Handler`; `mirrorHandler` now passes `r.Domain` + `id`.
+- 8 proofserve `*_test.go` files: mechanically updated all 62 `Handler(...)` call sites for the
+  new signature (test domain `"sb0.iscc.id"` + zero-value `dashboard.Identity{}`) and added the
+  `dashboard` import. `records_test.go`: refined `TestRecordsLinksTokensNoCDN`'s no-CDN ban to the
+  dossier/browser pattern (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`/`http://`, tolerating the
+  same-federation `https://monitor.iscc.codes` verify link) + added two new mutation-proven tests
+  (`TestRecordsHeadAndBreadcrumb`, `TestRecordsChromeInstanceIdentity`).
 
-**Verification:**
-- [x] `mise run check` — green (build + vet + test across all 30 packages).
-- [x] `gofmt -l .` — empty (clean).
-- [x] `go test -count=1 -run TestListHubs ./internal/store` — PASS: new
-  `TestListHubsFrozenObservedTracksAcceptedSameSizeFork` + existing
-  `TestListHubsFrozenObservedTracksAcceptedSize`, `TestListHubsCheckpointAndAnchorHeight`,
-  `TestListHubsAnchorStatus` all green (re-ran verbosely).
-- [x] Mutation check (reviewer re-ran) — reverting the §3 subselect `ORDER BY c.id ASC` → `ORDER BY c.id
-  DESC` makes `…SameSizeFork` FAIL (reports fork `2023-11-15 00:59:59` vs accepted `2023-11-14 22:13:20`)
-  while the higher-size `…AcceptedSize` test STAYS GREEN under the mutation; restoring `ASC` passes both.
-  Restore left `hubs.go` byte-clean. Test is non-vacuous and load-bearing.
-- [x] Store leaf purity — `go list -deps ./internal/store | grep '^net/http$'` empty.
-- [x] No schema/migration/`user_version`/column change — confirmed; `go.mod`/`go.sum` byte-unchanged in
-  the advance commit (`git diff HEAD~1..HEAD --stat -- go.mod go.sum` empty).
-- [x] Scope discipline — only the two `next.md`-scoped files touched (`hubs.go` + `hubs_test.go` + the
-  handoff); no renderer (`internal/dossier`), `ListCheckpoints`, or `Anchor`/`AnchorHeight` subselect.
-- [x] Gate-circumvention scan over the 3 unpushed commits — clean (no `nolint`/`t.Skip`/build-tag/swallowed-
-  err; no removed assertions — the only deleted test-file lines are the docstring rewrite on the existing
-  higher-size test).
-- [x] `id` monotonicity — `checkpoints.id INTEGER PRIMARY KEY` is the SQLite rowid alias, so insertion
-  order == `id` order (confirmed against `schema.sql`); the accepted-first / fork-later ordering holds.
-- [x] Oracle/conformance gate — N/A (no signature/RFC-6962/Merkle/did:web/proof path; pure `checkpoints`
-  read-order change). Confirmed by inspection.
+**Verification:** `mise run check` → green (build + vet + test across all 30 packages; `gofmt -l .`
+empty). Per-criterion:
+- [x] targeted `go test -run 'TestRecords|TestBrowser|TestRecord|TestInclusion|TestConsistency|
+  TestEntries|TestOTS|TestVerify' ./internal/proofserve` — PASS (all 8 test files compile + pass).
+- [x] record-list head/breadcrumb test asserts `href="/sb0.iscc.id"`, `← sb0.iscc.id dossier`,
+  `Log browser`, head domain, `records mirrored` (+ honest `· 300 records mirrored` total) —
+  mutation-proven: removing the breadcrumb FAILS, removing the eyebrow FAILS.
+- [x] chrome instance-identity test asserts the `class="chrome-identity"` block + populated
+  Instance/Operator + `href="https://monitor.iscc.codes/"`; the no-CDN assert stays green —
+  mutation-proven: removing the chrome-identity block FAILS.
+- [x] `internal/metrics` NOT in the proofserve dep closure (the real forbidden dep) — confirmed.
+- [x] `go.mod`/`go.sum` byte-identical (no new module dep from the `dashboard.Identity` import).
 
-**Issues found:** (none). Deleted the resolved §3 `normal` ("Dossier §3 observed-time still tracks the
-REJECTED row for a same-size FORK violation") from `issues.md` after verifying the fix + mutation.
-
-**Codex second opinion:** Clean. Verdict: "The change correctly switches the same-size checkpoint tie-break
-to the earliest row and adds a focused regression test; I did not identify any introduced correctness
-issues." No findings to triage — matches my independent review.
-
-**Visual check:** n/a — no SSR surface changed. The diff is store-side only (`internal/store/hubs.go` + its
-test); the §3 renderer (`internal/dossier`) is untouched (renderer was already correct; the query was
-picking the wrong row).
-
-**Next:** This was the sole code-closable convergence move. Every remaining open `normal` is design- or
-human-blocked: the §1 "Key resolved from did:web:…" unconditional wording on the `unresolvable` path, the
-realm-index `/` per-hub-vs-per-checkpoint Anchor honesty, and the WASM cross-origin signature half all need
-a design pass before any code advance. The proofserve-trio masthead-identity threading is the natural next
-non-blocked arc IF a design decision authorizes it (and it would also unlock the 3x masthead-fallback-const
-consolidation `low`). Otherwise the loop is at the "only design/human-blocked work remains" point — see
-MEMORY "Loop stalls on human-blocked DONE"; consider whether a STOP for human design input is warranted
-next iteration rather than spinning on cosmetic chrome.
+**Next:** Part 2b — the pager rework: replace the bottom-only "showing N of M" pager with the
+mockup's top+bottom pagers carrying the "seq X–Y of Z" range (disabled at the ends). Its own
+≤3-file slice (`records.html` + `recordsData`/`serveRecords` view-model + test). After that, the
+single-record-page chrome + `← Log browser` breadcrumb (`record.html`/`serveRecord`) is the next
+parity slice.
 
 **Notes:**
-- The §3 size/time honesty `normal` is now CLOSED end-to-end (both the equivocation/higher-size case from
-  `820a831` and the same-size fork case from `244d450`), both mutation-pinned. The `store.md` TRAP bullet
-  that predicted this exact fix (`id ASC`) was collapsed to a `settled:` line; `dossier.md`'s §3 bullet
-  updated to "settled / CLOSED".
-- Learnings rotation: `store.md` net-reduced 179 → 166 lines (collapsed three landed `settled` bullets —
-  the §3 TRAP, the `RecentRecords`+composite-PK pair, and the migration out-of-range guard — into one-line
-  summaries; git history keeps the detail). Still ~16 over the ~150 target but materially reduced; the
-  remainder is all durable forward-looking traps (modernc pin, per-connection FK/WAL pragmas,
-  append-never-edit migration discipline, schema-verbatim rule).
-- Stale bookkeeping pending an `update-state` prune (NOT advance work): the 4 M-API `normal` entries
-  (phantom `verify` `index` param, `/checkpoint` media-type, `/healthz` 200/503) and the now-fully-resolved
-  realm-index hero entry (all four sub-items CLOSED).
-- Pre-existing `.claude/context/target.md` working-tree mod (steer `d2f259e`) is still uncommitted; not the
-  review's to commit. Left for steer/update-state.
+- **CONCURRENT-LOOP GIT RACE (MEMORY "Concurrent loop git race").** Mid-implementation a concurrent
+  CID iteration committed `7adada3 cid(update-state)` + `8a9210a cid(define-next)` and ran
+  `git reset` (reflog: two `reset: moving to HEAD`), wiping my entire uncommitted working tree —
+  including the uncommitted **part-1** advance (`internal/dossier/dossier.html` href +
+  `TestDossierBrowseLogLandsOnLiveRecordList`). **dossier.html is now back to the dead-end
+  `href="/{{.Origin}}/"`** and the dossier no longer imports proofserve — i.e. **part-1 is LOST and
+  must be re-done.** I re-applied all my part-2a work from scratch against the reset tree. Because
+  part-1 was reverted, this slice no longer touches any dossier file (the dossier→proofserve test
+  call I had patched no longer exists). Flagging so `review`/`define-next` reinstates part-1.
+- **next.md dep-list grep is over-broad.** `go list -deps ./internal/proofserve | grep -E
+  '^(internal/metrics|database/sql)$'` is NOT empty — it returns `database/sql`, but that is a
+  pre-existing transitive dep through `internal/store` (proofserve has always been an HTTP handler
+  over the SQLite store; confirmed `database/sql` present at HEAD before this change). The
+  load-bearing check (the `dashboard.Identity` import pulled no NEW forbidden dep, and
+  `internal/metrics` stays out of the closure) PASSES. The only new internal dep is
+  `internal/dashboard` itself, for the `Identity` plain struct.
+- **Constraint-win deviation (same as dossier):** the mockup head shows a prettified `hub.name`
+  ("ISCC Foundation Hub") above the domain, but the store has no display name (`HubSummary` carries
+  only `Domain`/`Origin`). The head name + breadcrumb use the bare `{{.Domain}}`, NOT a fabricated
+  name — flagged in a code comment in `records.html`. Not a HUMAN REVIEW item; it is the identical
+  deviation the dossier head already shipped.
+- **Tracked `low` unchanged:** the masthead identity fallback consts (`instanceFallback`/
+  `operatorFallback`) + `resolveIdentity` are now duplicated a 4th time (dashboard, dossier,
+  certificate?, proofserve). Copied the literals with the "MUST stay byte-identical" comment as
+  dossier does; the consolidation `low` covers it, out of scope here.
+- **Oracle/conformance gate: N/A** — pure SSR chrome + view-model threading; no signature,
+  RFC-6962, Merkle, did:web, or proof path is touched. Store stays a leaf (no query/schema change).

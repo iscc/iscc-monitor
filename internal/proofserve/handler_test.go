@@ -34,6 +34,7 @@ import (
 	"github.com/transparency-dev/merkle/testonly"
 	"github.com/transparency-dev/tessera/api"
 
+	"github.com/iscc/iscc-monitor/internal/dashboard"
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/store"
 	"github.com/iscc/iscc-monitor/internal/tiles"
@@ -199,7 +200,7 @@ func decodeProof(t *testing.T, ev logclient.InclusionEvidence) [][]byte {
 // re-labelling it for a different leaf is REJECTED.
 func TestInclusionServedProofVerifies(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	root := m.tree.HashAt(m.size)
 
 	for _, leaf := range []int{0, 5, 255, 256, 260, 299} {
@@ -236,7 +237,7 @@ func TestInclusionServedProofVerifies(t *testing.T) {
 // with an empty proof.
 func TestInclusionUnknownISCCID(t *testing.T) {
 	m := buildMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	code, _ := getEvidence(t, h, "iscc_id=ISCC:NOSUCHLEAF")
 	if code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", code)
@@ -246,7 +247,7 @@ func TestInclusionUnknownISCCID(t *testing.T) {
 // TestInclusionMissingParam asserts a request without iscc_id is a 400.
 func TestInclusionMissingParam(t *testing.T) {
 	m := buildMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/inclusion", nil))
 	if rec.Code != http.StatusBadRequest {
@@ -257,7 +258,7 @@ func TestInclusionMissingParam(t *testing.T) {
 // TestInclusionNonGET asserts a non-GET method is a 405.
 func TestInclusionNonGET(t *testing.T) {
 	m := buildMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/inclusion?iscc_id="+leafISCCID(1), nil))
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -284,7 +285,7 @@ func TestInclusionNoAcceptedCheckpoint(t *testing.T) {
 		t.Fatalf("RecordProjections: %v", err)
 	}
 
-	h := Handler(st, hubID, nil)
+	h := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	code, _ := getEvidence(t, h, "iscc_id="+leafISCCID(0))
 	if code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", code)
@@ -296,7 +297,7 @@ func TestInclusionNoAcceptedCheckpoint(t *testing.T) {
 // tilesserve).
 func TestInclusionUnmatchedPath(t *testing.T) {
 	m := buildMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/checkpoint", nil))
 	if rec.Code != http.StatusNotFound {

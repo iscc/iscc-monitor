@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iscc/iscc-monitor/internal/dashboard"
 	"github.com/iscc/iscc-monitor/internal/store"
 	"github.com/iscc/iscc-monitor/internal/tiles"
 )
@@ -138,7 +139,7 @@ func getRecord(t *testing.T, h http.Handler, query string) (int, string) {
 // ISCC-ID, the verbatim note.$schema, and the raw record bytes.
 func TestRecordServesInTreeLeaf(t *testing.T) {
 	m := buildRecordPageMirror(t, 300)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 
 	for _, seq := range []int{0, 5, 255, 256, 299} {
 		code, body := getRecord(t, h, fmt.Sprintf("index=%d", seq))
@@ -167,7 +168,7 @@ func TestRecordServesInTreeLeaf(t *testing.T) {
 // TestRecordContentType asserts the single-record page is served as HTML.
 func TestRecordContentType(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/record?index=0", nil))
 	if rec.Code != http.StatusOK {
@@ -185,7 +186,7 @@ func TestRecordContentType(t *testing.T) {
 // clause). The verbatim schema string still appears alongside the label.
 func TestRecordKindLabels(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 
 	cases := []struct {
 		seq       int
@@ -247,7 +248,7 @@ func TestRecordRendersWithoutProjection(t *testing.T) {
 		t.Fatalf("AdvanceFollowState: %v", err)
 	}
 
-	h := Handler(st, hubID, nil)
+	h := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	code, body := getRecord(t, h, "index=2")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (missing projection must NOT 404)\n%s", code, body)
@@ -265,7 +266,7 @@ func TestRecordRendersWithoutProjection(t *testing.T) {
 // TestRecordMissingIndex asserts a request without index is a 400.
 func TestRecordMissingIndex(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	code, _ := getRecord(t, h, "")
 	if code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", code)
@@ -275,7 +276,7 @@ func TestRecordMissingIndex(t *testing.T) {
 // TestRecordNonNumericIndex asserts a non-numeric index is a 400.
 func TestRecordNonNumericIndex(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	code, _ := getRecord(t, h, "index=abc")
 	if code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", code)
@@ -286,7 +287,7 @@ func TestRecordNonNumericIndex(t *testing.T) {
 // not in the monitor's accepted tree (coverage honesty, ADR-0001).
 func TestRecordBeyondAcceptedTree(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	for _, seq := range []int{8, 9, 100} {
 		code, _ := getRecord(t, h, fmt.Sprintf("index=%d", seq))
 		if code != http.StatusNotFound {
@@ -309,7 +310,7 @@ func TestRecordNoAcceptedCheckpoint(t *testing.T) {
 		t.Fatalf("UpsertHub: %v", err)
 	}
 
-	h := Handler(st, hubID, nil)
+	h := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	code, _ := getRecord(t, h, "index=0")
 	if code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", code)
@@ -343,7 +344,7 @@ func TestRecordBundleNotMirrored(t *testing.T) {
 		t.Fatalf("AdvanceFollowState: %v", err)
 	}
 
-	h := Handler(st, hubID, nil)
+	h := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	code, body := getRecord(t, h, "index=3")
 	if code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404 (body %q)", code, body)
@@ -354,7 +355,7 @@ func TestRecordBundleNotMirrored(t *testing.T) {
 // at the top of Handler covers it).
 func TestRecordNonGET(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/record?index=0", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -376,7 +377,7 @@ func TestRecordNonGET(t *testing.T) {
 // the whole body.
 func TestRecordLinksTokensNoCDN(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, nil)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
 
 	code, body := getRecord(t, h, "index=0")
 	if code != http.StatusOK {
@@ -419,7 +420,7 @@ func TestRecordLinksTokensNoCDN(t *testing.T) {
 func TestRecordRendersInMemoryStatus(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
 	statuses := fakeStatusSource{m.hubID: "unresolvable"}
-	h := Handler(m.store, m.hubID, statuses)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", statuses, dashboard.Identity{})
 
 	code, body := getRecord(t, h, "index=0")
 	if code != http.StatusOK {
