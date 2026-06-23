@@ -1,59 +1,79 @@
-## 2026-06-23 — Stop the verifier app from claiming an un-run did:web signature check
+## 2026-06-23 — Review of: Stop the verifier app from claiming an un-run did:web signature check
 
-**Done:** Closed the copy-honesty half of the open `normal` "WASM verifier never checks the checkpoint
-signature against the hub's did:web key" issue. The Surface-C verifier page (`monitor.iscc.codes`)
-no longer lists "Check the signature against the hub's did:web key" as a verification step it runs,
-and its tier-2 verdict/in-progress copy no longer claims the browser re-verified a "hub-signed
-checkpoint root" — it now states truthfully that the in-browser WASM re-runs only the RFC-6962
-inclusion math + the id-binding against the **accepted/committed** root, and that the did:web
-signature is verified server-side (certificate §4). No verifier core / WASM / proof code changed.
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/verifier/verifier.html`: replaced the false 4th `vstep` ("Check the signature against the
-  hub's did:web key") with "Confirm the record commits the requested ISCC-ID" (the id-binding the WASM
-  actually checks); changed the 3rd `vstep` label, the in-progress copy, and both `setVerdict`
-  ("verified"/"failed") strings from "hub-signed checkpoint root" → "committed/accepted root" (matching
-  the certificate's already-honest sibling); updated the loader comment to state the WASM does NOT
-  fetch did:web or verify the signature. Left line 500 (`#mismatch-body`, the user's own signed
-  evidence) and line 579 (descriptive "hub-signed text" comment) unchanged per next.md — those refer
-  to evidence the user holds, not a check the run performed.
-- `internal/verifier/handler_test.go`: updated `TestVerifierRendersNamedRegions` to assert the two new
-  step labels (dropped the old hub-signed/did:web step strings); added mutation-provable honesty test
-  `TestVerifierDoesNotClaimSignatureCheck` (+ `verifiedVerdictLine` helper) asserting the served body
-  drops the did:web step, the `verified`-verdict line carries no `hub-signed`, and the `verified` copy
-  asserts only the inclusion / accepted-root + id-binding check.
+**Summary:** The advance does exactly what `next.md` asked: the Surface-C verifier page
+(`monitor.iscc.codes`) no longer lists "Check the signature against the hub's did:web key" as a step it
+runs, and its tier-2 `verified` verdict + in-progress copy no longer claim the browser re-verified a
+"hub-signed checkpoint root" — both now assert only the RFC-6962 inclusion + id-binding the WASM
+actually runs, pointing signature trust at server-side certificate §4. Pure static-template + golden-test
+edit (2 files, ≤3 budget); no verifier core / WASM / proof code touched. I independently re-verified the
+WASM scope, mutation-proved the new honesty test both ways, ran every gate green, and did a live visual
+pass — quality is solid.
 
-**Verification:** `mise run check` → exit 0 (build + vet + test across all 30 packages green; `gofmt
--l .` empty). Per next.md criteria:
-- [x] `mise run check` green.
-- [x] `go test -count=1 -run TestVerifier ./internal/verifier` → ok (updated `TestVerifierRendersNamedRegions`).
-- [x] NEW `TestVerifierDoesNotClaimSignatureCheck` passes; mutation-proven both ways: (A) re-adding the
-  did:web step → FAILs (new test + named-regions test); (B) restoring "hub-signed checkpoint root" to
-  the `verified` verdict → FAILs (new test). Restored → green.
+**Verification:**
+- [x] `mise run check` green — build + vet + test across all 30 packages, all `ok`.
+- [x] `gofmt -l .` — empty (no formatting failures).
+- [x] `go test -count=1 -run TestVerifier ./internal/verifier` — ok (updated `TestVerifierRendersNamedRegions`).
+- [x] NEW `TestVerifierDoesNotClaimSignatureCheck` passes; **I re-mutated both halves myself** — (A) re-add
+  the did:web step → `TestVerifierDoesNotClaimSignatureCheck` + `TestVerifierRendersNamedRegions` FAIL;
+  (B) restore "hub-signed checkpoint root" to the `verified` verdict → `TestVerifierDoesNotClaimSignatureCheck`
+  FAILs at handler_test.go:153. Reverted → green. Test is non-vacuous on both halves.
 - [x] `grep -c "Check the signature against the hub's did:web key" internal/verifier/verifier.html` → 0.
-- [x] `setVerdict("verified", …)` line contains no `hub-signed` substring (confirmed by grep + test).
-- [x] No new CDN literal (`http://`/`https://`/`cdn.`/`jsdelivr`) in added lines — `TestVerifierNoExternalCDN`
-  stays green; the bare text "did:web" (no scheme) is allowed.
+- [x] `setVerdict("verified", …)` line carries no `hub-signed` substring (grep + test).
+- [x] No-CDN ban holds — `TestVerifierNoExternalCDN` green; added lines contain no `http://`/`https://`/
+  `cdn.`/`jsdelivr` literal (the bare text "did:web" with no scheme is allowed and present in a negation).
+- [x] WASM-scope claim independently confirmed: `isccVerifyInclusion` → `verifyadapter.VerifyJSON`
+  (`verify.VerifyInclusion`) + `RecordCommitsID` checks ONLY inclusion math + id-binding; no signature /
+  did:web path exists in `cmd/wasm` or `internal/proof/verify`. The new copy is truthful.
+- [x] Quality-gate-integrity scan over unpushed commits — no `//nolint`, `t.Skip`, build-tag exclusion,
+  swallowed error, or deleted assertion. The diff only swaps prose + ADDS a mutation-proven test.
+- [x] The two surviving "hub-signed" strings (verifier.html:500 `#mismatch-body`, :579 comment) are the
+  user's-own-evidence / descriptive-text ones `next.md` explicitly said to leave — verified in context.
 
-**Next:** This code-closes the copy-honesty half of the WASM-verifier `normal`. A future `update-state`/
-`review` should narrow that issue to its remaining design-blocked half only (in-browser did:web
-resolution + checkpoint-signature verification — out of scope here, needs a design pass) and PRUNE the
-already-done/committed M-API contract-accuracy entries (the `verify`-`index` param + `checkpoint`
-media-type fixes, committed in `53ee328`, gated by per-op tests; `state.md`/`issues.md` still steer to
-them but they are stale, not open). The lone `critical` (dossier→log-browser navigation) stays
-human-blocked — do not re-attempt in code.
+**Issues found:** (none) — no new issue filed. Updated the open `normal` verifier-signature issue to
+record that its copy-honesty interim half is now CLOSED, narrowing it to the design-blocked
+in-browser-signature-verification remainder only.
+
+**Codex second opinion:** unavailable — the `codex review --commit HEAD -c sandbox_mode="danger-full-access"
+-c approval_policy="never"` launch was denied by the Claude Code auto-mode classifier ("creates an
+autonomous agent loop with no approval gates"), so the truncating `>` redirect never ran. The
+`/tmp/codex-review.txt` on disk is STALE (it describes the prior iteration's record-list "threads the
+domain and identity" work, not this verifier copy change) — treated as unavailable, NOT as a clean
+verdict. No second opinion this cycle; graceful degradation applied, loop not blocked.
+
+**Visual check:** PASS — `agent-browser` is available (bundles its own Chromium; no system Chrome). Built a
+throwaway in-module harness serving `verifier.Handler` + `web.Handler()`, screenshotted the live page
+headlessly, and `Read` both the masthead and the scrolled step-list region. The page renders cleanly: the
+`monitor.iscc.codes / independent verifier app` chrome + `← Certificate` breadcrumb intact; the
+VERIFICATION RECORD list now shows "Rebuild the root and match the committed checkpoint root" + "Confirm
+the record commits the requested ISCC-ID" (the false did:web step is gone); the illustrative split-view
+panel correctly KEEPS "hub-signed root" in its muted/dashed user's-own-evidence context. No layout
+breakage, no visual delta introduced — this was a copy-only change to existing regions, no new issue to
+file. Harness removed; tree clean.
+
+**Next:** This closes the copy-honesty half of the verifier-signature `normal`; the remaining half (actual
+in-browser did:web resolution + checkpoint-signature verification) is DESIGN-BLOCKED and should not be
+re-attempted in code without a design pass. With the lone `critical` human-blocked (M-UI exit sign-off
+only) and no other open `normal` that is code-closeable without design input, the next `define-next` is
+running low on autonomous code work. Candidate small autonomous items if needed: prune the stale/CLOSED
+sub-items in the `/` realm-index `normal` (all four sub-items closed) and in the dossier/record-list
+critical's narrative (every code half landed); or pick up one of the `low` locality-deepening refactors
+(masthead-identity / overlay-precedence / note-schema-URI consolidation) IF a future slice naturally
+touches those files — but lows are loop-skipped, so prefer pruning. Watch for the loop spinning on
+cosmetic chrome (auto-memory: loop-stalls-on-human-blocked-done).
 
 **Notes:**
-- Oracle/conformance gate is **N/A**: no signature, RFC-6962, Merkle, did:web, fsck, or proof code
-  touched. `internal/proof/verify` and `cmd/wasm` are unchanged; this is a pure static-template +
-  golden-test edit, and the template parses at init so a malformed edit would fail the build, not a
-  request (`learnings/verifier.md`).
-- The `verified` success copy intentionally adds a positive pointer to where the signature trust DOES
-  live ("verified server-side, certificate §4") rather than silently dropping it — per next.md's note
-  to "point it at the SERVER / certificate §4 (which IS server-verified), not at this in-browser run."
-  It says "did:web" only inside a negation; no scheme, so the no-CDN ban holds.
-- Scope: exactly 2 files (1 prod template + 1 test), within next.md's ≤3 file bound. Nothing in
-  `## Not In Scope` was touched (cert.html, openapi, the WASM artifact, `cmd/wasm`, `proof/verify`,
-  the human-blocked critical all untouched).
-- The Verdict-UI honesty auto-memory pattern: this fixes the recurring "page asserts an un-run
-  verification" gap at the source (a listed STEP must be one the code runs), not just the rendered ✓.
+- Oracle/conformance gate is **N/A** this iteration — no signature, RFC-6962, Merkle, did:web, fsck, or
+  proof code touched; `internal/proof/verify` + `cmd/wasm` unchanged; the template parses at init so a
+  malformed edit fails the build, not a request.
+- Scope discipline clean: exactly 2 code files (1 prod template + 1 test), nothing from `## Not In Scope`
+  touched (cert.html, openapi, the WASM artifact, `cmd/wasm`, `proof/verify`, the human-blocked critical
+  all untouched).
+- Codex tooling note for future cycles: the `danger-full-access`/`never` codex invocation is being denied
+  by the auto-mode classifier in this environment — the second opinion has been unavailable for several
+  cycles. Not a loop blocker (graceful degradation), but the human may want to add a Bash allow-rule for
+  `codex review` if the second opinion is wanted.
+- Learnings: added one settled bullet to `learnings/verifier.md` (step-list honesty CLOSED; the rule binds
+  the STEP LIST, not just the rendered ✓). Detail file is ~104 lines, under the rotation budget.

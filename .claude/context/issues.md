@@ -307,30 +307,31 @@ filed it and does **not** affect priority.
 - **Spec:** target.md M-UI design-parity "named-region" bar (the `/` realm-index region) + "Document chrome
   + instance identity"; ADR-0010 Evidence-Ledger handoff; ADR-0012 visual-pass.
 
-## The WASM verifier never checks the checkpoint signature against the hub's did:web key (the signature half of the verifier-scope trust gap; id-binding half now CLOSED in source)
+## The WASM verifier never checks the checkpoint signature against the hub's did:web key (the design-blocked signature half; id-binding AND copy-honesty halves now CLOSED in source)
 - **Priority:** normal
 - **Source:** [review] (Codex P1, reviewer-confirmed against the verify core; affects BOTH tier-2 callers)
-- **What / where / how to verify:** UPDATE: the **id-binding half** of this gap is now CLOSED IN SOURCE
-  (advance `22f0420`): `verifyadapter.RecordCommitsID` binds the record's committed `iscc_id` to the
-  requested id, and the 6-arg `isccVerifyInclusion` shim gates `verified` on it (the cross-origin
-  `verifier.html:628` passes `target.id`). What REMAINS open is the **signature half**:
-  `isccVerifyInclusion` (`VerifyJSON` → `internal/proof/verify.VerifyInclusion`) still verifies ONLY
-  that `record`+`proof`+`size`→`root` (RFC-6962 inclusion) and the id-binding — it does NOT verify the
-  checkpoint note signature against the hub's did:web key. So a malicious/compromised monitor can still
-  return a bundle whose record+proof+root are internally consistent under a FORGED (unsigned / wrong-key)
-  checkpoint and — provided the record commits the requested id — the browser renders the green
-  `verified` state, trusting the monitor for the signature. The copy overstates this: `verifier.html:449`
-  lists "Check the signature against the hub's did:web key" as a step the verifier WILL run, and
-  `verifier.html:631` reports "✓ … re-verified this inclusion proof against the **hub-signed** checkpoint
-  root" — but neither the signature nor a did:web resolution runs. This is the SAME verifier-core scope
-  the certificate's same-origin tier-2 ships (`cert.html:565`), so it is NOT a regression and does NOT
-  block progress; but it is more serious cross-origin. NOT currently exploitable on the testnet (the
-  fixture monitor is honest). It needs a DESIGN PASS (browser did:web resolution + note-signature verify)
-  — review flagged it as the design-first remainder. Fix when the WASM verifier scope is next expanded:
-  extend the verifier (or a sibling export) to verify the checkpoint note signature against a did:web key
-  fetched/resolved in the browser, gating `verified` on signature + id-binding + inclusion; until then,
-  narrow the success copy + drop the unrun did:web step from the record block so the page does not claim a
-  signature/key check it skips. Verify fixed: a bundle with a valid inclusion proof + matching id but a
+- **What / where / how to verify:** UPDATE (advance `4a0c24b`, reviewer-verified): the **copy-honesty
+  interim** half is now CLOSED. The verifier page no longer LISTS the un-run "Check the signature against
+  the hub's did:web key" step (replaced by "Confirm the record commits the requested ISCC-ID", the
+  id-binding the WASM does run) and no longer CLAIMS the browser re-verified a "hub-signed checkpoint
+  root" — the `verified` verdict now asserts only the accepted-root + id-binding check and points
+  signature trust at server-side certificate §4. Mutation-proven (`TestVerifierDoesNotClaimSignatureCheck`
+  FAILs if either the did:web step is re-added or "hub-signed checkpoint root" is restored to the verdict).
+  The earlier **id-binding** half was CLOSED in source (advance `22f0420`): `verifyadapter.RecordCommitsID`
+  binds the record's committed `iscc_id` to the requested id, and the 6-arg `isccVerifyInclusion` gates
+  `verified` on it. What REMAINS open is ONLY the **design-blocked signature half**: `isccVerifyInclusion`
+  (`VerifyJSON` → `internal/proof/verify.VerifyInclusion` + `RecordCommitsID`) verifies ONLY the RFC-6962
+  inclusion math and the id-binding — it does NOT verify the checkpoint note signature against the hub's
+  did:web key. So a malicious/compromised monitor can still return a bundle whose record+proof+root are
+  internally consistent under a FORGED (unsigned / wrong-key) checkpoint and — provided the record commits
+  the requested id — the browser renders green `verified`, trusting the monitor for the signature. This is
+  the SAME verifier-core scope the certificate's same-origin tier-2 ships (`cert.html`), so it is NOT a
+  regression and does NOT block progress; but it is more serious cross-origin. NOT currently exploitable on
+  the testnet (the fixture monitor is honest). The page is now HONEST about this gap; closing the gap
+  itself needs a DESIGN PASS (browser did:web resolution + note-signature verify). Fix when the WASM
+  verifier scope is next expanded: extend the verifier (or a sibling export) to verify the checkpoint note
+  signature against a did:web key fetched/resolved in the browser, gating `verified` on signature +
+  id-binding + inclusion. Verify fixed: a bundle with a valid inclusion proof + matching id but a
   checkpoint signed by a non-did:web key renders `error`/`failed`, NOT `verified`; reverting the added
   signature check makes that test FAIL.
 - **Spec:** CLAUDE.md "Verifier app" / "Proof bundle" / "Verifiable cache" (the monitor is NOT in the

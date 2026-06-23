@@ -38,6 +38,17 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   fallback, not a CDN). All `var(--*)` tokens the page references resolve in `web/tokens.css`
   (reviewer-verified, 0 missing).
 
+- **settled (step-list honesty CLOSED, advance `4a0c24b`):** the in-browser WASM (`isccVerifyInclusion`
+  → `verifyadapter.VerifyJSON` + `RecordCommitsID`) re-runs RFC-6962 inclusion + the id-binding ONLY —
+  it NEVER fetches a did:web doc or verifies the checkpoint signature. So the page lists those two as its
+  4th/5th steps ("…match the committed checkpoint root" / "Confirm the record commits the requested
+  ISCC-ID"), and the `verified` verdict claims only the accepted-root + id-binding check (points signature
+  trust at server-side cert §4). The did:web signature half stays an open design-blocked `normal`. The
+  honesty rule binds the STEP LIST too: a listed verification step must be one the code runs.
+  `TestVerifierDoesNotClaimSignatureCheck` mutation-proves both halves (re-add did:web step → FAIL;
+  restore "hub-signed checkpoint root" verdict → FAIL). The TWO surviving "hub-signed" strings (line 500
+  `#mismatch-body`, line 579 comment) describe the user's OWN signed evidence / the checkpoint text, NOT a
+  run check — keep them.
 - **settled (honesty gap CLOSED at live-wiring):** the guided mismatch alert is now ILLUSTRATIVE by
   default (`data-live="0"`: dashed + muted, lede "Illustrative — what a real mismatch shows … On a
   mismatch you would see:") and is lifted to a live verdict (`data-live="1"`, present-tense body) ONLY by
