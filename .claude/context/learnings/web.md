@@ -90,6 +90,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   surface: copy the same masthead block and add the same src assertion to its handler test — OR, if the
   six-way copy-paste is finally consolidated, a single `html/template` chrome partial (deferred KISS move).
   Never let an SSR masthead ship without the logo (target.md:148 "every surface").
+- **Masthead logo height is `38px` (`.chrome-logo { height: 38px; width: auto }`), set per-template in each
+  surface's page-scoped `<style>` (the same seven-way copy as the `<img>`: the six SSR mastheads above +
+  `verifier/verifier.html`).** Doubled from the original `19px` on 2026-06-23 by a deliberate human design
+  tweak made directly, OUTSIDE the CID loop. The `.claude/design` source mockups (`*.dc.html`,
+  `style="height:38px;..."`) were updated in the same change, so spec and implementation stay in sync — `38px`
+  is now the ratified value; do NOT "fix" it back to `19px`. No test asserts the pixel height (handler tests
+  only assert the `src` literal), so this is template-CSS-only with no test coupling. If/when the chrome is
+  consolidated into one partial, this height lives there too.
 - **Residual whitespace-prefixed hole (open `low` issue, Codex P2):** the same predicate still treats a
   `//` preceded by whitespace as a comment, so the (rare, mostly-invalid) whitespace-before-URL forms
   `<script src = //cdn...>` and CSS `url( //cdn...)` are stripped and the ban misses them. This is NOT a
