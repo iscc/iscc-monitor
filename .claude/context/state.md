@@ -1,31 +1,31 @@
-<!-- assessed-at: 5846e976c36546a5de188b5b7790967a50ecc2f2 -->
+<!-- assessed-at: c213dd98ff80dcaee8171be8f8da2af1f2908a67 -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: Data-model hardening — migration-runner mechanism landed (no-op baseline).
-All feature milestones (M1→M3, M-UI named-region, WASM published half, OTS observable halves) plus
-both order-independent code-closable milestones (M-Deploy + M-API) are met in-repo. This window added
-the project's FIRST on-disk migration mechanism — a `PRAGMA user_version`-gated, fail-closed,
-idempotent runner in `store.Open` — but its production migration list ships EMPTY, so it is the
-enabling step before the real data-model fix (the `iscc_index` PK rebuild), not a milestone-criterion
-close. What remains for DONE is the standing data-model + design/human-blocked `normal`s.
+## Phase: Data-model hardening — the project's FIRST real migration landed (composite `(hub_id, seq)` PK).
+All feature milestones (M1→M3, M-UI named-region, WASM published half, OTS observable halves) plus both
+order-independent code-closable milestones (M-Deploy + M-API) are met in-repo. This window converted the
+empty migration baseline into a real, single-entry migration list: `iscc_index` is re-keyed from the
+single-global `seq PRIMARY KEY` to the composite `(hub_id, seq)` PK (fresh DB via `schema.sql`,
+pre-existing DB via migration index 0), and the runner now bounds its read-back `user_version`
+fail-closed. That closes the two paired data-model `normal`s plus the migration-empty `normal`. The
+code-closable feature/milestone backlog is drained; what remains for DONE is the design/human-blocked
+`normal`s + the M-UI human sign-off.
 
-This window (`476743f..5846e97`, 4 commits: update-state `1163019` → define-next `4626397` → advance
-`94a5f7a` → review `5846e97`) is a clean single in-loop increment. The diff touched ONLY
-`internal/store/{sqlite.go,sqlite_test.go}` + `deploy/OPERATING.md` (§Migration-policy) plus context
-files. **No M1/M2/M3/M-UI/WASM/OTS/M-Deploy/M-API milestone-criterion source was touched** — those
-sections carry forward verified. HEAD `5846e97` is level with `origin/develop`. Pages `success`; CI +
-Publish were still `in_progress` at assessment (same SHA, no failure observed; review recorded gate-green
-locally over 30 packages). The working tree carries one uncommitted `target.md` edit (the prior
-`cid(steer)` artifact) — review correctly left it for the next steer; not state-assessor's to commit.
+This window (`5846e97..c213dd9`, 4 commits: update-state `0627349` → define-next `cc293e6` → advance
+`ed3206d` → review `c213dd9`) is a clean single in-loop increment. The diff touched ONLY
+`internal/store/{iscc_index.go,schema.sql,sqlite.go}` + their two test files (plus context files). **No
+M1/M2/M3/M-UI/WASM/OTS/M-Deploy/M-API milestone-criterion source was touched** — those sections carry
+forward verified. HEAD `c213dd9` is level with `origin/develop`; the working tree is clean. **CI, Pages,
+AND Publish are all `success` on HEAD `c213dd9`** (verified via `gh run list`).
 
 ## Convergence
 - **Remaining Verify criteria (all milestone Verify bars MET; what's left is `normal`/`low` issues, not
   milestone criteria):**
   - **M1: 0 open. M2: 0 open. M3: 0 open (4/4). M-API: 0 open (4/4). M-Deploy: 0 open.** All carried
-    forward — none of their source was touched this window (the diff is store-migration-only).
+    forward — none of their source was touched this window (the diff is `iscc_index` PK rework only).
   - **M-UI: behavioral + named-region Verify met on all five SSR surfaces; no `critical`.** Still open
     (all `normal`/design- or human-blocked): the dossier §3 frozen size/time decouple, the §1
     unconditional "resolved"-vs-unresolvable wording, the per-hub-vs-per-checkpoint realm-index Anchor
@@ -34,18 +34,18 @@ locally over 30 packages). The working tree carries one uncommitted `target.md` 
   - **WASM verifier: published half CLOSED** (`monitor.iscc.codes/_ds/verify.wasm` → 200 byte-pinned).
     **Still open:** the cross-origin **signature half** (no checkpoint-signature / did:web check), `normal`.
   - **OTS anchoring: 1/1 open (carried).** Only a real Bitcoin confirmation remains (offline-unprovable).
-- **Last ~10 iterations: ~7 milestone-Verify-or-gate-advancing / ~3 data-model-or-prune.** The last
-  three windows closed M-API (slices 1→4), and this window landed the migration MECHANISM — a deliberate
-  enabling step for the scheduled `iscc_index` PK rebuild, NOT a milestone-criterion close. **No drift:**
-  the code-closable feature/milestone backlog is drained, so the loop has correctly pivoted to the
-  data-model `normal`s (migration runner now, PK rebuild next) rather than spinning on cosmetic chrome.
-  This is the right convergence move per the loop-stalls-on-blocked-DONE memory.
+- **Last ~10 iterations: ~7 milestone-Verify-or-gate-advancing / ~3 data-model.** The last windows closed
+  M-API (slices 1→4), then landed the migration MECHANISM, and this window landed the FIRST real migration
+  (composite PK) — closing all three data-model `normal`s. **No drift:** the loop correctly worked the
+  data-model `normal`s to completion (mechanism → migration index 0) rather than spinning on cosmetic
+  chrome, exactly the convergence move the loop-stalls-on-blocked-DONE memory prescribes. The remaining
+  `normal`s are now all design- or human-blocked; the code-closable backlog is genuinely drained.
 
 ## M1 — Read-only Monitor
-**Status**: **met** — carried forward; the `476743f..5846e97` diff touched NO M1 source (config,
-registry, follower, didweb, metrics all untouched). All Verify criteria remain satisfied:
-`origin`/`vkey` golden; fork/shrink/equivocation golden-tested with freeze + alert-once + restart survival;
-structured logs; `/metrics`.
+**Status**: **met** — carried forward; the `5846e97..c213dd9` diff touched NO M1 source (config, registry,
+follower, didweb, metrics all untouched). All Verify criteria remain satisfied: `origin`/`vkey` golden;
+fork/shrink/equivocation golden-tested with freeze + alert-once + restart survival; structured logs;
+`/metrics`.
 - **Packages present** (26 internal + 4 cmd): `cmd/{iscc-monitor,notecheck,verifier-site,wasm}`; internal —
   `badge, certificate, config, corsmw, dashboard, didweb, docs, dossier, follower, healthz, index,
   logclient, metrics, metricshttp, openapi, ots, otsclient, proof, proofserve, registry, store, tiles,
@@ -55,12 +55,15 @@ structured logs; `/metrics`.
   `github.com/nbd-wtf/opentimestamps`.
 
 ## M2 — Aggregator
-**Status**: **met** — carried forward. No fsck / fetcher / mirror BLOB / follower-ingest path touched
-this window. The store touch was the migration runner (`store.Open`); the `SQLiteFetcher` /
-`iscc_index` / `ProofBuilder` contract is unchanged. The M2 mirror/fsck contract holds.
+**Status**: **met** — carried forward. No fsck / fetcher / mirror BLOB / follower-ingest path touched.
+The store touch this window was the `iscc_index` PK re-key (writer + schema + the migration), which keeps
+the same `(iscc_id → seq)` one-to-many, schema-agnostic projection contract — now correctly composite so
+two hubs sharing a leaf seq no longer collide. The `SQLiteFetcher` / `ProofBuilder` read side is unchanged
+(the four reader queries were explicitly left out of scope and untouched). The M2 mirror/fsck contract holds.
 
 ## M3 — Trust API + dashboard
-**Status**: **met (4/4 Verify criteria)** — carried forward; the M3 HTTP-seam contract is unchanged.
+**Status**: **met (4/4 Verify criteria)** — carried forward; the M3 HTTP-seam contract is unchanged (no
+handler source touched).
 - **Known limitations (off the M3 Verify bar):** `inactive` unreachable through the public store API; no
   ETag/Cache-Control on size-dependent proof surfaces (the `/_ds/` static assets and the `/openapi.*`
   routes DO carry strong ETag + no-cache + 304).
@@ -81,7 +84,7 @@ proofserve` template or `.html` source touched this window (the diff is store-on
 observable halves + both transport guards landed; only a real Bitcoin confirmation remains
 (offline-unprovable).** Neither core was touched this window.
 - **WASM:** id-binding half closed in source + artifact, reproducible from `mise run build:wasm`, publicly
-  served byte-pinned at `monitor.iscc.codes/_ds/verify.wasm` (Pages run on HEAD `5846e97` green). **Still
+  served byte-pinned at `monitor.iscc.codes/_ds/verify.wasm` (Pages run on HEAD `c213dd9` green). **Still
   open:** the cross-origin **SIGNATURE-half gap** (no checkpoint-signature / did:web check; the success
   copy overstates an unrun key check) — `normal`, design-first.
 - **OTS:** `.ots` route, §4 anchor clause (`ots.ConfirmedFor`), store layer, off-path stamp/upgrade loop,
@@ -94,19 +97,20 @@ observable halves + both transport guards landed; only a real Bitcoin confirmati
 M-Deploy source touched this window. Verified previously: SIGTERM trap, version-stamped binary +
 `/version`, production `Dockerfile` + CI `/healthz` smoke, GHCR `publish.yml` (`:develop` + `:sha-<short>`),
 canonical `deploy/realm-testnet.txt` (golden-accepted), `deploy/OPERATING.md`, root `README.md`.
-- **Migration story PROGRESSED this window:** the on-disk migration HAZARD (`store.Open` = baseline
-  `CREATE TABLE IF NOT EXISTS` + now a `PRAGMA user_version`-gated runner) is partially addressed — the
-  MECHANISM exists (`internal/store/sqlite.go:48,95,119-152`: append-only `migrations []func(*sql.Tx)
-  error`, fail-closed per-step `*sql.Tx`, idempotent; 5 mutation-proven `TestMigration*` tests) but the
-  production list is **EMPTY** (no-op baseline), so the "recreate the volume on a schema change" interim
-  in `OPERATING.md` §Migration-policy still holds until a real migration lands. `OPERATING.md` accurately
-  documents the new mechanism + keeps the honest caveat.
-- **Carried `normal` traps:** the **`iscc_index.seq` single-global-PK multi-hub collision**
-  (`RecordProjections`' `ON CONFLICT(seq)` clobbers when two hubs share a leaf index — the scheduled next
-  step, landing as migration index 0); and the NEW (this-window) **out-of-range `user_version`** edge —
-  the runner does not bound the read-back version, so a future `user_version > len(migrations)` opens
-  silently and a `-1` would panic `migs[-1]` (latent today with the empty slice; both go live the instant
-  migration index 0 lands, so fix WITH or BEFORE it).
+- **Migration story COMPLETE this window:** the on-disk migration HAZARD is now fully addressed — the
+  mechanism (`internal/store/sqlite.go`: append-only `migrations []func(*sql.Tx) error`, fail-closed
+  per-step `*sql.Tx`, idempotent, out-of-range `user_version` guard) is live AND the production list now
+  carries its FIRST real entry (`len(migrations)==1`, the composite-PK rebuild). The interim "recreate the
+  volume on a schema change" policy in `OPERATING.md` §Migration-policy now has a real migration backing it.
+  Seven `TestMigration*` + `TestRecordProjectionsMultiHubSeqZero` exercise the runner, the migration body,
+  and the guard (all reviewer mutation-proven load-bearing).
+- **Carried `low` traps (this-window follow-ups, both filed by review):** (1) the out-of-range
+  `user_version` guard runs AFTER `db.Exec(schemaSQL)`, so a downgrade-from-newer-binary re-applies the
+  (idempotent, `CREATE … IF NOT EXISTS`-only — non-destructive) baseline DDL before the reject; hoist the
+  guard ahead of the schema pass when `Open` is next touched. (2) the composite-PK rebuild dropped `seq`'s
+  standalone ordering path, so `RecentRecords`' `ORDER BY i.seq DESC` now sorts instead of walking an index
+  (a perf observation at scale, negligible at 2-hub testnet; add a `seq` index WITH the next `iscc_index`
+  schema edit). Both are correctness-neutral, latent, and skipped by the loop.
 - **Carried `low`:** `docker/login-action@v3` + `docker/build-push-action@v6` still Node-20;
   `.dockerignore` slashless globs; §Footprint qualitative disk-growth answer; `cmd/verifier-site`
   non-atomic write; `schemaDeclaration/Deletion` URI triplication; the masthead-identity fallback consts
@@ -121,49 +125,51 @@ against the handlers (the doc was NOT touched this window; spot-checked it still
 - **Slice 3 (`/docs` + Stoplight Elements):** `/docs` mounts `<elements-api apiDescriptionUrl="/openapi.json">`
   against same-origin byte-pinned `/_ds/elements.min.{js,css}` (SHA-256 pinned). No external CDN body.
 - **Slice 4 (contract accuracy):** RE-VERIFIED in the YAML this window: `/{domain}/log/verify` (line 220)
-  advertises ONLY `Domain` + `iscc_id` (no phantom `index`); `/{domain}/log/checkpoint` (line 252) `200` is
-  `application/octet-stream` (line 92 `text/plain` is `/metrics`, correct); `/healthz` documents its `503`
-  (line 52). Pinned by per-operation golden (`contract_test.go`) + a `TestNoMermaidInContract` fence ban.
-  **Bookkeeping lag (NOT a code gap):** `issues.md` still carries 4 now-RESOLVED M-API entries (the phantom
+  advertises ONLY `Domain` + `iscc_id` — **no phantom `index`** (the `index` param now appears only on
+  `inclusion` (line 141) and `entries` (line 201), both legitimate); `/{domain}/log/checkpoint` (line 252)
+  `200` is **`application/octet-stream`** (line 267); `/healthz` documents its **`503`** (line 52). Pinned
+  by per-operation golden (`contract_test.go`) + a `TestNoMermaidInContract` fence ban.
+  **Bookkeeping lag (NOT a code gap):** `issues.md` STILL carries 4 now-RESOLVED M-API entries (the phantom
   `index` `normal`, the `checkpoint` media-type `normal`, the `healthz` 503 `low`, and the umbrella "No
-  machine-readable API contract" `normal`) — all FIXED + verified-in-doc this assessment, awaiting a
+  machine-readable API contract" `normal`) — all FIXED + re-verified-in-doc this assessment, awaiting a
   `review` prune. **Carried `low`:** the mermaid ban is substring-only (misses `~~~mermaid` forms).
 
 ## Quality gates
-**Status**: **GREEN (review-confirmed; CI re-running on HEAD).**
+**Status**: **GREEN (review-confirmed + CI green on HEAD).**
 - `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.26.1`); `mise run check` runnable. This
-  window touched only `internal/store` (1 non-test file + 1 test file) + `deploy/OPERATING.md`. Review
-  recorded `mise run check` GREEN over 30 packages and `gofmt -l .` empty (clean).
+  window touched only `internal/store` (3 non-test source files + 2 test files). Review recorded `mise run
+  check` GREEN over 30 packages and `gofmt -l .` empty; `go.mod`/`go.sum` byte-unchanged; store leaf-purity
+  intact (`go list -deps ./internal/store | grep net/http` empty — re-verified 0 this assessment).
 - **CI**: `.github/workflows/` = `ci.yml` (`mise run check` + `notecheck` oracle + docker `/healthz` smoke)
-  + `pages.yml` + `publish.yml`. On HEAD `5846e97`: **Pages `success`**; **CI + Publish `in_progress`** at
-  assessment (they were `success` on the immediate parent `476743f`; review recorded `mise run check` green
-  locally on the migration commits). No CI failure observed — re-verify on next assessment if needed.
-- **Latest `review` verdict: PASS_WITH_NOTES / CONTINUE** (commit `5846e97`) — migration runner: gate-green
-  (30 pkgs), `gofmt` empty, all 5 `TestMigration*` PASS, both mutations reproduced (user_version-bump revert
-  → idempotent+upgrade tests FAIL; error-swallow revert → fail-closed test FAILS), store leaf purity intact
-  (`go list -deps ./internal/store | grep net/http` empty), gate-circumvention scan clean. PASS_WITH_NOTES
-  (not PASS) only for the Codex-confirmed out-of-range `user_version` edge (filed `normal`, latent today).
+  + `pages.yml` + `publish.yml`. On HEAD `c213dd9` (verified via `gh run list`): **CI `success`, Pages
+  `success`, Publish `success`** — all three green on the exact HEAD SHA.
+- **Latest `review` verdict: PASS / CONTINUE** (commit `c213dd9`) — composite-PK migration: gate-green
+  (30 pkgs), `gofmt` empty, all three new tests mutation-proven load-bearing (single-PK revert → multi-hub
+  round-trip FAILS; guard removal → out-of-range FAILS; neutered migration body → upgrade FAILS), store
+  leaf purity intact, scope = exactly the 3 asked source files. Oracle gate N/A (no crypto/RFC-6962/did:web
+  path touched). Two Codex `[P2]` findings triaged DOWN to `low` and filed (the guard-ordering + the lost
+  `seq` index path) — neither blocks; both strictly-narrower defense-in-depth / perf, not reachable today.
 - **Known non-CI flake (off the gate):** a certificate masthead test asserts an RFC-3339 timestamp in local
   TZ; fails on non-UTC dev hosts only (filed `low`). CI runs UTC and is green.
-- **Open issues: 0 critical, 11 normal, 19 low** (the single `## … critical` grep match is the
-  format-example line, not a real issue). Of the 11 normals: 4 are stale-but-resolved M-API entries
-  (re-verified fixed this assessment) awaiting a prune; the remaining 7 real normals (2 data-model
-  migration items, the WASM signature half, the realm-index Anchor honesty, the dossier §3 + §1, the
-  proofserve-masthead identity) + the M-UI human/design gate keep it `IN_PROGRESS`. DONE requires 0
-  critical AND 0 normal.
+- **Open issues: 0 critical, 8 normal, 21 low** (the single `## … critical` grep match is the
+  format-example line, not a real issue). Of the 8 normals: 4 are stale-but-resolved M-API entries
+  (re-verified fixed in the served doc this assessment) awaiting a prune; the remaining 4 real normals (the
+  WASM signature half, the realm-index Anchor honesty, the dossier §3 + §1) plus the M-UI human/design gate
+  keep it `IN_PROGRESS`. DONE requires 0 critical AND 0 normal.
 
 ## Next Milestone
-**The code-closable feature/milestone backlog is drained; the next deliberate code work is the paired
-data-model `normal`s, for which this window's migration runner is the enabling step.**
+**The code-closable feature/milestone backlog is drained (all data-model `normal`s now closed); the
+remaining `normal`s are design- or human-blocked.**
 1. **Prune the 4 resolved M-API issues** (next `update-state`/`review` can delete them — re-verified fixed
-   in the served `openapi.yaml` this assessment) so the normal count reflects reality.
-2. **Data-model `normal`s (code-closable, now unblocked by the migration runner):** land the
-   `iscc_index.seq` single-global-PK → composite `(hub_id, seq)` rebuild as **migration index 0** (re-keys
-   `iscc_index`, copies existing rows), plus the `iscc_index.go` writer/reader updates — AND fold in the
-   **out-of-range `user_version` guard** (`version < 0 || version > len(migs)` → error), which goes live
-   the instant the migration slice becomes non-empty. Both data-model normals + the runner guard close
-   together.
-3. **Design/human-blocked `normal`s (need a design pass or human sign-off, not autonomous loop work):** the
-   WASM cross-origin signature half; the realm-index per-hub-vs-per-checkpoint Anchor honesty; the dossier
-   §3 size/time decouple + §1 "resolved" wording; the proofserve-trio masthead identity; and the **M-UI exit
-   visual-pass + human sign-off** (ADR-0012). The OTS Bitcoin-confirmed half remains offline-unprovable.
+   in the served `openapi.yaml` this assessment: `/verify` has no `index`, `/checkpoint` is
+   `application/octet-stream`, `/healthz` documents `503`) so the normal count reflects reality (would drop
+   the real open-normal count to 4).
+2. **Design/human-blocked `normal`s (need a design pass or human sign-off, not autonomous loop work):** the
+   WASM cross-origin signature half (browser did:web resolution + note-signature verify); the realm-index
+   per-hub-vs-per-checkpoint Anchor honesty (a design semantics decision); the dossier §3 size/time decouple
+   on frozen hubs + the §1 "resolved" wording on the `unresolvable` path; the proofserve-trio masthead
+   identity; and the **M-UI exit visual-pass + human sign-off** (ADR-0012). The OTS Bitcoin-confirmed half
+   remains offline-unprovable.
+3. **Optional `low` hardening when the touched files are next edited:** hoist the `user_version` guard ahead
+   of `db.Exec(schemaSQL)`; add the `seq` index to `schema.sql` + migration 0 if a populated monitor shows
+   `RecentRecords` hot.
