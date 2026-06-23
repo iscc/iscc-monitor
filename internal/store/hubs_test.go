@@ -156,12 +156,16 @@ func TestListHubsCheckpointAndAnchorHeight(t *testing.T) {
 }
 
 // TestListHubsFrozenObservedTracksAcceptedSize pins the §3 size/time honesty fix on a
-// frozen hub: after the hub accepts a checkpoint at the accepted size and the freeze
-// path records a LATER, higher-tree-size contradictory checkpoint without advancing
-// last_size, ListHubs must report the accepted-size row's observed_at — not the
-// rejected checkpoint's later timestamp. It is mutation-targeted: reverting the §3
-// subselect to ORDER BY c.tree_size DESC, c.id DESC LIMIT 1 (dropping the
-// AND c.tree_size = f.last_size tie) makes it report tRejected and FAIL.
+// frozen hub for the higher-tree-size (equivocation) case: after the hub accepts a
+// checkpoint at the accepted size and the freeze path records a LATER, higher-tree-size
+// contradictory checkpoint without advancing last_size, ListHubs must report the
+// accepted-size row's observed_at — not the rejected checkpoint's later timestamp. The
+// rejected checkpoint's tree_size (200) differs from last_size (100), so the
+// AND c.tree_size = f.last_size clause excludes it: only one row matches the subselect
+// and the id-ordering is irrelevant here (the same-size FORK case, where two rows share
+// last_size, is pinned by TestListHubsFrozenObservedTracksAcceptedSameSizeFork). It is
+// mutation-targeted: dropping the AND c.tree_size = f.last_size tie (e.g. reverting to
+// ORDER BY c.tree_size DESC, c.id DESC LIMIT 1) makes it report tRejected and FAIL.
 func TestListHubsFrozenObservedTracksAcceptedSize(t *testing.T) {
 	ctx := context.Background()
 	s := openTemp(t)
@@ -222,5 +226,81 @@ func TestListHubsFrozenObservedTracksAcceptedSize(t *testing.T) {
 	if !frozen.CheckpointObserved.Equal(tAccepted) {
 		t.Errorf("CheckpointObserved = %v, want %v (accepted-size row time, not rejected %v)",
 			frozen.CheckpointObserved, tAccepted, tRejected)
+	}
+}
+
+// TestListHubsFrozenObservedTracksAcceptedSameSizeFork pins the §3 size/time honesty
+// fix for the SAME-SIZE FORK case — the remainder the higher-size test does not cover.
+// The freeze path records the contradictory checkpoint at the SAME tree_size as the
+// accepted one (a fork: same size, DIFFERENT root) without advancing last_size, so two
+// checkpoint rows share tree_size = last_size = 100. The §3 subselect must report the
+// EARLIEST (accepted) row's observed_at, not the later fork row's. It is
+// mutation-targeted: reverting the §3 subselect's ORDER BY c.id ASC → ORDER BY c.id DESC
+// makes it report tForkRejected and FAIL, while the higher-size test stays green
+// (distinct sizes → only one matching row, ordering irrelevant); restoring ASC passes
+// both. The two roots MUST differ, else ON CONFLICT(hub_id, tree_size, root) dedupes and
+// no fork row exists.
+func TestListHubsFrozenObservedTracksAcceptedSameSizeFork(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	// Distinct instants so the assertion is sharp: the accepted checkpoint is observed
+	// BEFORE the rejected same-size fork checkpoint.
+	tAccepted := time.Unix(1_700_000_000, 0)
+	tForkRejected := time.Unix(1_700_009_999, 0)
+
+	frozenID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub frozen: %v", err)
+	}
+	// Accept a checkpoint at the accepted size (sets last_size = 100 + observed_at).
+	if err := s.AdvanceAccepted(ctx, CheckpointRecord{
+		HubID:      frozenID,
+		TreeSize:   100,
+		Root:       []byte("accepted-checkpoint-root-pad-32!!"),
+		Raw:        []byte("raw-accepted-checkpoint-bytes"),
+		ObservedAt: tAccepted,
+	}); err != nil {
+		t.Fatalf("AdvanceAccepted: %v", err)
+	}
+	// Freeze records the contradictory SAME-SIZE fork checkpoint (tree_size 100, a
+	// DIFFERENT root) WITHOUT advancing last_size (mirrors follower.freeze on a fork:
+	// RecordCheckpoint then Freeze, never AdvanceFollowState), so last_size stays 100
+	// while a second tree_size=100 row exists with a later id and later observed_at.
+	if _, _, err := s.RecordCheckpoint(ctx, CheckpointRecord{
+		HubID:      frozenID,
+		TreeSize:   100,
+		Root:       []byte("forked-checkpoint-root-diff-pad32"),
+		Raw:        []byte("raw-forked-checkpoint-bytes"),
+		ObservedAt: tForkRejected,
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint fork: %v", err)
+	}
+	if err := s.Freeze(ctx, frozenID); err != nil {
+		t.Fatalf("Freeze: %v", err)
+	}
+
+	hubs, err := s.ListHubs(ctx)
+	if err != nil {
+		t.Fatalf("ListHubs: %v", err)
+	}
+	var frozen HubSummary
+	for _, h := range hubs {
+		if h.Domain == "sb0.iscc.id" {
+			frozen = h
+		}
+	}
+	if !frozen.Frozen {
+		t.Fatalf("hub not frozen after Freeze: %+v", frozen)
+	}
+	if frozen.LastSize != 100 {
+		t.Fatalf("LastSize = %d, want 100 (freeze must not advance accepted size)", frozen.LastSize)
+	}
+	// §3 time must track the EARLIEST (accepted) row at size 100 (tAccepted), NOT the
+	// later same-size fork checkpoint's timestamp (tForkRejected). id ASC selects the
+	// accepted row; id DESC would wrongly select the fork.
+	if !frozen.CheckpointObserved.Equal(tAccepted) {
+		t.Errorf("CheckpointObserved = %v, want %v (accepted-size row time, not fork %v)",
+			frozen.CheckpointObserved, tAccepted, tForkRejected)
 	}
 }
