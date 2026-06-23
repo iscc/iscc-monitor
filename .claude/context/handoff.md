@@ -1,76 +1,42 @@
-## 2026-06-23 — Close the single-record navigation back-leg: chrome identity + `← Log browser` breadcrumb + older/newer stepper + actions on `record.html`
+## 2026-06-23 — Review of: Close the single-record navigation back-leg — chrome identity + `← Log browser` breadcrumb + older/newer stepper + actions on `record.html`
 
-**Done:** Made the single-record page (`GET /<domain>/log/record?index=<seq>`) a navigable
-node instead of a dead end: threaded `domain, instance, operator` into the `serveRecord`
-dispatch, extended the `recordData` view-model, and dressed `record.html` with the
-`ISCC Monitor - Single Record.dc.html` navigation named regions — the shared chrome
-instance-identity block + `verify ↗ monitor.iscc.codes` link, the `← Log browser` breadcrumb
-back to the record list, the no-JS older/newer stepper (plain links, disabled `<span>` at the
-ends), and the honesty-gated "Prove this record's inclusion →" / unconditional "Back to list"
-actions. The no-JS dossier→record-list→single-record→**back** chain is now traversable
-end-to-end (only the part-2b record-list pager remains to fully close the `critical`).
+**Verdict:** PASS
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/proofserve/handler.go`: threaded `domain, instance, operator` into the
-  `serveRecord` call (line 245) and its signature + doc comment; extended `recordData` with
-  `Domain/Instance/Operator`, the stepper `HasOlder/OlderIndex/HasNewer/NewerIndex`, `Total`,
-  and the gated `ProveInclusionID`; populated them in the `data := recordData{…}` literal
-  (older when `seq > 0`, newer when `seq+1 < size`, `Total = size`, `ProveInclusionID` set only
-  when `found && row.IsccID != ""`). No new store read, no constructor change, no schema/migration.
-- `internal/proofserve/record.html`: ported the `.chrome-actions`/`.chrome-identity`/
-  `.chrome-instance`/`.chrome-operator`/`.chrome-verify` CSS + markup verbatim from `records.html`;
-  added the `.breadcrumb`, `.stepper`, and `.actions` CSS + markup; the breadcrumb back-link is the
-  relative `records` target, the stepper links are `record?index=<n>` (disabled `<span>` at the
-  ends), the position label is the honest 0-based `seq {{.Seq}} of {{.Total}}`, the prove-inclusion
-  action is `{{if .ProveInclusionID}}` → `/inclusion/{{.ProveInclusionID}}`.
-- `internal/proofserve/record_test.go` *(test)*: added `TestRecordBreadcrumbAndChromeIdentity`,
-  `TestRecordStepperEnds`, `TestRecordProveInclusionHonestyGate` + a `recordBody` head/body splitter
-  helper. All three are mutation-proven (see below).
+**Summary:** Clean, tightly-scoped increment that turns the single-record page (`GET /<domain>/log/record?index=<seq>`)
+from a dead end into a navigable node: it threads `domain, instance, operator` into the `serveRecord` dispatch
+(a one-line call edit + signature), extends the `recordData` view-model with pure-derived fields (no new store
+read), and dresses `record.html` with the mockup's navigation regions — chrome identity + `verify ↗`, the
+`← Log browser` breadcrumb, the no-JS older/newer stepper disabled at the ends, and the honesty-gated
+"Prove this record's inclusion →" / "Back to list" actions. Two prod files (within the ≤3 budget, both named
+in `next.md`), all gates green, three new tests mutation-proven (reviewer independently re-mutated the honesty
+gate and the stepper guards → both FAIL). With this slice the no-JS chain `/` → dossier → record list → single
+record → (cert / back) is traversable forward **and** back end-to-end.
 
-**Verification:** `mise run check` → green (build + vet + test across all 30 packages).
+**Verification:**
+- [x] `mise run check` — green (build + vet + test across all 30 packages).
 - [x] `gofmt -l .` — empty.
-- [x] `go test -count=1 -run TestRecord ./internal/proofserve` — PASS (all existing single-record
-  tests still green under the threaded `serveRecord` signature).
-- [x] Region test (`TestRecordBreadcrumbAndChromeIdentity`): asserts `<a href="records">← Log browser</a>`,
-  the `breadcrumb-here` bare-domain crumb, the populated `chrome-identity` Instance/Operator strings,
-  and the `verify ↗ monitor.iscc.codes` link; zero-value Identity falls back to "monitor instance".
-- [x] Stepper end-condition test (`TestRecordStepperEnds`): seq 0 → older disabled `<span>`, newer →
-  `record?index=1`; seq 7 (size-1) → newer disabled, older → `record?index=6`; mid-tree seq 4 → both
-  live, no disabled span in the body region (scoped past `</style>` to dodge the CSS-literal trap).
-- [x] Honesty-gate test (`TestRecordProveInclusionHonestyGate`): a projected leaf renders
-  `href="/inclusion/<iscc_id>"`; the no-projection fixture (index=2) renders NO `/inclusion/` link;
-  "Back to list" unconditional on both.
+- [x] `go test -count=1 -run TestRecord ./internal/proofserve` — PASS (existing single-record tests green under the threaded signature).
+- [x] `TestRecordBreadcrumbAndChromeIdentity` / `TestRecordStepperEnds` / `TestRecordProveInclusionHonestyGate` — all PASS verbose.
 - [x] Import-direction: `go list -deps ./internal/proofserve | grep -qx internal/metrics` → absent.
-- [x] `go.mod`/`go.sum` byte-identical (no new module dep; `dashboard.Identity` already imported).
-- [x] **Mutation-proven (all 4 FAIL when reverted):** breadcrumb anchor removed → FAIL;
-  `{{.Instance}}` → constant → FAIL; `HasOlder`/`HasNewer` guards → `if true` → FAIL;
-  `{{if .ProveInclusionID}}` → `{{if true}}` → FAIL.
-- Oracle/conformance gate: **N/A** — pure SSR chrome + view-model threading; no signature, RFC-6962,
-  Merkle, did:web, fsck, or proof path touched; store stays a leaf, no new read.
+- [x] `go.mod`/`go.sum` byte-identical (not in the diff; no new module dep — `dashboard.Identity` already imported via part-2a).
+- [x] **Mutation re-proven independently:** dropped the `{{if .ProveInclusionID}}` gate (→ `{{if true}}`) → honesty-gate test FAILS; forced `HasOlder`/`HasNewer` to `if true` → stepper test FAILS; both restored, suite green again.
+- [x] No-CDN body ban intact: `TestRecordLinksTokensNoCDN` PASS (the `monitor.iscc.codes` host is same-federation, tolerated).
+- [x] Gate-circumvention scan over `@{upstream}..HEAD` — no `//nolint`, `t.Skip`, build-tag exclusion, swallowed error, or deleted assertion.
+- [x] Chrome CSS + markup is a faithful port of `records.html` (verified line-for-line); breadcrumb relative `href="records"` is deliberately distinct from the record-list's ABSOLUTE `/{{.Domain}}` dossier crumb (different back-legs).
+- Oracle/conformance gate: **N/A** — pure SSR chrome + view-model threading; no signature, RFC-6962, Merkle, did:web, fsck, or proof path touched; store stays a leaf, no new read. Correctly stated N/A in the advance.
 
-**Next:** **Part-2b — the record-list pager parity** (the OTHER open half of the `critical`): rework
-`records.html`'s pager to the mockup's top+bottom "seq X–Y of Z" form disabled at the ends, and drop
-the Status-badge row the mockup's log browser omits. That is the last code-closable slice before the
-`critical` can be closed and the human M-UI exit sign-off requested. After that, the masthead-identity
-const consolidation (the tracked `low`, now duplicated 5× with this slice) is the natural cleanup.
+**Issues found:** (none in this diff.) The lone `critical` is now down to its **part-2b cosmetic pager parity + human M-UI sign-off** — its STATUS block was updated: part-1 (dossier repoint, recovered in `de9ed3c`), part-2a (record-list chrome), and part-2 (this single-record back-leg) are all DONE, so the no-JS navigation dead-end the human reported is FIXED and the chain is unbroken end-to-end (reviewer-traced every href). It stays OPEN only for the remaining mockup-parity (pager + Status-badge-row drop) and the human exit sign-off — neither is a dead-end.
+
+**Codex second opinion:** unavailable — the `codex review` launch was denied by the auto-mode classifier this iteration (the `sandbox_mode=danger-full-access` + `approval_policy=never` flags trip its "create unsafe agents" rule, not pre-authorized here). `/tmp/codex-review.txt` holds only a STALE verdict from the prior (part-2a) review — it describes "threads the domain and identity through the **record-list** path", i.e. the previous slice, so it is NOT a second opinion on this commit and was not relied on. Graceful degradation per protocol; my own review + independent mutation re-proof stands in.
+
+**Visual check:** skipped — `agent-browser` is installed but no Chrome/Chromium binary is present in the devcontainer, so the headless ADR-0012 pass cannot launch (same as the part-2a review). Graceful degradation; the hard gate is the human M-UI exit sign-off. Static cross-check against `.claude/design/ISCC Monitor - Single Record.dc.html` (lines 41-90) instead: the rendered breadcrumb (`← Log browser` / `/ <domain>`), the older/newer stepper, the honest `seq N of M` position label (vs the mockup's 1-based "record N of M" — the deliberate honest-0-based deviation), and the two actions ("Prove this record's inclusion →" / "Back to list") all match the mockup's named regions for this slice's scope. The type-notice callouts + HUB/POSITION/LOGGED field-grid restructure are correctly left out (Not-In-Scope).
+
+**Next:** **Part-2b — the record-list pager parity** (the last code-closable half of the `critical`): rework `records.html`'s bottom-only "showing N of M" pager into the mockup's top+bottom "seq X–Y of Z" form disabled at the ends, and drop the Status-badge row the mockup's log browser omits. After that, request the human M-UI exit sign-off, then the masthead-identity const consolidation (the tracked `low`, now duplicated across dashboard/dossier/certificate/records).
 
 **Notes:**
-- **CSS-literal trap (recorded in http-surface.md) bit once during dev:** the mid-tree negative
-  "no disabled stepper" assert initially tripped on the `.stepper-disabled` CSS rule in the head
-  `<style>`. Fixed by scoping the assert to the rendered body (after `</style>`) via the new
-  `recordBody` helper — same pattern the no-CDN test uses. The disabled-stepper class selector itself
-  is plain (no `data-*` literal), so no quoted/unquoted attribute-selector concern here.
-- **Breadcrumb back-link is `href="records"` (relative), NOT the absolute `/{{.Domain}}` the
-  record-list breadcrumb uses.** Deliberate: the record list shares the `/log/` subtree with this page
-  (same as the `record?index=` row links + "Back to list" action), whereas the record-list page's
-  `← <domain> dossier` crumb points OUT of the subtree to the site-root dossier mount. Two different
-  back-legs, two different href styles — both correct.
-- **The masthead-identity fallback consts are now duplicated a 5th time** (dashboard, dossier,
-  certificate, records — already 4× — and now the single-record path reuses proofserve's existing
-  `resolveIdentity`, so no NEW const copy was added; the duplication count is unchanged at the package
-  level). Tracked `low` (consolidation); correctly out of scope here.
-- **Kept the existing field rows as-is** (per Not-In-Scope): the mockup's type-notice callouts and the
-  HUB/POSITION/LOGGED field-grid re-layout were left untouched — `record.html`'s existing rows already
-  render the kind + deletion note. Only the navigation regions were added.
-- No backward-incompatible API change, no design deviation — the `serveRecord` signature change is
-  internal to the package (the 11 `record_test.go` `Handler(...)` calls are unchanged).
+- The honesty gate (`found && row.IsccID != ""` → `data.ProveInclusionID`, rendered only `{{if .ProveInclusionID}}`) is the recurring "Verdict-UI honesty" trap (MEMORY): this slice gets it right and proves it non-vacuously — the no-projection fixture (index=2) renders no `/inclusion/` link. Reviewer re-mutated to confirm.
+- The `HasNewer` ceiling `seq+1 < size` cannot overflow: the `seq >= size → 404` guard upstream means `seq < size`, and `size` is the accepted-tree size (bounded). At `seq == size-1`, `seq+1 == size` → newer disabled. Correct.
+- Masthead-identity fallback consts are unchanged at the package level — `serveRecord` reuses proofserve's existing `resolveIdentity` (no NEW const copy added). The cross-package duplication (dashboard/dossier/certificate/proofserve) is the standing `low` consolidation, correctly out of scope here.
+- `database/sql` is in proofserve's dep closure pre-existing (the handler reads the SQLite store) — not introduced here; the load-bearing check (`internal/metrics` absent, no new module dep) passes.
+- The single-record-page chrome note in `records.html`'s part-2a section was a forward-looking "separate slice" pointer; updated to reflect this slice landed it.

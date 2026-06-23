@@ -91,7 +91,8 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   is mounted at the site root OUTSIDE the `/log/` subtree, so a relative `../` walk is wrong (the record
   rows are relative because they share the subtree); (2) head name + breadcrumb use the bare `{{.Domain}}`,
   NOT a fabricated display name (`HubSummary` has no `name`) — same constraint-win the dossier head makes.
-  Part-2b (pager rework: top+bottom "seq X–Y of Z") and the single-record-page chrome are separate slices.
+  Part-2b (pager rework: top+bottom "seq X–Y of Z" + drop the Status-badge row) is the last open slice;
+  the single-record-page chrome landed (see the `/record` section below).
 
 ## HTML single-record page at `/record?index=<seq>` (`serveRecord` + `store.RecordAt`)
 
@@ -105,6 +106,15 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   (2) **Tie a schema-match test to GROUND TRUTH, not the constant under test** — `record_test.go`'s
   `schemaForSeq` + `recordKind` switch on the SAME constants, so reverting both leaves the suite green
   (mutation-verified); a future `note.$schema`→label test must seed a HARDCODED literal URI (open `low`).
+- **Navigation-closure dressing (landed):** `serveRecord` now takes `domain, instance, operator`
+  (threaded from `Handler`, byte-identical chrome port from `records.html`) and the page carries the
+  `← Log browser` breadcrumb (relative `href="records"` — same `/log/` subtree, UNLIKE the record-list's
+  ABSOLUTE `/{{.Domain}}` dossier crumb that points OUT of the subtree), the no-JS older/newer stepper
+  (precomputed `OlderIndex/NewerIndex` cursors; disabled `<span>` at the ends gated on `seq>0` /
+  `seq+1<size`), and the honesty-gated "Prove this record's inclusion →" action set ONLY on
+  `found && row.IsccID != ""` so a no-projection leaf links to no certificate it cannot produce. The
+  negative "no disabled stepper mid-tree" assert MUST be scoped past `</style>` (the `.stepper-disabled`
+  CSS rule lives in the head) — the same CSS-literal trap as the no-CDN/`data-status` asserts.
 
 ## Mirrored OTS proof at `/checkpoint.ots` (`serveOTS` + `store.OTSForRoot`)
 
