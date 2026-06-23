@@ -439,3 +439,186 @@ func TestRecordRendersInMemoryStatus(t *testing.T) {
 		t.Errorf("body still renders store-only verified status; overlay did not apply\n%s", body)
 	}
 }
+
+// TestRecordBreadcrumbAndChromeIdentity asserts the single-record page carries the
+// navigation chrome's named regions: the "← Log browser" breadcrumb back to the record
+// list (a relative records target, the same /log/ subtree the record-row links share)
+// with the bare-domain trailing crumb, plus the shared chrome's instance-identity
+// masthead + the static "verify ↗ monitor.iscc.codes" tier-2 link. It is mutation-proven:
+// removing the breadcrumb link FAILS, and threading a constant instead of the
+// {{.Instance}} / {{.Operator}} bindings FAILS the populated-identity assertions because
+// the exact operator strings would no longer appear.
+func TestRecordBreadcrumbAndChromeIdentity(t *testing.T) {
+	m := buildRecordPageMirror(t, 8)
+	idv := dashboard.Identity{
+		Instance: "monitor.example.test",
+		Operator: "operated by Example Org · example net",
+		Realm:    "example net",
+	}
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, idv)
+
+	code, body := getRecord(t, h, "index=4")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	for _, want := range []string{
+		`<a href="records">← Log browser</a>`,   // the breadcrumb back-link: anchor + copy + target together
+		`class="breadcrumb-here">sb0.iscc.id`,   // the bare-domain trailing crumb (constraint-win)
+		`class="chrome-identity"`,               // the instance-identity block
+		"monitor.example.test",                  // the operator-supplied instance line
+		"operated by Example Org · example net", // the operator-supplied operator line
+		"monitor.iscc.codes",                    // the tier-2 verify link copy
+		`href="https://monitor.iscc.codes/"`,    // the tier-2 verify link target
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing chrome/breadcrumb region %q\n%s", want, body)
+		}
+	}
+	// The breadcrumb back-link must be the relative record-list target, never a relative
+	// ../ walk out of the /log/ subtree (the record list shares the subtree).
+	if strings.Contains(body, `href="../`) {
+		t.Errorf("breadcrumb wrongly uses a relative ../ walk instead of the relative records target\n%s", body)
+	}
+	// A zero-value Identity falls back to the static placeholder copy, proving
+	// resolveIdentity is wired into the single-record path, not bypassed.
+	h0 := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	_, body0 := getRecord(t, h0, "index=4")
+	if !strings.Contains(body0, "monitor instance") {
+		t.Errorf("zero-value Identity did not fall back to the static placeholder copy\n%s", body0)
+	}
+}
+
+// TestRecordStepperEnds asserts the no-JS older/newer stepper is disabled at the tree
+// ends and live in the interior: at seq 0 the older affordance is a disabled <span> (no
+// older record?index= link) and newer is a live link to seq 1; at the topmost in-tree
+// seq (size-1) newer is disabled and older is live; and a mid-tree seq has both live.
+// It is mutation-proven: reverting the HasOlder / HasNewer guards (so an end renders a
+// live link) FAILS the disabled-end assertions. The honest 0-based "seq N of M" position
+// label is also pinned.
+func TestRecordStepperEnds(t *testing.T) {
+	m := buildRecordPageMirror(t, 8) // accepted tree size 8, seqs 0..7
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+
+	// At seq 0: older is disabled, newer steps to seq 1.
+	_, body0 := getRecord(t, h, "index=0")
+	if !strings.Contains(body0, `class="stepper-disabled">&larr; older record`) {
+		t.Errorf("seq 0: older stepper not rendered as a disabled span\n%s", body0)
+	}
+	// There is no leaf below seq 0, so no older record?index= link may be rendered (the
+	// newer link to seq 1 still uses record?index=, so this asserts the older anchor's
+	// trailing copy is absent, not the bare prefix).
+	if strings.Contains(body0, "&larr; older record</a>") {
+		t.Errorf("seq 0: older stepper is a live link, want a disabled <span>\n%s", body0)
+	}
+	if !strings.Contains(body0, `href="record?index=1"`) {
+		t.Errorf("seq 0: newer stepper missing the live link to seq 1\n%s", body0)
+	}
+	if !strings.Contains(body0, "seq 0 of 8") {
+		t.Errorf("seq 0: missing honest 0-based position label\n%s", body0)
+	}
+
+	// At the topmost in-tree seq (7): newer is disabled, older steps to seq 6.
+	_, body7 := getRecord(t, h, "index=7")
+	if !strings.Contains(body7, `href="record?index=6"`) {
+		t.Errorf("seq 7: older stepper missing the live link to seq 6\n%s", body7)
+	}
+	if !strings.Contains(body7, `class="stepper-disabled">newer record`) {
+		t.Errorf("seq 7: newer stepper not rendered as a disabled span\n%s", body7)
+	}
+	// No leaf sits above the topmost accepted seq, so no live newer anchor may render.
+	if strings.Contains(body7, "newer record &rarr;</a>") {
+		t.Errorf("seq 7: newer stepper is a live link, want a disabled <span>\n%s", body7)
+	}
+	if !strings.Contains(body7, "seq 7 of 8") {
+		t.Errorf("seq 7: missing honest 0-based position label\n%s", body7)
+	}
+
+	// A mid-tree seq (4): both steppers live (older→3, newer→5).
+	_, body4 := getRecord(t, h, "index=4")
+	for _, want := range []string{`href="record?index=3"`, `href="record?index=5"`} {
+		if !strings.Contains(body4, want) {
+			t.Errorf("seq 4: missing live stepper link %q\n%s", want, body4)
+		}
+	}
+	// Scope the no-disabled-stepper assert to the rendered <body> (after </style>): the
+	// .stepper-disabled CSS rule lives in the head <style> on every page, so a whole-body
+	// substring check would trip on the stylesheet literal, not the markup.
+	if strings.Contains(recordBody(body4), `class="stepper-disabled"`) {
+		t.Errorf("seq 4: a stepper is wrongly disabled mid-tree\n%s", body4)
+	}
+}
+
+// recordBody returns the rendered document body (everything after the head's </style>),
+// so a negative markup assert is not tripped by a same-named CSS rule in the stylesheet.
+func recordBody(body string) string {
+	if i := strings.Index(body, "</style>"); i >= 0 {
+		return body[i:]
+	}
+	return body
+}
+
+// TestRecordProveInclusionHonestyGate asserts the "Prove this record's inclusion →"
+// action is honesty-gated on a projected, non-empty ISCC-ID: a leaf WITH a projected id
+// renders the /inclusion/<iscc_id> certificate link, while a leaf with NO projection
+// renders NO /inclusion/ link at all (it cannot produce a certificate it has no id for).
+// It is mutation-proven: removing the {{if .ProveInclusionID}} gate would link the
+// no-projection leaf to a certificate route it cannot serve, failing the no-link assert.
+// "Back to list" is unconditional on both.
+func TestRecordProveInclusionHonestyGate(t *testing.T) {
+	// A leaf WITH a projection renders the certificate link keyed on its verbatim id.
+	m := buildRecordPageMirror(t, 8)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	code, body := getRecord(t, h, "index=4")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	wantHref := fmt.Sprintf(`href="/inclusion/%s"`, leafISCCID(4))
+	if !strings.Contains(body, wantHref) {
+		t.Errorf("projected leaf missing the certificate link %q\n%s", wantHref, body)
+	}
+	if !strings.Contains(body, "Prove this record's inclusion →") {
+		t.Errorf("projected leaf missing the prove-inclusion action copy\n%s", body)
+	}
+	if !strings.Contains(body, `href="records"`) {
+		t.Errorf("projected leaf missing the unconditional Back-to-list link\n%s", body)
+	}
+
+	// The TestRecordRendersWithoutProjection fixture: a leaf whose bytes are mirrored but
+	// whose iscc_index projection is absent (index=2) renders NO /inclusion/ link.
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "noproj-cert.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	hubID, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	at := time.Unix(1700000000, 0)
+	recs := [][]byte{recordBytes(0), recordBytes(1), recordBytes(2), recordBytes(3)}
+	if err := st.RecordEntryBundle(ctx, hubID, 0, 4, frameBundle(recs), at); err != nil {
+		t.Fatalf("RecordEntryBundle: %v", err)
+	}
+	if _, _, err := st.RecordCheckpoint(ctx, store.CheckpointRecord{
+		HubID: hubID, TreeSize: 4, Root: []byte("root"), Raw: []byte("checkpoint"), ObservedAt: at,
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint: %v", err)
+	}
+	if err := st.AdvanceFollowState(ctx, hubID, 4); err != nil {
+		t.Fatalf("AdvanceFollowState: %v", err)
+	}
+
+	hNo := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	codeNo, bodyNo := getRecord(t, hNo, "index=2")
+	if codeNo != http.StatusOK {
+		t.Fatalf("no-projection leaf: status = %d, want 200", codeNo)
+	}
+	if strings.Contains(bodyNo, "/inclusion/") {
+		t.Errorf("no-projection leaf wrongly links to a certificate it cannot produce\n%s", bodyNo)
+	}
+	// Back to list is still unconditional even with no projection.
+	if !strings.Contains(bodyNo, `href="records"`) {
+		t.Errorf("no-projection leaf missing the unconditional Back-to-list link\n%s", bodyNo)
+	}
+}

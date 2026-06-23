@@ -242,7 +242,7 @@ func Handler(st *store.Store, hubID int64, domain string, statuses StatusSource,
 		case "/records":
 			serveRecords(w, r, st, hubID, domain, instance, operator, statuses)
 		case "/record":
-			serveRecord(w, r, st, f, hubID, statuses)
+			serveRecord(w, r, st, f, hubID, domain, instance, operator, statuses)
 		case "/inclusion":
 			serveInclusion(w, r, st, f, hubID)
 		case "/consistency":
@@ -1019,16 +1019,45 @@ func serveRecords(w http.ResponseWriter, r *http.Request, st *store.Store, hubID
 // and NoteSchema strings (never interpreted beyond Kind), and RecordBytes — the raw
 // opaque JCS-canonical log-entry envelope cast to a string for html/template auto-
 // escape (NOT template.HTML), shown verbatim for human inspection.
+//
+// Domain / Instance / Operator drive the navigation chrome (resolved once at Handler
+// construction, byte-identical to the dashboard / dossier / record-list mastheads):
+// Domain is the hub's bare domain, rendered as the breadcrumb's trailing crumb, and
+// Instance / Operator are the masthead instance-identity block. The breadcrumb's
+// "← Log browser" back-link is the record list (a relative records target, the same
+// /log/ subtree the record rows share).
+//
+// HasOlder / OlderIndex and HasNewer / NewerIndex are the no-JS older/newer stepper:
+// the template renders a plain record?index=<n> link only when the flag is set, else a
+// disabled <span>, so the stepper never links past the ends. The cursors are
+// precomputed uint64 (Seq-1 / Seq+1) so the template does no arithmetic. Total is the
+// accepted-tree size (the stepper's ceiling), shown in the honest 0-based "seq N of M"
+// position label.
+//
+// ProveInclusionID is the honesty gate for the "Prove this record's inclusion →"
+// action: it is set ONLY when this leaf has a projected, non-empty ISCC-ID
+// (HasProjection && IsccID != ""), so the template links to /inclusion/<id> only for a
+// leaf that can actually produce a certificate — a no-id / no-projection leaf renders no
+// such affordance (never assert a capability the data does not support).
 type recordData struct {
-	Status        string
-	Label         string
-	Seq           uint64
-	Kind          string
-	IsDeletion    bool
-	HasProjection bool
-	IsccID        string
-	NoteSchema    string
-	RecordBytes   string
+	Status           string
+	Label            string
+	Seq              uint64
+	Kind             string
+	IsDeletion       bool
+	HasProjection    bool
+	IsccID           string
+	NoteSchema       string
+	RecordBytes      string
+	Domain           string
+	Instance         string
+	Operator         string
+	Total            uint64
+	HasOlder         bool
+	OlderIndex       uint64
+	HasNewer         bool
+	NewerIndex       uint64
+	ProveInclusionID string
 }
 
 // recordKind maps the verbatim note.$schema to a human-readable kind label and a
@@ -1064,7 +1093,14 @@ func recordKind(noteSchema string) (kind string, isDeletion bool) {
 // covering this leaf (ErrLeafOutOfBundle) → 404; a FollowState / RecordAt / bundle-read
 // DB error → 500. A missing projection is NOT a 404 (the bytes are the truth). The page
 // is rendered into a buffer first so a template/store error is a 500 BEFORE any 200.
-func serveRecord(w http.ResponseWriter, r *http.Request, st *store.Store, f store.SQLiteFetcher, hubID int64, statuses StatusSource) {
+//
+// domain is the hub's bare domain and instance / operator are the resolved masthead
+// identity (resolved once at Handler construction), threaded into the page chrome
+// (instance-identity block + verify link) and the "← Log browser" breadcrumb's trailing
+// "/ <domain>" crumb. The older/newer stepper and the honesty-gated "Prove this record's
+// inclusion →" action are pure view-model derived from data already in scope (seq, size,
+// the projection's id), so no new store read is added.
+func serveRecord(w http.ResponseWriter, r *http.Request, st *store.Store, f store.SQLiteFetcher, hubID int64, domain, instance, operator string, statuses StatusSource) {
 	ctx := r.Context()
 
 	seq, err := parseUint(r.URL.Query().Get("index"))
@@ -1145,6 +1181,29 @@ func serveRecord(w http.ResponseWriter, r *http.Request, st *store.Store, f stor
 		// The record envelope is opaque bytes for human inspection — string-cast for
 		// html/template auto-escape, never parsed and never template.HTML.
 		RecordBytes: string(record),
+		Domain:      domain,
+		Instance:    instance,
+		Operator:    operator,
+		Total:       size,
+	}
+	// No-JS older/newer stepper: plain links disabled at the ends. older steps to the
+	// previous seq (only when seq > 0); newer steps to the next seq (only while it
+	// stays under the accepted-tree ceiling). The cursors are precomputed so the
+	// template does no arithmetic.
+	if seq > 0 {
+		data.HasOlder = true
+		data.OlderIndex = seq - 1
+	}
+	if seq+1 < size {
+		data.HasNewer = true
+		data.NewerIndex = seq + 1
+	}
+	// The "Prove this record's inclusion →" action is honesty-gated: the certificate
+	// route is keyed on the ISCC-ID (/inclusion/<id>), so the link renders only when this
+	// leaf has a projected, non-empty id it could actually certify. A no-id / no-projection
+	// leaf links to no certificate it cannot produce.
+	if found && row.IsccID != "" {
+		data.ProveInclusionID = row.IsccID
 	}
 
 	var buf bytes.Buffer

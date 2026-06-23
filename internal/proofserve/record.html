@@ -62,11 +62,125 @@
       color: var(--text-muted);
       font-weight: var(--weight-light);
     }
+    .chrome-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: var(--space-5);
+      flex-wrap: wrap;
+    }
+    /* The instance-identity block: this deployment's domain + operator/realm,
+       config-driven from the masthead Identity (byte-identical to the dashboard). */
+    .chrome-identity {
+      text-align: right;
+      line-height: var(--leading-snug);
+    }
+    .chrome-instance {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-body);
+    }
+    .chrome-operator {
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+      font-weight: var(--weight-light);
+    }
+    /* The tier-2 link to the monitor-agnostic verifier app (monitor.iscc.codes).
+       The single-record page's tier-2 affordance is this cross-surface link, matching
+       the record-list / dossier masthead. The .codes verifier app is same-federation,
+       not a third-party asset CDN, so the no-CDN body ban tolerates the literal host. */
+    .chrome-verify {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-link);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-xs);
+      padding: var(--space-2) var(--space-3);
+    }
 
     .page {
       max-width: 1000px;
       margin: 0 auto;
       padding: var(--space-10) var(--space-8) var(--space-14);
+    }
+
+    /* The breadcrumb row: the "← Log browser" back-link to this hub's record list
+       (a relative records target, the same /log/ subtree the record-row links share),
+       plus the trailing "/ <domain>" crumb (the bare domain, no fabricated display
+       name — the same constraint-win the records / dossier heads make). */
+    .breadcrumb {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      margin-bottom: var(--space-4);
+    }
+    .breadcrumb a {
+      color: var(--text-link);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-semibold);
+    }
+    .breadcrumb-sep {
+      color: var(--text-faint);
+    }
+    .breadcrumb-here {
+      font-size: var(--text-sm);
+      color: var(--text-muted);
+    }
+
+    /* The no-JS older/newer record stepper: plain links disabled at the ends. The
+       mockup's JS buttons become <a> links (or a disabled <span> at an end), with the
+       honest 0-based "seq N of M" position label between them. */
+    .stepper {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+      margin-bottom: var(--space-4);
+    }
+    .stepper a,
+    .stepper span {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      font-weight: var(--weight-semibold);
+    }
+    .stepper a {
+      color: var(--text-link);
+    }
+    .stepper-disabled {
+      color: var(--text-faint);
+    }
+    .stepper-position {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+      font-weight: var(--weight-light);
+    }
+
+    /* The record actions: the honesty-gated "Prove this record's inclusion →" link to
+       this leaf's certificate (rendered only for a leaf with a projected id) and the
+       unconditional "Back to list" link to the record list. */
+    .actions {
+      display: flex;
+      gap: var(--space-3);
+      flex-wrap: wrap;
+      margin-top: var(--space-5);
+      padding: var(--space-4) var(--space-5);
+    }
+    .action {
+      font-size: var(--text-sm);
+      font-weight: var(--weight-semibold);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-xs);
+      padding: var(--space-3) var(--space-4);
+    }
+    .action-primary {
+      color: var(--surface-card);
+      background: var(--text-heading);
+      border-color: var(--text-heading);
+    }
+    .action-secondary {
+      color: var(--text-heading);
+      background: var(--surface-card);
     }
 
     /* Ledger heading row. */
@@ -248,9 +362,36 @@
         <div class="chrome-sub">Evidence of record · ISCC-Hub network</div>
       </div>
     </div>
+    <div class="chrome-actions">
+      <div class="chrome-identity">
+        <div class="chrome-instance">{{.Instance}}</div>
+        <div class="chrome-operator">{{.Operator}}</div>
+      </div>
+      <a class="chrome-verify" href="https://monitor.iscc.codes/">verify ↗ monitor.iscc.codes</a>
+    </div>
   </header>
 
   <main class="page">
+    <div class="breadcrumb">
+      <a href="records">← Log browser</a>
+      <span class="breadcrumb-sep">/</span>
+      <span class="breadcrumb-here">{{.Domain}}</span>
+    </div>
+
+    <div class="stepper">
+      {{- if .HasOlder}}
+      <a href="record?index={{.OlderIndex}}">&larr; older record</a>
+      {{- else}}
+      <span class="stepper-disabled">&larr; older record</span>
+      {{- end}}
+      <span class="stepper-position">seq {{.Seq}} of {{.Total}}</span>
+      {{- if .HasNewer}}
+      <a href="record?index={{.NewerIndex}}">newer record &rarr;</a>
+      {{- else}}
+      <span class="stepper-disabled">newer record &rarr;</span>
+      {{- end}}
+    </div>
+
     <div class="ledger-head">
       <h1 class="ledger-title">Record</h1>
       <span class="ledger-count">One mirrored, accepted leaf of this hub's log — listed verbatim, interpreted nothing beyond its kind label.</span>
@@ -298,6 +439,13 @@
         <p class="bytes-title">Raw record bytes</p>
         <pre class="bytes-pre"><code>{{.RecordBytes}}</code></pre>
       </div>
+    </div>
+
+    <div class="actions">
+      {{- if .ProveInclusionID}}
+      <a class="action action-primary" href="/inclusion/{{.ProveInclusionID}}">Prove this record's inclusion →</a>
+      {{- end}}
+      <a class="action action-secondary" href="records">Back to list</a>
     </div>
 
     <p class="footnote">The record bytes are the source of truth — the kind label, ISCC-ID, and note schema above are a derived projection of them and the monitor interprets neither the ISCC-ID nor the schema beyond labelling its kind. Guarantees hold only from coverage start, so a record committed before the monitor began watching is mirrored but not vouched for.</p>
