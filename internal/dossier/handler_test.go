@@ -13,6 +13,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,6 +22,20 @@ import (
 	"github.com/iscc/iscc-monitor/internal/dashboard"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
+
+// readCheckpoint loads a captured live hub-signed checkpoint fixture from the
+// module-root testdata/live/ directory (two levels up from this package). The
+// dossier Exhibit reads its tree size back (unverified) for the size line, so the
+// frozen fixtures use real signed checkpoints of known, differing sizes (sb0 =
+// 10183, sb1 = 61) rather than hand-built strings.
+func readCheckpoint(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "live", name))
+	if err != nil {
+		t.Fatalf("read checkpoint fixture %q: %v", name, err)
+	}
+	return data
+}
 
 // fakeStatusSource is an in-memory StatusSource keyed by hub_id, standing in for the
 // metrics registry so the dossier's status overlay is golden-testable without
@@ -62,8 +77,14 @@ func coveredHub(t *testing.T) (*store.Store, int64) {
 }
 
 // frozenHub opens a fresh store, registers one hub, records two self-consistency
-// violations (a fork then a later shrink), and freezes it — the state the dossier's
-// non-dismissable Exhibit surfaces (ADR-0006). It returns the store and the hub_id.
+// violations, and freezes it — the state the dossier's non-dismissable Exhibit
+// surfaces (ADR-0006). It returns the store and the hub_id.
+//
+// The fork violation carries REAL signed checkpoints as RawA / RawB (the captured
+// sb0 = size 10183 prior and sb1 = size 61 contradictory fixtures), so the Exhibit's
+// "size before → presented" line is proven against ground truth. The later shrink
+// violation carries non-note RawA / RawB so the fail-closed "tree sizes unavailable"
+// path is exercised in the same render.
 func frozenHub(t *testing.T) (*store.Store, int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -78,7 +99,9 @@ func frozenHub(t *testing.T) (*store.Store, int64) {
 		t.Fatalf("UpsertHub: %v", err)
 	}
 	if _, err := st.RecordViolation(ctx, store.Violation{
-		HubID: id, Kind: "fork", RawA: []byte("a"), RawB: []byte("b"),
+		HubID: id, Kind: "fork",
+		RawA:       readCheckpoint(t, "sb0.iscc.id_checkpoint"),  // prior accepted, size 10183
+		RawB:       readCheckpoint(t, "sb1.amlet.id_checkpoint"), // contradictory, size 61
 		DetectedAt: time.Unix(1_700_000_000, 0),
 	}); err != nil {
 		t.Fatalf("RecordViolation fork: %v", err)
@@ -137,6 +160,35 @@ func TestDossierFrozenExhibit(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing violation detail %q\n%s", want, body)
 		}
+	}
+	// The fork violation carries real signed checkpoints, so the Exhibit renders the
+	// two contradictory checkpoints' parsed tree sizes (size before → presented) — the
+	// sb0 prior size 10183 and the sb1 contradictory size 61, read back unverified.
+	for _, want := range []string{
+		"tree size 10183",
+		"presented 61",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing Exhibit size line %q\n%s", want, body)
+		}
+	}
+	// A stable, non-empty evidence ref derived from the raw pair (12 hex chars over
+	// sha256(RawA||RawB)). The fork pair's ref is deterministic from the fixtures.
+	wantRef := evidenceRef(readCheckpoint(t, "sb0.iscc.id_checkpoint"), readCheckpoint(t, "sb1.amlet.id_checkpoint"))
+	if wantRef == "" {
+		t.Fatal("evidenceRef of the fork pair is empty; the fixtures carry raw bytes")
+	}
+	if !strings.Contains(body, "evidence ref "+wantRef) {
+		t.Errorf("body missing the fork violation's evidence ref %q\n%s", wantRef, body)
+	}
+	// The shrink violation carries non-note RawA/RawB, so its sizes are unparseable:
+	// the Exhibit must render the honest "tree sizes unavailable" rather than a
+	// fabricated number, and must NOT show a "0" pseudo-size for it.
+	if !strings.Contains(body, "tree sizes unavailable") {
+		t.Errorf("body missing the fail-closed \"tree sizes unavailable\" line for the non-note shrink\n%s", body)
+	}
+	if strings.Contains(body, "tree size 0 →") {
+		t.Errorf("Exhibit fabricates a zero size for an unparseable violation\n%s", body)
 	}
 	// Non-dismissable: no dismiss/close control and no JS. The HTML `hidden`
 	// attribute (`hidden>` / `hidden=`) is banned specifically — not the CSS
@@ -464,6 +516,116 @@ func TestDossierObservationLogAnchorAndFreeze(t *testing.T) {
 			t.Errorf("§5 contains a synthesized per-poll verdict %q\n%s", banned, body)
 		}
 	}
+}
+
+// TestDossierObservationLogFrozenNoPseudoTransition asserts the §5 fork/shrink fix:
+// a frozen hub whose recorded checkpoints are NOT a strictly-increasing series (a
+// same-size fork or a shrunk contradictory checkpoint, which follower.freeze records
+// at a later observed_at without advancing accepted state) renders NO "size N → N" or
+// "larger → smaller" pseudo-transition line, while the freeze pointer still appears.
+func TestDossierObservationLogFrozenNoPseudoTransition(t *testing.T) {
+	ctx := context.Background()
+
+	// Fork case: an accepted size-500 checkpoint, then a same-size/different-root
+	// contradictory checkpoint recorded at a later observed_at. §5 must NOT show
+	// "size 500 → 500" but MUST keep the freeze pointer.
+	t.Run("same-size fork", func(t *testing.T) {
+		st, err := store.Open(filepath.Join(t.TempDir(), "fork.db"))
+		if err != nil {
+			t.Fatalf("store.Open: %v", err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		id, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+		if err != nil {
+			t.Fatalf("UpsertHub: %v", err)
+		}
+		rootA := []byte("fork-accepted-root-padding-32byt")
+		if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+			HubID: id, TreeSize: 500, Root: rootA, Raw: []byte("raw-a"),
+			ObservedAt: time.Unix(1_700_000_000, 0),
+		}); err != nil {
+			t.Fatalf("AdvanceAccepted: %v", err)
+		}
+		rootB := []byte("fork-contradictory-root-pad-32by")
+		if _, _, err := st.RecordCheckpoint(ctx, store.CheckpointRecord{
+			HubID: id, TreeSize: 500, Root: rootB, Raw: []byte("raw-b"),
+			ObservedAt: time.Unix(1_700_000_100, 0),
+		}); err != nil {
+			t.Fatalf("RecordCheckpoint contradictory: %v", err)
+		}
+		if _, err := st.RecordViolation(ctx, store.Violation{
+			HubID: id, Kind: "fork", RawA: []byte("raw-a"), RawB: []byte("raw-b"),
+			DetectedAt: time.Unix(1_700_000_100, 0),
+		}); err != nil {
+			t.Fatalf("RecordViolation fork: %v", err)
+		}
+		if err := st.Freeze(ctx, id); err != nil {
+			t.Fatalf("Freeze: %v", err)
+		}
+
+		body := renderDossier(t, st, id)
+		if strings.Contains(body, "size 500 → 500") {
+			t.Errorf("§5 renders a same-size pseudo-transition \"size 500 → 500\"\n%s", body)
+		}
+		if !strings.Contains(body, "froze hub") {
+			t.Errorf("§5 missing the freeze pointer for the frozen fork hub\n%s", body)
+		}
+	})
+
+	// Shrink case: an accepted size-500 checkpoint, then a smaller (size-400)
+	// contradictory checkpoint recorded later. §5 must NOT show "size 500 → 400".
+	t.Run("shrink", func(t *testing.T) {
+		st, err := store.Open(filepath.Join(t.TempDir(), "shrink.db"))
+		if err != nil {
+			t.Fatalf("store.Open: %v", err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		id, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+		if err != nil {
+			t.Fatalf("UpsertHub: %v", err)
+		}
+		if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+			HubID: id, TreeSize: 500, Root: []byte("shrink-accepted-root-padding-32b"), Raw: []byte("raw-a"),
+			ObservedAt: time.Unix(1_700_000_000, 0),
+		}); err != nil {
+			t.Fatalf("AdvanceAccepted: %v", err)
+		}
+		if _, _, err := st.RecordCheckpoint(ctx, store.CheckpointRecord{
+			HubID: id, TreeSize: 400, Root: []byte("shrink-contradictory-root-pad-32"), Raw: []byte("raw-b"),
+			ObservedAt: time.Unix(1_700_000_100, 0),
+		}); err != nil {
+			t.Fatalf("RecordCheckpoint shrunk: %v", err)
+		}
+		if _, err := st.RecordViolation(ctx, store.Violation{
+			HubID: id, Kind: "shrink", RawA: []byte("raw-a"), RawB: []byte("raw-b"),
+			DetectedAt: time.Unix(1_700_000_100, 0),
+		}); err != nil {
+			t.Fatalf("RecordViolation shrink: %v", err)
+		}
+		if err := st.Freeze(ctx, id); err != nil {
+			t.Fatalf("Freeze: %v", err)
+		}
+
+		body := renderDossier(t, st, id)
+		if strings.Contains(body, "size 500 → 400") {
+			t.Errorf("§5 renders a shrink pseudo-transition \"size 500 → 400\"\n%s", body)
+		}
+		if !strings.Contains(body, "froze hub") {
+			t.Errorf("§5 missing the freeze pointer for the frozen shrink hub\n%s", body)
+		}
+	})
+}
+
+// renderDossier renders the dossier for hubID against st and returns the response
+// body, failing the test on a non-200 status.
+func renderDossier(t *testing.T, st *store.Store, hubID int64) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	Handler(st, hubID, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	return rec.Body.String()
 }
 
 // TestDossierConfirmedAnchorRendersHeight asserts the §4 Bitcoin-anchor section of a

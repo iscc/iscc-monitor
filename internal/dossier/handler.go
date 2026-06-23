@@ -28,7 +28,9 @@ package dossier
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -36,6 +38,7 @@ import (
 
 	"github.com/iscc/iscc-monitor/internal/badge"
 	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -110,11 +113,23 @@ type dossierData struct {
 // the trigger Kind ("fork"/"shrink"/"equivocation") and the DetectedAt instant as
 // RFC 3339, or the empty string when the detected time is unknown (the template
 // shows "time unknown" rather than a fabricated epoch — coverage-honesty discipline
-// applies to evidence timestamps too). The raw checkpoint bytes and proof are NOT
-// rendered here; they belong with the future proof-bundle surface.
+// applies to evidence timestamps too).
+//
+// SizeBefore / SizePresented are the two contradictory checkpoints' tree sizes read
+// back (unverified) from the stored RawA / RawB evidence; HasSizes gates the "size
+// <before> → <presented>" line and is true only when BOTH parse, so an unparseable
+// raw never fabricates a number (fail-closed, the SSR-honesty rule). EvidenceRef is
+// a stable short hash over the raw pair (sha256(RawA||RawB)[:6] hex) — a non-empty
+// handle whenever the violation carries any raw bytes, never a fabricated id. The
+// raw checkpoint bytes and proof themselves are NOT rendered here; they belong with
+// the future proof-bundle surface.
 type violationRow struct {
-	Kind       string
-	DetectedAt string
+	Kind          string
+	DetectedAt    string
+	HasSizes      bool
+	SizeBefore    uint64
+	SizePresented uint64
+	EvidenceRef   string
 }
 
 // observationRow is one line of the §5 observation log, each traceable to a recorded
@@ -363,17 +378,42 @@ func statusNote(status string) string {
 
 // violationRows maps the store violation rows into the dossier render structs,
 // formatting each DetectedAt as RFC 3339 (or the empty string when the time is
-// unknown — the same idiom coverageTime uses, never a fabricated epoch). Only kind
-// and detected-at are surfaced; the raw evidence bytes are out of scope here.
+// unknown — the same idiom coverageTime uses, never a fabricated epoch). For each
+// row it reads back the two contradictory checkpoints' tree sizes from the already-
+// verified RawA / RawB evidence (size before → presented) and derives a stable short
+// evidence ref over the raw pair. Sizes are surfaced only when BOTH raws parse
+// (fail-closed, never a fabricated number); the raw evidence bytes themselves are
+// out of scope here (the proof-bundle surface owns them).
 func violationRows(violations []store.Violation) []violationRow {
 	rows := make([]violationRow, 0, len(violations))
 	for _, v := range violations {
+		before, okBefore := logclient.CheckpointSizeFromRaw(v.RawA)
+		presented, okPresented := logclient.CheckpointSizeFromRaw(v.RawB)
 		rows = append(rows, violationRow{
-			Kind:       v.Kind,
-			DetectedAt: violationTime(v.DetectedAt),
+			Kind:          v.Kind,
+			DetectedAt:    violationTime(v.DetectedAt),
+			HasSizes:      okBefore && okPresented,
+			SizeBefore:    before,
+			SizePresented: presented,
+			EvidenceRef:   evidenceRef(v.RawA, v.RawB),
 		})
 	}
 	return rows
+}
+
+// evidenceRef derives a stable short handle for a violation from its raw evidence
+// bytes — the first 6 bytes of sha256(rawA||rawB) as 12 hex chars. It is a content-
+// derived handle (the same pair always yields the same ref), never a fabricated id,
+// and is non-empty whenever the violation carries any raw bytes — a stable reference
+// even when the sizes are unparseable. It returns "" only when both raws are empty.
+func evidenceRef(rawA, rawB []byte) string {
+	if len(rawA) == 0 && len(rawB) == 0 {
+		return ""
+	}
+	h := sha256.New()
+	h.Write(rawA)
+	h.Write(rawB)
+	return hex.EncodeToString(h.Sum(nil)[:6])
 }
 
 // violationTime renders a violation's detected-at as RFC 3339 UTC, or the empty
@@ -396,15 +436,18 @@ func violationTime(t time.Time) string {
 //     already-fetched violations slice, mapping "fork" to the canonical "split view"
 //     vocabulary), newest-first — the loud Exhibit already shows the full evidence, so
 //     this §5 line is a brief, honest pointer, not a second read;
-//   - one size-transition line per consecutive recorded-checkpoint pair, newest-first
-//     ("size <older> → <newer>" with the newer checkpoint's observed time when known);
-//   - the oldest recorded checkpoint as a singleton ("size <n> observed"), only when
-//     there were transitions (≥2 checkpoints) — a lone checkpoint is no event.
+//   - one size-transition line per consecutive recorded-checkpoint pair whose size
+//     strictly INCREASES, newest-first ("size <older> → <newer>" with the newer
+//     checkpoint's observed time when known) — a non-increasing pair (a frozen hub's
+//     same-size fork/equivocation or shrunk contradictory checkpoint) is skipped, never
+//     rendered as a "size N → N" / "larger → smaller" pseudo-transition;
+//   - the oldest recorded checkpoint as a singleton ("size <n> observed"), only when at
+//     least one real increasing transition was emitted — a lone checkpoint is no event.
 //
 // A checkpoint with a NULL observed_at renders the size without a time (the "" idiom),
-// never a fabricated instant. With ≤1 checkpoint and no confirmed anchor and no freeze,
-// it returns nil so the template renders the honest empty state (a single checkpoint is
-// not a transition, so it surfaces no §5 line on its own).
+// never a fabricated instant. With ≤1 checkpoint (or only non-increasing pairs) and no
+// confirmed anchor and no freeze, it returns nil so the template renders the honest
+// empty state (a single checkpoint is not a transition, so it surfaces no §5 line).
 func observationRows(checkpoints []store.CheckpointSummary, s store.HubSummary, violations []store.Violation) []observationRow {
 	var rows []observationRow
 
@@ -425,16 +468,27 @@ func observationRows(checkpoints []store.CheckpointSummary, s store.HubSummary, 
 	}
 
 	// Size transitions between consecutive recorded checkpoints (newest-first), then
-	// the oldest checkpoint as a singleton. A lone checkpoint is not a transition, so
-	// it surfaces no §5 line on its own (the honest empty state covers it).
+	// the oldest checkpoint as a singleton. Only a strictly-INCREASING pair is a real
+	// transition: a frozen hub's contradictory checkpoint is recorded at a later
+	// observed_at WITHOUT advancing accepted state, so a fork/equivocation (same size)
+	// or a shrink (smaller size) must be skipped — rendering "size N → N" or "larger →
+	// smaller" would assert a non-transition the data does not support (the SSR-honesty
+	// rule). The freeze pointer above records that contradictory event; the Exhibit
+	// shows its full evidence. The singleton is emitted only when at least one real
+	// increasing transition was emitted (a lone checkpoint is no event).
+	transitioned := false
 	for i := 0; i+1 < len(checkpoints); i++ {
 		newer, older := checkpoints[i], checkpoints[i+1]
+		if newer.TreeSize <= older.TreeSize {
+			continue
+		}
+		transitioned = true
 		rows = append(rows, observationRow{
 			Line: withObservedTime(fmt.Sprintf("size %d → %d", older.TreeSize, newer.TreeSize), newer.ObservedAt),
 			Tone: "normal",
 		})
 	}
-	if len(checkpoints) > 1 {
+	if transitioned {
 		oldest := checkpoints[len(checkpoints)-1]
 		rows = append(rows, observationRow{
 			Line: withObservedTime(fmt.Sprintf("size %d observed", oldest.TreeSize), oldest.ObservedAt),

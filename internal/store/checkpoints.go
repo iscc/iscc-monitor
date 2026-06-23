@@ -293,16 +293,18 @@ func (s *Store) RecordViolation(ctx context.Context, v Violation) (int64, error)
 
 // ListViolations reads a hub's recorded self-consistency violations newest-first
 // (ORDER BY detected_at DESC, id DESC) for the dossier's permanent-evidence
-// Exhibit (ADR-0006). It is a pure leaf read returning plain []Violation: only
-// hub_id, kind, and detected_at are read (the markup renders kind + detected_at;
-// raw_a / raw_b / proof_json belong with the future proof-bundle surface and are
-// left zero here). detected_at is read through sql.NullInt64 — the unixOrNil write
-// inverse — so a NULL detected_at degrades to a zero time.Time. A hub with no
-// violations returns an empty slice and a nil error (an absent row is not an
-// error, mirroring the other reads).
+// Exhibit (ADR-0006). It is a pure leaf read returning plain []Violation: hub_id,
+// kind, detected_at, and the two contradictory checkpoints' raw bytes (raw_a /
+// raw_b) are read — the Exhibit reads the tree size back from raw_a / raw_b (size
+// before → presented) and derives a stable evidence ref from the pair, while
+// proof_json belongs with the future proof-bundle surface and is left zero here.
+// detected_at is read through sql.NullInt64 — the unixOrNil write inverse — so a
+// NULL detected_at degrades to a zero time.Time. A hub with no violations returns
+// an empty slice and a nil error (an absent row is not an error, mirroring the
+// other reads).
 func (s *Store) ListViolations(ctx context.Context, hubID int64) ([]Violation, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT hub_id, kind, detected_at FROM violations WHERE hub_id = ? "+
+		"SELECT hub_id, kind, detected_at, raw_a, raw_b FROM violations WHERE hub_id = ? "+
 			"ORDER BY detected_at DESC, id DESC",
 		hubID,
 	)
@@ -317,7 +319,7 @@ func (s *Store) ListViolations(ctx context.Context, hubID int64) ([]Violation, e
 			v        Violation
 			detected sql.NullInt64
 		)
-		if err := rows.Scan(&v.HubID, &v.Kind, &detected); err != nil {
+		if err := rows.Scan(&v.HubID, &v.Kind, &detected, &v.RawA, &v.RawB); err != nil {
 			return nil, fmt.Errorf("store.ListViolations: scan: %w", err)
 		}
 		if detected.Valid {

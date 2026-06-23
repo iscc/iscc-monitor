@@ -818,6 +818,15 @@ func TestListViolations(t *testing.T) {
 			t.Errorf("got[%d].DetectedAt is zero, want a non-zero instant", i)
 		}
 	}
+	// The two contradictory checkpoints' raw bytes round-trip (the dossier Exhibit
+	// reads the tree size back from raw_a / raw_b). Newest-first: the shrink's c/d
+	// then the fork's a/b. This pins the read-back so a reverted SELECT fails.
+	if string(got[0].RawA) != "c" || string(got[0].RawB) != "d" {
+		t.Errorf("got[0] raw = (%q,%q), want (\"c\",\"d\")", got[0].RawA, got[0].RawB)
+	}
+	if string(got[1].RawA) != "a" || string(got[1].RawB) != "b" {
+		t.Errorf("got[1] raw = (%q,%q), want (\"a\",\"b\")", got[1].RawA, got[1].RawB)
+	}
 }
 
 // TestListViolationsNullDetectedAt confirms a violation written with a zero

@@ -1,85 +1,78 @@
-## 2026-06-23 — Review of: Hub dossier §5 honest observation log (increment 2a — checkpoint-event log)
+## 2026-06-23 — Richer frozen Exhibit ("size before → presented" + evidence ref) + §5 fork/shrink pseudo-transition fix
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** The frozen hub-dossier Exhibit now renders the two contradictory checkpoints' tree
+sizes ("tree size <before> → then presented <presented>", read back from the stored RawA/RawB
+evidence WITHOUT re-verifying the signature) plus a stable content-derived evidence ref, and
+falls back to an honest "tree sizes unavailable" when a raw is unparseable (fail-closed, never a
+fabricated number). The §5 observation-log transition loop now skips non-increasing pairs, so a
+frozen fork/equivocation hub no longer renders `size N → N` and a shrink hub no longer renders
+`larger → smaller`, while the freeze pointer still appears.
 
-**Summary:** The advance filled §5 of the served hub dossier (`GET /<domain>`) with an honest observation
-log derived from a new `store.ListCheckpoints` leaf read: newest-first size-transition lines, an
-"anchored · block N" line for a confirmed anchor with a real height, and a "froze hub (split view)"
-pointer on the frozen path — never a synthesized per-poll "consistent" verdict (the recurring SSR-honesty
-trap is avoided). The work is scope-disciplined (exactly the 3 prod files next.md named + 2 test files),
-gate-green, mutation-proven, and a live visual pass confirms the §5 region matches the document style. One
-confirmed Codex P2 honesty nit — a fork/equivocation/shrink frozen hub renders a nonsensical `size N → N`
-(or `larger → smaller`) pseudo-transition — is real but narrow (frozen edge state, loud Exhibit dominates,
-no fabricated "consistent" line); filed `normal`, a natural co-resident of increment 2b. Does not block.
+**Files changed:**
+- `internal/logclient/checkpointsize.go` (NEW): `CheckpointSizeFromRaw(raw) (uint64, ok bool)` —
+  pure (stdlib + `sumdb/note` only), ports `checkpointkey.go`'s empty-verifier-list pattern and
+  mirrors `verify.go`'s `parseCheckpointBody` line-2 size parse (reject leading zeros except "0",
+  `ParseUint` base 10). Fails closed `(0,false)` on any non-note / short body. WASM-shareable.
+- `internal/dossier/handler.go`: added `SizeBefore`/`SizePresented`/`HasSizes`/`EvidenceRef` to
+  `violationRow`; `violationRows` now calls `CheckpointSizeFromRaw(v.RawA/RawB)` + derives the ref
+  via new `evidenceRef` helper (`sha256(RawA||RawB)[:6]` hex, "" only when both raws empty); fixed
+  the §5 loop to skip `newer.TreeSize <= older.TreeSize` and gate the oldest-checkpoint singleton
+  on a real transition. New imports: `crypto/sha256`, `encoding/hex`, `internal/logclient`.
+- `internal/dossier/dossier.html`: render the new Exhibit fields (size line / "tree sizes
+  unavailable" / "evidence ref") inside `.exhibit-item`, wrapped in a new `.exhibit-detail` flex
+  column + matching CSS (existing DS tokens only).
+- `internal/store/checkpoints.go`: **[SCOPE DEVIATION — see Notes]** `ListViolations` now selects
+  `raw_a, raw_b` and scans them into `Violation.RawA/RawB` (previously left zero), so the Exhibit
+  can read the sizes. Required — the feature is impossible without it.
+- `internal/store/checkpoints_test.go`, `internal/dossier/handler_test.go`,
+  `internal/logclient/checkpointsize_test.go`: tests (see Verification).
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green, all 28 pkgs `ok`; `gofmt -l .` empty.
-- [x] `go test -count=1 -run TestListCheckpoints ./internal/store` — PASS (newest-first `observed_at DESC`,
-  `n` cap, scoped to hub, absent hub → empty+nil, NULL `observed_at` → zero time; insertion order ≠ result
-  order proves ORDER BY drives it).
-- [x] `go test -count=1 -run TestDossier ./internal/dossier` — 15 tests PASS, incl. the 3 new §5 cases
-  (transition lines newest-first + traceable values; honest empty state for ≤1 checkpoint; no
-  "consistent"/"consistency PASSED"/"verified-poll" substring; confirmed anchor "block 869440", never
-  "block 0"; fork → "split view" freeze pointer).
-- [x] Mutation 1 (reviewer-run): drop the size-transition append → `TestDossierObservationLog` FAILS. Restored.
-- [x] Mutation 2 (reviewer-run): `ORDER BY observed_at DESC → ASC` → BOTH `TestListCheckpoints` (caps assertion)
-  AND the dossier order assertion FAIL. Restored byte-identical (`git diff --stat` clean).
-- [x] Store stays a leaf: `go list -deps ./internal/store | grep '^net/http$'` empty; `checkpoints.go`
-  imports stdlib only (`context database/sql errors fmt time`); the `internal/tiles` dep is pre-existing
-  (from `fetcher.go`, not added here).
-- [x] Scope discipline: exactly 3 non-test/doc prod files (`store/checkpoints.go`, `dossier/handler.go`,
-  `dossier/dossier.html`), all in next.md's Scope; nothing from `## Not In Scope` done.
-- [x] `go.mod` / `go.sum` / `internal/store/schema.sql` byte-identical vs HEAD~1.
-- [x] No-CDN / no-JS bans (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`/`http://`; `<script`/`<button`/` hidden`)
-  cover the full body incl. the new §5 markup; `html/template` auto-escapes `.Tone`/`.Line`.
-- [x] Gate-integrity scan over 3 unpushed commits — no `nolint`/`t.Skip`/swallowed-err/build-tag/removed
-  assertion/loosened gate.
-- [x] Oracle/conformance gate N/A — pure HTML render of persisted `checkpoints` rows + in-memory overlay;
-  touches no signature/RFC-6962/Merkle/did:web/fsck/proof path.
+**Verification:** `mise run check` → GREEN (build + vet + all 28 pkgs `ok`; `gofmt -l .` empty).
+Per-criterion:
+- `GOOS=js GOARCH=wasm go build ./internal/logclient` → OK (new helper stays WASM-shareable).
+- `TestCheckpointSizeFromRaw` PASS: sb0 fixture → `(size>=1, true)` and byte-equals
+  `VerifyCheckpoint`'s treeSize; non-note / empty / single-byte / leading-zero / one-line all
+  `(0,false)`.
+- `TestDossierFrozenExhibit` PASS: real sb0(10183)/sb1(61) fork pair renders "tree size 10183 →
+  then presented 61" + a deterministic evidence ref; the non-note shrink renders "tree sizes
+  unavailable" with no fabricated `tree size 0 →`.
+- `TestDossierObservationLog` + new `TestDossierObservationLogFrozenNoPseudoTransition` PASS: a
+  same-size fork renders NO `size 500 → 500`, a shrink renders NO `size 500 → 400`, both keep the
+  `froze hub` pointer.
+- Mutations (reviewer-runnable, both reverted): (1) `if newer.TreeSize <= older.TreeSize` →
+  `if false` makes the fork test FAIL; (2) `CheckpointSizeFromRaw` returning a constant makes
+  `TestDossierFrozenExhibit` FAIL. Both confirmed non-vacuous.
+- go.mod / go.sum / `internal/store/schema.sql` byte-identical to HEAD (`git diff --stat` empty).
+- No-JS/no-CDN bans clean in dossier.html (no `<script>`/`<button>`/` hidden>`/CDN/`http://`).
+- Oracle/conformance gate N/A: reads a stored evidence body's plaintext size + renders HTML;
+  touches no signature/RFC-6962/Merkle/did:web/fsck/proof-verification path (`CheckpointSizeFromRaw`
+  explicitly does NOT verify the signature — the stored evidence is already signature-verified).
 
-**Issues found:** One (Codex-found, reviewer-confirmed) — filed `normal`:
-- **Dossier §5 `size N → N` pseudo-transition on a fork/equivocation/shrink frozen hub.** The transition
-  loop (`handler.go:430-433`) orders by `observed_at DESC` and assumes growing size, but `follower.freeze`
-  records the contradictory checkpoint (same size for a fork — the `checkpoints` UNIQUE is `(hub,size,root)`
-  so it persists — or smaller for a shrink) at a later `observed_at`, so §5 renders a non-transition line.
-  Confined to the frozen edge (loud Exhibit dominates; the freeze pointer records the real event); no
-  fabricated "consistent" verdict. Folded into increment 2b's §3/Exhibit rework. (Increment-2 critical
-  retitled "2b" and trimmed to the remaining Exhibit + §3/§1 + this fix; 2a's §5 Verify clauses removed.)
-
-**Codex second opinion:** Finished (exit 0). ONE `[P2]` finding, reviewer-CONFIRMED by a throwaway
-reproduction: "Skip equal-size checkpoints in the transition log (`handler.go:430-433`)" — a same-size
-split-view (fork) violation persists both roots at the same `tree_size`, so the loop renders a `size N → N`
-line. I reproduced it (accepted size-500 + fork same-size/different-root contradictory checkpoint → served
-§5 contains `size 500 → 500` plus the correct `froze hub (split view)` pointer). CONFIRMED → filed `normal`
-(above); also noted the sibling shrink `larger → smaller` case, same fix. Codex's suggested fix (skip
-non-increasing pairs, gate the singleton on a real transition) is sound and folded into 2b. Touches no
-trust root; no oracle conflict.
-
-**Visual check:** Done (SSR surface changed — `internal/dossier`). `agent-browser` (Chrome via the bundled
-runtime) screenshotted a throwaway harness serving the dossier + `/_ds/` assets for a fixture-rich
-multi-checkpoint + confirmed-anchor hub (the live cold-start index is empty), and the local mockup. The §5
-region renders in full design-parity: the `§5 · OBSERVATION LOG` eyebrow, monospace evidence lines
-(`anchored · block 869440`, `size 2304 → 3456 · <RFC3339>`, `size 1280 → 2304 · …`, `size 1280 observed · …`
-newest-first), subtle border-top, consistent with §1–§4. The intentional deviation (the mock's illustrative
-"consistent" lines are NOT emitted — they would assert un-run per-poll checks) is the honest correction
-next.md called for. Harness removed before commit; tree clean. No visual delta filed.
-
-**Next:** Increment 2b (the now-trimmed `critical`) — the richer frozen Exhibit ("size before → presented"
-+ a stable evidence ref from `Violation.RawA`/`RawB`, reusing the existing unexported checkpoint parser),
-the §3 frozen size/time-decouple `normal` (select `observed_at` for the `f.last_size` row), the §5
-same-size pseudo-transition `normal` filed this iteration (skip non-increasing pairs), and — if a design
-call is made — the §1 "resolved"-vs-unresolvable `normal`. All four are natural co-residents of one
-§3/Exhibit rework.
+**Next:** The deferred 2b sub-parts: (1) the §3 frozen size/time decouple `normal` (select
+`observed_at` for the `tree_size = f.last_size` row in `internal/store/hubs.go`) and (2) the §1
+"resolved"-vs-unresolvable wording `normal` (a design call). Both are recorded in
+`learnings/dossier.md`.
 
 **Notes:**
-- The §5 transition loop's `size <older> → <newer>` is faithful for a verified hub (size grows
-  monotonically with observed time) and only misleads on the frozen edge — that is the entire scope of the
-  new `normal`. The increment is otherwise honest: every §5 line is traceable to a recorded `checkpoints`
-  row or a confirmed `ots` row, and the recurring "synthesized per-poll consistent verdict" trap is
-  explicitly avoided (tested).
-- `learnings/dossier.md` updated: the stale "§5 is increment-2 placeholder" bullet replaced with the landed
-  derivation + the new monotonic-size trap; `learnings/store.md` gained the `ListCheckpoints` leaf bullet
-  (with the non-monotonic-ordering caveat). Both files stay well under the rotation budget.
-- 4 unpushed commits in `@{upstream}..HEAD` (update-state, define-next, advance, this review). Pushing
-  `develop` on this PASS_WITH_NOTES.
+- **SCOPE DEVIATION (4th prod file, justified + flagged):** next.md scoped exactly 3 prod files
+  (checkpointsize.go, dossier/handler.go, dossier.html) and assumed `violationRows` could read
+  `v.RawA/v.RawB`. But the actual read path `store.ListViolations` selected only
+  `hub_id, kind, detected_at` and left RawA/RawB ZERO (its doc comment said the raws "belong with
+  the future proof-bundle surface"). The Exhibit cannot render real sizes or a real ref without
+  them, so I extended that one SELECT (+scan) — a minimal, additive, load-bearing change. This
+  makes 4 prod files instead of 3. I judged shipping the feature (with the required store read)
+  better than a partial that renders "tree sizes unavailable" for every real violation; the change
+  is tightly scoped and schema-unchanged. **Please confirm this deviation is acceptable.** The
+  store test (`TestListViolations`) now pins the raw round-trip so reverting the SELECT fails.
+- **Learnings NOT updated** (role protocol forbids `advance` from touching `learnings/`). For
+  `review` to fold in: `learnings/logclient.md` should gain a `CheckpointSizeFromRaw` bullet (the
+  unverified size-read sibling of `KeyIDFromCheckpoint`); `learnings/dossier.md`'s §5 monotonic-size
+  TRAP bullet and the "richer frozen Exhibit is still 2b" line in the §5-LANDED bullet should be
+  marked resolved (the skip-non-increasing fix + the Exhibit size/ref landed here); and a new
+  `learnings/store.md` note that `ListViolations` now reads `raw_a/raw_b` for the Exhibit.
+- The Exhibit shows BOTH sizes only when both raws parse (`HasSizes`); a single unparseable raw
+  degrades the whole row to "tree sizes unavailable" (no half-size). The evidence ref is still
+  emitted in that case (a stable handle even without sizes), as next.md specified.
+- The `frozenHub` test fixture now carries the two captured live checkpoints as the fork's
+  RawA/RawB (sb0=10183, sb1=61), so the size line is proven against ground truth, and keeps a
+  non-note shrink to exercise the fail-closed path in the same render.
