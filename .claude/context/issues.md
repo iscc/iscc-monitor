@@ -21,9 +21,25 @@ filed it and does **not** affect priority.
 ## Hub-dossier "Browse the log →" lands on a dead-end checkpoint page; the record-list log browser is off-mockup
 - **Priority:** critical
 - **Source:** [human] (Titusz, host-machine frontend review)
-- **STATUS (review of the single-record back-leg slice):** the no-JS navigation chain is now
-  **UNBROKEN end-to-end** — the load-bearing dead-end the human reported is FIXED. Remaining is the
-  **part-2b cosmetic pager parity + human M-UI sign-off** only.
+> **HUMAN SIGN-OFF NEEDED (does not halt the loop):** every code-closable half of this `critical` has now
+> landed and is reviewer-verified (navigation closure + part-2a chrome/head + single-record back-leg +
+> part-2b pager parity). The ONLY remaining gate is the **human M-UI exit sign-off** — a human-only
+> decision the loop cannot make. Please traverse `/` → dossier → record list → single record → cert/back
+> (JS disabled) and confirm the record-list log browser matches `ISCC Monitor - Log Browser.dc.html`
+> closely enough to sign off. Until then the loop CONTINUES on the open `normal` M-API contract-accuracy
+> fixes (which are NOT human-blocked); `define-next` should NOT re-attempt this human-blocked `critical`.
+- **STATUS (review of the part-2b pager-parity slice):** the no-JS navigation chain is
+  **UNBROKEN end-to-end** AND every code-closable parity half has now landed. Remaining is the
+  **human M-UI sign-off ONLY** — no code slice is left.
+  **Part-2b (record-list pager parity — top+bottom "seq X–Y of Z" + drop the off-mockup Status row) — DONE**
+  (`b6eee37`, reviewer-verified this iteration): `records.html` now renders a `.pager-top` (seamed into the
+  ledger card) + a `.pager-bottom`, each a three-slot `← newer` / `seq RangeTop – RangeBottom of Total` /
+  `older →` row with disabled-`<span>` ends; the off-mockup Status-badge row + its dead CSS are gone (the
+  overlaid status reaches only the `.ledger data-status` frozen-tint attribute). Mutation-proven by the
+  reviewer (swap RangeTop/RangeBottom → `TestRecordsPagerRangeAndTopBottom` FAILS; drop the top pager →
+  FAILS; re-add the Status row → `TestRecordsRendersInMemoryStatus` FAILS), each reverted; an `agent-browser`
+  visual pass vs the Log Browser mockup confirms top+bottom pager + range label + no Status row, with only
+  the constraint-win residuals (plain-link pager vs mockup buttons, no JS "Jump to sequence" input). Gates green.
   **Part-1 (dossier "Browse the log →" repoint) — DONE** (recovered in `de9ed3c`):
   `internal/dossier/dossier.html:573` now reads `href="/{{.Origin}}/records"` → the record list
   (reviewer-verified this iteration; the prior git-race loss is recovered).
@@ -38,10 +54,10 @@ filed it and does **not** affect priority.
   (reviewer re-mutated the honesty gate + stepper guards → both FAIL); gates green.
   The full chain `/` → dossier → record list → single record → (cert / back) is now traversable forward
   **and** back with JavaScript disabled (reviewer-traced every href).
-  **REMAINING (part-2b, cosmetic parity — NOT a dead-end):** rework `records.html`'s pager to the mockup's
-  top+bottom "seq X–Y of Z" disabled at the ends, drop the Status-badge row the mockup's log browser omits,
-  and the type-badge-tint / append-only-footnote copy deltas. Keep this critical OPEN until part-2b lands
-  and the human M-UI exit sign-off is given; the navigation-closure clause itself is now satisfied.
+  **REMAINING (human M-UI exit sign-off ONLY — NOT a code slice):** every code-closable half has landed and
+  is reviewer-verified. Keep this critical OPEN until the human gives the M-UI exit sign-off; the loop has
+  no further code work here (residual type-badge-tint / footnote micro-copy are deferred to the human pass,
+  not named regions). The `define-next` after this should NOT re-attempt this critical — it is human-blocked.
 - **What / where / how to verify:** Two coupled defects break the dossier→log-browser leg of the no-JS
   navigation chain and miss `ISCC Monitor - Log Browser.dc.html` parity.
   **(1) Wrong link target / dead end.** The hub dossier's "Browse the log →" action

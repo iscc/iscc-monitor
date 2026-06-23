@@ -73,9 +73,11 @@ var browserTmpl = func() *template.Template {
 var recordsSource string
 
 // recordsTmpl is the parsed record-list template with the HubStatusBadge partial
-// associated into the same set, so the page invokes {{template "hubStatusBadge" .}}
-// over the recordsData view (which exposes .Status and .Label), the same wiring
-// browserTmpl uses. template.Must panics at init if either source fails to parse. It
+// associated into the same set. The record list no longer renders a Status-badge row
+// (the Log Browser mockup omits it; the overlaid status reaches only the .ledger
+// data-status frozen-tint attribute), so the page does NOT invoke the partial — it is
+// kept associated so the parse stays uniform with browserTmpl / recordTmpl and a future
+// re-add cannot panic. template.Must panics at init if either source fails to parse. It
 // is html/template (NOT text/template) so the id / schema strings auto-escape.
 var recordsTmpl = func() *template.Template {
 	t := template.Must(template.New("records").Parse(recordsSource))
