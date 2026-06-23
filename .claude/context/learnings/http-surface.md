@@ -83,23 +83,28 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `int()` conversion (a huge `n` wraps `int(n)` negative and modernc SQLite reads a negative `LIMIT` as
   UNLIMITED); apply the accepted-tree ceiling to the COUNT and the windowed SELECT alike (an uncapped
   total lies in the "showing N of TOTAL" line). `parseUint` rejects overflow with its existing error type.
+- **Chrome/breadcrumb/head dressing (part-2a, landed):** `Handler`/`serveRecords` now take `domain string`
+  + `dashboard.Identity` (resolved ONCE at construction via a local `resolveIdentity` + byte-identical
+  `instanceFallback`/`operatorFallback` consts — the now-4× duplication is the tracked `low`). Only the
+  `/records` HTML surface reads them; the proof/bytes/verdict routes ignore them. Two durable points: (1)
+  the `← <domain> dossier` breadcrumb MUST be the ABSOLUTE site-root `href="/{{.Domain}}"` — the dossier
+  is mounted at the site root OUTSIDE the `/log/` subtree, so a relative `../` walk is wrong (the record
+  rows are relative because they share the subtree); (2) head name + breadcrumb use the bare `{{.Domain}}`,
+  NOT a fabricated display name (`HubSummary` has no `name`) — same constraint-win the dossier head makes.
+  Part-2b (pager rework: top+bottom "seq X–Y of Z") and the single-record-page chrome are separate slices.
 
 ## HTML single-record page at `/record?index=<seq>` (`serveRecord` + `store.RecordAt`)
 
 - **settled:** the `/record` page is landed + correct — `serveRecord` copies `serveEntries`'
   accepted-tree-capped bundle read verbatim, renders bytes as source of truth (missing `iscc_index`
-  projection → 200 "no projection indexed", ADR-0008), and the kind-label constants hold the FULL wire
-  URIs byte-matching `projection_test.go`. (Detail at-2026-06-21.)
-- **Durable trap for any surface that interprets `note.$schema`:** match the FULL wire URI (see
-  `projection_test.go`/`fsck_test.go`), never CLAUDE.md's prose short name. A no-CDN `http://` body ban
-  must be scoped to the template/CDN region (head up to `</style>`), not the verbatim record fields, once
-  a real schema URI renders into the page.
-- **Tie a schema-match test to GROUND TRUTH, not to the constant under test.** `record_test.go`'s
-  `schemaForSeq` returns the `schemaDeclaration`/`schemaDeletion` *constants*, and `recordKind` switches
-  on the same constants — so reverting both constants to the wrong value leaves the whole suite green
-  (mutation-verified). The label test cannot catch a constant regression. Any future test guarding a
-  `note.$schema`→label map must seed a HARDCODED literal URI (or compare the constant against the
-  `projection_test.go` literal) so the gate is non-vacuous. (Open `low` issue.)
+  projection → 200 "no projection indexed", ADR-0008), kind-label constants hold the FULL wire URIs
+  byte-matching `projection_test.go`. (Detail in git history at-2026-06-21.) Two durable traps survive:
+  (1) **any surface interpreting `note.$schema` matches the FULL wire URI** (`projection_test.go`/
+  `fsck_test.go`), never CLAUDE.md's prose short name; once a real schema URI renders, scope a no-CDN
+  `http://` body ban to the template/head region (up to `</style>`), not the verbatim record fields.
+  (2) **Tie a schema-match test to GROUND TRUTH, not the constant under test** — `record_test.go`'s
+  `schemaForSeq` + `recordKind` switch on the SAME constants, so reverting both leaves the suite green
+  (mutation-verified); a future `note.$schema`→label test must seed a HARDCODED literal URI (open `low`).
 
 ## Mirrored OTS proof at `/checkpoint.ots` (`serveOTS` + `store.OTSForRoot`)
 
@@ -136,22 +141,20 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 - **settled:** the `GET /<domain>/log/` browser is landed + Evidence-Ledger-dressed (DS token/font shell,
   no `<table>`, no CDN URL — matches `/`). Pure store-read render (oracle gate N/A): reads only
-  `FollowState` + `CheckpointAt`, base64-Std encodes the root verbatim, render-into-`bytes.Buffer`-then-200
-  with post-200 write-drop, `html/template` auto-escape; `proofserve` stays free of
-  `internal/metrics`/`internal/dashboard` (`go list -deps` empty); store stays a leaf; go.mod/go.sum
-  byte-identical. The status cell renders through the five-status `hubStatusBadge` partial overlaid with
-  the in-memory verdict via `proofserve`'s own local `StatusSource` + `overlayStatus` (verbatim
-  `dashboard.overlayStatus` precedence; can only flip store-`verified` → `unresolvable`/`unverified`;
-  `inactive` unreachable here). (Detail in git history pre/at-2026-06-21.) Three durable traps below.
+  `FollowState` + `CheckpointAt`, base64-Std root, render-into-`bytes.Buffer`-then-200, `html/template`
+  auto-escape; store stays a leaf. Status cell uses the five-status `hubStatusBadge` overlaid via
+  proofserve's local `StatusSource` + `overlayStatus` (verbatim `dashboard.overlayStatus` precedence; can
+  only flip store-`verified` → `unresolvable`/`unverified`; `inactive` unreachable here). **Dep note (as
+  of part-2a):** proofserve now DOES import `internal/dashboard` (for the plain `Identity` struct only) —
+  the load-bearing rule is `internal/metrics` stays OUT of the closure and no `net/http`/`database/sql` is
+  pulled via dashboard; `database/sql` IS present but pre-existing through `store`. Coverage-honesty
+  (ADR-0001): DB error / `CheckpointAt found==false` at accepted size → 500; `LastSize == 0`
+  (followed-but-unpolled) → **200** "No accepted checkpoint yet", never 404 / fabricated `(0,"")`.
 - **Mux mount trap:** the bare-`/` hub-log root is a 5th `proofserve.Handler` route, but an
   `http.ServeMux` cannot hold both an exact `/` AND a subtree `/` (the subtree pattern `/` IS the bare-`/`
   match). `cmd/iscc-monitor` `hubHandler` makes the `/` slot a tiny dispatch `http.HandlerFunc`: send
   `r.URL.Path == "/"` to proofserve, delegate every deeper path to `tilesserve`; the four exact proof
   mounts still win by most-specific match. `/<domain>/log` (no slash) → 301 to trailing slash.
-- **Coverage-honesty status mapping (ADR-0001):** DB error or `CheckpointAt found==false` at the accepted
-  size → 500 (real store-inconsistency fault); `LastSize == 0` (followed-but-unpolled) → **200** "No
-  accepted checkpoint yet", NEVER a 404 and NEVER a fabricated `(0,"")`. Both `browser.html` branches
-  invoke the badge partial so an unpolled hub still shows its honest overlay status.
 - **CSS-literal trap (cross-cutting for any DS-dressed SSR surface with a negative `data-status` assert):**
   `TestBrowserRendersInMemoryStatus` asserts the body contains NO `data-status="verified"` (proving the
   overlay won). The DS badge-color/frozen-tint selectors must therefore use the UNQUOTED CSS attribute

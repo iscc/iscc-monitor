@@ -21,6 +21,21 @@ filed it and does **not** affect priority.
 ## Hub-dossier "Browse the log →" lands on a dead-end checkpoint page; the record-list log browser is off-mockup
 - **Priority:** critical
 - **Source:** [human] (Titusz, host-machine frontend review)
+- **STATUS (review `7ea7fef`):** PARTIALLY closed.
+  **Part-2a (chrome + `← <domain> dossier` breadcrumb + "Log browser" head) — DONE** in advance `7ea7fef`:
+  `records.html` now carries the shared masthead chrome (instance identity + `verify ↗ monitor.iscc.codes`),
+  the absolute-site-root breadcrumb, and the eyebrow/name/sub-line head; mutation-proven by
+  `TestRecordsHeadAndBreadcrumb` + `TestRecordsChromeInstanceIdentity`; gates green; Codex clean.
+  **Part-1 (the dossier "Browse the log →" repoint) is STILL OPEN — it was LOST to the concurrent-loop
+  git race** (define-next `3c7cb2d` scoped it; the advance was never committed and a concurrent `git reset`
+  wiped the working tree). Verified at review: `internal/dossier/dossier.html:573` STILL reads
+  `href="/{{.Origin}}/"` (the dead-end checkpoint page), and no commit in history ever set `log/records`
+  there. So the no-JS dead-end the human reported is **NOT yet fixed** — the next slice MUST redo part-1
+  (the single href `→ /{{.Origin}}/records` + the `handler_test.go` assertion + the no-JS-chain test
+  define-next `3c7cb2d` specified). Remaining part-2 residuals after part-1 + part-2a: the pager rework
+  (top+bottom "seq X–Y of Z" disabled at the ends — part-2b), dropping the Status-badge row the mockup's
+  log browser omits, and the type-badge-tint / append-only-footnote copy deltas. Keep this critical OPEN
+  until the dossier→record-list→single-record→back chain is unbroken end-to-end.
 - **What / where / how to verify:** Two coupled defects break the dossier→log-browser leg of the no-JS
   navigation chain and miss `ISCC Monitor - Log Browser.dc.html` parity.
   **(1) Wrong link target / dead end.** The hub dossier's "Browse the log →" action
