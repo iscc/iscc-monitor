@@ -40,6 +40,14 @@ is where doc-paths meet the real mux).
   to the contract or `machineProbes()` would FAIL the SSR "must be excluded" assertion. The Elements JS/CSS it
   loads are byte-pinned `/_ds/` assets (see `learnings/web.md`); the no-CDN-over-HTML-body-only nuance and the
   latent mermaid-from-unpkg gap live there too.
+- **The `TestNoMermaidInContract` ban is a SUBSTRING check (`containsFold "```mermaid"`), so it only catches
+  the canonical adjacent-backtick fence — NOT CommonMark-equivalent forms a Markdown renderer still treats as
+  a mermaid block: a tilde fence (`~~~mermaid`) or whitespace after the fence (`` ``` mermaid ``).**
+  Reviewer-probed both forms pass the ban green while still triggering Elements' unpkg-mermaid load (filed
+  `low`). It is non-vacuous and closes the realistic human-authored case; the gap is latent (the doc has zero
+  mermaid). If you ever harden it, parse the description's fenced-code language token rather than extending a
+  per-form substring blocklist (a substring list keeps losing CommonMark edge forms — same lesson as
+  `noExternalCDN`'s `//`-comment over-strip).
 
 settled: leaf-purity (only itself in the internal closure), CORS-rides-outer-wrap, no-cache+ETag+304
 parity with `internal/web`, and the byte-verbatim serve are all gate-green and mutation-confirmed this

@@ -418,30 +418,29 @@ filed it and does **not** affect priority.
 - **Spec:** repo `.gitignore` "Local secrets / state — never commit"; ADR-0013 server packaging;
   `learnings/ci.md` (`.dockerignore` matching is not `.gitignore` matching).
 
-## `/docs` Elements bundle can fetch Mermaid from unpkg — a latent break of the no-CDN invariant
-- **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed against the bundle bytes + the served OpenAPI doc)
-- **What / where / how to verify:** The vendored Stoplight Elements bundle
-  (`internal/web/elements.min.js`) hardcodes `bE="https://unpkg.com/mermaid@9.4.3/dist/mermaid.min.js"`
-  and its Markdown renderer LAZY-LOADS that script the first time a description renders a fenced
-  ` ```mermaid ` block (reviewer grep-confirmed the const + that it is the bundle's ONLY dynamic
-  external-asset loader; the speakerdeck/vimeo strings are oEmbed example DATA, not unconditional loads).
-  So `/docs` CAN make a third-party CDN request despite self-hosting `elements.min.js`, breaking the
-  hard no-external-runtime-call invariant (target.md M-UI / ADR-0014 §4). **NOT triggered today:** the
-  served `/openapi.json` contains ZERO `mermaid` (reviewer-grepped both YAML + JSON), so no mermaid block
-  exists to render — the live smoke test + agent-browser visual pass both showed `/docs` making no
-  external request and no external host in the body. This is a LATENT defense-in-depth gap (same class as
-  the `.dockerignore`-slashless / `noExternalCDN`-whitespace lows), but `normal` because it punctures a
-  HARD project invariant and is reachable the moment anyone adds a mermaid diagram to an OpenAPI
-  description. Does NOT block this increment — every `next.md` Verify criterion is met and all gates green.
-  Fix: add a durable guard that the served OpenAPI doc body contains no fenced ` ```mermaid ` block (a
-  test banning `mermaid` in `openapi.{yaml,json}`), since the doc is the only trigger and hand-patching
-  the pinned minified bundle would violate the never-hand-edit pin discipline. (If a mermaid diagram is
-  ever genuinely wanted in a description, the assets must additionally vendor Mermaid locally + patch the
-  loader's source URL — a deliberate, larger change.) Verify fixed: a test asserts the served OpenAPI body
-  has no ` ```mermaid ` fence; adding one to a description FAILS it; reverting the guard makes it pass.
+## `TestNoMermaidInContract` ban is a substring check — misses CommonMark-equivalent fence forms (tilde / whitespace-after-fence)
+- **Priority:** low
+- **Source:** [review] (Codex P2, reviewer-confirmed by probe; residual of the now-CLOSED `normal` mermaid-ban ask)
+- **What / where / how to verify:** The slice-4 guard `TestNoMermaidInContract`
+  (`internal/openapi/contract_test.go:193`) bans a mermaid fence via `containsFold(a.doc, "```mermaid")` —
+  a SUBSTRING match for the canonical adjacent-backtick form only. CommonMark also treats a TILDE fence
+  (`~~~mermaid`) and a fence with WHITESPACE before the info string (`` ``` mermaid ``) as a mermaid code
+  block, and Stoplight Elements' Markdown renderer would lazy-load `unpkg.com/mermaid@9.4.3/...` for those
+  too. Reviewer-probed BOTH forms in a description: `TestNoMermaidInContract` stays GREEN (the ban does NOT
+  fire) while still being a no-CDN trigger. The PRIMARY ask of the prior `normal` is DELIVERED and CLOSED —
+  the guard exists, catches the realistic human-authored ` ```mermaid ` form, and is mutation-proven
+  (adding ` ```mermaid ` FAILS it; reverting the guard passes) — so this is a NARROWER residual, same class
+  as the `noExternalCDN`-whitespace / `.dockerignore`-slashless lows: latent (the served doc has ZERO
+  mermaid of any form today), defense-in-depth, and reachable only if a FUTURE author writes a
+  non-canonical CommonMark fence in a description that currently has no diagrams. Does NOT block progress —
+  all gates green, every `next.md` Verify criterion met. Fix when the guard is next touched: parse the
+  description's fenced-code LANGUAGE TOKEN (`~~~`/```` ``` ```` + optional whitespace + `mermaid`) rather
+  than extending a per-form substring blocklist (a substring list keeps losing edge forms). Verify fixed:
+  a test feeds `~~~mermaid` and ` ``` mermaid ` into a description and the ban FIRES for both; reverting the
+  token-parse makes them pass.
 - **Spec:** target.md M-UI hard CDN-free constraint; ADR-0014 §4 ("No external CDN, no external runtime
-  call"); CLAUDE.md "Verifier app"/"no external CDN at runtime"; `learnings/web.md` Elements no-CDN nuance.
+  call"); `learnings/openapi.md` mermaid-ban-substring nuance; `learnings/web.md` Elements no-CDN nuance;
+  CLAUDE.md "Never weaken a quality gate" (a substring guard with a known bypass is the root cause to fix).
 
 ---
 
