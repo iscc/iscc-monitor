@@ -99,6 +99,17 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   ground truth, not the author. Oracle gate correctly N/A (reads an already-decoded keyhash; no
   verify/proof/merkle/didweb path; go.mod/go.sum/schema byte-identical). Still the pure prerequisite —
   wiring it into `PollHub` to consult `LookupHubKey` and skip the 2nd did.json fetch is the next slice.
+- **`CheckpointSizeFromRaw(raw) (treeSize uint64, ok bool)` is the UNVERIFIED size sibling of
+  `KeyIDFromCheckpoint` (`checkpointsize.go`).** Same `note.Open(raw, note.VerifierList())` + empty
+  verifier list → `errors.As(err, &*note.UnverifiedNoteError)` → `ue.Note.Text` is the body, then parse
+  line 2 EXACTLY as the unexported `parseCheckpointBody` (reject leading zeros except "0",
+  `strconv.ParseUint(_, 10, 64)`). It does NOT verify the signature — the dossier Exhibit caller reads
+  back already-signature-verified evidence (`Violation.RawA/RawB`) and only DISPLAYS each claimed size,
+  so it must never pull a vkey/did:web resolution into the dossier. Fails closed `(0,false)` on any
+  non-note / `<2`-line / leading-zero / non-decimal input. Pure (stdlib + `sumdb/note`), WASM-shareable
+  (`GOOS=js GOARCH=wasm go build ./internal/logclient` exit 0). Oracle gate N/A — no
+  signature/RFC-6962/Merkle/did:web/fsck path. Ground-truth test: the unverified size byte-EQUALS
+  `VerifyCheckpoint`'s (independent line-2 parse) for the same sb0 fixture; off-by-one mutation FAILS it.
 
 ## Consistency triggers (`internal/logclient/consistency.go`)
 
@@ -177,14 +188,11 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `index < size` / `max > treeSize` guard before the `proof.*` call — they lean on `proof.Inclusion`/
   `proof.Consistency`'s own precondition (verified: `index == size` errors cleanly, never panics, never
   reaches the fetcher).
-- **Oracle gate APPLIES (RFC-6962 inclusion crypto), mutation-proven non-vacuous by the reviewer.** The
-  golden reuses the same 300-leaf `testonly.Tree` boundary fixture; for `{0,5,200,255,256,260,299}` it
-  asserts byte-equality vs `tree.InclusionProof(index,300)` AND `proof.VerifyInclusion(hasher, index,
-  300, tree.LeafHash(index), got, tree.HashAt(300))` — three independent merkle paths. Note the arg
-  order `(hasher, index, size, leafHash, proof, root)`: `leafHash` precedes `proof`, unlike
-  `VerifyConsistency`'s `(…, proof, root1, root2)`. Two mutations (reverted) both FAILED the golden: (1)
-  `proof.Inclusion(index+1, size)` (wrong leaf → root mismatch at 256/260, out-of-bounds at 299); (2)
-  corrupting every fetched node hash in the shared `getNode` loop. A green-but-wrong builder cannot ship.
+- **settled — both proof builders are oracle-gated (RFC-6962) + mutation-proven over the 300-leaf
+  `testonly.Tree` boundary fixture (byte-equal vs `tree.*Proof` AND verify vs `proof.Verify*`, three
+  independent merkle paths).** Durable trap to keep: `VerifyInclusion`'s arg order is `(hasher, index,
+  size, leafHash, proof, root)` — `leafHash` precedes `proof`, UNLIKE `VerifyConsistency`'s `(…, proof,
+  root1, root2)`. (Git history holds the full mutation log: wrong-leaf + node-corruption both FAIL.)
 - **The `TileFetcher` signature is byte-identical to `store.SQLiteFetcher.ReadTile`** (`func(ctx
   context.Context, level, index uint64, p uint8) ([]byte, error)`), so the follower's equivocation wiring
   can pass `SQLiteFetcher.ReadTile` straight in — verified both signatures side by side. `larger` (not
@@ -194,14 +202,6 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   fail-on-fetch fetcher proves this. A genuine tile miss is `%w`-wrapped so `errors.Is(err,
   os.ErrNotExist)` survives, distinct from the "proof fails to verify = violation" verdict (that verdict
   is `CheckEquivocation`'s job, never this builder's).
-- **Oracle gate APPLIES (RFC-6962 crypto) and is satisfied by three independent code paths.** The golden
-  builds a 300-leaf `testonly.Tree` (crosses the 256-leaf tile boundary: tile 0 full, tile 1 = 44-leaf
-  partial at index 1), serves its tiles via an in-test `TileFetcher`, and asserts the tile-built proof
-  *byte-equals* `tree.ConsistencyProof(s1,s2)` AND *verifies* via `proof.VerifyConsistency` for 5 growing
-  pairs. Prover, verifier, and builder are three independent merkle paths → not a tautology. Reviewer
-  confirmed non-vacuousness two ways: (1) instrumented the proof lengths — 9/7/10/6/8 hashes, so the
-  byte-match is substantive not empty-vs-empty; (2) injected a one-byte corruption into `getNode`'s
-  returned hash → the golden FAILED (then reverted). A green-but-wrong builder cannot ship.
 - **`proofbuilder.go` is net-free though the `logclient` *package* is not.** `next.md` criterion "`go
   list -deps ./internal/logclient | grep net/http` empty" is UNSATISFIABLE for this package and was so at
   baseline — `net/http` enters via `didresolve.go` (the networked did:web resolver), confirmed

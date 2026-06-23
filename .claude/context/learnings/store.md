@@ -121,13 +121,16 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `Kind` string rides on the `Violation` struct exactly as `Status` rides on `CheckpointRecord`, keeping
   store import-free of `logclient`.
 - **`ListViolations(ctx, hubID)` is the read side of the freeze evidence — a leaf read scoped to one
-  hub, newest-first (`ORDER BY detected_at DESC, id DESC`), reading back only `hub_id, kind,
-  detected_at` (raw_a/raw_b/proof_json deliberately left zero — they belong with the future
-  proof-bundle surface).** `detected_at` reads through `sql.NullInt64` (the `unixOrNil` inverse) → zero
-  `time.Time` on NULL, mirroring the other NULL-time reads; a hub with none returns an empty slice +
-  nil err. SQLite quirk to know: a NULL `detected_at` sorts LAST under `DESC` (so a time-unknown
-  violation lands at the bottom of the newest-first list) — acceptable for the Exhibit. Reviewer
-  mutation-proved non-vacuous (reverted): `DESC → ASC` flips `TestListViolations`'s newest-first order.
+  hub, newest-first (`ORDER BY detected_at DESC, id DESC`), now reading `hub_id, kind, detected_at,
+  raw_a, raw_b`** (advance `872ab8b` added `raw_a/raw_b` so the dossier Exhibit can read each
+  contradictory checkpoint's tree size back via `logclient.CheckpointSizeFromRaw`; `proof_json` still
+  left zero — proof-bundle surface). The raws are ALREADY written by `RecordViolation`, so this was a
+  SELECT+Scan-only change, schema byte-unchanged. `detected_at` reads through `sql.NullInt64` (the
+  `unixOrNil` inverse) → zero `time.Time` on NULL; a hub with none → empty slice + nil err. SQLite
+  quirk: a NULL `detected_at` sorts LAST under `DESC`. Mutation-proven: `DESC → ASC` flips
+  `TestListViolations`'s order, AND reverting the SELECT to drop `raw_a/raw_b` FAILS the raw round-trip
+  assertion (`got[0].RawA/RawB`). Store stays a leaf (no logclient import — the Exhibit, in `dossier`,
+  calls `CheckpointSizeFromRaw`, not the store).
 - **`ListCheckpoints(ctx, hubID, n) ([]CheckpointSummary, error)` is the §5-observation-log read** (added
   2026-06-23, advance `96e9600`): a leaf read of `tree_size, observed_at FROM checkpoints WHERE hub_id=?
   ORDER BY observed_at DESC, id DESC LIMIT ?`, mirroring `ListViolations`'s shape. `observed_at` reads

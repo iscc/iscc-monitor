@@ -571,55 +571,36 @@ filed it and does **not** affect priority.
   ADR-0010 Evidence-Ledger honesty; learnings.md always-loaded SSR-honesty rule; `.claude/design/ISCC
   Monitor - Hub Dossier.dc.html` §1 static phrasing; `learnings/dossier.md` §1 note.
 
-## Dossier §5 renders a nonsensical `size N → N` (or `larger → smaller`) pseudo-transition on a fork / equivocation / shrink frozen hub
+## No machine-readable API contract (OpenAPI) and no interactive API docs hosted by the app
 - **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-CONFIRMED by a throwaway reproduction)
-- **What / where / how to verify:** `observationRows` (`internal/dossier/handler.go:430-433`) emits one
-  size-transition line per consecutive recorded-checkpoint pair, ordered by `observed_at DESC`. On the
-  FROZEN path `follower.freeze` (`internal/follower/follower.go:475`) calls `RecordCheckpoint` for the
-  CONTRADICTORY checkpoint (the `checkpoints` UNIQUE is `(hub_id,tree_size,root)`, so a same-size/different-
-  root row IS persisted) at a LATER `observed_at`. So §5 renders: (a) a FORK / equivocation (same size,
-  different root) → a literal `size N → N` line — not a transition at all; (b) a SHRINK contradictory
-  checkpoint (smaller size, later observed) → a `size <larger> → <smaller>` line that reads like an accepted
-  shrink. Both are confined to the frozen edge state where the loud non-dismissable Exhibit already renders
-  "do not trust new state" ABOVE §5, and the §5 freeze pointer line correctly records the real event — so it
-  does NOT fabricate a "consistent" verdict and does NOT block progress. Reviewer-confirmed by a throwaway
-  test: an accepted size-500 + a fork same-size-500/different-root contradictory checkpoint renders
-  `size 500 → 500` in the served §5 (plus the correct `froze hub (split view)` pointer). Fix (Codex's, sound)
-  when the §5/Exhibit is next touched (increment 2b): in the transition loop skip non-increasing pairs
-  (`newer.TreeSize <= older.TreeSize`) so a same-size or shrunk contradictory checkpoint never renders a
-  pseudo-transition, and only emit the oldest singleton when at least one REAL (increasing) transition was
-  emitted. Verify fixed: a fork fixture (accepted N + contradictory N/different-root) renders NO `size N → N`
-  line in §5; a shrink fixture renders no `larger → smaller` line; reverting the skip makes both reappear.
-- **Spec:** CLAUDE.md "Self-consistency violation" / "Irreplaceable evidence" (a fork/shrink is not a benign
-  size transition); ADR-0006 frozen-evidence honesty; learnings.md always-loaded SSR-honesty rule;
-  `learnings/dossier.md` §5 derivation note. Natural co-resident of increment 2b (the §3/Exhibit rework).
-
-## Hub dossier richer frozen Exhibit (size before → presented, evidence ref) + §3/§1 honesty — increment 2b of 2
-- **Priority:** critical
-- **Source:** [human] (Titusz, design-parity review 2026-06-23)
-- **What / where / how to verify:** **INCREMENT 2a (the §5 observation log) LANDED in advance `96e9600`,
-  review-verified PASS_WITH_NOTES (gate-green, mutation-proven, live visual pass confirmed the §5 region):**
-  the §5 size-transition / anchor-confirmation / freeze-pointer log is built off the new `store.ListCheckpoints`
-  leaf, with NO synthesized per-poll "consistent" line. What REMAINS for 2b: the richer frozen Exhibit detail
-  + the two §3/§1 honesty `normal`s, PLUS the new same-size pseudo-transition `normal` 2a filed (see the
-  "Dossier §5 renders a nonsensical `size N → N`" entry below) — all natural co-residents of the §3/Exhibit
-  rework. **Fold in the §3 frozen size/time-decouple `normal` and, if a design call is made, the §1
-  "resolved"-vs-unresolvable `normal`.** Then:
-  - **§5 fork/equivocation honesty (2a follow-up):** the §5 transition loop must skip non-increasing
-    (equal/shrunk) consecutive pairs so a fork (same `tree_size`, different root) or a shrink contradictory
-    checkpoint never renders a `size N → N` / `size larger → smaller` pseudo-transition; only emit the oldest
-    singleton when at least one REAL (increasing) transition was emitted. Already filed as its own `normal`.
-  - **Richer Exhibit:** the mock shows "Tree size before → Then presented" + an "Evidence ref".
-    `store.Violation` carries `RawA`/`RawB` (the two contradictory checkpoints) + `ProofJSON`. **Reuse the
-    existing checkpoint/note parser** (do NOT re-implement) to read the two tree sizes → render "size
-    before → presented"; derive a STABLE, honest evidence ref (e.g. a short hash over the pair), never a
-    fabricated id. Keep the existing kind + detected-at + "do not trust new state".
-  - **Verify** (HTTP seam, golden, fixture store): a frozen fixture's Exhibit renders "size <before> →
-    <presented>" matching the two checkpoint blobs + a non-empty evidence ref, values derived from
-    `RawA`/`RawB` (mutation-proven non-vacuous, not constants); a fork fixture's §5 renders NO `size N → N`
-    pseudo-transition; `mise run check` green; the new store read is a leaf; reuse the existing note parser
-    (oracle gate N/A — touches no new crypto/proof path). [§5 observation-log Verify clauses landed in 2a.]
-- **Spec:** target.md M-UI dossier named-region bar ("§5 observation log" + Exhibit); ADR-0006 (frozen
-  evidence preserved, non-dismissable); CLAUDE.md "Irreplaceable evidence" / "Self-consistency violation";
-  learnings (the SSR-verdict honesty gap).
+- **Source:** [human]
+- **What / where / how to verify:** The monitor exposes a machine-consumable HTTP surface
+  (`/healthz`, `/version`, `/metrics`, the per-hub `inclusion`/`consistency`/`entries`/`checkpoint`/
+  `checkpoint.ots`/`tile` routes, `verify-for-me` at `/<domain>/log/verify`, and the
+  `/inclusion/<iscc_id>.bundle` proof bundle — all CORS `*`, wired in `cmd/iscc-monitor/main.go`
+  `buildMux`), but there is **no OpenAPI document and no interactive docs**. The only reference is
+  prose in `CLAUDE.md`; the response shapes exist solely as Go structs (`VerifyVerdict`,
+  `ConsistencyEvidence`, `InclusionEvidence`, the bundle) in `internal/proofserve` / `internal/logclient`
+  / `internal/certificate`. A third-party integrator has nothing to generate a client from or validate
+  against, and no in-browser way to explore the API. Implement per ADR-0014: (1) a hand-authored
+  **OpenAPI 3.1** document in-repo covering the machine-consumable surface ONLY (HTML SSR surfaces
+  excluded), with `verify-for-me` flagged in its `description` as the weaker non-authoritative path; (2)
+  serve it byte-verbatim via `go:embed` at `GET /openapi.json` + `GET /openapi.yaml` under `corsmw`; (3)
+  host **Stoplight Elements** interactive docs at `GET /docs` — the `<elements-api>` web component (its JS
+  bundle **and** stylesheet) **self-hosted under `/_ds/`**, each byte-pinned with a published
+  `internal/web` hash next to `WasmVerifyHash` (same strong-ETag + no-cache + 304 policy as `verify.wasm`),
+  with `apiDescriptionUrl="/openapi.json"` and **no** `tryItCorsProxy` set so "try it" goes
+  browser→this-instance directly on the existing CORS `*` — NO external CDN / external runtime
+  call. Verify fixed (all at the HTTP seam against fixtures + golden): `GET /openapi.json` returns `200`
+  + a valid OpenAPI 3.1 body byte-equal to the embedded doc and carries `Access-Control-Allow-Origin: *`;
+  a **drift test** asserts every path the doc declares is mounted in the real mux AND every
+  machine-consumable route the mux mounts is declared (HTML SSR routes on an explicit exclusion list) —
+  adding/renaming a JSON route without updating the doc, or documenting a removed route, FAILS it; `GET
+  /docs` returns `200 text/html` with **no external host in the body or in any request it makes** and
+  loads the pinned `/_ds/` Stoplight Elements assets (JS + CSS) whose served bytes hashes match the
+  published constants; `mise run check` green and no gate weakened. Order-independent (like M-Deploy) —
+  no feature milestone gates it, and the touched routes add no new crypto/proof path so the oracle gate
+  is N/A.
+- **Spec:** ADR-0014 (the authoritative decision); target.md M-API + "Done When"; CLAUDE.md endpoint
+  reference (the prose this makes machine-readable); the "verify.wasm pin is fragile" learning (the
+  Stoplight Elements assets join the same pin discipline).

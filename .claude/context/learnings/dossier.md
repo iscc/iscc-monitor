@@ -46,22 +46,23 @@ this surface shares live in `learnings/dashboard.md` (read both).
   as local copies — 3× now, a tracked `low` consolidation). The "Browse the log →" link is `/{{.Origin}}/`
   → `/<domain>/log/` because `Origin` = `<domain>/log`; "Prove an ISCC-ID in this hub →" links to `/` (the
   realm-index claim hero, NOT a fabricated per-hub form). Edit any masthead → mirror all three SSR HTML files.
-- **§5 observation log LANDED (increment 2a, advance `96e9600`): it is derived in the view layer from
-  `store.ListCheckpoints` (newest-first by `observed_at DESC`) — a size-transition line per consecutive
-  pair, the oldest checkpoint as a singleton (only when ≥2 checkpoints), an "anchored · block N" line ONLY
-  when `Anchor == OTSStatusConfirmed && AnchorHeight > 0`, and a "froze hub (<kind→split view>)" pointer
-  per recorded violation on the frozen path (off the already-fetched `violations` slice, no second read).**
-  It NEVER synthesizes a per-poll "consistent" line (no recorded per-poll verdict exists; emitting one
-  asserts an un-run check). A NULL `observed_at` renders the size without a time. The richer frozen Exhibit
-  ("size before → presented" + evidence ref) is still increment 2b (needs an unverified tree-size parse of
-  `Violation.RawA/RawB`; `parseCheckpointBody` is unexported + verifies first).
-- **TRAP — the §5 transition loop assumes monotonically-GROWING size, which the frozen path breaks.** It
-  orders strictly by `observed_at DESC` and renders `size <older.TreeSize> → <newer.TreeSize>` for each
-  consecutive pair. But `follower.freeze` `RecordCheckpoint`s the CONTRADICTORY checkpoint (the `checkpoints`
-  UNIQUE is `(hub_id,tree_size,root)`, so a same-size/different-root row persists) at a LATER `observed_at`,
-  WITHOUT advancing `last_size`. So a fork/equivocation (same size) renders a literal `size N → N` and a
-  shrink renders `size <larger> → <smaller>` — neither is a real transition. Confined to the frozen edge (the
-  loud Exhibit dominates above §5; the freeze pointer line records the real event), so it does NOT fabricate
-  a "consistent" verdict — but it is misleading. Open `normal` (folded into 2b): skip non-increasing pairs in
-  the loop and only emit the singleton when a real increasing transition was emitted. [Codex P2, reviewer-
-  confirmed by a fork reproduction.]
+- **§5 observation log + richer frozen Exhibit BOTH LANDED (2a `96e9600`, 2b `872ab8b`).** §5 is derived
+  in the view layer from `store.ListCheckpoints` (newest-first by `observed_at DESC`) — a size-transition
+  line per consecutive **strictly-increasing** pair, the oldest checkpoint as a singleton, an "anchored ·
+  block N" line ONLY when `Anchor == OTSStatusConfirmed && AnchorHeight > 0`, and a "froze hub
+  (<kind→split view>)" pointer per recorded violation (off the already-fetched `violations` slice). It
+  NEVER synthesizes a per-poll "consistent" line. The Exhibit now reads each contradictory checkpoint's
+  tree size back via `logclient.CheckpointSizeFromRaw(Violation.RawA/RawB)` (UNVERIFIED — the stored raws
+  are already signature-verified evidence) and renders "tree size <before> → then presented <presented>"
+  + a content-derived `evidenceRef` (`sha256(RawA‖RawB)[:6]` hex). **`RawA`=prior accepted, `RawB`=presented**
+  (`follower.freeze`), so on a fork the "presented" size can be SMALLER than "before" (e.g. 10183 → 61) —
+  that is honest evidence, not a bug; §5 separately suppresses it as a non-transition.
+- **TRAP (RESOLVED 2b) — §5 must skip NON-INCREASING consecutive pairs, and gate the oldest singleton on a
+  real transition (`transitioned bool`), never `len(checkpoints)>1`.** `follower.freeze` `RecordCheckpoint`s
+  the contradictory checkpoint (same-size/different-root OR shrunk) at a LATER `observed_at` without
+  advancing `last_size`, so a naive loop renders a phantom `size N → N` / `larger → smaller`. The fix
+  (`newer.TreeSize <= older.TreeSize` → `continue`) is mutation-pinned by
+  `TestDossierObservationLogFrozenNoPseudoTransition`. Keep this skip whenever editing the §5 loop.
+- **settled:** the Exhibit's unverified size read MUST fail closed — both raws parse (`HasSizes`) or the row
+  degrades to "tree sizes unavailable" (no half-size, no fabricated `0`); the evidence ref is still emitted
+  (a stable handle) when sizes are unparseable, empty only when both raws are empty.
