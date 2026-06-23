@@ -83,6 +83,7 @@ func ssrExclusions() []string {
 		"/" + driftDomain + "/log/records",
 		"/" + driftDomain + "/log/record?index=2",
 		"/inclusion/" + driftISCCID,
+		"/docs",
 		"/_ds/tokens.css",
 	}
 }

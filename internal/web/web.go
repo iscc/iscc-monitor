@@ -1,8 +1,10 @@
 // Package web serves the monitor's shared static front-end assets — the ISCC
 // Design System v2 token stylesheet, the self-hosted webfont @font-face shell, the
 // woff2 binaries themselves, the Go WASM runtime loader (wasm_exec.js), the
-// verifier WebAssembly artifact (verify.wasm), and the grayscale ISCC masthead logo
-// (iscc-logo-black.png) — over net/http as a tiny stdlib-only leaf. The stylesheets and fonts are the one no-JS,
+// verifier WebAssembly artifact (verify.wasm), the grayscale ISCC masthead logo
+// (iscc-logo-black.png), and the self-hosted Stoplight Elements assets
+// (elements.min.js + elements.min.css) the /docs API reference mounts — over
+// net/http as a tiny stdlib-only leaf. The stylesheets and fonts are the one no-JS,
 // no-CDN style shell every server-rendered M-UI surface (the realm index at "/", the
 // hub dossier, the log browser, the certificate page) links via stable paths under
 // /_ds/, so the design tokens and fonts are defined once and shared. The wasm_exec.js
@@ -81,6 +83,17 @@ const WasmVerifyPath = "/_ds/verify.wasm"
 // literal must stay in sync with this value, since templates cannot read the Go const.
 const LogoPath = "/_ds/iscc-logo-black.png"
 
+// ElementsJSPath is the stable exact path the self-hosted Stoplight Elements
+// web-component JS bundle is served at. The /docs page (internal/docs) loads it as a
+// same-origin <script> to mount the <elements-api> component; like TokensPath that
+// template's <script src> literal must stay in sync with this value.
+const ElementsJSPath = "/_ds/elements.min.js"
+
+// ElementsCSSPath is the stable exact path the self-hosted Stoplight Elements
+// stylesheet is served at. The /docs page links it as a same-origin <link>; like
+// TokensPath that template's href literal must stay in sync with this value.
+const ElementsCSSPath = "/_ds/elements.min.css"
+
 // WasmVerifyHash is the published lowercase-hex SHA-256 of the committed verify.wasm
 // bytes — the reproducible-build artifact hash a client compares against to confirm it
 // loaded the audited verifier (the SRI/verify-artifact pin). It is produced by the
@@ -91,6 +104,23 @@ const LogoPath = "/_ds/iscc-logo-black.png"
 // task without re-pinning this const fails TestWasmVerifyHashPinned. The bytes are
 // toolchain-dependent, so this value tracks `mise run build:wasm`, not a bare go build.
 const WasmVerifyHash = "2c91e61f20560fa98e0fbd6813746c40687861d4b4b3be604d4216557df0f48e"
+
+// ElementsJSHash is the published lowercase-hex SHA-256 of the committed
+// elements.min.js bytes — the build-pinned hash a reviewer compares against to
+// confirm the vendored Stoplight Elements web-component bundle is the audited one
+// (the SRI / pinned self-hosted-asset discipline, alongside WasmVerifyHash). The
+// bundle is vendored byte-verbatim from a PINNED upstream version
+// (@stoplight/elements@9.0.23 web-components.min.js), committed and never hand-edited;
+// re-fetch + re-pin deliberately on a version bump (the "verify.wasm pin is fragile"
+// discipline). Its SHA-256 must equal this value (TestElementsAssetsHashPinned).
+const ElementsJSHash = "46e5a044295bbd599772e1a5e678e807078a3d2cd43226640a50917cd88d6938"
+
+// ElementsCSSHash is the published lowercase-hex SHA-256 of the committed
+// elements.min.css bytes — the build-pinned hash for the vendored Stoplight Elements
+// stylesheet (@stoplight/elements@9.0.23 styles.min.css), the sibling pin of
+// ElementsJSHash. Committed byte-verbatim, never hand-edited; its SHA-256 must equal
+// this value (TestElementsAssetsHashPinned).
+const ElementsCSSHash = "a52002228108fb567b75caff209c4d8aa256ae591de3dea7d3b1a384b1a27b06"
 
 // cacheControl is the Cache-Control policy for every /_ds/ asset. Each is served at
 // a stable, overwrite-in-place URL (not content-addressed), so it must NOT carry the
@@ -170,12 +200,38 @@ var wasmVerify []byte
 //go:embed iscc-logo-black.png
 var logoPNG []byte
 
+// elementsJS is the embedded Stoplight Elements web-component JS bundle — vendored
+// byte-verbatim from a PINNED upstream version (@stoplight/elements@9.0.23
+// web-components.min.js), committed so the served bytes are build-pinned. It is a
+// downloaded, generated asset, never hand-edited: re-fetch + re-pin ElementsJSHash
+// deliberately on a version bump (the "verify.wasm pin is fragile" discipline). The
+// /docs page (internal/docs) loads it same-origin to mount the <elements-api>
+// component. IMPORTANT for any no-CDN reviewer: this ~2 MB minified bundle contains
+// hundreds of inert, baked http(s):// example/documentation strings (golang.org,
+// example.com, etc.) that are DATA, not runtime fetches — the bundle issues no
+// external request at runtime. Do NOT run a substring CDN ban over these bytes; the
+// no-CDN assertion applies only to the rendered /docs HTML page body.
+//
+//go:embed elements.min.js
+var elementsJS []byte
+
+// elementsCSS is the embedded Stoplight Elements stylesheet — vendored byte-verbatim
+// from the same pinned version (@stoplight/elements@9.0.23 styles.min.css), committed
+// and build-pinned. It has no @import and no external-font url() (confirmed), so it
+// references no external CDN at runtime. The /docs page links it same-origin. Like
+// elementsJS it is a downloaded asset, never hand-edited; re-pin ElementsCSSHash on a
+// version bump.
+//
+//go:embed elements.min.css
+var elementsCSS []byte
+
 // Handler returns an http.Handler for the /_ds/ static-asset subtree. It serves the
 // token stylesheet, the @font-face stylesheet, the woff2 binaries, the wasm_exec.js
-// runtime loader, the verifier verify.wasm artifact, and the masthead logo PNG; the
-// content type is chosen per path (text/css for the .css, text/javascript for
-// wasm_exec.js, application/wasm for verify.wasm, image/png for the logo, font/woff2
-// for .woff2). Only GET is served
+// runtime loader, the verifier verify.wasm artifact, the masthead logo PNG, and the
+// Stoplight Elements JS bundle + stylesheet; the content type is chosen per path
+// (text/css for the .css, text/javascript for wasm_exec.js and elements.min.js,
+// application/wasm for verify.wasm, image/png for the logo, font/woff2 for .woff2).
+// Only GET is served
 // (any other method is 405); an unknown /_ds/ path is 404. Every 200 carries
 // Cache-Control: no-cache and a strong content ETag, with an If-None-Match match
 // short-circuiting to 304. It sets no CORS headers — the outer corsmw wrap at the mux
@@ -201,6 +257,10 @@ func Handler() http.Handler {
 			writeAsset(w, r, wasmVerify, contentTypeWASM)
 		case LogoPath:
 			writeAsset(w, r, logoPNG, contentTypePNG)
+		case ElementsJSPath:
+			writeAsset(w, r, elementsJS, contentTypeJS)
+		case ElementsCSSPath:
+			writeAsset(w, r, elementsCSS, contentTypeCSS)
 		default:
 			serveFont(w, r)
 		}

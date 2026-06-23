@@ -1,75 +1,73 @@
-## 2026-06-23 — Review of: M-API slice 1 — embed + serve OpenAPI 3.1 contract at `/openapi.json` + `/openapi.yaml` with a route↔spec drift test
+## 2026-06-23 — M-API slice 3 — serve `GET /docs` + self-hosted byte-pinned Stoplight Elements assets
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Vendored the two Stoplight Elements `9.0.23` assets (web-component JS + stylesheet)
+byte-verbatim into `internal/web`, served them under `/_ds/` with published SHA-256 pins on the same
+no-cache + strong-ETag + 304 policy as `verify.wasm`, and added a pure-stdlib SSR leaf `internal/docs`
+that mounts `<elements-api apiDescriptionUrl="/openapi.json">` against those same-origin assets — making
+the machine API explorable in-browser with no external CDN host and no external runtime call (no
+`tryItCorsProxy`). Mounted `GET /docs` in `buildMux`, reserved the `docs` mount name, and put `/docs` on
+the drift test's SSR exclusion list. Closes the M-API `/docs` Verify criterion.
 
-**Summary:** The advance added a clean `internal/openapi` leaf (hand-authored OpenAPI 3.1 YAML +
-byte-distinct JSON twin, `go:embed`-served byte-verbatim under the CORS `*` wrap with no-cache+ETag+304),
-mounted both exact routes in `buildMux`, reserved their mount names, and gated the lot with a non-vacuous
-route↔spec drift test. All `next.md` Verify criteria are met and `mise run check` is green. The contract is
-accurate on PATHS, but Codex surfaced three contract-vs-handler mismatches (a phantom `verify` query param,
-a wrong `checkpoint` media type, a missing `healthz` 503) that the drift test cannot catch because it gates
-paths, not params/media-types/responses — all reviewer-confirmed and filed as issues, none blocking.
+**Files changed:**
+- `internal/web/elements.min.js` (new): vendored `@stoplight/elements@9.0.23/web-components.min.js`
+  (~2.0 MB), committed verbatim. SHA-256 `46e5a044…d6938`.
+- `internal/web/elements.min.css` (new): vendored `@stoplight/elements@9.0.23/styles.min.css` (~290 KB),
+  committed verbatim. SHA-256 `a5200222…27b06`.
+- `internal/docs/docs.go` + `internal/docs/docs.html` (new): pure-stdlib SSR leaf in the `verifier`
+  shape — `//go:embed docs.html`, parse-at-init, buffer-then-200 `text/html`, 405 on non-GET. Static no-JS
+  DS shell (tokens/fonts/logo) mounting `<elements-api … router="hash">` from `/_ds/elements.min.js` +
+  `/_ds/elements.min.css`, `tryItCorsProxy` left unset.
+- `internal/web/web.go`: two path consts (`ElementsJSPath`, `ElementsCSSPath`), two pin consts
+  (`ElementsJSHash`, `ElementsCSSHash`) next to `WasmVerifyHash`, two `//go:embed` vars, two `Handler`
+  `case` arms reusing `writeAsset` (JS→`contentTypeJS`, CSS→`contentTypeCSS`). Doc comments updated.
+- `cmd/iscc-monitor/main.go`: `mux.Handle("/docs", docs.Handler())`, `"docs"` added to
+  `reservedMountNames`, `buildMux` docstring extended.
+- `internal/web/web_test.go`: `TestElementsJSServed` / `TestElementsCSSServed` (200, content-type,
+  byte-equal, strong ETag, 304-on-match) + `TestElementsAssetsHashPinned` (mutation-proven pin).
+- `internal/docs/docs_test.go` (new): 200 text/html, Elements mount + `/_ds/` refs + DS shell,
+  no-`tryItCorsProxy`, no-CDN body ban, 405 non-GET.
+- `cmd/iscc-monitor/openapi_drift_test.go`: `/docs` added to `ssrExclusions()`.
+- `CLAUDE.md`: added `GET /docs` and `GET /_ds/elements.min.{js,css}` endpoint bullets.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test, 28 pkgs) — GREEN.
-- [x] `gofmt -l .` (outside `cauldron/`) — empty; `main.go`'s function-call map keys are correctly left
-  unaligned by gofmt.
-- [x] `go test -run TestOpenAPI ./internal/openapi` — PASS (JSON/YAML verbatim+content-type, 405, 404,
-  304-echo-ETag, JSON⇔YAML path-set identical, valid 3.1 skeleton, verify-for-me weaker golden).
-- [x] `go test -run TestOpenAPIDrift ./cmd/iscc-monitor` — PASS; reviewer mutation-confirmed NON-VACUOUS in
-  BOTH directions: (1) dropping `/version` from the YAML → set-equality FAILS; (2) declaring a `ghost` path
-  the mux doesn't mount → "has no probe" FAILS. Restored → green.
-- [x] `go test -run TestOpenAPIServedVerbatimWithCORS ./cmd/iscc-monitor` — PASS; reviewer re-probed the
-  real mux: `/openapi.json` is byte-equal to `openapi.JSON` and carries `Access-Control-Allow-Origin: *`.
-- [x] `/openapi.json` parses as `openapi: 3.1.0`, 13 non-empty machine paths.
-- [x] `grep -c "openapi" CLAUDE.md` = 1 (>0); the two endpoints documented in the dev-instance list.
-- [x] Leaf purity — `go list -deps internal/openapi` shows only itself in the `internal/*` closure (no
-  store/metrics/logclient). `go.mod`/`go.sum` byte-identical to HEAD~1.
-- [x] Scope discipline — exactly 2 non-test/doc prod files (`main.go`, `openapi.go`); nothing in `## Not In
-  Scope` (no `/docs`, no Stoplight asset, no route/handler change). Clean.
-- [x] Twin fidelity (reviewer probe, beyond what the gate asserts) — decoded both embedded artifacts via
-  yaml.v3 and `reflect.DeepEqual`: the JSON twin is a faithful FULL-BODY render of the YAML, not just the
-  path set. (Note: nothing GATES full-body agreement — only the path set — so a future one-sided edit can
-  rot it; captured in `learnings/openapi.md`.)
-- [x] Gate-circumvention scan over unpushed commits — no `nolint`/`t.Skip`/swallowed-err/build-tag dodge,
-  no deleted assertions or tests.
+**Verification:** `mise run check` → GREEN (build + vet + test, all 30 pkgs).
+- `go test -run TestDocs ./internal/docs` → PASS (200 text/html; `apiDescriptionUrl="/openapi.json"`,
+  `<elements-api`, `src="/_ds/elements.min.js"`, `href="/_ds/elements.min.css"`, `href="/_ds/tokens.css"`,
+  `src="/_ds/iscc-logo-black.png"` present; `tryItCorsProxy` absent; no-CDN body ban clean; 405 non-GET).
+- `go test -run TestElements ./internal/web` → PASS (both assets: 200, correct content-type, byte-equal,
+  strong ETag, 304-on-match; `sha256.Sum256` of each equals its published `Elements*Hash`).
+- `go test -run TestOpenAPIDrift ./cmd/iscc-monitor` → PASS with `/docs` probed MOUNTED and asserted NOT
+  declared in the contract.
+- `GOOS=js GOARCH=wasm go build ./internal/web` and `./internal/docs` → both succeed (WASM-green).
+- `sha256sum internal/web/elements.min.{js,css}` equals the two published consts (pin reproducible from
+  committed bytes).
+- `internal/docs` is a pure leaf (`go list -deps` shows only itself in the internal closure); `go.mod`/
+  `go.sum` byte-identical to HEAD (the assets are embedded data, no new dependency).
 
-**Issues found:** Three contract-accuracy defects (all Codex-raised, all reviewer-confirmed, none blocking;
-filed in issues.md):
-- `normal` — `/{domain}/log/verify` declares a phantom `index` query param the handler NEVER reads
-  (`serveVerify` always uses `seqs[0]`; its own comment says so). A generated client sends `index` and
-  silently gets a verdict for a different leaf. Most client-misleading of the three.
-- `normal` — `/{domain}/log/checkpoint` advertises `text/plain`, but tilesserve's `writeBlob` serves
-  `application/octet-stream` (reviewer-probed the live mux: `200`, `octet-stream`).
-- `low` — `/healthz` documents only `200`; the handler returns `503 {status:unavailable}` on store-down
-  (the readiness probe's primary failure mode), which the contract omits.
-The umbrella M-API issue was updated to record slices 1+2 as LANDED with slice 3 (`/docs` + Stoplight
-Elements) remaining.
-
-**Codex second opinion:** Ran clean (exit 0), three findings, all triaged CONFIRMED REAL against the
-handler code/live mux and filed as issues above — none refuted, none blocking. P2 verify-`index`: confirmed
-`serveVerify` never reads `index`. P2 checkpoint media type: confirmed `tilesserve.writeBlob` always sets
-`octet-stream` (const, line 32) + probed the real mux. P3 healthz 503: confirmed `healthz.Handler` returns
-503 on `Ping` failure. Codex correctly found the one class of bug the PATH-only drift test is structurally
-blind to — exactly the residual the advance's own handoff Notes flagged.
-
-**Visual check:** n/a — no SSR surface changed. The OpenAPI doc is served as raw JSON/YAML bytes (no
-template, no DS shell); the diff touches no `internal/dashboard|dossier|web|certificate` or `.html`.
-
-**Next:** M-API slice 3 — `GET /docs` + the self-hosted, byte-pinned Stoplight Elements assets (the
-`<elements-api>` JS + CSS under `/_ds/` with published `internal/web` hash constants next to
-`WasmVerifyHash`, same strong-ETag+no-cache+304, `apiDescriptionUrl="/openapi.json"`, no `tryItCorsProxy`),
-closing the last two M-API Verify criteria. **Strongly consider folding the two `normal` contract-accuracy
-fixes into that slice** (remove the `verify` `index` param + fix the `checkpoint` media type, regenerate the
-JSON twin) since it is the natural next doc-touch — and add a golden that pins each documented operation's
-params + `200` media type against the handler's real behavior, since the path-only drift test cannot.
+**Next:** The IMMEDIATE follow-on (this slice's `Not In Scope` breadcrumb): the two `normal` OpenAPI
+contract-accuracy fixes in `internal/openapi/openapi.yaml` + regenerated `openapi.json` twin — remove the
+phantom `verify` `index` query param (handler always uses `seqs[0]`) and fix `/{domain}/log/checkpoint`'s
+media type `text/plain`→`application/octet-stream` — plus the `low` `healthz` 503 response. Add a
+per-operation golden pinning each documented op's params + `200` media type against the handler's real
+behavior, since the path-only drift test is structurally blind to params/media-types/responses
+(`learnings/openapi.md`). Regenerate the JSON twin deterministically after the YAML edit. That closes the
+last M-API contract-fidelity gap and would meet the 4th M-API criterion fully.
 
 **Notes:**
-- The drift test's structural blind spot (paths only; `machineProbes()` is hand-maintained, not
-  mux-derived) is the load-bearing thing the next OpenAPI editor must know — recorded in the new
-  `learnings/openapi.md` detail file (index pointer added). The fix is NOT to weaken the drift test but to
-  hand-check params/media-types/responses on every doc edit and consider a per-operation golden.
-- Regenerate the JSON twin from the YAML deterministically after ANY YAML edit — `TestOpenAPIDocsAgree`
-  gates only the path set, so a one-sided body edit silently rots the twin in everything but paths.
-- Pushed to `origin/develop`.
+- **CRITICAL no-CDN nuance (do not "fix" into a false positive):** the no-CDN ban runs ONLY over the
+  rendered `/docs` HTML body, NEVER over the 2 MB Elements JS bytes. The minified bundle carries hundreds
+  of inert baked `http(s)://` example/doc strings (golang.org, example.com, …) that are DATA, not runtime
+  fetches; the bundle issues no external request at runtime, and the CSS has no `@import`/external-font
+  `url()` (both re-confirmed this iteration). This is documented in `web.go`'s `elementsJS` doc comment and
+  in `TestElementsJSServed` so a future reviewer does not run a substring ban over the asset bytes.
+- The `/docs` page is a STATIC artifact (`tmpl.Execute(&buf, nil)`, no Identity data), so its masthead uses
+  the static proofserve-style chrome (brand + mark + sub, no `{{.Instance}}`/`{{.Operator}}` binding) — the
+  `internal/docs` leaf deliberately takes no `dashboard.Identity` to stay import-pure. If a future step wants
+  the instance-identity line on `/docs`, that needs an `Identity` parameter (and a `dashboard` import) — a
+  deliberate, separate change, not done here.
+- The Elements assets are minified third-party bundles (not hand-written source), so `gofmt` does not touch
+  them and they join the "verify.wasm pin is fragile" discipline: re-fetch + re-pin deliberately on a
+  version bump, never hand-edit (`TestElementsAssetsHashPinned` gates it).
+- `.claude/context/target.md` (modified) and the untracked `.claude/adr/0014-…md` are pre-existing artifacts
+  from the prior `cid(steer)` commit, NOT touched/authored by this advance — left out of this commit per the
+  context-file rule (advance writes only `handoff.md` + source/test). Review may want to confirm ADR-0014
+  gets tracked.

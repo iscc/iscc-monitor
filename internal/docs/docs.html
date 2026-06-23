@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ISCC Monitor — API Reference</title>
+  <!-- Shared ISCC Design System v2 token stylesheet (CDN-free, self-hosted).
+       The path is a literal because templates cannot read Go consts; keep it in
+       sync with web.TokensPath. -->
+  <link rel="stylesheet" href="/_ds/tokens.css">
+  <!-- Self-hosted @font-face shell (Readex Pro / JetBrains Mono woff2 under
+       /_ds/fonts/, no runtime CDN). The path is a literal; keep it in sync with
+       web.FontsCSSPath. -->
+  <link rel="stylesheet" href="/_ds/fonts.css">
+  <!-- Stoplight Elements stylesheet, self-hosted byte-verbatim under /_ds/ (no
+       external CDN). The path is a literal; keep it in sync with
+       web.ElementsCSSPath. -->
+  <link rel="stylesheet" href="/_ds/elements.min.css">
+  <!-- Page-scoped chrome layout, expressed through the embedded DS tokens
+       (var(--*)) so the masthead matches the dashboard / dossier / certificate
+       chrome. No external/CDN URL appears in this page body — the Stoplight
+       Elements JS/CSS are loaded same-origin from /_ds/. -->
+  <style>
+    body {
+      font-family: var(--font-sans);
+      color: var(--text-body);
+      background: var(--surface-page);
+      margin: 0;
+    }
+
+    /* Document chrome: the masthead identifying the Trust & Transparency Monitor,
+       matching the no-JS DS shell every server-rendered surface carries. */
+    .chrome {
+      display: flex;
+      align-items: center;
+      gap: var(--space-4);
+      flex-wrap: wrap;
+      padding: var(--space-4) var(--space-8);
+      background: var(--surface-card);
+      border-bottom: var(--border-width) solid var(--border-default);
+    }
+    .chrome-brand {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+    }
+    .chrome-logo {
+      height: 38px;
+      width: auto;
+      display: block;
+    }
+    .chrome-divider {
+      width: 1px;
+      height: 24px;
+      background: var(--border-default);
+    }
+    .chrome-mark {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      letter-spacing: var(--tracking-widest);
+      text-transform: uppercase;
+      color: var(--text-heading);
+      font-weight: var(--weight-semibold);
+    }
+    .chrome-sub {
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+      font-weight: var(--weight-light);
+    }
+
+    /* The Elements explorer fills the viewport below the masthead. Elements is
+       styled largely by its own shipped CSS (ADR-0014); this only sizes the host
+       element so the API reference occupies the remaining height. */
+    elements-api {
+      display: block;
+      height: calc(100vh - 71px);
+    }
+  </style>
+</head>
+<body>
+  <header class="chrome">
+    <div class="chrome-brand">
+      <img class="chrome-logo" src="/_ds/iscc-logo-black.png" alt="ISCC">
+      <span class="chrome-divider"></span>
+      <div>
+        <div class="chrome-mark">Trust &amp; Transparency Monitor</div>
+        <div class="chrome-sub">API reference · ISCC-Hub network</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Stoplight Elements API explorer. apiDescriptionUrl points at this instance's
+       own /openapi.json (same-origin), and tryItCorsProxy is deliberately UNSET so
+       the "Try It" console issues requests browser → this instance directly on the
+       existing CORS * policy — never a third-party proxy (ADR-0014 §4). The web
+       component is loaded from the self-hosted /_ds/elements.min.js below; the path
+       is a literal kept in sync with web.ElementsJSPath. -->
+  <elements-api apiDescriptionUrl="/openapi.json" router="hash" layout="sidebar"></elements-api>
+
+  <script src="/_ds/elements.min.js"></script>
+</body>
+</html>

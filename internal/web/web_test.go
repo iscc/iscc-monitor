@@ -345,6 +345,106 @@ func TestLogoServed(t *testing.T) {
 	}
 }
 
+// TestElementsJSServed checks the self-hosted Stoplight Elements web-component bundle
+// is served at ElementsJSPath with the text/javascript content type, the revalidating
+// no-cache + strong ETag policy, a non-empty body byte-equal to the embedded bytes,
+// and an If-None-Match echo short-circuiting to 304 — the byte-pinned same-origin
+// script the /docs page mounts. It does NOT run the no-CDN ban over these bytes: the
+// minified bundle carries hundreds of inert baked example URL strings that are data,
+// not runtime fetches (see web.go's elementsJS doc comment).
+func TestElementsJSServed(t *testing.T) {
+	rec := get(t, ElementsJSPath)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/javascript; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/javascript; charset=utf-8", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	etag := rec.Header().Get("ETag")
+	if !strings.HasPrefix(etag, "\"") || strings.HasPrefix(etag, "W/") {
+		t.Errorf("ETag = %q, want a strong quoted-hex tag", etag)
+	}
+	body := rec.Body.Bytes()
+	if len(body) == 0 {
+		t.Fatal("body is empty")
+	}
+	if !bytes.Equal(body, elementsJS) {
+		t.Errorf("served body (%d bytes) differs from the embedded elementsJS (%d bytes)", len(body), len(elementsJS))
+	}
+
+	cond := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, ElementsJSPath, nil)
+	req.Header.Set("If-None-Match", etag)
+	Handler().ServeHTTP(cond, req)
+	if cond.Code != http.StatusNotModified {
+		t.Errorf("If-None-Match status = %d, want 304", cond.Code)
+	}
+	if cond.Body.Len() != 0 {
+		t.Errorf("304 body not empty (%d bytes)", cond.Body.Len())
+	}
+}
+
+// TestElementsCSSServed checks the self-hosted Stoplight Elements stylesheet is served
+// at ElementsCSSPath as text/css with the revalidating no-cache + strong ETag policy,
+// a non-empty body byte-equal to the embedded bytes, and a 304 on an If-None-Match
+// echo — the byte-pinned same-origin stylesheet the /docs page links.
+func TestElementsCSSServed(t *testing.T) {
+	rec := get(t, ElementsCSSPath)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/css; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/css; charset=utf-8", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	etag := rec.Header().Get("ETag")
+	if !strings.HasPrefix(etag, "\"") || strings.HasPrefix(etag, "W/") {
+		t.Errorf("ETag = %q, want a strong quoted-hex tag", etag)
+	}
+	body := rec.Body.Bytes()
+	if len(body) == 0 {
+		t.Fatal("body is empty")
+	}
+	if !bytes.Equal(body, elementsCSS) {
+		t.Errorf("served body (%d bytes) differs from the embedded elementsCSS (%d bytes)", len(body), len(elementsCSS))
+	}
+
+	cond := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, ElementsCSSPath, nil)
+	req.Header.Set("If-None-Match", etag)
+	Handler().ServeHTTP(cond, req)
+	if cond.Code != http.StatusNotModified {
+		t.Errorf("If-None-Match status = %d, want 304", cond.Code)
+	}
+	if cond.Body.Len() != 0 {
+		t.Errorf("304 body not empty (%d bytes)", cond.Body.Len())
+	}
+}
+
+// TestElementsAssetsHashPinned is the published-hash regression guard for the two
+// vendored Stoplight Elements assets (the SRI / pinned self-hosted-asset discipline,
+// the sibling of TestWasmVerifyHashPinned): the SHA-256 of each committed asset must
+// equal its published Elements*Hash const. Re-fetching a different version without
+// re-pinning the const (or hand-editing the bytes) fails here, forcing the published
+// hash to track the committed artifact.
+func TestElementsAssetsHashPinned(t *testing.T) {
+	if got := fmt.Sprintf("%x", sha256.Sum256(elementsJS)); got != ElementsJSHash {
+		t.Errorf("sha256(elements.min.js) = %s, but ElementsJSHash = %s\n"+
+			"re-fetch the pinned Stoplight Elements bundle and re-pin ElementsJSHash to the emitted hash", got, ElementsJSHash)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(elementsCSS)); got != ElementsCSSHash {
+		t.Errorf("sha256(elements.min.css) = %s, but ElementsCSSHash = %s\n"+
+			"re-fetch the pinned Stoplight Elements stylesheet and re-pin ElementsCSSHash to the emitted hash", got, ElementsCSSHash)
+	}
+}
+
 func TestFontMissingIs404(t *testing.T) {
 	if rec := get(t, "/_ds/fonts/does-not-exist.woff2"); rec.Code != http.StatusNotFound {
 		t.Errorf("missing font status = %d, want 404", rec.Code)

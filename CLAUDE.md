@@ -99,6 +99,17 @@ After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSO
   its SHA-256 is published as `web.WasmVerifyHash` (the SRI/verify-artifact pin). The tier-2
   progressive-enhancement loader fetches and instantiates it (after `/_ds/wasm_exec.js`) to run the
   in-browser inclusion verifier client-side.
+- `GET /_ds/elements.min.js` + `GET /_ds/elements.min.css` — the self-hosted, byte-pinned **Stoplight
+  Elements** assets (the `<elements-api>` web-component JS bundle and its stylesheet, vendored from
+  `@stoplight/elements@9.0.23`) served byte-verbatim with the same no-cache + strong-ETag + 304 policy;
+  each SHA-256 is published as `web.ElementsJSHash` / `web.ElementsCSSHash` (the SRI/pinned-asset
+  discipline, alongside `WasmVerifyHash`). The `/docs` page loads them same-origin to mount the API
+  reference — no external CDN.
+- `GET /docs` — server-rendered HTML API reference: the no-JS DS shell mounting the self-hosted Stoplight
+  Elements `<elements-api apiDescriptionUrl="/openapi.json">` against the two `/_ds/elements.min.{js,css}`
+  assets, so the machine surface is explorable in-browser. Elements' "Try It" console calls this instance
+  directly on the existing CORS `*` (no `tryItCorsProxy`); the page body references no external CDN host
+  and makes no external runtime call (ADR-0014 §4).
 - `GET /healthz` — liveness + store readiness.
 - `GET /metrics` — Prometheus: hub status, last-observed, poll failures, violations.
 - `GET /openapi.json` + `GET /openapi.yaml` — the hand-authored **OpenAPI 3.1** contract (ADR-0014),
