@@ -128,6 +128,15 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   nil err. SQLite quirk to know: a NULL `detected_at` sorts LAST under `DESC` (so a time-unknown
   violation lands at the bottom of the newest-first list) — acceptable for the Exhibit. Reviewer
   mutation-proved non-vacuous (reverted): `DESC → ASC` flips `TestListViolations`'s newest-first order.
+- **`ListCheckpoints(ctx, hubID, n) ([]CheckpointSummary, error)` is the §5-observation-log read** (added
+  2026-06-23, advance `96e9600`): a leaf read of `tree_size, observed_at FROM checkpoints WHERE hub_id=?
+  ORDER BY observed_at DESC, id DESC LIMIT ?`, mirroring `ListViolations`'s shape. `observed_at` reads
+  through `sql.NullInt64` (the `unixOrNil` inverse) → zero `time.Time` on NULL; absent hub → empty slice +
+  nil err. Deliberately `observed_at DESC` (chronological log), DISTINCT from `ListHubs`'s §3 `tree_size
+  DESC` subselect — note a frozen hub can have a same-size or smaller contradictory checkpoint at a LATER
+  `observed_at`, so the size is NOT monotonic across this ordering (the view layer must not assume it — see
+  `learnings/dossier.md`). Mutation-proven (`DESC → ASC` flips `TestListCheckpoints` + the dossier order
+  assertion). Store stays a leaf (stdlib-only imports; no `net/http`).
 - **The `net`/`net/netip`/`net/url` in `go list -deps ./internal/store` are from `modernc.org/sqlite`,
   NOT iscc-monitor code.** The load-bearing invariant is "no `net/http` in the store closure" — verify
   with `go list -deps ./internal/store | grep '^net/http'` (empty) and that the package's own `.Imports`

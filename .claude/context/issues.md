@@ -571,38 +571,55 @@ filed it and does **not** affect priority.
   ADR-0010 Evidence-Ledger honesty; learnings.md always-loaded SSR-honesty rule; `.claude/design/ISCC
   Monitor - Hub Dossier.dc.html` §1 static phrasing; `learnings/dossier.md` §1 note.
 
-## Hub dossier §5 honest observation log + richer frozen Exhibit (size before → presented, evidence ref) — increment 2 of 2
+## Dossier §5 renders a nonsensical `size N → N` (or `larger → smaller`) pseudo-transition on a fork / equivocation / shrink frozen hub
+- **Priority:** normal
+- **Source:** [review] (Codex P2, reviewer-CONFIRMED by a throwaway reproduction)
+- **What / where / how to verify:** `observationRows` (`internal/dossier/handler.go:430-433`) emits one
+  size-transition line per consecutive recorded-checkpoint pair, ordered by `observed_at DESC`. On the
+  FROZEN path `follower.freeze` (`internal/follower/follower.go:475`) calls `RecordCheckpoint` for the
+  CONTRADICTORY checkpoint (the `checkpoints` UNIQUE is `(hub_id,tree_size,root)`, so a same-size/different-
+  root row IS persisted) at a LATER `observed_at`. So §5 renders: (a) a FORK / equivocation (same size,
+  different root) → a literal `size N → N` line — not a transition at all; (b) a SHRINK contradictory
+  checkpoint (smaller size, later observed) → a `size <larger> → <smaller>` line that reads like an accepted
+  shrink. Both are confined to the frozen edge state where the loud non-dismissable Exhibit already renders
+  "do not trust new state" ABOVE §5, and the §5 freeze pointer line correctly records the real event — so it
+  does NOT fabricate a "consistent" verdict and does NOT block progress. Reviewer-confirmed by a throwaway
+  test: an accepted size-500 + a fork same-size-500/different-root contradictory checkpoint renders
+  `size 500 → 500` in the served §5 (plus the correct `froze hub (split view)` pointer). Fix (Codex's, sound)
+  when the §5/Exhibit is next touched (increment 2b): in the transition loop skip non-increasing pairs
+  (`newer.TreeSize <= older.TreeSize`) so a same-size or shrunk contradictory checkpoint never renders a
+  pseudo-transition, and only emit the oldest singleton when at least one REAL (increasing) transition was
+  emitted. Verify fixed: a fork fixture (accepted N + contradictory N/different-root) renders NO `size N → N`
+  line in §5; a shrink fixture renders no `larger → smaller` line; reverting the skip makes both reappear.
+- **Spec:** CLAUDE.md "Self-consistency violation" / "Irreplaceable evidence" (a fork/shrink is not a benign
+  size transition); ADR-0006 frozen-evidence honesty; learnings.md always-loaded SSR-honesty rule;
+  `learnings/dossier.md` §5 derivation note. Natural co-resident of increment 2b (the §3/Exhibit rework).
+
+## Hub dossier richer frozen Exhibit (size before → presented, evidence ref) + §3/§1 honesty — increment 2b of 2
 - **Priority:** critical
 - **Source:** [human] (Titusz, design-parity review 2026-06-23)
-- **What / where / how to verify:** **NOW PICKABLE — increment 1 (the numbered-document layout) LANDED in
-  advance `a15a213`, review-verified PASS_WITH_NOTES (gate-green, mutation-proven, visual pass confirmed):**
-  this increment fills §5 + the Exhibit detail INTO the structure increment 1 created (which ships §5 as an
-  honest minimal placeholder + a 2-row Exhibit). **Fold in the two §3/§1 honesty fixes review filed
-  alongside increment 1** (the §3 frozen size/time-decouple `normal` and, if a design call is made, the §1
-  "resolved"-vs-unresolvable `normal`) — increment 2 already reworks §3 + the Exhibit, so the §3 fix is a
-  natural co-resident. Then:
-  - **§5 observation log:** there is NO store query for an observation history today (only
-    `ListViolations`; `checkpoints` has no list accessor). Add a `ListCheckpoints(hubID, n)`-style read
-    (newest-first over `checkpoints`, carrying `tree_size` + `observed_at`; join `ots` for confirmations)
-    and derive the log lines in the dossier view layer. **DECISION — reduced honest log:** render ONLY
-    events the monitor actually recorded — checkpoint **size transitions** ("size A → B"), **freeze**
-    events (from `violations`), and **anchor confirmations** (from `ots`). Do **NOT** synthesize per-poll
-    "consistent" / "consistency PASSED" lines — the follower records no such per-poll verdict, so emitting
-    one asserts an un-run check (the recurring SSR-honesty gap the review gate keeps catching). The mock's
-    "consistent" lines are illustrative, not a parity requirement — flag the deviation.
+- **What / where / how to verify:** **INCREMENT 2a (the §5 observation log) LANDED in advance `96e9600`,
+  review-verified PASS_WITH_NOTES (gate-green, mutation-proven, live visual pass confirmed the §5 region):**
+  the §5 size-transition / anchor-confirmation / freeze-pointer log is built off the new `store.ListCheckpoints`
+  leaf, with NO synthesized per-poll "consistent" line. What REMAINS for 2b: the richer frozen Exhibit detail
+  + the two §3/§1 honesty `normal`s, PLUS the new same-size pseudo-transition `normal` 2a filed (see the
+  "Dossier §5 renders a nonsensical `size N → N`" entry below) — all natural co-residents of the §3/Exhibit
+  rework. **Fold in the §3 frozen size/time-decouple `normal` and, if a design call is made, the §1
+  "resolved"-vs-unresolvable `normal`.** Then:
+  - **§5 fork/equivocation honesty (2a follow-up):** the §5 transition loop must skip non-increasing
+    (equal/shrunk) consecutive pairs so a fork (same `tree_size`, different root) or a shrink contradictory
+    checkpoint never renders a `size N → N` / `size larger → smaller` pseudo-transition; only emit the oldest
+    singleton when at least one REAL (increasing) transition was emitted. Already filed as its own `normal`.
   - **Richer Exhibit:** the mock shows "Tree size before → Then presented" + an "Evidence ref".
     `store.Violation` carries `RawA`/`RawB` (the two contradictory checkpoints) + `ProofJSON`. **Reuse the
     existing checkpoint/note parser** (do NOT re-implement) to read the two tree sizes → render "size
     before → presented"; derive a STABLE, honest evidence ref (e.g. a short hash over the pair), never a
     fabricated id. Keep the existing kind + detected-at + "do not trust new state".
-  - **Verify** (HTTP seam, golden, fixture store): a fixture hub with ≥2 recorded checkpoints renders a §5
-    log of the size transitions + any anchor confirmation, newest-first, every value traceable to the
-    fixture rows; a hub with ≤1 checkpoint renders an honest minimal/empty §5 (no fabricated history); the
-    §5 HTML contains **no** "consistent"/"verified-poll" line not backed by a recorded event (assert the
-    honest-derivation invariant); a frozen fixture's Exhibit renders "size <before> → <presented>" matching
-    the two checkpoint blobs + a non-empty evidence ref, values derived from `RawA`/`RawB` (mutation-proven
-    non-vacuous, not constants); `mise run check` green; the new store read is a leaf; reuse the existing
-    note parser (oracle gate N/A — touches no new crypto/proof path).
+  - **Verify** (HTTP seam, golden, fixture store): a frozen fixture's Exhibit renders "size <before> →
+    <presented>" matching the two checkpoint blobs + a non-empty evidence ref, values derived from
+    `RawA`/`RawB` (mutation-proven non-vacuous, not constants); a fork fixture's §5 renders NO `size N → N`
+    pseudo-transition; `mise run check` green; the new store read is a leaf; reuse the existing note parser
+    (oracle gate N/A — touches no new crypto/proof path). [§5 observation-log Verify clauses landed in 2a.]
 - **Spec:** target.md M-UI dossier named-region bar ("§5 observation log" + Exhibit); ADR-0006 (frozen
   evidence preserved, non-dismissable); CLAUDE.md "Irreplaceable evidence" / "Self-consistency violation";
   learnings (the SSR-verdict honesty gap).

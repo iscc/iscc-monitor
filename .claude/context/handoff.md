@@ -1,69 +1,85 @@
-## 2026-06-23 — Hub dossier §5 honest observation log (increment 2a — checkpoint-event log)
+## 2026-06-23 — Review of: Hub dossier §5 honest observation log (increment 2a — checkpoint-event log)
 
-**Done:** Filled §5 of the served hub dossier (`GET /<domain>`) with an honest observation log
-derived from recorded `checkpoints` rows: a new `store.ListCheckpoints` leaf read (newest-first by
-`observed_at`), a view-layer derivation that emits one size-transition line per consecutive recorded
-pair (newest-first) plus the oldest checkpoint as a singleton, an "anchored · block N" line only for a
-confirmed anchor with a real height, and a "froze hub (split view)" pointer per recorded violation on
-the frozen path. It never emits a synthesized per-poll "consistent" verdict (the recurring SSR-honesty
-trap). The richer frozen Exhibit and the §3/§1 honesty `normal`s remain the sibling follow-on (not in
-scope).
+**Verdict:** PASS_WITH_NOTES
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/store/checkpoints.go`: added `CheckpointSummary` + `ListCheckpoints(ctx, hubID, n)` — a
-  pure leaf read of `tree_size, observed_at` newest-first (`ORDER BY observed_at DESC, id DESC LIMIT ?`,
-  NULL-safe `sql.NullInt64` → zero `time.Time`, absent hub → empty slice + nil err), mirroring
-  `ListViolations`'s shape. Deliberately `observed_at DESC` (chronological log), distinct from `ListHubs`'s
-  §3 `tree_size DESC` subselect.
-- `internal/dossier/handler.go`: added `observationRow{Line, Tone}` + `Observations` field on
-  `dossierData`; the handler reads `ListCheckpoints(…, observationCap=8)` before `tmpl.Execute` (read
-  error → 500 like the existing reads); `observationRows`/`freezeLine`/`withObservedTime` derive §5 in
-  the view layer (size transitions + confirmed-anchor line + frozen pointer, honesty-gated, no per-poll
-  verdict). `buildData` threads the checkpoints through.
-- `internal/dossier/dossier.html`: replaced the §5 `obs-empty` placeholder with
-  `{{if .Observations}}{{range}}<div class="obs-line" data-tone>…{{else}}<p class="obs-empty">honest empty</p>{{end}}`;
-  added `.obs-line` (+ decorative `[data-tone=freeze]`) styles. No `<script>`, no external/CDN URL.
-- Tests (not counted): `internal/store/checkpoints_test.go` (`TestListCheckpoints`,
-  `TestListCheckpointsNullObservedAt`); `internal/dossier/handler_test.go` (`TestDossierObservationLog`,
-  `TestDossierObservationLogEmpty`, `TestDossierObservationLogAnchorAndFreeze` + a `multiCheckpointHub`
-  helper).
+**Summary:** The advance filled §5 of the served hub dossier (`GET /<domain>`) with an honest observation
+log derived from a new `store.ListCheckpoints` leaf read: newest-first size-transition lines, an
+"anchored · block N" line for a confirmed anchor with a real height, and a "froze hub (split view)"
+pointer on the frozen path — never a synthesized per-poll "consistent" verdict (the recurring SSR-honesty
+trap is avoided). The work is scope-disciplined (exactly the 3 prod files next.md named + 2 test files),
+gate-green, mutation-proven, and a live visual pass confirms the §5 region matches the document style. One
+confirmed Codex P2 honesty nit — a fork/equivocation/shrink frozen hub renders a nonsensical `size N → N`
+(or `larger → smaller`) pseudo-transition — is real but narrow (frozen edge state, loud Exhibit dominates,
+no fabricated "consistent" line); filed `normal`, a natural co-resident of increment 2b. Does not block.
 
-**Verification:** `mise run check` → green (build + vet + all 28 pkgs `ok`; `gofmt -l .` empty).
-- `go test -run TestListCheckpoints ./internal/store` — PASS (newest-first `observed_at DESC` order, `n`
-  cap, NULL `observed_at` → zero time, absent hub → empty + nil err; insertion order ≠ result order to
-  prove ORDER BY drives it).
-- `go test -run TestDossier ./internal/dossier` — PASS, incl. the new §5 cases: a ≥2-checkpoint hub
-  renders a transition line per consecutive pair in newest-first order with each value traceable to a
-  fixture row; a ≤1-checkpoint hub renders the honest empty state; §5 contains NO
-  "consistent"/"consistency PASSED"/"verified-poll" substring; confirmed-anchor renders "block 869440"
-  (never "block 0") and the frozen pointer maps fork → "split view".
-- Mutation checks (non-vacuous, reviewer-runnable): dropping the size-transition append →
-  `TestDossierObservationLog` FAILS; reverting `ORDER BY observed_at DESC` → `ASC` → `TestListCheckpoints`
-  order assertions AND the dossier order assertion FAIL. Both restored.
-- Store stays a leaf: `go list -deps ./internal/store | grep '^net/http$'` empty.
+**Verification:**
+- [x] `mise run check` (build + vet + test) — green, all 28 pkgs `ok`; `gofmt -l .` empty.
+- [x] `go test -count=1 -run TestListCheckpoints ./internal/store` — PASS (newest-first `observed_at DESC`,
+  `n` cap, scoped to hub, absent hub → empty+nil, NULL `observed_at` → zero time; insertion order ≠ result
+  order proves ORDER BY drives it).
+- [x] `go test -count=1 -run TestDossier ./internal/dossier` — 15 tests PASS, incl. the 3 new §5 cases
+  (transition lines newest-first + traceable values; honest empty state for ≤1 checkpoint; no
+  "consistent"/"consistency PASSED"/"verified-poll" substring; confirmed anchor "block 869440", never
+  "block 0"; fork → "split view" freeze pointer).
+- [x] Mutation 1 (reviewer-run): drop the size-transition append → `TestDossierObservationLog` FAILS. Restored.
+- [x] Mutation 2 (reviewer-run): `ORDER BY observed_at DESC → ASC` → BOTH `TestListCheckpoints` (caps assertion)
+  AND the dossier order assertion FAIL. Restored byte-identical (`git diff --stat` clean).
+- [x] Store stays a leaf: `go list -deps ./internal/store | grep '^net/http$'` empty; `checkpoints.go`
+  imports stdlib only (`context database/sql errors fmt time`); the `internal/tiles` dep is pre-existing
+  (from `fetcher.go`, not added here).
+- [x] Scope discipline: exactly 3 non-test/doc prod files (`store/checkpoints.go`, `dossier/handler.go`,
+  `dossier/dossier.html`), all in next.md's Scope; nothing from `## Not In Scope` done.
+- [x] `go.mod` / `go.sum` / `internal/store/schema.sql` byte-identical vs HEAD~1.
+- [x] No-CDN / no-JS bans (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`/`http://`; `<script`/`<button`/` hidden`)
+  cover the full body incl. the new §5 markup; `html/template` auto-escapes `.Tone`/`.Line`.
+- [x] Gate-integrity scan over 3 unpushed commits — no `nolint`/`t.Skip`/swallowed-err/build-tag/removed
+  assertion/loosened gate.
+- [x] Oracle/conformance gate N/A — pure HTML render of persisted `checkpoints` rows + in-memory overlay;
+  touches no signature/RFC-6962/Merkle/did:web/fsck/proof path.
 
-**Next:** The sibling follow-on of the same `critical` (increment 2b): the richer frozen Exhibit
-("Tree size before → Then presented" + a stable evidence ref from `Violation.RawA`/`RawB`) — which needs
-an *unverified* tree-size parse of the two stored checkpoint blobs (no exported pure parser exists today;
-`parseCheckpointBody` is unexported and verifies the signature first), plus folding in the §3 frozen
-size/time-decouple `normal` (select `observed_at` for the row whose `tree_size = f.last_size`) and the §1
-"resolved"-vs-unresolvable `normal`.
+**Issues found:** One (Codex-found, reviewer-confirmed) — filed `normal`:
+- **Dossier §5 `size N → N` pseudo-transition on a fork/equivocation/shrink frozen hub.** The transition
+  loop (`handler.go:430-433`) orders by `observed_at DESC` and assumes growing size, but `follower.freeze`
+  records the contradictory checkpoint (same size for a fork — the `checkpoints` UNIQUE is `(hub,size,root)`
+  so it persists — or smaller for a shrink) at a later `observed_at`, so §5 renders a non-transition line.
+  Confined to the frozen edge (loud Exhibit dominates; the freeze pointer records the real event); no
+  fabricated "consistent" verdict. Folded into increment 2b's §3/Exhibit rework. (Increment-2 critical
+  retitled "2b" and trimmed to the remaining Exhibit + §3/§1 + this fix; 2a's §5 Verify clauses removed.)
+
+**Codex second opinion:** Finished (exit 0). ONE `[P2]` finding, reviewer-CONFIRMED by a throwaway
+reproduction: "Skip equal-size checkpoints in the transition log (`handler.go:430-433`)" — a same-size
+split-view (fork) violation persists both roots at the same `tree_size`, so the loop renders a `size N → N`
+line. I reproduced it (accepted size-500 + fork same-size/different-root contradictory checkpoint → served
+§5 contains `size 500 → 500` plus the correct `froze hub (split view)` pointer). CONFIRMED → filed `normal`
+(above); also noted the sibling shrink `larger → smaller` case, same fix. Codex's suggested fix (skip
+non-increasing pairs, gate the singleton on a real transition) is sound and folded into 2b. Touches no
+trust root; no oracle conflict.
+
+**Visual check:** Done (SSR surface changed — `internal/dossier`). `agent-browser` (Chrome via the bundled
+runtime) screenshotted a throwaway harness serving the dossier + `/_ds/` assets for a fixture-rich
+multi-checkpoint + confirmed-anchor hub (the live cold-start index is empty), and the local mockup. The §5
+region renders in full design-parity: the `§5 · OBSERVATION LOG` eyebrow, monospace evidence lines
+(`anchored · block 869440`, `size 2304 → 3456 · <RFC3339>`, `size 1280 → 2304 · …`, `size 1280 observed · …`
+newest-first), subtle border-top, consistent with §1–§4. The intentional deviation (the mock's illustrative
+"consistent" lines are NOT emitted — they would assert un-run per-poll checks) is the honest correction
+next.md called for. Harness removed before commit; tree clean. No visual delta filed.
+
+**Next:** Increment 2b (the now-trimmed `critical`) — the richer frozen Exhibit ("size before → presented"
++ a stable evidence ref from `Violation.RawA`/`RawB`, reusing the existing unexported checkpoint parser),
+the §3 frozen size/time-decouple `normal` (select `observed_at` for the `f.last_size` row), the §5
+same-size pseudo-transition `normal` filed this iteration (skip non-increasing pairs), and — if a design
+call is made — the §1 "resolved"-vs-unresolvable `normal`. All four are natural co-residents of one
+§3/Exhibit rework.
 
 **Notes:**
-- Honesty/empty-state decision: a LONE checkpoint surfaces NO §5 line on its own (a single checkpoint is
-  not a transition); the singleton "size N observed" tail only renders when there were ≥2 checkpoints.
-  This is the literal reading of next.md's "≤1 checkpoint and no anchor → honest empty state" — it
-  corrected an initial draft where `coveredHub`'s single seeded checkpoint produced a spurious
-  "size 42 observed" line and failed `TestDossierObservationLogEmpty`. (A lone checkpoint with a confirmed
-  anchor or a freeze still renders those real event lines — only the bare singleton is suppressed.)
-- The freeze pointer reads ONLY the `violations` slice the handler already fetches on the frozen path
-  (gated on `s.Frozen`); no second `ListViolations` read on the non-frozen path, per next.md.
-- The mock's illustrative `observations` lines (`.dc.html` 118-122) carry "consistency FAILED" /
-  "consistent" — those are ILLUSTRATIVE, NOT a parity requirement, and are deliberately NOT emitted (they
-  would assert un-run per-poll checks). Flagged here as the design deviation next.md asked for.
-- `data-tone` is decorative (grayscale-safe, ADR-0010 inv.4); the `Line` carries the meaning. `Tone` is
-  only "normal" or "freeze" today.
-- Oracle/conformance gate N/A — pure HTML render of persisted `checkpoints` rows + an in-memory overlay;
-  touches no signature/RFC-6962/Merkle/did:web/fsck/proof path. `schema.sql`, `go.mod`, `go.sum`
-  byte-identical. No visual pass run by the implementer; the SSR §5 region changed, so `review` may want a
-  live look (the rendered §5 markup is in the test bodies).
+- The §5 transition loop's `size <older> → <newer>` is faithful for a verified hub (size grows
+  monotonically with observed time) and only misleads on the frozen edge — that is the entire scope of the
+  new `normal`. The increment is otherwise honest: every §5 line is traceable to a recorded `checkpoints`
+  row or a confirmed `ots` row, and the recurring "synthesized per-poll consistent verdict" trap is
+  explicitly avoided (tested).
+- `learnings/dossier.md` updated: the stale "§5 is increment-2 placeholder" bullet replaced with the landed
+  derivation + the new monotonic-size trap; `learnings/store.md` gained the `ListCheckpoints` leaf bullet
+  (with the non-monotonic-ordering caveat). Both files stay well under the rotation budget.
+- 4 unpushed commits in `@{upstream}..HEAD` (update-state, define-next, advance, this review). Pushing
+  `develop` on this PASS_WITH_NOTES.

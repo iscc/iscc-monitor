@@ -46,7 +46,22 @@ this surface shares live in `learnings/dashboard.md` (read both).
   as local copies — 3× now, a tracked `low` consolidation). The "Browse the log →" link is `/{{.Origin}}/`
   → `/<domain>/log/` because `Origin` = `<domain>/log`; "Prove an ISCC-ID in this hub →" links to `/` (the
   realm-index claim hero, NOT a fabricated per-hub form). Edit any masthead → mirror all three SSR HTML files.
-- **§5 observation log + the richer Exhibit ("size before → presented" + evidence ref) are increment 2
-  (gated, separate critical).** This increment renders §5 as an honest minimal placeholder ONLY — no
-  `ListCheckpoints` read, no `RawA/RawB` parse. Do NOT synthesize per-poll "consistent" lines (no recorded
-  per-poll verdict exists; emitting one asserts an un-run check).
+- **§5 observation log LANDED (increment 2a, advance `96e9600`): it is derived in the view layer from
+  `store.ListCheckpoints` (newest-first by `observed_at DESC`) — a size-transition line per consecutive
+  pair, the oldest checkpoint as a singleton (only when ≥2 checkpoints), an "anchored · block N" line ONLY
+  when `Anchor == OTSStatusConfirmed && AnchorHeight > 0`, and a "froze hub (<kind→split view>)" pointer
+  per recorded violation on the frozen path (off the already-fetched `violations` slice, no second read).**
+  It NEVER synthesizes a per-poll "consistent" line (no recorded per-poll verdict exists; emitting one
+  asserts an un-run check). A NULL `observed_at` renders the size without a time. The richer frozen Exhibit
+  ("size before → presented" + evidence ref) is still increment 2b (needs an unverified tree-size parse of
+  `Violation.RawA/RawB`; `parseCheckpointBody` is unexported + verifies first).
+- **TRAP — the §5 transition loop assumes monotonically-GROWING size, which the frozen path breaks.** It
+  orders strictly by `observed_at DESC` and renders `size <older.TreeSize> → <newer.TreeSize>` for each
+  consecutive pair. But `follower.freeze` `RecordCheckpoint`s the CONTRADICTORY checkpoint (the `checkpoints`
+  UNIQUE is `(hub_id,tree_size,root)`, so a same-size/different-root row persists) at a LATER `observed_at`,
+  WITHOUT advancing `last_size`. So a fork/equivocation (same size) renders a literal `size N → N` and a
+  shrink renders `size <larger> → <smaller>` — neither is a real transition. Confined to the frozen edge (the
+  loud Exhibit dominates above §5; the freeze pointer line records the real event), so it does NOT fabricate
+  a "consistent" verdict — but it is misleading. Open `normal` (folded into 2b): skip non-increasing pairs in
+  the loop and only emit the singleton when a real increasing transition was emitted. [Codex P2, reviewer-
+  confirmed by a fork reproduction.]
