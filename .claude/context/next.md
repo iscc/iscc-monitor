@@ -1,132 +1,126 @@
 # Next Work Package
 
-## Step: Close the single-record navigation back-leg — chrome identity + `← Log browser` breadcrumb + older/newer stepper + actions on `record.html`
+## Step: Record-list pager parity (part-2b) — top+bottom "seq X–Y of Z" pager + drop the off-mockup Status row
 
 ## Advances
-The lone **`critical`** issue (`[human]`, "Hub-dossier 'Browse the log →' lands on a dead-end … the
-record-list log browser is off-mockup"), whose navigation-closure clause is **not yet met**: per
-`target.md` M-UI **"Navigation closure"** — *"The `/` → hub dossier → log browser → single record →
-certificate chain is fully traversable with JavaScript disabled: forward links **and** `←` breadcrumb
-back-links both present, so … no surface is a dead end."* `state.md` verifies the single-record page
-`record.html` carries **zero `<a>` nav links** (confirmed: `grep -c '<a ' record.html` == 0), so the
-dossier→record-list→single-record→**back** chain is broken at the single-record back-leg. This step
-builds the `ISCC Monitor - Single Record.dc.html` named regions on `record.html` (breadcrumb, stepper,
-actions, chrome identity), the load-bearing remaining half of the navigation-closure clause. Part-2b
-(the record-list pager) is the other open half and is deferred to the next slice (Not In Scope).
+Closes the **last code-closable half of the lone `critical`** ("Hub-dossier 'Browse the log →' …
+record-list log browser is off-mockup", `issues.md`), whose navigation-closure clause is already MET —
+only its **part-2b cosmetic pager parity** + the human M-UI exit sign-off remain. The `critical`
+preempts milestone-fresh work; it is rooted in the M-UI Verify criterion:
+
+> "the log-browser record list paginates via plain links (`?from=…[&n=…]`, no-JS), newest-first, each
+> row links to its single-record page" — and the design-parity named region: "the **plain-link pager**
+> (newer/older + 'seq X–Y of Z' range, disabled at the ends — the no-JS `?from=…` form of the mockup's
+> buttons)" (`target.md` M-UI "log browser / record list").
+
+The current `records.html` renders a **single bottom-only** pager labelled "showing N of M" and carries
+a **Status-badge row the mockup's Log Browser omits** — this step brings both to named-region parity.
 
 ## Goal
-Make the single-record page a navigable node, not a dead end: add the shared chrome instance-identity
-block + `verify ↗` link, the `← Log browser` breadcrumb back to the record list, the no-JS older/newer
-record stepper (plain links disabled at the ends), and the "Prove this record's inclusion →" /
-"Back to list" actions — so a no-JS reader can traverse the chain forward and back.
+Rework the record-list pager into the mockup's top+bottom pagers — each with newer/older affordances
+disabled (rendered as a `<span>`) at the ends and a center "seq X – Y of Z" range label — and drop the
+off-mockup Status-badge row, so the served no-JS HTML carries the Log Browser mockup's pager region.
+This is the final code slice needed before the human M-UI exit sign-off.
 
 ## Scope
-- **Modify**:
-  - `internal/proofserve/handler.go` — thread `domain, instance, operator` into the `serveRecord`
-    dispatch (line 245: `serveRecord(w, r, st, f, hubID, domain, instance, operator, statuses)`) and
-    into `serveRecord`'s signature; extend the `recordData` view-model (line 1022) with the new fields
-    (`Domain, Instance, Operator`, the stepper `HasOlder/OlderIndex/HasNewer/NewerIndex`, the gated
-    `ProveInclusionID`, and `Total`). Populate them in the `data := recordData{…}` literal (line 1136).
-  - `internal/proofserve/record.html` — add the chrome instance-identity block + `verify ↗` link (port
-    byte-for-byte from `records.html` lines 368-385 + their `.chrome-actions`/`.chrome-identity`/
-    `.chrome-verify` CSS), the `← Log browser` breadcrumb, the older/newer stepper, and the two action
-    links, per the mockup named regions below.
-  - `internal/proofserve/record_test.go` *(test — not in the ≤3 non-test budget)* — add region tests
-    (breadcrumb, stepper, identity, actions) and the stepper end-condition + honesty-gate tests.
+- **Modify**: `internal/proofserve/handler.go` (add precomputed `RangeTop`/`RangeBottom` fields to
+  `recordsData` in `serveRecords`; no new store read — top/bottom seq come from the already-fetched
+  `records` slice)
+- **Modify**: `internal/proofserve/records.html` (replace the single bottom pager + the `.ledger-status`
+  Status row with the top+bottom "seq X–Y of Z" pager region matching the mockup; remove the now-dead
+  `.ledger-status` / `.row-label` CSS)
+- **Modify (test)**: `internal/proofserve/records_test.go` (new region/golden tests for the pager parity
+  + the dropped Status row; update `olderHref` + the `older &rarr;` / `showing N of M` markers in the
+  EXISTING pagination tests to the reworked pager markup — these are test-only edits, off the ≤3 budget)
 - **Reference**:
-  - `.claude/design/ISCC Monitor - Single Record.dc.html` — the authoritative mockup (lines 41-90: the
-    breadcrumb, stepper, head, type notices, field grid, actions).
-  - `.claude/context/learnings/http-surface.md` — §"HTML single-record page at `/record`" (the
-    `record.html` durable traps) + §"HTML record list at `/records`" / "Chrome/breadcrumb/head dressing
-    (part-2a)" (the breadcrumb must be the ABSOLUTE site-root `href="/{{.Domain}}"`; bare-`{{.Domain}}`,
-    no fabricated display name; the unquoted `[data-status=…]`/`[data-kind=…]` CSS-literal trap).
-  - `internal/proofserve/records.html` (the part-2a sibling — copy its `.chrome-actions` /
-    `.chrome-identity` / `.chrome-verify` / `.backlink` markup + CSS verbatim so the surfaces stay
-    byte-identical chrome; and its pager disabled-`<span>` pattern lines 427-438 for the stepper ends).
-  - `internal/certificate/handler.go:109` (`const PathPrefix = "/inclusion/"`) — the
-    "Prove this record's inclusion →" target is `/inclusion/<iscc_id>` (realm-root, NOT under `/log/`).
+  - `.claude/design/ISCC Monitor - Log Browser.dc.html` lines 58–85 (the authoritative top pager / record
+    list / bottom pager markup: `seq {top} – {bottom} of {hubMax}` range label, opacity-disabled at the
+    ends, the append-only footnote in the bottom pager's center)
+  - `.claude/context/learnings/http-surface.md` §"HTML record list at `/records`" + §"Chrome/breadcrumb/
+    head dressing (part-2a)" (the no-`<table>`/CDN rule, the unquoted `[data-status=…]`/`[data-kind=…]`
+    CSS-literal trap, HARDCODED-literal test grounding, the seq-cursor pager liveness rules already settled)
+  - `internal/proofserve/records.html` lines 398–447 (current ledger head, `.ledger-status` Status row,
+    single bottom pager, footnote) and `internal/proofserve/handler.go` lines 846–998 (the `recordsData`
+    view-model + `serveRecords` cursor math — `HasNewer/NewerFrom/HasOlder/OlderFrom`, `Total`, `PageSize`
+    already exist)
 
 ## Not In Scope
-- **Part-2b record-list pager parity** (the `records.html` top+bottom "seq X–Y of Z" pager disabled at
-  the ends, dropping the Status-badge row) — that is the OTHER open half of the critical and the next
-  slice; do not touch `records.html` here beyond reading it for the chrome/pager-pattern port.
-- **The masthead-identity const consolidation** (the tracked `low`, instanceFallback/operatorFallback
-  duplicated 4×) — keep the byte-identical-copy pattern; do not refactor a shared resolve leaf here.
-- **The proof-bundle / certificate `§6` flow itself** — only the link to the existing certificate route
-  is added; no crypto/proof/Merkle path changes (oracle gate stays N/A).
-- Touching `cmd/iscc-monitor/main.go` or the `Handler` constructor — the part-2a `Handler` already
-  takes `domain` + `dashboard.Identity` and resolves `instance, operator` once; this change is internal
-  to the `serveRecord` dispatch (the 11 `record_test.go` `Handler(...)` calls stay unchanged).
-- **The mockup's type-notice callouts** (the deletion / unknown-type info boxes, mockup lines 64-75) and
-  the field-grid restructure (HUB / POSITION / LOGGED rows) — `record.html`'s existing field rows
-  already render the kind + deletion note; the navigation regions are this step's scope, not a full
-  field-grid re-layout. Leave the field rows as they are.
+- The **single-record page** (`record.html`) — its navigation closure (part-2) already landed; do not
+  touch `serveRecord`/`record.html`.
+- The **`/<domain>/log/` checkpoint-summary landing** (`browser.html`/`serveBrowser`) — it keeps its
+  Status badge; only the *record-list* (`records.html`) drops the off-mockup Status row.
+- A **"Jump to sequence" input** — the mockup's `<input onKeyDown>` is JS-driven; the no-JS constraint
+  wins (the plain-link `?from=…` pager IS its no-JS equivalent). Do not add a form/input; flag the
+  deviation in a comment, as the existing surfaces do.
+- Type-badge **exact tint/hex** + append-only **footnote wording** micro-deltas beyond moving the
+  append-only line into the bottom pager's center — leave residual aesthetic deltas to the ADR-0012 visual
+  pass / human exit sign-off (they are not named regions).
+- Requesting the **human M-UI exit sign-off** itself — that is the next step *after* this lands.
+- The masthead-identity **const consolidation** (`low`, tracked) — out of scope; would add a 4th file.
 
 ## Implementation Notes
-- **No constructor change.** `Handler(st, hubID, domain, statuses, id)` already resolves
-  `instance, operator := resolveIdentity(id)` once (handler.go:231) and passes `domain` to
-  `serveRecords`. Pass those same three (`domain, instance, operator`) into the `serveRecord` call at
-  line 245 — a one-line edit; the 11 existing `record_test.go` calls that build `Handler(...)` stay
-  unchanged (they already pass `"sb0.iscc.id"` + `dashboard.Identity{}`, which `resolveIdentity` maps to
-  the static fallback copy, so non-identity assertions stay green).
-- **Breadcrumb (no-JS back-leg, the load-bearing fix).** `← Log browser` links to the record list:
-  `href="records"` (relative — the record list shares the `/log/` subtree, same as the `record?index=`
-  row links). The mockup also shows a `/ <hub name>` trailing crumb; render the bare `{{.Domain}}` (no
-  fabricated display name — same constraint-win the records/dossier heads make; flag it in a comment).
-- **Older/newer stepper = plain links, disabled at the ends.** The mockup's JS buttons become no-JS
-  `<a>`s: **older** → `record?index=<Seq-1>`, present only when `Seq > 0` (`HasOlder`); **newer** →
-  `record?index=<Seq+1>`, present only when `Seq+1 < size` (`HasNewer`, the accepted-tree ceiling
-  `LastSize`, already in scope at handler.go:1081 as `size`). At an end, render a disabled `<span>` (the
-  records.html pager pattern at lines 427-438). The position label: `Seq` is 0-based — show
-  `seq {{.Seq}} of {{.Total}}` (`Total` = `size`), keeping the existing single-record `seq` wording
-  rather than the mockup's 1-based "record N of M" (honest 0-based seq). Carry `OlderIndex`/`NewerIndex`
-  as precomputed `uint64` so the template does no arithmetic.
-- **"Prove this record's inclusion →" MUST be honesty-gated.** The certificate route is keyed on the
-  ISCC-ID (`/inclusion/<iscc_id>`), but a leaf can have NO projection (`HasProjection=false`) or an
-  empty/unknown id. Set `ProveInclusionID` only when `HasProjection && IsccID != ""`; in the template,
-  render the "Prove this record's inclusion →" action ONLY `{{if .ProveInclusionID}}` (href
-  `/inclusion/{{.ProveInclusionID}}`), so a no-id / no-projection leaf does not link to a certificate it
-  cannot produce. This is the recurring honesty rule (MEMORY "Verdict-UI honesty recurring gap";
-  learnings.md): never render an affordance asserting a capability the data does not support.
-  "Back to list" is unconditional: `href="records"` (same as the breadcrumb target).
-- **Chrome port + CSS-literal trap.** Port `records.html`'s `.chrome-actions`/`.chrome-identity`/
-  `.chrome-verify`/`.backlink` markup AND their CSS rules verbatim into `record.html` (it currently
-  lacks the identity block + verify link — it has only the brand half of the chrome). `record.html`
-  already uses the UNQUOTED `[data-status=frozen]` form (lines 110, 224-238) — keep any new selector
-  unquoted so a future negative `data-status="…"` body assert stays honest (http-surface.md trap).
-- **Buffer-then-200 unchanged + store stays a leaf.** `serveRecord` already renders into a `bytes.Buffer`
-  then writes 200 (handler.go:1150-1159); the new fields are pure view-model derived from data already in
-  scope (`seq`, `size`, `row.IsccID`, `found`), no new store read, no schema/migration. `go.mod`/`go.sum`
-  stay byte-identical (`dashboard.Identity` is already imported via the part-2a chrome).
-- **No-CDN body ban.** The `verify ↗ monitor.iscc.codes` host is same-federation (the `.codes` verifier
-  app), so the existing no-CDN body ban tolerates it (records.html already carries it past
-  `TestRecordsLinksTokensNoCDN`); do NOT regress `TestRecordLinksTokensNoCDN`.
-- **Oracle/conformance gate is N/A** — pure SSR chrome + view-model threading; no signature, RFC-6962,
-  Merkle, did:web, or proof path is touched. State the N/A in the advance.
+- **Range label is pure-derived, no new store read.** The page's top seq is `records[0].Seq` (largest,
+  newest-first) and the bottom seq is `records[len(records)-1].Seq` (smallest); `Total` is already in
+  `recordsData`. Add `RangeTop uint64` + `RangeBottom uint64` to `recordsData` and set them inside the
+  EXISTING `if len(records) > 0 {` block in `serveRecords` (alongside the `HasOlder/HasNewer` math at
+  `handler.go:976-998`) — the slice is already in hand, so this adds zero queries and keeps the store a
+  leaf. Render the label as `seq {{.RangeTop}} – {{.RangeBottom}} of {{.Total}}` (the mockup's order: top
+  is the *larger* seq because the list is newest-first; matches mockup line 61/134
+  `${logTop} – ${logBottom} of ${hubMax}`).
+- **Top + bottom pager, both gated.** Port the mockup's two pager blocks (lines 58–63 top, 80–85 bottom).
+  Each block has three slots: Newer (left), center label, Older (right). Reuse the EXISTING liveness flags
+  — `HasNewer` → `<a href="records?from={{.NewerFrom}}&amp;n={{.PageSize}}">` else a disabled `<span>`;
+  `HasOlder` → `<a href="records?from={{.OlderFrom}}&amp;n={{.PageSize}}">` else a `<span>`. The mockup's
+  `opacity`/`cursor` "disabled" styling becomes the `<span>` (no href) form — the no-JS equivalent of the
+  mockup's `op:.4` button, the same pattern the single-record stepper already uses (`record.html`
+  older/newer stepper) and the current bottom pager already uses (`records.html:427-438`). The TOP pager's
+  center is the `seq X–Y of Z` range; the BOTTOM pager's center is the **append-only footnote** ("Records
+  are append-only — a deletion is itself a new entry, never a removal.", mockup line 83). Keep the
+  standalone `<p class="footnote">` (`records.html:447`) for the coverage-honesty clause OR fold its
+  append-only sentence into the bottom pager — either way the append-only statement must appear and the
+  coverage-honesty clause ("guarantees hold only from coverage start") must NOT be dropped.
+- **Drop the Status-badge row.** Remove the `.ledger-status` block (`records.html:402-406`, the
+  `<span class="row-label">Status</span>` + `{{template "hubStatusBadge" .}}` partial) AND its now-unused
+  `.ledger-status` (`:194`) / `.row-label` (`:202`) CSS. NOTE: `serveRecords` still computes
+  `status`/`label` for the `data-status="{{.Status}}"` attribute on `.ledger` (frozen-row tinting) — KEEP
+  that attribute and the `Status`/`Label` fields; only the rendered *badge row* goes. After editing, grep
+  the template to confirm no remaining line references the dropped CSS classes.
+- **CSS-literal trap (learnings, recurring).** `TestRecordsRendersInMemoryStatus` asserts the body
+  contains NO `data-status="verified"`. Any badge-color/frozen-tint CSS that survives MUST use the
+  UNQUOTED attribute selector (`[data-status=verified]`), never the quoted `[data-status="verified"]`
+  form — the quoted form leaks that literal into `<style>` and falsely fails the negative assert. The
+  record list already follows this; do not regress it when editing the CSS block.
+- **Honesty rule (learnings always-loaded).** This surface renders no `✓`/verification — pure store-read,
+  oracle gate N/A. Do not introduce any verification-shaped copy. The range/pager is derived purely from
+  the page window + `Total`.
+- **Test grounding = HARDCODED literals, not constants.** Per the settled record-list rule, seed the
+  pager-region tests against literal seq values + the literal range string the page renders (e.g. a
+  5-record mirror `seq 0..4`, full page → top pager asserts `seq 4 – 0 of 5`; with `n=2` from the newest
+  → `seq 4 – 3 of 5`), NOT against view-model field reads, so a regression of the range math FAILS. Use
+  the existing `buildMirror` / fixture helpers in `records_test.go`.
+- **Update the existing pagination-chain tests' markers.** `TestRecordsPagination`,
+  `TestRecordsOlderLinkReachesSeq0`, and the `olderHref` helper (`records_test.go:330`, keyed on
+  `older &rarr;</a>`) plus `TestRecordsListsNewestFirst`'s `showing N of M` assertion all key off the
+  current pager markup — both change shape in this rework. Update those markers to the reworked pager's
+  anchor text so the link-chain assertions still verify the `?from=…` chain reaches seq 0 (the
+  load-bearing seq-cursor-reaches-0 guard must stay green). These are test-file edits, off the ≤3 budget.
 
 ## Verification
 - `mise run check` is green (build + vet + test across all packages; `gofmt -l .` empty).
-- `go test -count=1 -run TestRecord ./internal/proofserve` passes (all existing single-record tests
-  still green under the threaded `serveRecord` signature).
-- A new region test asserts the served `/record?index=<mid-seq>` body contains the breadcrumb
-  `← Log browser` with `href="records"`, the chrome instance-identity binding (a populated
-  `dashboard.Identity` renders its `Instance`/`Operator` strings), and the `verify ↗ monitor.iscc.codes`
-  link — and is **mutation-proven**: removing the breadcrumb link FAILS; replacing the `{{.Instance}}`
-  binding with a constant FAILS.
-- A stepper end-condition test asserts: at `index=0` the older affordance is a disabled `<span>` (no
-  older `record?index=` link) and newer is a live `<a href="record?index=1">`; at the topmost in-tree
-  seq (`size-1`) newer is disabled and older is live — reverting the `HasOlder`/`HasNewer` guards FAILS.
-- An honesty-gate test asserts: a leaf WITH a projected id renders the `href="/inclusion/<iscc_id>"`
-  "Prove this record's inclusion →" action, and a leaf with NO projection (the existing
-  `TestRecordRendersWithoutProjection` fixture, `index=2`) renders NO `/inclusion/` link — removing the
-  `{{if .ProveInclusionID}}` gate FAILS the no-link assertion.
-- `go list -deps ./internal/proofserve | grep -qx internal/metrics && exit 1 || true` (proofserve still
-  does not pull `internal/metrics` into its dep closure — the load-bearing import-direction check).
+- `go test -count=1 -run TestRecords ./internal/proofserve` passes (all existing record-list tests green
+  under the reworked pager, including the updated `TestRecordsPagination` + `TestRecordsOlderLinkReachesSeq0`).
+- A NEW pager-parity test asserts the served `/records` body for a multi-page fixture contains the
+  mockup's range label form `seq <top> – <bottom> of <total>` with hardcoded literal seqs, and contains a
+  newer/older affordance BOTH above (top pager) and below (bottom pager) the record list; reverting the
+  range computation (swapping top/bottom, or dropping one of the two pagers) makes it FAIL.
+- A NEW test asserts the served `/records` body NO LONGER contains the dropped Status-badge row markup
+  (e.g. the `row-label">Status` marker is absent), while `data-status="<overlaid>"` on `.ledger` is still
+  present (frozen-tint attribute kept); re-adding the badge row makes it FAIL.
+- `go list -deps ./internal/proofserve | grep -qx internal/metrics && exit 1 || true` — `internal/metrics`
+  stays out of the proofserve closure (no new dep; this is a template/view-model-only change).
+- `go.mod` / `go.sum` are byte-identical (no new module dependency).
 
 ## Done When
-`record.html` carries the `ISCC Monitor - Single Record.dc.html` navigation named regions — chrome
-instance identity + `verify ↗`, the `← Log browser` breadcrumb, the no-JS older/newer stepper disabled
-at the ends, and the honesty-gated "Prove this record's inclusion →" / "Back to list" actions — every
-new region is mutation-proven by a test, and `mise run check` is green; the no-JS
-dossier→record-list→single-record→**back** chain is then traversable end-to-end (only the part-2b
-record-list pager remains to fully close the `critical`).
+`mise run check` is green and the served `/records` HTML carries the mockup's top+bottom "seq X–Y of Z"
+pager region disabled at the ends with no off-mockup Status-badge row, each new assertion mutation-proven
+— closing the last code-closable half of the `critical` so only the human M-UI exit sign-off remains.
