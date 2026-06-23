@@ -571,9 +571,81 @@ filed it and does **not** affect priority.
   ADR-0010 Evidence-Ledger honesty; learnings.md always-loaded SSR-honesty rule; `.claude/design/ISCC
   Monitor - Hub Dossier.dc.html` §1 static phrasing; `learnings/dossier.md` §1 note.
 
+## OpenAPI contract advertises a phantom `index` query param on `/{domain}/log/verify` the handler never reads
+- **Priority:** normal
+- **Source:** [review] (Codex P2, reviewer-confirmed against `serveVerify`)
+- **What / where / how to verify:** `internal/openapi/openapi.yaml:237-243` (+ the JSON twin) declares an
+  optional `index` query parameter on `GET /{domain}/log/verify` described as "An explicit committed leaf
+  sequence to verify". But `serveVerify` (`internal/proofserve/handler.go`) NEVER reads `index` — its own
+  comment is explicit: "verify-for-me takes no index param, so seqs[0] is the deterministic subject" — it
+  always verifies `seqs[0]` (the lowest committed sequence). For an ISCC-ID with multiple committed leaves,
+  a client generated from this contract sends `?index=<n>` and silently receives a verdict for a DIFFERENT
+  leaf (`seqs[0]`), with no error. This is the most client-misleading of the three contract-accuracy gaps:
+  the param looks supported and the request succeeds, so the divergence is invisible. The drift test gates
+  PATHS, not params, so it cannot catch this (the path is correct; only the operation's param list is
+  wrong). NOT a code regression — `serveVerify` is correct; the CONTRACT overstates it. Does NOT block
+  progress (gates green; the increment met every `next.md` Verify criterion). Fix when the OpenAPI doc is
+  next touched (likely M-API slice 3, the `/docs` slice): EITHER remove the `index` parameter from the
+  `/{domain}/log/verify` operation in both `openapi.yaml` and `openapi.json` (regenerate the JSON twin from
+  the YAML), OR — only with a design decision — implement `index` selection in `serveVerify` so the
+  contract becomes true. Verify fixed: the `verify` operation in the served `/openapi.json` declares no
+  `index` parameter (or `serveVerify` reads it and verifies that leaf); add a golden asserting the verify
+  operation's param set matches the handler's actual query params.
+- **Spec:** ADR-0014 §1 (the contract describes the real machine surface, accurately); CLAUDE.md
+  "verify-for-me" (the monitor reports a verdict — for `seqs[0]`, the deterministic subject); next.md
+  Implementation Note (the contract must describe the documented response shapes faithfully).
+
+## OpenAPI contract advertises `text/plain` for `/{domain}/log/checkpoint` but the handler serves `application/octet-stream`
+- **Priority:** normal
+- **Source:** [review] (Codex P2, reviewer-confirmed at the live mux seam)
+- **What / where / how to verify:** `internal/openapi/openapi.yaml:265-270` (+ the JSON twin) advertises the
+  `200` response of `GET /{domain}/log/checkpoint` as `text/plain`. But that route is served by tilesserve
+  (the `/`-fallthrough in `hubHandler`, since `checkpoint` is NOT an exact proofserve mount), whose
+  `writeBlob` (`internal/tilesserve/handler.go:170`) unconditionally sets `Content-Type:
+  application/octet-stream` (the package `contentType` const, line 32). Reviewer-confirmed by probing the
+  real `buildMux` mux: `GET /sb0.iscc.id/log/checkpoint` → `200`, `Content-Type: application/octet-stream`.
+  So an OpenAPI validator / generated client expects `text/plain` and gets `octet-stream` for this route —
+  a media-type mismatch (the `.ots` route at `:289` already correctly says `application/octet-stream`; only
+  the plain `/checkpoint` is wrong). NOT a code regression (tilesserve is correct — the checkpoint is an
+  opaque signed-note BLOB); the CONTRACT is inaccurate. Does NOT block progress (gates green). Fix when the
+  OpenAPI doc is next touched: change the `/{domain}/log/checkpoint` `200` content key from `text/plain` to
+  `application/octet-stream` in both docs and regenerate the JSON twin. Verify fixed: the served
+  `/openapi.json` `checkpoint` operation's `200` content type equals what the live mux sends
+  (`application/octet-stream`); a probe comparing the two matches.
+- **Spec:** ADR-0014 §1 (accurate machine-surface contract); CLAUDE.md `GET /<domain>/log/checkpoint`
+  ("served verbatim as `application/octet-stream`" is how the sibling `.ots` is described); next.md
+  "describe the documented response shapes faithfully".
+
+## OpenAPI contract omits `/healthz`'s 503 store-down readiness response (only 200 documented)
+- **Priority:** low
+- **Source:** [review] (Codex P3, reviewer-confirmed against `healthz.Handler`)
+- **What / where / how to verify:** `internal/openapi/openapi.yaml:45-51` documents only a `200` response
+  for `GET /healthz`, but `healthz.Handler` (`internal/healthz/handler.go`) returns `503` +
+  `{"status":"unavailable"}` (`application/json`) when the store `Ping` fails — the endpoint's PRIMARY
+  failure mode and the whole point of a readiness probe. A readiness-check client generated from
+  `/openapi.json` therefore treats the store-down case as undocumented. NOT a code regression (healthz is
+  correct); the contract is incomplete. Does NOT block progress (gates green); low because a readiness
+  client typically checks the status code regardless and the 200 path is documented. Fix when the OpenAPI
+  doc is next touched: add a `503` response to the `/healthz` operation (`{status: unavailable}`,
+  `application/json`) in both docs and regenerate the JSON twin. Verify fixed: the served `/openapi.json`
+  `healthz` operation declares both `200` and `503`. Low — skipped by the loop until the doc is next edited.
+- **Spec:** ADR-0014 §1 (document the machine surface's real responses); `internal/healthz/handler.go`
+  (the 503 unavailable path); CLAUDE.md `GET /healthz` ("liveness + store readiness").
+
 ## No machine-readable API contract (OpenAPI) and no interactive API docs hosted by the app
 - **Priority:** normal
 - **Source:** [human]
+- **STATUS — slices 1+2 LANDED (advance `e2de5e6`, reviewer-verified):** the in-repo OpenAPI 3.1 document
+  (`internal/openapi/openapi.yaml` + byte-distinct JSON twin) is served byte-verbatim at `GET /openapi.json`
+  + `GET /openapi.yaml` under the CORS `*` wrap with the `no-cache`+strong-ETag+304 policy, covering the 13
+  machine paths, excluding the HTML SSR surfaces, with `verify-for-me` flagged weaker in-band — and a
+  NON-VACUOUS route↔spec drift test (`cmd/iscc-monitor/openapi_drift_test.go`, reviewer mutation-confirmed
+  both directions). What REMAINS to close this issue is **slice 3: `GET /docs` + the self-hosted, byte-pinned
+  Stoplight Elements assets** (the `<elements-api>` JS+CSS under `/_ds/` with published `internal/web` hash
+  constants, `apiDescriptionUrl="/openapi.json"`, no `tryItCorsProxy`). Three contract-accuracy defects the
+  drift test cannot catch (it gates PATHS, not params/media-types/responses) are filed as their own entries
+  above (the phantom `verify` `index` param + the `checkpoint` media type are `normal`; the `healthz` 503 is
+  `low`) — fold those fixes into slice 3 or a doc-touch.
 - **What / where / how to verify:** The monitor exposes a machine-consumable HTTP surface
   (`/healthz`, `/version`, `/metrics`, the per-hub `inclusion`/`consistency`/`entries`/`checkpoint`/
   `checkpoint.ots`/`tile` routes, `verify-for-me` at `/<domain>/log/verify`, and the
