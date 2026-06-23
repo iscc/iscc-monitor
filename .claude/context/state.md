@@ -1,51 +1,43 @@
-<!-- assessed-at: 0673ff0e0fe607d6c39fd4a7c0dfc2e3b417071d -->
+<!-- assessed-at: 46e690adda83ba526ffd4a04fce4555eec12caca -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: The lone `critical` log-browser gap is now FULLY code-closed — every code-closable half (navigation closure + record-list named-region + pager parity) has landed and is reviewer-verified. Only the human M-UI exit sign-off remains on that critical; the loop continues on the open `normal` M-API contract-accuracy fixes.
-This window closed **part-2b** — the record-list pager parity. `records.html` now renders a top
-pager seamed into the ledger card plus a bottom pager, each a three-slot `← newer` /
-`seq RangeTop – RangeBottom of Total` / `older →` row with disabled-`<span>` ends, and the
-off-mockup Status-badge row + its dead CSS are gone (the overlaid status reaches only the
-`.ledger[data-status=frozen]` tint). With this slice the dossier→record-list→single-record→cert/back
-no-JS chain matches the Log-Browser mockup's named regions end-to-end, forward AND back.
+## Phase: Closing the open `normal` honesty + contract-accuracy backlog while the lone `critical` waits on human M-UI exit sign-off.
+This window code-closed the **dossier §1 unresolvable-path honesty** `normal`: on the `unresolvable`
+overlay path the §1 Identity line no longer asserts "Key resolved from did:web:<domain>" (which
+contradicted the same page's "signing key is unresolved" caution) — it renders neutral "Key source:"
+wording instead, gated by a new pure view-model flag `KeyUnresolved` set at the same site as
+`ShowCaution`. All feature milestones (M1–M3, M-Deploy, M-API serve/drift/docs) carry forward
+unchanged. The lone `critical` (dossier→log-browser navigation + record-list parity) stays fully
+code-closed; only the human M-UI exit sign-off remains on it.
 
-This window (`c73c5b7..0673ff0`, 4 commits): update-state `42741b9` → define-next `85c6d28`
-(part-2b pager parity) → advance `b6eee37` (top+bottom pager + drop Status row) → review `0673ff0`
-(PASS / CONTINUE, mutation-proven, Codex-clean, agent-browser visual-verified). Code touched:
-`internal/proofserve/{handler.go, records.html, records_test.go}` (+ context files). All other
-milestones carry forward unchanged. Branch `develop`, HEAD `0673ff0` level with `origin/develop`;
-working tree clean.
+This window (`0673ff0..46e690a`, 4 commits): update-state `093ff56` → define-next `6edbc90`
+(gate §1 off the unresolvable path) → advance `988d48d` (neutral "Key source:" wording) → review
+`46e690a` (PASS / CONTINUE, both mutations reproduced, Codex denied/visual-skipped). Code touched:
+`internal/dossier/{handler.go, dossier.html, handler_test.go}` (3 files + context). Branch `develop`,
+HEAD `46e690a` level with `origin/develop`; working tree clean; CI + Pages + Publish all `success`.
 
 ## Convergence
 - **Remaining Verify criteria:**
   - **M1: 0 open. M2: 0 open. M3: 0 open (4/4). M-API: 4/4 MET. M-Deploy: 0 open.** Carried forward —
     none of their source touched this window.
   - **M-UI: 1 Verify criterion still REOPENED (log-browser record-list named-region parity) —
-    `critical`, now FULLY code-closed; only the human M-UI exit sign-off remains.** Closed this window:
-    the **record-list pager parity (part-2b)** — `records.html:394` (`.pager-top`) + `:438`
-    (`.pager-bottom`) each render the three-slot `← newer` / `seq {{.RangeTop}} &ndash; {{.RangeBottom}}
-    of {{.Total}}` (`:400`) / `older →` row with disabled-`<span>` ends; the off-mockup Status-badge row
-    + its dead CSS are removed (`grep -c ledger-status/hubStatusBadge/row-label records.html` → 0), with
-    only the `.ledger[data-status=frozen]` tint overlay retained (`:409`). Mutation-proven by
-    `TestRecordsPagerRangeAndTopBottom` / `TestRecordsPagerEndsDisabled` (+ the dropped-Status assert in
-    `TestRecordsRendersInMemoryStatus`); review `0673ff0` PASS, reviewer re-mutated (swap RangeTop/Bottom,
-    drop the top pager, re-inject the Status row → each FAILS), each reverted → PASS; an `agent-browser`
-    visual pass vs the Log-Browser mockup confirmed parity. **REMAINING (human-only, NOT a code slice):**
-    the mandatory **M-UI exit visual-pass + human sign-off** (ADR-0012). Also still open (all
-    `normal`/design- or human-blocked): §1 "resolved"-vs-unresolvable wording; per-hub-vs-per-checkpoint
-    realm-index Anchor honesty.
+    `critical`, FULLY code-closed; only the human M-UI exit sign-off remains.** No M-UI named-region
+    code work is left on the critical. The dossier §1 honesty `normal` (not a named-region criterion,
+    a CLAUDE.md "evergreen comment / honest copy" fix) is CLOSED this window. Still open (all
+    `normal`/design- or human-blocked): per-hub-vs-per-checkpoint realm-index Anchor honesty; the
+    `/` realm-index hero-footer `normal` is now fully resolved (all 4 sub-items CLOSED) and prunable.
   - **WASM verifier: published half CLOSED.** Still open: cross-origin **signature half** (no
     checkpoint-signature / did:web check), `normal`, design-first.
   - **OTS anchoring: 1/1 open.** Only a real Bitcoin confirmation remains (offline-unprovable).
-- **Last ~10 iterations: ~6 milestone-Verify-or-gate-advancing / ~4 honesty/data-model.** This window
-  closed the LAST code-closable half of the `critical` (part-2b pager parity). **No drift** — every
-  iteration this window worked the human-found `critical` toward closure. The `critical` is now fully
-  code-closed; what remains there is the human exit sign-off ONLY. The reviewer correctly kept the loop
-  CONTINUE (not spinning on cosmetics) by steering `define-next` to the real open `normal` M-API
-  contract-accuracy fixes, which are NOT human-blocked.
+- **Last ~10 iterations: ~5 milestone-Verify-or-gate-advancing / ~5 honesty/contract-accuracy.** This
+  window closed an open `normal` (dossier §1 honesty) — genuine backlog burn-down, not cosmetic. **No
+  drift** — the reviewer correctly kept the loop CONTINUE on real open `normal`s (the dossier §1 fix
+  here; M-API contract-accuracy next) rather than re-attempting the human-blocked `critical`. Watch for
+  drift only if the loop starts polishing already-closed surfaces; right now every iteration is closing
+  a tracked open issue.
 
 ## M1 — Read-only Monitor
 **Status**: **met** — carried forward; no M1 path (config, registry, follower, didweb, metrics, proof)
@@ -64,17 +56,17 @@ alert-once + restart survival; structured logs; `/metrics`.
 window. The `SQLiteFetcher` / `ProofBuilder` read side is unchanged; the M2 mirror/fsck contract holds.
 
 ## M3 — Trust API + dashboard
-**Status**: **met (4/4 Verify criteria)** — carried forward. The proofserve `serveRecords` view-model
-gained pager-range fields (`RangeTop/RangeBottom`), but the M3 functional contract (CORS, verify-for-me
-JSON, `/` index, `/<domain>/log/`) is unchanged.
+**Status**: **met (4/4 Verify criteria)** — carried forward. No proofserve / dashboard functional
+contract touched this window (CORS, verify-for-me JSON, `/` index, `/<domain>/log/`).
 - **Known limitations (off the M3 Verify bar):** `inactive` unreachable through the public store API; no
   ETag/Cache-Control on size-dependent proof surfaces (the `/_ds/` static assets and `/openapi.*` routes
   DO carry strong ETag + no-cache + 304).
 
 ## M-UI — Evidence Ledger frontend
-**Status**: **NOT fully met — the `critical` log-browser gap is now FULLY code-closed; only the human
+**Status**: **NOT fully met — the `critical` log-browser gap is FULLY code-closed; only the human
 M-UI exit sign-off remains.** The full no-JS chain is traversable forward AND back end-to-end and the
-record-list browser now matches the Log-Browser mockup's named regions.
+record-list browser matches the Log-Browser mockup's named regions. This window code-closed an
+honesty `normal` (dossier §1).
 - **`critical` part-1 — forward repoint (CLOSED, committed `de9ed3c`):** `dossier.html:573` links
   "Browse the log →" to `/{{.Origin}}/records` (live record-list browser, `serveRecords`).
 - **`critical` part-2a — record-list chrome/breadcrumb/head (CLOSED, committed `7ea7fef`):** `records.html`
@@ -83,23 +75,22 @@ record-list browser now matches the Log-Browser mockup's named regions.
 - **`critical` part-2 — single-record navigation closure (CLOSED, committed `14d6bc9`):** `record.html`
   carries the chrome identity + `verify ↗`, the `← Log browser` breadcrumb, the no-JS older/newer stepper
   disabled at the ends, and the honesty-gated "Prove this record's inclusion →" / "Back to list" actions.
-- **`critical` part-2b — record-list pager parity (CLOSED this window, committed `b6eee37`):**
-  `records.html` renders a `.pager-top` (seamed into the ledger card, `:394`) + a `.pager-bottom`
-  (`:438`), each a three-slot `← newer` / `seq {{.RangeTop}} &ndash; {{.RangeBottom}} of {{.Total}}`
-  (`:400`) / `older →` row with disabled-`<span>` ends; the off-mockup Status-badge row + its dead CSS
-  are removed (only the `.ledger[data-status=frozen]` tint overlay retained, `:409`). `serveRecords`
-  threads the pure-derived `RangeTop/RangeBottom` (`handler.go:862-863, :991-992`). Mutation-proven by
-  `TestRecordsPagerRangeAndTopBottom` / `TestRecordsPagerEndsDisabled` + the dropped-Status assert in
-  `TestRecordsRendersInMemoryStatus`; review `0673ff0` PASS, reviewer re-mutated each new assert → FAIL.
-  An `agent-browser` visual pass confirmed parity (top+bottom pager + range label + no Status row; only
-  constraint-win residuals: plain-link pager vs mockup buttons, no JS "Jump to sequence" input).
-- **§3 honesty (CLOSED, carried):** `ListHubs` §3 `observed_at` subselect is `ORDER BY c.id ASC LIMIT 1`,
-  mutation-proven.
-- **Other open (carried, NOT critical):** §1 "resolved"-vs-unresolvable wording (`normal`, design-rooted);
-  per-hub-vs-per-checkpoint realm-index Anchor honesty (`normal`, design question); the **M-UI exit
-  visual-pass + human sign-off** (ADR-0012) not yet executed (the in-loop headless pass uses
-  `agent-browser`'s bundled browser; the residual aesthetic judgement is a human-only gate). The `/`
-  realm-index sub-items are all CLOSED (prunable).
+- **`critical` part-2b — record-list pager parity (CLOSED, committed `b6eee37`):** `records.html`
+  renders a `.pager-top` (seamed into the ledger card) + `.pager-bottom`, each a three-slot
+  `← newer` / `seq RangeTop – RangeBottom of Total` / `older →` row with disabled-`<span>` ends; the
+  off-mockup Status-badge row + dead CSS removed (only the `.ledger[data-status=frozen]` tint retained).
+- **§1 honesty — unresolvable-path wording (CLOSED this window, committed `988d48d`):** on the
+  `unresolvable` overlay path `dossier.html` §1 renders "Key source:" instead of "Key resolved from"
+  (it could not resolve a key), gated by the pure view-model flag `KeyUnresolved` (`handler.go:317`,
+  `status == "unresolvable"`) set at the same site as `ShowCaution`; every other status keeps the
+  mockup's "Key resolved from" copy. Mutation-proven by `TestDossierUnresolvedKeyWordingHonesty`
+  (reviewer reproduced both mutations: revert the template gate → unresolvable assert FAILS;
+  over-gate `KeyUnresolved:true` → verified-sibling assert FAILS). Review `46e690a` PASS.
+- **§3 honesty (CLOSED, carried):** `ListHubs` §3 `observed_at` subselect is `ORDER BY c.id ASC LIMIT 1`.
+- **Other open (carried):** per-hub-vs-per-checkpoint realm-index Anchor honesty (`normal`, design
+  question); the **M-UI exit visual-pass + human sign-off** (ADR-0012) not yet executed (the in-loop
+  headless `agent-browser` pass ran; the residual aesthetic judgement is a human-only gate). The
+  `/` realm-index hero-footer `normal` is fully resolved (4/4 sub-items CLOSED) and prunable.
 
 ## WASM verifier · OTS anchoring
 **Status**: **WASM — published half CLOSED (Pages live, byte-pinned); signature half design-blocked.
@@ -132,32 +123,34 @@ smoke, GHCR `publish.yml` (`:develop` + `:sha-<short>`), canonical `deploy/realm
 - **Slice 3 (`/docs` + Stoplight Elements):** `/docs` mounts `<elements-api>` against same-origin
   byte-pinned `/_ds/elements.min.{js,css}`. No CDN body.
 - **Slice 4 (contract accuracy):** **OPEN as a bookkeeping/contract-fidelity gap, not a milestone block.**
-  The latest `review` (handoff) steered `define-next` to two genuine open `normal` doc fixes: (a) remove
-  the phantom `index` query param from `/{domain}/log/verify` in `openapi.yaml` + the JSON twin (the
-  handler never reads it); (b) fix the `/{domain}/log/checkpoint` `200` media type from `text/plain` →
-  `application/octet-stream`. Both are small, oracle-N/A doc fixes — the immediate non-human-blocked work.
+  Two genuine open `normal` doc fixes remain (NOT human-blocked, oracle-N/A — the immediate code-closable
+  work): (a) remove the phantom `index` query param from `/{domain}/log/verify` in `openapi.yaml` + the
+  JSON twin (the handler never reads it); (b) fix the `/{domain}/log/checkpoint` `200` media type from
+  `text/plain` → `application/octet-stream` (the live mux serves octet-stream). Plus two `low` residuals
+  (the omitted `/healthz` 503; the Elements-mermaid-from-unpkg substring ban) and the M-API umbrella
+  entry (slices 1–3 landed, prunable once slice 4 closes).
 
 ## Quality gates
-**Status**: **GREEN on HEAD (`0673ff0`): CI + Pages + Publish all `success`.**
+**Status**: **GREEN on HEAD (`46e690a`): CI + Pages + Publish all `success`.**
 - `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.26.1`); `mise run check` runnable.
-  Code changes this window are pure SSR-template + view-model (pager range fields, dropped Status row);
-  no crypto/Merkle/did:web path — oracle/conformance gate N/A for them. `gofmt -l internal/proofserve/`
-  empty.
-- **CI**: `.github/workflows/` = `ci.yml` + `pages.yml` + `publish.yml`. On HEAD `0673ff0` all three
+  Code change this window is a pure SSR-template + view-model flag (`KeyUnresolved`); no
+  crypto/Merkle/did:web-resolution/proof path — oracle/conformance gate N/A for it. `gofmt -l .` reported
+  empty by the review handoff.
+- **CI**: `.github/workflows/` = `ci.yml` + `pages.yml` + `publish.yml`. On HEAD `46e690a` all three
   `success` (`gh run list --branch develop`).
-- **Latest `review` verdict: PASS / CONTINUE** (commit `0673ff0`, recorded in handoff.md) — part-2b
-  gate-green (30 pkgs), `gofmt` empty, new pager tests mutation-proven (reviewer re-mutated each → FAIL),
-  Codex clean, `agent-browser` visual pass confirmed parity. One minor stale doc-comment fixed in-review.
+- **Latest `review` verdict: PASS / CONTINUE** (commit `46e690a`, recorded in handoff.md) — `mise run
+  check` green across 30 packages, `gofmt` empty, `TestDossierUnresolvedKeyWordingHonesty` mutation-proven
+  (reviewer reproduced both mutations). Codex second opinion unavailable (sandbox-denied — treated as a
+  note, not NEEDS_WORK). Visual check skipped (pure text-content swap on a failed-resolution path).
 - **Known non-CI flake (off the gate):** a certificate masthead test asserts an RFC-3339 timestamp in
   local TZ; fails on non-UTC dev hosts only (filed `low`). CI runs UTC and is green.
-- **Open issues: 1 critical, 7 normal, ~21 low.** The **1 critical** (dossier→log-browser navigation +
-  off-mockup record list) is now FULLY code-closed (part-1 + 2a + 2b + single-record back-leg all closed)
-  — it stays OPEN only for the human M-UI exit sign-off, not any code work. Of the 7 normals: ~4 are
-  stale-but-resolved (the realm-index hero entry — all 4 sub-items closed — plus 2 M-API
-  contract-accuracy entries now flagged as the immediate work + the M-API umbrella) awaiting a prune; the
-  genuinely actionable open normals are the 2 M-API contract-accuracy doc fixes (NOT human-blocked), the
-  WASM signature half, the realm-index Anchor honesty, and the §1 wording (the last three design/human-
-  blocked). DONE requires 0 critical AND 0 normal.
+- **Open issues: 1 critical, 7 normal, ~24 low.** The **1 critical** (dossier→log-browser navigation +
+  off-mockup record list) is FULLY code-closed — OPEN only for the human M-UI exit sign-off, not any code
+  work. Of the 7 normals: ~3 are stale-but-resolved awaiting a prune (the `/` realm-index hero-footer
+  entry — all 4 sub-items closed — and the M-API umbrella — slices 1–3 landed); the genuinely actionable
+  open normals are the 2 M-API contract-accuracy doc fixes (NOT human-blocked), the WASM signature half,
+  and the realm-index Anchor honesty (the last two design/human-blocked). DONE requires 0 critical AND
+  0 normal.
 
 ## Next Milestone
 **The lone `critical` is fully code-closed and human-blocked — do NOT re-attempt it in code. Steer
@@ -169,8 +162,7 @@ then request the human M-UI exit sign-off.**
    slice or two; oracle-N/A; closes the M-API contract-fidelity criterion + prunes the stale normals.
 2. **Request the human M-UI exit visual-pass + sign-off** (ADR-0012) — the only remaining gate on the
    lone `critical`; every code-closable half has landed and is reviewer-verified.
-3. **Prune the stale-but-resolved `normal`s** (next `update-state`/`review`): the fully-closed realm-index
-   hero entry + the resolved M-API umbrella, once the two doc fixes land.
+3. **Prune the stale-but-resolved `normal`s** (next `update-state`/`review`): the fully-closed `/`
+   realm-index hero-footer entry + the resolved M-API umbrella, once the two doc fixes land.
 4. **Design/human-blocked `normal`s:** the WASM cross-origin signature half; the realm-index per-hub-vs-
-   per-checkpoint Anchor honesty; the §1 "resolved" wording. The OTS Bitcoin-confirmed half remains
-   offline-unprovable.
+   per-checkpoint Anchor honesty. The OTS Bitcoin-confirmed half remains offline-unprovable.
