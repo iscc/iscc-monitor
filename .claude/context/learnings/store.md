@@ -29,16 +29,16 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## iscc_index writer/reader (`internal/store/iscc_index.go`)
 
-- **settled:** `RecordProjections` writer + the two readers (`SeqsForISCCID` one-to-many BLOB lookup,
-  `RecordAt` single-row `(hub_id, seq)` PK read) are the store half of the M2 projection (ADR-0008),
-  store stays a leaf (no `internal/logclient`/`net/http`), schema/go.mod/go.sum byte-unchanged. Writer
-  is per-row `ON CONFLICT(seq) DO UPDATE` (second write wins; mutation `DO NOTHING` → idempotency test
-  FAILS on stale fields). `iscc_id` is bound as BOTH the BLOB and TEXT column; readers query the BLOB
-  so the index drives it (no ISCC-ID codec). `RecordAt` maps `sql.ErrNoRows → (RecordRow{}, false, nil)`
-  (absent projection is a plain miss, not an error — the leaf's mirrored BYTES are the source of truth);
-  reads `iscc_id_str`/`note_schema` through `sql.NullString` (NULL→""); scans `seq` int64→uint64.
-  Hub-scoping is load-bearing for both readers (mutation dropping `hub_id` → scope test FAILS). (Detail
-  in git history at-2026-06-21.) One durable trap below.
+- **settled:** `RecordProjections` writer + the readers (`SeqsForISCCID` one-to-many BLOB lookup,
+  `RecordAt`/`ListRecords`/`RecentRecords`) are the store half of the M2 projection (ADR-0008), store
+  stays a leaf (no `internal/logclient`/`net/http`), schema/go.mod/go.sum byte-unchanged. Writer is
+  per-row `ON CONFLICT(hub_id, seq) DO UPDATE` (composite PK, second write wins; mutation `DO NOTHING`
+  → idempotency test FAILS on stale fields). `iscc_id` is bound as BOTH the BLOB and TEXT column;
+  readers query the BLOB so the index drives it (no ISCC-ID codec). `RecordAt` maps `sql.ErrNoRows →
+  (RecordRow{}, false, nil)` (absent projection is a plain miss, not an error — the leaf's mirrored
+  BYTES are the source of truth); reads `iscc_id_str`/`note_schema` through `sql.NullString` (NULL→"");
+  scans `seq` int64→uint64. Hub-scoping is load-bearing for every reader (mutation dropping `hub_id` →
+  scope test FAILS). (Detail in git history at-2026-06-21.) One durable trap below.
 - **`RecentRecords(ctx, n) ([]RecordRow, error)` is the realm-wide recent reader** (added 2026-06-23 for
   the dashboard "Recently declared" row): newest-first by the global `seq`, `JOIN follow_state f ON
   f.hub_id = i.hub_id WHERE i.seq < f.last_size` so the accepted-tree ceiling is applied per hub and a
@@ -46,17 +46,16 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   (ADR-0008): NO `note_schema` filter — rows carry the verbatim schema for the caller (the dashboard view
   layer) to interpret which are declarations. Tests: `TestRecentRecords` (realm-wide order + cap + no-
   follow_state exclusion + limit + schema passthrough) / `TestRecentRecordsEmpty`.
-- **Two PRE-EXISTING facts confirmed while wiring `RecentRecords` (NOT introduced by it, NOT fixed here):**
-  (a) The `iscc_index.go` package-docstring's "RecordProjections has no production caller yet" is STALE —
-  `follower/ingest.go:118` calls it on every verified poll, so the index IS populated in production. (b)
-  `seq` is a SINGLE global `INTEGER PRIMARY KEY`, but ingest writes the per-hub ABSOLUTE leaf index
-  (`bundleIndex*TileWidth + offset`) — so two hubs whose logs share a leaf index (e.g. both seq 0) COLLIDE
-  on the PK and the later write clobbers the earlier (`ON CONFLICT(seq) DO UPDATE` overwrites `hub_id`).
-  For a multi-hub realm this means `iscc_index` cannot faithfully hold both hubs' low leaves; it likely
-  should be a composite PK `(hub_id, seq)`. `RecentRecords` ordering-by-`seq` is the only monotonic signal
-  available (there is no observed-at/declared-at column to order by) and is consistent with `ListRecords`'
-  newest-first convention — but the cross-hub recency is only as honest as the clobber allows. Filed as a
-  finding for the loop (see issues.md), out of scope for the out-of-loop UI tweak that surfaced it.
+- **settled (landed, migration 0): `iscc_index` is keyed on the composite `(hub_id, seq)` PK.** `seq` is
+  each hub's per-hub ABSOLUTE leaf index (`bundleIndex*TileWidth + offset`, restarts at 0 per hub), so the
+  composite PK lets two hubs both index low leaves (seq 0, 1, …) without colliding — the original single
+  global `seq PRIMARY KEY` clobbered the earlier hub's row on `ON CONFLICT(seq)`. Both the `schema.sql`
+  fresh-DB shape and migration 0's rebuilt table carry `PRIMARY KEY (hub_id, seq)`; the two DDLs MUST stay
+  identical (if either is edited, edit both). `RecentRecords` orders by the global `seq` (the only
+  monotonic signal — no observed-at column), now honest across hubs since the clobber is gone.
+  Mutation-proven (revert to single-PK → `TestRecordProjectionsMultiHubSeqZero` FAILS on the `ON CONFLICT`
+  mismatch). Also confirmed (NOT a defect): the `iscc_index.go` package-docstring's "no production caller
+  yet" is STALE — `follower/ingest.go` calls `RecordProjections` on every verified poll.
 - **The stored `note.$schema` is the VERBATIM wire value — a full URI, NOT a short name.** Production
   records carry `http://purl.org/iscc/schema/iscc-note-0.8.0.json` (declaration) /
   `…iscc-note-delete-0.8.0.json` (deletion); the golden `projection_test.go` and `follower/fsck_test.go`
@@ -70,19 +69,23 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   "" through `sql.NullString` in `RecordAt`/`ListRecords`; never parsed (ADR-0008). It is the §6 `· at`
   store prerequisite — the certificate render is still the open follow-up; mutation-proven non-vacuous on
   both the present and the NULL→"" leaf (drop it from `DO UPDATE SET` → `…Idempotent` FAILS).
-- **Migration runner lives in `Open` after the `schemaSQL` exec (advance `94a5f7a`): a `PRAGMA
-  user_version`-gated, append-only `migrations []func(*sql.Tx) error`.** `len(migrations)` IS the code's
-  current schema version; index `i` lifts the version `i→i+1` inside its OWN `*sql.Tx` (the
-  `AdvanceAccepted` `defer Rollback` idiom; the bump is `fmt.Sprintf("PRAGMA user_version = %d", v+1)`
-  because SQLite won't BIND that pragma — in-code `int`, no injection). Fail-closed + idempotent;
-  `applyMigrations` takes the slice explicitly so it's unit-testable with a synthetic list. **Production
-  slice is EMPTY today** (no-op baseline; fresh DB already at v0=len), so neither edge below is reachable
-  yet — both go LIVE the instant migration index 0 (the planned `iscc_index` composite-PK rebuild) lands:
-  the runner does NOT bound the read-back version, so (a) `user_version > len(migrations)` (a DB from a
-  NEWER binary, downgraded) opens SILENTLY against unsupported schema, and (b) a corrupt NEGATIVE version
-  PANICS on `migs[-1]` once the slice is non-empty (reviewer-reproduced both). Guard `version < 0 ||
-  version > len(migs)` before the loop when adding migration 0 — filed `normal`. **Append migrations,
-  never edit/reorder a released entry.**
+- **Migration runner lives in `Open` after the `schemaSQL` exec: a `PRAGMA user_version`-gated,
+  append-only `migrations []func(*sql.Tx) error`.** `len(migrations)` IS the code's current schema
+  version; index `i` lifts the version `i→i+1` inside its OWN `*sql.Tx` (the `AdvanceAccepted` `defer
+  Rollback` idiom; the bump is `fmt.Sprintf("PRAGMA user_version = %d", v+1)` because SQLite won't BIND
+  that pragma — in-code `int`, no injection). Fail-closed + idempotent; `applyMigrations` takes the slice
+  explicitly so it's unit-testable with a synthetic list. **Append migrations, never edit/reorder a
+  released entry** (`migrateISCCIndexCompositePK` is index 0; a fresh DB skips it — `schemaSQL` already
+  builds the composite shape and Open jumps straight to `len(migrations)`; only a pre-existing single-PK
+  DB runs it). A migration body does NOT bump `user_version` — `applyMigration` does that on the same tx.
+- **settled (landed): the runner now bounds the read-back `user_version` BEFORE the loop** (`if version <
+  0 || version > len(migs)` → wrapped `errUnsupportedSchemaVersion`), so a DB from a NEWER binary
+  (version > len) is rejected fail-closed instead of opening silently, and a corrupt NEGATIVE version
+  returns an error instead of panicking on `migs[-1]`. Match the reject with `errors.Is(err,
+  errUnsupportedSchemaVersion)`, not the message. Mutation-proven (remove the guard →
+  `TestMigrationOutOfRangeVersion` FAILS: future returns nil, negative panics). This is the durable
+  fail-closed posture every future migration index inherits — the guard is the reason a non-empty
+  `migrations` slice is safe.
 
 ## SQLite store (`internal/store`)
 
@@ -118,16 +121,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   "never observed" stays distinct from the unix epoch. `FollowState` reads `last_size`/`last_error`
   through `sql.NullInt64`/`sql.NullString` so a partial/absent row degrades to the zero value, never an
   error — an unknown `hubID` returns `FollowState{}` + nil err by design (follower treats it as "never polled").
-- **settled (landed): freeze seam is `RecordViolation` (plain INSERT, no `ON CONFLICT` → distinct
-  re-detection rows = evidence) + `Freeze` (upsert `frozen=1`).** `AdvanceFollowState` omits `frozen`
-  from its `DO UPDATE`, so advance-after-freeze keeps `frozen=1` AND moves `last_size` (no auto-unfreeze,
-  ADR-0006; `TestFreezeNoAutoUnfreeze` asserts both). `Kind`/`Status` ride structs (not columns) so store
-  stays `logclient`-free. (Detail in git history.)
-- **settled (landed): `ListViolations(ctx, hubID)` reads the freeze evidence** — leaf read, newest-first
-  (`ORDER BY detected_at DESC, id DESC`), returns `hub_id, kind, detected_at, raw_a, raw_b` (the dossier
-  Exhibit reads each contradictory checkpoint's size via `logclient.CheckpointSizeFromRaw`; `proof_json`
-  left zero). `detected_at` via `sql.NullInt64` → zero `time.Time` on NULL (which sorts LAST under
-  `DESC`); none → empty slice. Mutation-proven; store stays leaf. (Detail in git history.)
+- **settled (landed, detail in git history): the freeze + evidence seams are leaf, struct-carried
+  (`Kind`/`Status` ride structs, not columns, so store stays `logclient`-free).** `RecordViolation`
+  (plain INSERT, no `ON CONFLICT` → distinct re-detection rows = evidence) + `Freeze` (upsert
+  `frozen=1`); `AdvanceFollowState`/`AdvanceAccepted` omit `frozen` from their `DO UPDATE` so
+  advance-after-freeze keeps `frozen=1` while moving `last_size` (no auto-unfreeze, ADR-0006).
+  `ListViolations` reads the evidence newest-first (`detected_at DESC, id DESC`; NULL `detected_at`
+  sorts LAST); the dossier Exhibit reads each raw checkpoint's size via `logclient.CheckpointSizeFromRaw`.
+  All mutation-proven, oracle N/A.
 - **`ListCheckpoints(ctx, hubID, n) ([]CheckpointSummary, error)` is the §5-observation-log read** (added
   2026-06-23, advance `96e9600`): a leaf read of `tree_size, observed_at FROM checkpoints WHERE hub_id=?
   ORDER BY observed_at DESC, id DESC LIMIT ?`, mirroring `ListViolations`'s shape. `observed_at` reads
@@ -142,11 +143,11 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   with `go list -deps ./internal/store | grep '^net/http'` (empty) and that the package's own `.Imports`
   are exactly `context database/sql embed errors fmt time` + the sqlite driver. Do not flag the bare
   `net` lines as a leak.
-- **settled (landed): `RecordHubKey` is the did:web key cache write** — guarded `UPDATE` then `INSERT`
-  on zero `RowsAffected` (the `SetCoverage` idiom; `hub_keys` has no UNIQUE); UPDATE rewrites ALL mutable
-  columns so a re-resolve tracks the DID doc (clears `pubkey_z`→NULL when multibase drops, not
-  append-only). `nullStringOrNil`+`unixOrNil` keep absent distinct from `""`/epoch; FK enforced (787).
-  Leaf-pure, oracle N/A. (Detail in git history.)
+- **settled (landed, detail in git history): `RecordHubKey` is the did:web key cache write** — guarded
+  `UPDATE` then `INSERT` on zero `RowsAffected` (the `SetCoverage` idiom; `hub_keys` has no UNIQUE);
+  UPDATE rewrites ALL mutable columns so a re-resolve tracks the DID doc (clears `pubkey_z`→NULL when
+  multibase drops, not append-only). `nullStringOrNil`+`unixOrNil` keep absent distinct from `""`/epoch;
+  FK enforced (787). Leaf-pure, oracle N/A.
 - **Coverage set-once is a guarded `UPDATE … WHERE monitored_since_size IS NULL` keyed on the SIZE
   column being NULL — and that guard is correct even for a size-0 start.** The first `SetCoverage`
   writes `int64(size)` (so the column is NOT NULL afterward, even when size==0), making every re-call a
@@ -160,25 +161,17 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   always injects a real `observedAt`). Wiring lives ONLY on the verified, non-violation `PollHub` path
   (between `RecordCheckpoint` and `AdvanceFollowState`), kept out of `freeze`, so a contradictory
   observation never starts coverage (ADR-0001) — the fork/unverified tests assert `cov.Set == false`.
-- **settled (landed): `AdvanceAccepted(ctx, CheckpointRecord)` is the repo's first `*sql.Tx`** — it
-  collapses the verified-advance triad into one transaction whose three `tx.ExecContext` statements are
-  byte-for-byte the `RecordCheckpoint` insert (`DO NOTHING`), the `SetCoverage` guarded set-once UPDATE
-  (`… IS NULL`), and the `AdvanceFollowState` upsert (`frozen` omitted, no auto-unfreeze). The
-  `defer func(){ _ = tx.Rollback() }()` is the standard pattern (post-`Commit` rollback → benign
-  `sql.ErrTxDone`; real commit error returned `%w`-wrapped), NOT a swallowed-error dodge. The three
-  original methods stay public (still used as seed helpers + the freeze-path `RecordCheckpoint`).
-  Mutation-proven non-vacuous; store stays a leaf; oracle N/A. Detail in git history.
-- **settled (landed): OTS-table CRUD seam (`ots.go`) is a leaf, idiom-identical to the checkpoint
-  family.** `RecordOTS` ports `RecordCheckpoint`'s `ON CONFLICT(hub_id,tree_size,root) DO NOTHING` +
-  `RowsAffected` dance; `OTSForRoot` ports the `sql.ErrNoRows → (zero,false,nil)` absent-is-not-error
-  miss (un-anchored root → honest pending, never 5xx); `PendingOTS(now)` is a status-scoped leaf read
-  `WHERE status=? AND (next_retry IS NULL OR next_retry<=?) ORDER BY stamped_at ASC, id ASC` (the
-  `next_retry` back-off leg binds `now.Unix()` directly, not `unixOrNil`); `MarkOTSUpgraded` /
-  `MarkOTSAttempted` / `MarkOTSStamped` are plain UPDATEs that ignore `RowsAffected` (idempotent/absent
-  re-mark is a no-op) and leave `status` untouched except the explicit upgrade. `OTSStatusPending`/
-  `OTSStatusConfirmed` consts are the single source for the two literals (literal-drift trap); `Status`/
-  `ots_bytes` carried opaque so store stays leaf-pure (no anchoring/OTS import). All mutation-proven;
-  oracle N/A (opaque-BLOB round-trip, no merkle/proof path). Detail in git history at-2026-06-21.
+- **settled (landed, detail in git history): the verified-advance + OTS CRUD seams are leaf,
+  struct-carried, mutation-proven, oracle N/A.** `AdvanceAccepted(ctx, CheckpointRecord)` is the repo's
+  first `*sql.Tx` — it collapses the verified-advance triad (the `RecordCheckpoint` `DO NOTHING` insert,
+  the `SetCoverage` set-once UPDATE, the `AdvanceFollowState` `frozen`-omitting upsert) into one
+  transaction (`defer Rollback` after `Commit` → benign `sql.ErrTxDone`, NOT a swallowed dodge). The OTS
+  seam (`ots.go`) is idiom-identical to the checkpoint family: `RecordOTS` (`ON CONFLICT … DO NOTHING` +
+  `RowsAffected`), `OTSForRoot` (`sql.ErrNoRows → (zero,false,nil)` → honest pending, never 5xx),
+  `PendingOTS(now)` (`status=? AND (next_retry IS NULL OR next_retry<=?) ORDER BY stamped_at ASC, id
+  ASC`), and the `MarkOTS*` no-op-on-absent UPDATEs. `OTSStatusPending`/`OTSStatusConfirmed` consts are
+  the single source for the two literals (drift trap); `Status`/`ots_bytes` carried opaque so store stays
+  leaf-pure.
 - **settled (landed): the realm-index `Anchor` projection is a read-only column on `ListHubs`.** A
   correlated subselect `(SELECT o.status FROM ots o WHERE o.hub_id=h.hub_id ORDER BY o.stamped_at DESC,
   o.id DESC LIMIT 1)` read through `sql.NullString` (NULL→"") gives the hub's latest-stamped-root OTS

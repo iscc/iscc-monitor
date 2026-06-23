@@ -37,48 +37,6 @@ filed it and does **not** affect priority.
 - **Spec:** CLAUDE.md "Write evergreen comments that describe the current state" (docstring must match
   behavior); next.md Implementation Note "Prefer nil-tolerant, mirroring the Loop's nil-Logger discipline".
 
-## Migration MECHANISM landed but the production list is still EMPTY — no column-add migration exists yet
-- **Priority:** normal
-- **Source:** [review] (mechanism added advance `94a5f7a`; originally Codex P1)
-- **What / where / how to verify:** UPDATE — the `PRAGMA user_version`-gated migration RUNNER now exists
-  in `store.Open` (`internal/store/sqlite.go:95,119-152`, advance `94a5f7a`): an append-only
-  `migrations []func(*sql.Tx) error` run after the `schemaSQL` exec, fail-closed + idempotent,
-  mutation-proven. What REMAINS open: the production `migrations` slice ships **EMPTY** (no-op baseline),
-  so no actual column-add/`ALTER` migration has landed — a column added to an existing table in a later
-  image **still** silently never reaches a pre-existing DB until its migration entry is appended (the
-  `OPERATING.md` §Migration-policy "recreate the volume on a schema change" interim still holds today).
-  Does NOT block — fresh DBs (the only deployed kind) get the full baseline; all gates green. Close this
-  when the first real migration lands (the planned `iscc_index` single-global-PK → composite `(hub_id,seq)`
-  rebuild is the scheduled next step — it appends migration index 0). Verify fixed: opening a DB seeded
-  with a pre-`note_timestamp` `iscc_index` DDL (version 0) then running an ingest + `RecordAt` succeeds
-  (column auto-added by a real migration), with a test that seeds the old schema and asserts no
-  `no such column` error; AND `len(migrations) > 0`.
-- **Spec:** ADR-0007 one-file-per-network store; CLAUDE.md "Irreplaceable evidence" (a populated prod DB
-  that cannot be upgraded in place is a backup/continuity risk); `next.md` Not-In-Scope migration note.
-
-## Migration runner does not bound the read-back `user_version` — future-version silent-accept + negative-version panic (both go live at migration index 0)
-- **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-reproduced both halves by probe)
-- **What / where / how to verify:** `applyMigrations` (`internal/store/sqlite.go:119-130`) reads
-  `PRAGMA user_version` into an `int` and loops `for v := version; v < len(migs); v++` WITHOUT bounding
-  `version` against `[0, len(migs)]`. Two fail-open edges, both reviewer-reproduced by a throwaway probe:
-  (a) **future version** — a DB whose `user_version > len(migrations)` (written by a NEWER binary, then
-  DOWNGRADED) opens SILENTLY against an unsupported schema (probe: set version 5 over the empty prod slice →
-  `Open` SUCCEEDS, no error), defeating the "fail-closed" contract the docstring + `OPERATING.md` claim;
-  (b) **negative version** — a corrupt/manual `user_version = -1` PANICS on `migs[-1]` (`index out of
-  range [-1]`) the instant the slice is NON-EMPTY (probe with a 1-entry synthetic slice → panic). NOT
-  reachable in production TODAY because the production `migrations` slice is EMPTY (a fresh/upgraded DB
-  only ever has `user_version == 0 == len(migrations)`; the negative loop `v:=-1; v<0` never enters with
-  an empty slice) — so all gates green, every `next.md` Verify met, this increment is sound. But BOTH go
-  live the moment migration index 0 lands (the explicitly-scheduled next step), so fix WITH or BEFORE that
-  step. Fix: guard `if version < 0 || version > len(migs) { return error }` before the loop, so the runner
-  stays fail-closed on an unsupported on-disk version instead of silently accepting / panicking. Verify
-  fixed: `Open` on a DB whose `user_version` exceeds `len(migrations)` returns a wrapped error (not
-  success), and a `-1` version returns an error (not a panic); reverting the guard makes both FAIL.
-- **Spec:** correctness rule 6 "fail-closed" discipline; `store.Open` docstring + `deploy/OPERATING.md`
-  §Migration-policy ("fail-closed … never leaving a half-migrated database"); CLAUDE.md "fail-closed"
-  posture; `learnings/store.md` migration-runner note.
-
 ## Single-record label test is vacuous on the kind-label constant value
 - **Priority:** low
 - **Source:** [review] (mutation-found in the constant-fix review)
@@ -533,26 +491,6 @@ filed it and does **not** affect priority.
   the (pruned) egress+footprint critical's disk-growth-rate Verify clause.
 
 
-## `iscc_index.seq` is a single global PRIMARY KEY but ingest writes per-hub absolute leaf indices — multi-hub PK collision
-- **Priority:** normal
-- **Source:** [out-of-loop UI work] (surfaced while adding `store.RecentRecords` for the dashboard "Recently declared" row, 2026-06-23)
-- **What / where / how to verify:** `schema.sql` declares `iscc_index(seq INTEGER PRIMARY KEY, …)` — a
-  single global rowid — yet `follower/ingest.go` folds projections at the per-hub ABSOLUTE leaf index
-  (`logclient.BundleProjections(raw, bundleIndex*tiles.TileWidth)`), which restarts at 0 for each hub. So
-  two followed hubs whose logs share a leaf index (every realm with ≥2 active hubs: both have seq 0, 1, …)
-  COLLIDE on the PK, and `RecordProjections`' `ON CONFLICT(seq) DO UPDATE SET hub_id = excluded.hub_id, …`
-  silently OVERWRITES the earlier hub's row with the later hub's. The index therefore cannot faithfully
-  hold both hubs' low leaves; per-hub readers (`ListRecords`/`SeqsForISCCID`/`RecordAt`) still filter by
-  `hub_id` so they only ever see the surviving (last-written) rows, and the realm-wide `RecentRecords`
-  inherits the same clobbered set. Likely fix: composite PK `(hub_id, seq)` (and update the BLOB index +
-  the `ON CONFLICT` target accordingly), with a migration story (see the existing no-migration issue).
-  Verify fixed: two hubs can both index seq 0 without one clobbering the other (a store test seeding
-  `{hubA,0}` and `{hubB,0}` then reading both back per hub). NOT introduced by the dashboard work — that
-  feature only reads what is there; this is a pre-existing data-model bug it surfaced. Normal: it is a
-  multi-hub correctness limitation, not a current crash, and the testnet realm is small.
-- **Spec:** ADR-0008 schema-agnostic record index; ADR-0007 one-file-per-network; CLAUDE.md "Mirror" /
-  "Projection". Pairs with the existing "No on-disk DB migration story" issue (a PK change needs one).
-
 ## `schemaDeclaration`/`schemaDeletion` note-schema URIs are now triplicated (certificate + proofserve + dashboard)
 - **Priority:** low
 - **Source:** [out-of-loop UI work] (2026-06-23, adding the dashboard's declaration filter)
@@ -591,6 +529,55 @@ filed it and does **not** affect priority.
 - **Spec:** CLAUDE.md "Coverage" / "Self-consistency violation" (never imply a guarantee the data does not
   support); ADR-0001 coverage honesty; learnings.md always-loaded SSR-honesty rule; `learnings/dossier.md`
   §3 size/time-decouple note.
+
+## The out-of-range `user_version` guard runs AFTER `db.Exec(schemaSQL)`, so a downgrade-from-newer-binary still re-applies the baseline DDL before the reject
+- **Priority:** low
+- **Source:** [review] (Codex P2, reviewer-confirmed against `Open` ordering)
+- **What / where / how to verify:** `Open` (`internal/store/sqlite.go:142,146`) runs `db.Exec(schemaSQL)`
+  BEFORE `applyMigrations`, and the new out-of-range guard (`internal/store/sqlite.go:181-184`, advance
+  `ed3206d`) lives INSIDE `applyMigrations` — so the guard rejects a `user_version > len(migrations)` DB
+  (one written by a NEWER binary, then opened by this OLDER one) only AFTER the baseline DDL has already
+  run. Reviewer-confirmed the residual is strictly bounded: `schemaSQL` is ENTIRELY
+  `CREATE TABLE/INDEX IF NOT EXISTS` (grep-verified — NO `DROP`/`ALTER`/`DELETE`/`UPDATE`/`INSERT`), so on
+  a downgrade it can only RE-CREATE a table/index a newer schema had dropped or renamed; it can never
+  alter or corrupt existing data. NOT reachable today — this is the FIRST migration (`len(migrations)==1`),
+  there is no newer binary, and the guard this advance added is strictly STRONGER than the prior no-guard
+  state (the migration-layer reject is mutation-proven by `TestMigrationOutOfRangeVersion`). The
+  `schemaSQL`-before-guard ordering is PRE-EXISTING (not introduced by this advance — only the guard is
+  new), so this is a narrower defense-in-depth gap, same class as the other latent `low`s, not a
+  regression. Does NOT block progress; all gates green, every `next.md` Verify met. Fix when `Open` /
+  the migration runner is next touched: read `PRAGMA user_version` and apply the `version < 0 || version >
+  len(migrations)` reject BEFORE `db.Exec(schemaSQL)` (hoist the guard out of `applyMigrations` into `Open`
+  ahead of the schema pass, or split a `checkSchemaVersion` step), so an unsupported on-disk version
+  fails closed without the baseline DDL touching the DB at all. Verify fixed: opening a DB whose
+  `user_version > len(migrations)` returns the wrapped error AND leaves the schema untouched (a probe
+  that drops a baseline table on a future-version DB finds it still dropped after the failed Open);
+  reverting the hoist re-creates it.
+- **Spec:** correctness rule 6 "fail-closed" discipline; `store.Open` docstring + `deploy/OPERATING.md`
+  §Migration-policy ("fail-closed … never leaving a half-migrated database"); CLAUDE.md "fail-closed"
+  posture; `learnings/store.md` migration-runner note.
+
+## Composite-PK rebuild dropped `seq`'s standalone ordering path — `RecentRecords`' `ORDER BY i.seq DESC` now sorts instead of walking an index
+- **Priority:** low
+- **Source:** [review] (Codex P2, reviewer-confirmed against the schema + `RecentRecords` query)
+- **What / where / how to verify:** Re-keying `iscc_index` from `seq INTEGER PRIMARY KEY` (the rowid) to
+  the composite `PRIMARY KEY (hub_id, seq)` (advance `ed3206d`) removed the standalone ordering path on
+  `seq`: `seq` is now the SECOND column of the composite PK, so there is no index SQLite can walk for the
+  realm-wide `ORDER BY i.seq DESC` in `RecentRecords` (`internal/store/iscc_index.go:237`) — on a populated
+  monitor that query now scans + sorts `iscc_index` instead of walking the old rowid order in reverse. This
+  is a PERFORMANCE observation, NOT a correctness defect: the query returns the right rows in the right
+  order (mutation-proven by `TestRecentRecords`); only the access path changed. The cost is negligible at
+  current scale — `RecentRecords` is realm-wide with a small `LIMIT n` over a 2-hub testnet — and `next.md`
+  explicitly scoped this step to the PK rework + left `RecentRecords`' ordering as-is (Not In Scope: "Do NOT
+  re-key `RecentRecords`' cross-hub ordering"). Does NOT block progress; all gates green. Fix when the
+  dashboard-recent path or `iscc_index` schema is next touched (and only if a populated monitor shows the
+  sort as a hot path): add `CREATE INDEX IF NOT EXISTS iscc_index_by_seq ON iscc_index (seq)` to
+  `schema.sql` AND recreate it inside migration 0's rebuild (append to its `stmts`, since a released
+  migration's effect must converge with the fresh-DB schema). Verify fixed: `EXPLAIN QUERY PLAN` for the
+  `RecentRecords` query uses the `seq` index (no `USE TEMP B-TREE FOR ORDER BY`); the fresh-DB schema and
+  the migrated DB both carry the index. Low — skipped by the loop; a scale-time refinement, not a defect.
+- **Spec:** ADR-0007 per-network store sizing / scaling trip-wire; ADR-0008 schema-agnostic index;
+  CLAUDE.md `GET /` "Recently declared" surface; `learnings/store.md` `RecentRecords` ordering note.
 
 ## Dossier §1 unconditionally says "Key resolved from did:web:…" even on the `unresolvable` overlay path
 - **Priority:** normal
