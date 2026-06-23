@@ -1,42 +1,70 @@
-## 2026-06-23 — Review of: Close the single-record navigation back-leg — chrome identity + `← Log browser` breadcrumb + older/newer stepper + actions on `record.html`
+## 2026-06-23 — Record-list pager parity (part-2b): top+bottom "seq X–Y of Z" pager + drop the off-mockup Status row
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Reworked the `/records` log-browser record list to the Log-Browser mockup's pager region — a
+top pager (above the ledger card) and a bottom pager (below it), each a three-slot row (Newer left,
+center label, Older right) with the end affordances rendered as non-interactive `<span class="pager-disabled">`
+(the no-JS equivalent of the mockup's opacity-disabled button). The top pager's center is the pure-derived
+`seq <top> – <bottom> of <total>` range label (newest-first, so top is the LARGER seq); the bottom pager's
+center is the append-only footnote. Dropped the off-mockup Status-badge row (and its now-dead CSS); the
+overlaid status now reaches only the `.ledger` element's `data-status` frozen-tint attribute. Closes the
+last code-closable half of the lone `critical` — only the human M-UI exit sign-off remains.
 
-**Summary:** Clean, tightly-scoped increment that turns the single-record page (`GET /<domain>/log/record?index=<seq>`)
-from a dead end into a navigable node: it threads `domain, instance, operator` into the `serveRecord` dispatch
-(a one-line call edit + signature), extends the `recordData` view-model with pure-derived fields (no new store
-read), and dresses `record.html` with the mockup's navigation regions — chrome identity + `verify ↗`, the
-`← Log browser` breadcrumb, the no-JS older/newer stepper disabled at the ends, and the honesty-gated
-"Prove this record's inclusion →" / "Back to list" actions. Two prod files (within the ≤3 budget, both named
-in `next.md`), all gates green, three new tests mutation-proven (reviewer independently re-mutated the honesty
-gate and the stepper guards → both FAIL). With this slice the no-JS chain `/` → dossier → record list → single
-record → (cert / back) is traversable forward **and** back end-to-end.
+**Files changed:**
+- `internal/proofserve/handler.go`: added `RangeTop`/`RangeBottom uint64` to `recordsData` and set them
+  inside the existing `if len(records) > 0 {` block in `serveRecords` from the already-fetched page slice
+  (`records[0].Seq` / `records[len-1].Seq`) — zero new store reads, no new query.
+- `internal/proofserve/records.html`: replaced the single bottom-only "showing N of M" pager + the
+  `.ledger-status` Status row with the top+bottom pager region (`.pager-top` seamed into the ledger card,
+  `.pager-bottom` below); removed the dead `.ledger-status`/`.row-label` CSS AND the now-dead
+  `.hub-status-badge` CSS block (the badge partial is no longer invoked on this page); kept the standalone
+  coverage-honesty footnote; updated the `.ledger[data-status=frozen]` comment to reflect the dropped badge.
+- `internal/proofserve/records_test.go` (test-only, off the ≤3 budget): reworked
+  `TestRecordsRendersInMemoryStatus` to assert the overlay reaches the `.ledger` `data-status` attribute
+  while the dropped Status-badge row markers (`row-label">Status`, `class="hub-status-badge"`,
+  `>Unresolvable<`) are ABSENT; added `TestRecordsPagerRangeAndTopBottom` (hardcoded `seq 4 – 0 of 5` /
+  `seq 4 – 3 of 5` range + top/bottom pager bracketing) and `TestRecordsPagerEndsDisabled` (disabled-span
+  ends). The existing `TestRecordsPagination` / `TestRecordsOlderLinkReachesSeq0` / `olderHref` markers
+  needed NO change — the live older anchor still renders `older &rarr;</a>` and the `?from=…&amp;n=…` chain
+  is unchanged (the rework only moved the markup, not the cursor math).
 
-**Verification:**
-- [x] `mise run check` — green (build + vet + test across all 30 packages).
-- [x] `gofmt -l .` — empty.
-- [x] `go test -count=1 -run TestRecord ./internal/proofserve` — PASS (existing single-record tests green under the threaded signature).
-- [x] `TestRecordBreadcrumbAndChromeIdentity` / `TestRecordStepperEnds` / `TestRecordProveInclusionHonestyGate` — all PASS verbose.
-- [x] Import-direction: `go list -deps ./internal/proofserve | grep -qx internal/metrics` → absent.
-- [x] `go.mod`/`go.sum` byte-identical (not in the diff; no new module dep — `dashboard.Identity` already imported via part-2a).
-- [x] **Mutation re-proven independently:** dropped the `{{if .ProveInclusionID}}` gate (→ `{{if true}}`) → honesty-gate test FAILS; forced `HasOlder`/`HasNewer` to `if true` → stepper test FAILS; both restored, suite green again.
-- [x] No-CDN body ban intact: `TestRecordLinksTokensNoCDN` PASS (the `monitor.iscc.codes` host is same-federation, tolerated).
-- [x] Gate-circumvention scan over `@{upstream}..HEAD` — no `//nolint`, `t.Skip`, build-tag exclusion, swallowed error, or deleted assertion.
-- [x] Chrome CSS + markup is a faithful port of `records.html` (verified line-for-line); breadcrumb relative `href="records"` is deliberately distinct from the record-list's ABSOLUTE `/{{.Domain}}` dossier crumb (different back-legs).
-- Oracle/conformance gate: **N/A** — pure SSR chrome + view-model threading; no signature, RFC-6962, Merkle, did:web, fsck, or proof path touched; store stays a leaf, no new read. Correctly stated N/A in the advance.
+**Verification:** `mise run check` → GREEN (build + vet + test across all 30 packages; `gofmt -l .` empty).
+- [x] `go test -count=1 -run TestRecords ./internal/proofserve` → all 15 PASS (existing pagination-chain
+  tests green under the reworked pager).
+- [x] NEW pager-parity test (`TestRecordsPagerRangeAndTopBottom`) asserts the hardcoded `seq 4 &ndash; 0 of 5`
+  range + a top pager preceding and a bottom pager following the ledger; append-only + coverage-honesty
+  clauses both present.
+- [x] NEW dropped-Status-row test (in `TestRecordsRendersInMemoryStatus`) asserts the Status-row markers are
+  absent while `class="ledger" data-status="unresolvable"` (frozen-tint attribute) survives.
+- [x] `go list -deps ./internal/proofserve | grep -qx internal/metrics` → ABSENT (no new dep).
+- [x] `go.mod` / `go.sum` byte-identical (template/view-model-only change).
+- [x] **Mutations re-proven** (restored after each, suite green): swap `RangeTop`/`RangeBottom` → range test
+  FAILS; rename `pager pager-bottom` class → "body missing the bottom pager" FAILS; re-add the Status-badge
+  row → "still carries the dropped Status-badge row marker" FAILS; force top-pager older always-live → ends
+  test FAILS.
+- Oracle/conformance gate: **N/A** — pure SSR template + view-model rework, no signature, RFC-6962, Merkle,
+  did:web, fsck, or proof path touched; store stays a leaf, no new read.
 
-**Issues found:** (none in this diff.) The lone `critical` is now down to its **part-2b cosmetic pager parity + human M-UI sign-off** — its STATUS block was updated: part-1 (dossier repoint, recovered in `de9ed3c`), part-2a (record-list chrome), and part-2 (this single-record back-leg) are all DONE, so the no-JS navigation dead-end the human reported is FIXED and the chain is unbroken end-to-end (reviewer-traced every href). It stays OPEN only for the remaining mockup-parity (pager + Status-badge-row drop) and the human exit sign-off — neither is a dead-end.
-
-**Codex second opinion:** unavailable — the `codex review` launch was denied by the auto-mode classifier this iteration (the `sandbox_mode=danger-full-access` + `approval_policy=never` flags trip its "create unsafe agents" rule, not pre-authorized here). `/tmp/codex-review.txt` holds only a STALE verdict from the prior (part-2a) review — it describes "threads the domain and identity through the **record-list** path", i.e. the previous slice, so it is NOT a second opinion on this commit and was not relied on. Graceful degradation per protocol; my own review + independent mutation re-proof stands in.
-
-**Visual check:** skipped — `agent-browser` is installed but no Chrome/Chromium binary is present in the devcontainer, so the headless ADR-0012 pass cannot launch (same as the part-2a review). Graceful degradation; the hard gate is the human M-UI exit sign-off. Static cross-check against `.claude/design/ISCC Monitor - Single Record.dc.html` (lines 41-90) instead: the rendered breadcrumb (`← Log browser` / `/ <domain>`), the older/newer stepper, the honest `seq N of M` position label (vs the mockup's 1-based "record N of M" — the deliberate honest-0-based deviation), and the two actions ("Prove this record's inclusion →" / "Back to list") all match the mockup's named regions for this slice's scope. The type-notice callouts + HUB/POSITION/LOGGED field-grid restructure are correctly left out (Not-In-Scope).
-
-**Next:** **Part-2b — the record-list pager parity** (the last code-closable half of the `critical`): rework `records.html`'s bottom-only "showing N of M" pager into the mockup's top+bottom "seq X–Y of Z" form disabled at the ends, and drop the Status-badge row the mockup's log browser omits. After that, request the human M-UI exit sign-off, then the masthead-identity const consolidation (the tracked `low`, now duplicated across dashboard/dossier/certificate/records).
+**Next:** Request the **human M-UI exit sign-off** — this was the final code slice gating it; the no-JS
+navigation chain `/` → dossier → record list → single record → cert/back is traversable both ways and the
+record-list pager region now matches the Log Browser mockup. After sign-off, the masthead-identity const
+consolidation (the tracked `low`, now 4× duplicated across dashboard/dossier/certificate/proofserve) is the
+next milestone-fresh candidate.
 
 **Notes:**
-- The honesty gate (`found && row.IsccID != ""` → `data.ProveInclusionID`, rendered only `{{if .ProveInclusionID}}`) is the recurring "Verdict-UI honesty" trap (MEMORY): this slice gets it right and proves it non-vacuously — the no-projection fixture (index=2) renders no `/inclusion/` link. Reviewer re-mutated to confirm.
-- The `HasNewer` ceiling `seq+1 < size` cannot overflow: the `seq >= size → 404` guard upstream means `seq < size`, and `size` is the accepted-tree size (bounded). At `seq == size-1`, `seq+1 == size` → newer disabled. Correct.
-- Masthead-identity fallback consts are unchanged at the package level — `serveRecord` reuses proofserve's existing `resolveIdentity` (no NEW const copy added). The cross-package duplication (dashboard/dossier/certificate/proofserve) is the standing `low` consolidation, correctly out of scope here.
-- `database/sql` is in proofserve's dep closure pre-existing (the handler reads the SQLite store) — not introduced here; the load-bearing check (`internal/metrics` absent, no new module dep) passes.
-- The single-record-page chrome note in `records.html`'s part-2a section was a forward-looking "separate slice" pointer; updated to reflect this slice landed it.
+- **Dead partial association kept (harmless):** `recordsTmpl` still parses `badge.Source` into its set even
+  though the body no longer invokes `{{template "hubStatusBadge" .}}`. Left as-is to stay in scope (no
+  dep/behavior change — `internal/badge` is still imported for `badge.Label`); removing it is a trivial
+  cleanup if review prefers. Likewise `serveRecords` still computes the `.Label` field (per `next.md`: "KEEP
+  the `Status`/`Label` fields") though the template only reads `.Status` now.
+- **Removed the `.hub-status-badge` CSS block** (a small deviation from `next.md`, which scoped only
+  `.ledger-status`/`.row-label`): that block solely styled the badge partial this slice stops rendering, so
+  it is genuinely dead code. Leaving it would be misleading; it uses the unquoted `[data-status=…]` selector
+  so removing it cannot affect the negative `data-status="verified"` assert either way.
+- **Empty-state case renders no pagers** — both pagers are gated on `{{if .Records}}`, so an empty index
+  shows just the `.ledger` empty state + the coverage footnote (`TestRecordsEmpty` green). The `.pager-top +
+  .ledger` CSS seam (squared corners, no top border) only applies when the top pager is present.
+- **No `&ndash;` escaping surprise:** the en-dash entity is literal template text, so `html/template`
+  passes it through verbatim (`seq 4 &ndash; 0 of 5`); the tests assert that exact byte form.
+- The `from=1&n=2` window (seqs 1..0) is the oldest-page fixture for the disabled-Older end; a 5-record
+  mirror at full `n=50` disables BOTH ends (the whole index is one page), so the ends test deliberately uses
+  `n=2` for the newest-page case.

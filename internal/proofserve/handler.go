@@ -844,18 +844,25 @@ type recordRowVM struct {
 // /log/ subtree). Instance / Operator are the resolved masthead identity (the chrome's
 // instance-identity block + verify link), byte-identical to the dashboard and dossier.
 type recordsData struct {
-	Status    string
-	Label     string
-	Domain    string
-	Instance  string
-	Operator  string
-	Records   []recordRowVM
-	Total     int
-	PageSize  int
-	HasNewer  bool
-	NewerFrom uint64
-	HasOlder  bool
-	OlderFrom uint64
+	Status   string
+	Label    string
+	Domain   string
+	Instance string
+	Operator string
+	Records  []recordRowVM
+	Total    int
+	PageSize int
+	// RangeTop / RangeBottom are the largest / smallest seq on the current page,
+	// rendered as the pager's "seq RangeTop – RangeBottom of Total" range label. The
+	// list is newest-first, so the top is the LARGER seq (records[0]) and the bottom
+	// is the smaller (records[len-1]); both are derived purely from the page slice in
+	// hand (no extra store read). Unset (zero) on the empty page, where no pager renders.
+	RangeTop    uint64
+	RangeBottom uint64
+	HasNewer    bool
+	NewerFrom   uint64
+	HasOlder    bool
+	OlderFrom   uint64
 }
 
 // recordKindKey maps the verbatim note.$schema to a stable lowercase kind token
@@ -975,6 +982,12 @@ func serveRecords(w http.ResponseWriter, r *http.Request, st *store.Store, hubID
 	}
 	if len(records) > 0 {
 		oldest := records[len(records)-1].Seq // smallest seq on the page
+		// The pager range label is pure-derived from the page slice already in hand
+		// (no extra store read): the page is newest-first, so the top is the LARGER
+		// seq (records[0]) and the bottom is the smaller (the last row). Total already
+		// carries the honest accepted-tree count.
+		data.RangeTop = records[0].Seq
+		data.RangeBottom = oldest
 		// A newer page exists only once we have paged down at all (hasFrom; the
 		// no-cursor page always starts at the newest leaf). Its cursor is a full page
 		// above the page's top seq; ListRecords clamps seq <= cursor with LIMIT

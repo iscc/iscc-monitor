@@ -154,11 +154,14 @@ func TestRecordsLinksTokensNoCDN(t *testing.T) {
 	}
 }
 
-// TestRecordsRendersInMemoryStatus proves the in-memory status overlay reaches the
-// record-list page: a store-verified hub whose live verdict is unresolvable renders
-// that richer status through the hubStatusBadge partial, and the store-only "verified"
-// is NOT the rendered status (the overlay won). The negative data-status="verified"
-// assert is what the unquoted CSS selector in records.html keeps honest.
+// TestRecordsRendersInMemoryStatus proves the in-memory status overlay still reaches
+// the record-list page after the Status-badge row was dropped (the Log Browser mockup
+// omits it): a store-verified hub whose live verdict is unresolvable surfaces that
+// richer status as the .ledger element's data-status attribute (the frozen-tint hook),
+// and the store-only "verified" is NOT the rendered status (the overlay won). The
+// negative data-status="verified" assert is what the unquoted CSS selector in
+// records.html keeps honest — the only data-status literal in the body is the single
+// .ledger element's, carrying the overlaid value.
 func TestRecordsRendersInMemoryStatus(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
 	statuses := fakeStatusSource{m.hubID: "unresolvable"}
@@ -168,17 +171,25 @@ func TestRecordsRendersInMemoryStatus(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
 	}
-	for _, want := range []string{
-		`class="hub-status-badge"`,
-		`data-status="unresolvable"`,
-		">Unresolvable<",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("body missing overlaid status markup %q\n%s", want, body)
-		}
+	// The overlaid status reaches the .ledger card's data-status attribute (the
+	// frozen-tint hook the mockup keeps), proving the overlay is wired to the page.
+	if !strings.Contains(body, `class="ledger" data-status="unresolvable"`) {
+		t.Errorf("body missing overlaid .ledger data-status attribute (data-status=\"unresolvable\")\n%s", body)
 	}
+	// The store-only verified status must NOT appear — the overlay replaced it.
 	if strings.Contains(body, `data-status="verified"`) {
 		t.Errorf("body still renders store-only verified status; overlay did not apply\n%s", body)
+	}
+	// The off-mockup Status-badge ROW is gone: no "Status" row label and no rendered
+	// hub-status-badge partial markup. Re-adding the badge row makes this FAIL.
+	for _, banned := range []string{
+		`row-label">Status`,        // the dropped Status row label
+		`class="hub-status-badge"`, // the dropped badge partial markup
+		">Unresolvable<",           // the dropped badge's rendered label text
+	} {
+		if strings.Contains(body, banned) {
+			t.Errorf("body still carries the dropped Status-badge row marker %q\n%s", banned, body)
+		}
 	}
 }
 
@@ -299,6 +310,88 @@ func TestRecordsRendersTypeColumn(t *testing.T) {
 // the single-record-page links each row emits (one record?index= link per row).
 func countRecordLinks(body string) int {
 	return strings.Count(body, "record?index=")
+}
+
+// TestRecordsPagerRangeAndTopBottom asserts the record list carries the Log-Browser
+// mockup's top+bottom pager region: the "seq <top> – <bottom> of <total>" range label
+// (newest-first, so the top is the LARGER seq) above the record list, and a
+// newer/older affordance BOTH above (the top pager, which precedes the ledger card)
+// and below it (the bottom pager). The seqs are HARDCODED literals (a 5-record mirror
+// seq 0..4), so reverting the range computation — swapping top/bottom or dropping a
+// pager — makes this FAIL. The full-page case shows the whole window (seq 4 – 0 of 5).
+func TestRecordsPagerRangeAndTopBottom(t *testing.T) {
+	m := buildMirror(t, 5)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+
+	// Full page (default n=50 > 5): the whole window, top seq 4 down to bottom seq 0.
+	code, body := getRecords(t, h, "")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	// The range label is newest-first: top is the LARGER seq (4), bottom the smaller (0).
+	// A hardcoded literal so a swapped/reverted range computation FAILS this assert.
+	wantRange := "seq 4 &ndash; 0 of 5"
+	if !strings.Contains(body, wantRange) {
+		t.Fatalf("body missing the top-pager range label %q\n%s", wantRange, body)
+	}
+	// The pager region exists both above (top) and below (bottom) the record list. The
+	// top pager precedes the ledger card; the bottom pager follows it. Index ordering
+	// proves both are present and bracket the list.
+	iTop := strings.Index(body, `class="pager pager-top"`)
+	iLedger := strings.Index(body, `class="ledger"`)
+	iBottom := strings.Index(body, `class="pager pager-bottom"`)
+	if iTop < 0 {
+		t.Fatalf("body missing the top pager\n%s", body)
+	}
+	if iBottom < 0 {
+		t.Fatalf("body missing the bottom pager\n%s", body)
+	}
+	if !(iTop < iLedger && iLedger < iBottom) {
+		t.Errorf("pagers do not bracket the record list: top=%d ledger=%d bottom=%d", iTop, iLedger, iBottom)
+	}
+	// The bottom pager carries the append-only footnote in its center slot.
+	if !strings.Contains(body, "Records are append-only") {
+		t.Errorf("bottom pager missing the append-only footnote\n%s", body)
+	}
+	// The coverage-honesty clause must still render (not dropped in the rework).
+	if !strings.Contains(body, "guarantees hold only from coverage start") {
+		t.Errorf("body dropped the coverage-honesty footnote clause\n%s", body)
+	}
+
+	// A windowed page (n=2 from the newest) shows seq 4 – 3 of 5 — the page window, not
+	// the whole index; Total stays the honest 5. Another hardcoded-literal range gate.
+	_, body = getRecords(t, h, "n=2")
+	wantWindow := "seq 4 &ndash; 3 of 5"
+	if !strings.Contains(body, wantWindow) {
+		t.Errorf("windowed page missing the page-window range label %q\n%s", wantWindow, body)
+	}
+}
+
+// TestRecordsPagerEndsDisabled asserts the newer/older affordances render as
+// non-interactive <span class="pager-disabled"> (the no-JS equivalent of the mockup's
+// opacity-disabled button) at the ends of the chain: on the first (newest) page the
+// Newer affordance is disabled, and on the last (oldest) page the Older affordance is.
+// Re-enabling a disabled end (rendering the <a> instead of the <span>) makes this FAIL.
+func TestRecordsPagerEndsDisabled(t *testing.T) {
+	m := buildMirror(t, 5)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+
+	// First page (no cursor, n=2 so records remain below): Newer is at the newest end →
+	// disabled span, while the Older affordance is live (a link) since seqs 1..0 remain.
+	_, body := getRecords(t, h, "n=2")
+	if !strings.Contains(body, `<span class="pager-disabled">&larr; newer</span>`) {
+		t.Errorf("first page Newer affordance is not the disabled span at the newest end\n%s", body)
+	}
+	if !strings.Contains(body, `class="pager-link" href="records?from=`) {
+		t.Errorf("first page Older affordance is not a live link\n%s", body)
+	}
+
+	// Last page (n=2 from the oldest seq 1 cursor): the page ends at seq 0, so Older is
+	// at its end → disabled span. from=1&n=2 yields the window seq 1..0.
+	_, body = getRecords(t, h, "from=1&n=2")
+	if !strings.Contains(body, `<span class="pager-disabled">older &rarr;</span>`) {
+		t.Errorf("oldest page Older affordance is not the disabled span at the oldest end\n%s", body)
+	}
 }
 
 // TestRecordsClampsHostilePageSize asserts a hostile n that wraps int(n) negative is
