@@ -24,12 +24,18 @@ import (
 // the hub's most-recently-stamped root, or "" when no root has been stamped — the
 // honest "not anchored yet" state, never a guarantee.
 //
-// CheckpointObserved is the observed_at instant of the hub's newest checkpoint
-// (the §3 "latest checkpoint" time on the dossier), zero when no checkpoint carries
-// a recorded time. AnchorHeight is the Bitcoin block height of the hub's confirmed
-// anchor (the §4 height), zero when no anchor is confirmed or the confirmed row has
-// no recorded height — the dossier renders the height only when it is non-zero, so
-// a zero never reads as block 0.
+// CheckpointObserved is the observed_at instant of the checkpoint row whose
+// tree_size equals the accepted last_size (the §3 "latest checkpoint" time on the
+// dossier, tied to the same accepted size §3 renders). It is zero when the hub has
+// not been polled, when no checkpoint matches the accepted size, or when that row
+// carries no recorded time. Tying the time to the accepted size keeps §3 honest on a
+// frozen hub: the freeze path records the contradictory (often higher-tree-size)
+// checkpoint without advancing last_size, so reading the newest-by-tree_size row
+// would pair the accepted size with a rejected checkpoint's timestamp. AnchorHeight
+// is the Bitcoin block height of the hub's confirmed anchor (the §4 height), zero
+// when no anchor is confirmed or the confirmed row has no recorded height — the
+// dossier renders the height only when it is non-zero, so a zero never reads as
+// block 0.
 type HubSummary struct {
 	HubID              int64
 	Domain             string
@@ -54,12 +60,13 @@ type HubSummary struct {
 // hub yields SQL NULL → empty Anchor (the honest "not anchored yet" state).
 //
 // Two further NULL-safe correlated subselects mirror that Anchor pattern for the
-// hub dossier: the newest checkpoint's observed_at (the §3 "latest checkpoint" time,
-// ordered tree_size DESC, id DESC) and the btc_height of the hub's confirmed anchor
-// (the §4 height, scoped to status = OTSStatusConfirmed). A hub with no recorded
-// checkpoint time or no confirmed anchor yields SQL NULL → the zero value, so the
-// renderer shows the honest "unknown" / "not confirmed" state rather than a
-// fabricated instant or block 0.
+// hub dossier: the observed_at of the checkpoint row whose tree_size equals the
+// accepted f.last_size (the §3 "latest checkpoint" time, tied to the accepted size
+// §3 renders so the two never come from different rows on a frozen hub) and the
+// btc_height of the hub's confirmed anchor (the §4 height, scoped to status =
+// OTSStatusConfirmed). A hub with no accepted size, no checkpoint matching it, or no
+// confirmed anchor yields SQL NULL → the zero value, so the renderer shows the honest
+// "unknown" / "not confirmed" state rather than a fabricated instant or block 0.
 func (s *Store) ListHubs(ctx context.Context) ([]HubSummary, error) {
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT h.hub_id, h.domain, h.origin, h.active, "+
@@ -67,7 +74,7 @@ func (s *Store) ListHubs(ctx context.Context) ([]HubSummary, error) {
 			"(SELECT o.status FROM ots o WHERE o.hub_id = h.hub_id "+
 			"ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1), "+
 			"(SELECT c.observed_at FROM checkpoints c WHERE c.hub_id = h.hub_id "+
-			"ORDER BY c.tree_size DESC, c.id DESC LIMIT 1), "+
+			"AND c.tree_size = f.last_size ORDER BY c.id DESC LIMIT 1), "+
 			"(SELECT o.btc_height FROM ots o WHERE o.hub_id = h.hub_id "+
 			"AND o.status = ? ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1) "+
 			"FROM hubs h LEFT JOIN follow_state f ON f.hub_id = h.hub_id "+

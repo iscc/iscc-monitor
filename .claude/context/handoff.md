@@ -1,77 +1,56 @@
-## 2026-06-23 — Review of: Rebuild `iscc_index` under a composite `(hub_id, seq)` PK as migration index 0, with the out-of-range `user_version` guard
+## 2026-06-23 — Tie the dossier §3 observed-time to the accepted `last_size` checkpoint row (frozen-hub honesty fix)
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Done:** Changed the §3 `observed_at` correlated subselect in `store.ListHubs` so it reads the
+`observed_at` of the checkpoint row whose `tree_size = f.last_size` (the accepted size §3 renders),
+instead of the newest-by-`tree_size` row. A frozen hub no longer pairs its accepted size with a
+rejected (higher-tree-size) checkpoint's timestamp. Renderer is unchanged — the fix is store-side.
 
-**Summary:** The advance re-keys `iscc_index` from the single-global `seq PRIMARY KEY` to the composite
-`(hub_id, seq)` PK (fresh DB via `schema.sql`, pre-existing DB via the project's first real migration,
-index 0) and bounds the migration runner's read-back `user_version` so the now-non-empty slice rejects an
-out-of-range version fail-closed. Scope is exactly the 3 asked source files; `mise run check` is green,
-`gofmt` clean, store leaf-purity intact, `go.mod`/`go.sum` byte-unchanged. I independently mutation-proved
-all three new tests are load-bearing (single-PK revert, guard removal, neutered-migration each FAIL the
-matching test) — the work is correct and well-gated.
+**Files changed:**
+- `internal/store/hubs.go`: subselect now `(SELECT c.observed_at FROM checkpoints c WHERE c.hub_id =
+  h.hub_id AND c.tree_size = f.last_size ORDER BY c.id DESC LIMIT 1)`; `id DESC LIMIT 1` keeps a
+  re-observed same-size row deterministic. Rewrote the `CheckpointObserved` doc comment and the
+  in-query comment block to describe the "tied to the accepted size" semantics (evergreen).
+- `internal/store/hubs_test.go`: added `TestListHubsFrozenObservedTracksAcceptedSize` — seeds an
+  accepted checkpoint (`TreeSize 100 @ tAccepted`) via `AdvanceAccepted`, then a rejected higher-size
+  row (`TreeSize 200 @ tRejected`) via `RecordCheckpoint` + `Freeze` (no `last_size` advance, mirroring
+  `follower.freeze`), and asserts `CheckpointObserved == tAccepted` (plus `Frozen` true, `LastSize` 100).
 
-**Verification:**
-- [x] `mise run check` green (build + vet + test, 30 pkgs) — PASS.
-- [x] `gofmt -l .` empty — PASS.
-- [x] Composite-PK multi-hub round-trip — `TestRecordProjectionsMultiHubSeqZero` PASS; mutation (revert
-  schema+writer to single-PK) → FAILS with `ON CONFLICT clause does not match any PRIMARY KEY` (load-bearing).
-- [x] Migration upgrade-in-place — `TestMigrationIsccIndexCompositePK` PASS (seeded row survives, version →
-  `len(migrations)`==1, PK columns `[hub_id seq]`, second-hub seq-0 insert no collision); mutation (neuter
-  the migration body) → FAILS (PK stays `[seq]`, second insert hits the UNIQUE constraint).
-- [x] Out-of-range guard fail-closed — `TestMigrationOutOfRangeVersion` PASS (future + negative both wrap
-  `errUnsupportedSchemaVersion`); mutation (remove the guard) → FAILS (future returns nil; negative would panic).
-- [x] All seven `TestMigration*` PASS (the runner change is additive; the fresh-DB test sees `len(migrations)==1`).
-- [x] Store leaf purity intact — `go list -deps ./internal/store | grep '^net/http$'` empty.
-- [x] Scope discipline — exactly 3 non-test/doc source files (`schema.sql`, `iscc_index.go`, `sqlite.go`),
-  matching `next.md`; the four reader queries untouched (Not-In-Scope honored); no gate circumvention in the
-  unpushed commits.
+**Verification:** `mise run check` → green (build + vet + test across all 30 packages; `gofmt -l .`
+empty). Per-criterion:
+- [x] `go test -count=1 -run TestListHubs ./internal/store` passes — existing
+  `TestListHubsCheckpointAndAnchorHeight` (verified-hub size 42 = last_size 42; bare-hub zero) unchanged
+  and green; `TestListHubsAnchorStatus` unchanged; the new frozen-hub test passes.
+- [x] New frozen test mutation-proven load-bearing: reverting the subselect to
+  `ORDER BY c.tree_size DESC, c.id DESC LIMIT 1` (dropping `AND c.tree_size = f.last_size`) makes it
+  FAIL — it reports `tRejected` (`2023-11-15 00:59:59`) instead of `tAccepted` (`2023-11-14 22:13:20`);
+  `TestListHubsCheckpointAndAnchorHeight` still passed under the mutation (verified-path no-regression).
+  Restore confirmed clean (`go.mod`/`go.sum` byte-unchanged, subselect back in place).
+- [x] Store leaf purity intact: `go list -deps ./internal/store | grep '^net/http$'` empty.
+- [x] No schema/migration/`user_version` change (query-shape change inside the existing statement only).
 
-**Oracle/conformance gate:** N/A — touches no signature / RFC-6962 / Merkle / did:web / proof path; it is
-`iscc_index` DDL + `user_version` bookkeeping (advance + `next.md` both call this N/A; confirmed by inspection).
+**Oracle/conformance gate:** N/A — touches no signature / RFC-6962 / Merkle / did:web / proof path; it
+is a pure `checkpoints`/`follow_state` read-shape change. (Confirmed by inspection; `next.md` calls this
+N/A.)
 
-**Issues found:** Two Codex-confirmed hardening follow-ups, both filed `low` (neither blocks; both
-strictly-narrower defense-in-depth / performance, not reachable today, not regressions):
-1. The out-of-range guard runs AFTER `db.Exec(schemaSQL)` in `Open`, so a downgrade-from-newer-binary
-   re-applies the (idempotent, `CREATE … IF NOT EXISTS`-only) baseline DDL before the reject. Hoist the
-   version read+guard ahead of the schema pass.
-2. The composite-PK rebuild dropped `seq`'s standalone ordering path; `RecentRecords`' `ORDER BY i.seq DESC`
-   now sorts instead of walking the old rowid order. Add a `seq` index (schema + migration 0) if a populated
-   monitor shows it hot.
-Resolved this iteration (deleted from `issues.md`, fix verified + mutation-proven): the `iscc_index` single-
-global-PK multi-hub collision `normal`, the migration-runner out-of-range `normal`, and the "migration list
-still EMPTY" `normal` (now `len(migrations)==1`).
-
-**Codex second opinion:** Two `[P2]` findings, both reviewer-CONFIRMED as real but triaged DOWN to `low`
-(not blockers) and filed as issues — see above. (1) `sqlite.go:181-184` schema-version check after the
-baseline DDL: confirmed the ordering, but verified `schemaSQL` is entirely `CREATE … IF NOT EXISTS` (no
-DROP/ALTER/DELETE/UPDATE/INSERT — grepped), so the residual is non-destructive, not reachable on a first
-migration, and the guard is strictly stronger than the prior no-guard state. (2) `schema.sql:119` lost `seq`
-ordering path: confirmed it is a performance regression (correct rows, just a sort vs index walk),
-negligible at 2-hub testnet scale, and `next.md` explicitly scoped this step to the PK rework + left
-`RecentRecords` ordering as-is. Neither contradicts a trust-root oracle (no crypto path touched). Codex did
-NOT flag any correctness defect in the migration, the guard, or the writer.
-
-**Visual check:** n/a — no SSR surface changed (the diff is `internal/store` DDL + migration bookkeeping;
-no `internal/dashboard`/`dossier`/`certificate`/`web`/template was touched).
-
-**Next:** Both paired data-model `normal`s and the migration-empty `normal` are now closed; the
-migration mechanism + first real migration are proven end-to-end. No further code-closable
-migration/`iscc_index` work is queued. `define-next` should pull from the open `normal` backlog — the
-M-API contract-fidelity slice 4 (the phantom `verify` `index` param + the `checkpoint` media-type doc
-fixes, both `normal`) is the most self-contained next deliberate step; the dossier §1/§3 honesty `normal`s
-and the realm-index Anchor design `normal` are the alternative tracks (the last two want a design pass).
+**Next:** This closes the §3 size/time-decouple `normal`. The two remaining dossier/realm-index honesty
+`normal`s are both DESIGN-BLOCKED (the §1 "Key resolved from did:web:…" unconditional-wording-vs-
+`unresolvable` nit and the realm-index `/` per-hub-vs-per-checkpoint Anchor honesty), per their issues +
+`learnings/dossier.md`/`learnings/store.md` — neither is code-closable without a design pass, so do not
+pull them as an advance. `define-next` should pull from the remaining open `normal` backlog after the
+4 stale M-API entries are pruned (bookkeeping, not advance work — see Notes); the two `low`
+hardening follow-ups (guard-hoist ahead of the baseline DDL; `seq` ordering index) remain the natural
+fold-ins WHEN `Open`/the migration runner or the dashboard-recent path is next touched.
 
 **Notes:**
-- The two new `low`s I filed are the natural follow-ups WHEN `Open`/the migration runner or the
-  dashboard-recent path is next touched — fold the guard-hoist into any future migration work and the
-  `seq` index into the next `iscc_index` schema edit (a released migration's effect must converge with the
-  fresh-DB schema, so both move together).
-- Net-reduced `learnings/store.md` from 191 → 181 lines this iteration (rotation budget): collapsed the
-  freeze/ListViolations/RecordHubKey/AdvanceAccepted/OTS-CRUD settled-landed bullets into compact
-  `settled (landed, detail in git history)` one-liners, and rewrote the two superseded notes (single-PK
-  collision → "settled: composite PK"; migration-runner "go live the instant" → "settled: the guard
-  landed") to the post-landing state.
-- Pre-existing `.claude/context/target.md` working-tree mod (from steer `d2f259e`) is still uncommitted —
-  not mine to commit (review writes only learnings/handoff/issues + minor fixes); left for `update-state`/`steer`.
-- No `critical` issues open; 7 real `normal`s remain → CONTINUE (DONE requires zero open `critical`/`normal`).
+- The §3 subselect references `f.last_size` from the already-joined `follow_state` LEFT JOIN (alias `f`).
+  NULL-safety holds three ways: a never-polled hub (`f.last_size` NULL → `c.tree_size = NULL` matches no
+  row → SQL NULL → `observedAt.Valid == false` → zero `time.Time` → renderer "observed time unknown"),
+  a hub whose accepted size has no recorded checkpoint row, and a checkpoint row with a NULL
+  `observed_at`. The existing bare-hub assertion (`CheckpointObserved.IsZero()`) still holds and pins
+  this. Verified-hub path is unchanged (accepted size == the accepted row's `tree_size`, same row picked).
+- The 4 stale M-API `normal` issue entries (phantom `verify` `index` param, `/checkpoint` media-type,
+  `/healthz` 200/503) are ALREADY satisfied in the served `internal/openapi/openapi.{yaml,json}` per the
+  prior define-next read — they await a prune by `update-state`/`review`, not an advance code change.
+- Pre-existing `.claude/context/target.md` working-tree mod (from steer `d2f259e`) is still uncommitted
+  and is NOT mine to commit (advance commits only implementation/test files + handoff.md); left for
+  `update-state`/`steer`. My commit excludes it.

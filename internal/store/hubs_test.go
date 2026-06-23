@@ -154,3 +154,73 @@ func TestListHubsCheckpointAndAnchorHeight(t *testing.T) {
 		t.Errorf("bare AnchorHeight = %d, want 0", bare.AnchorHeight)
 	}
 }
+
+// TestListHubsFrozenObservedTracksAcceptedSize pins the §3 size/time honesty fix on a
+// frozen hub: after the hub accepts a checkpoint at the accepted size and the freeze
+// path records a LATER, higher-tree-size contradictory checkpoint without advancing
+// last_size, ListHubs must report the accepted-size row's observed_at — not the
+// rejected checkpoint's later timestamp. It is mutation-targeted: reverting the §3
+// subselect to ORDER BY c.tree_size DESC, c.id DESC LIMIT 1 (dropping the
+// AND c.tree_size = f.last_size tie) makes it report tRejected and FAIL.
+func TestListHubsFrozenObservedTracksAcceptedSize(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	// Distinct instants so the assertion is sharp: the accepted-size checkpoint is
+	// observed BEFORE the rejected, higher-size contradictory checkpoint.
+	tAccepted := time.Unix(1_700_000_000, 0)
+	tRejected := time.Unix(1_700_009_999, 0)
+
+	frozenID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub frozen: %v", err)
+	}
+	// Accept a checkpoint at the accepted size (sets last_size = 100 + observed_at).
+	if err := s.AdvanceAccepted(ctx, CheckpointRecord{
+		HubID:      frozenID,
+		TreeSize:   100,
+		Root:       []byte("accepted-checkpoint-root-pad-32!!"),
+		Raw:        []byte("raw-accepted-checkpoint-bytes"),
+		ObservedAt: tAccepted,
+	}); err != nil {
+		t.Fatalf("AdvanceAccepted: %v", err)
+	}
+	// Freeze records the contradictory higher-size checkpoint WITHOUT advancing
+	// last_size (mirrors follower.freeze: RecordCheckpoint then Freeze, never
+	// AdvanceFollowState), so last_size stays 100 while a tree_size=200 row exists.
+	if _, _, err := s.RecordCheckpoint(ctx, CheckpointRecord{
+		HubID:      frozenID,
+		TreeSize:   200,
+		Root:       []byte("rejected-checkpoint-root-pad-32!!"),
+		Raw:        []byte("raw-rejected-checkpoint-bytes"),
+		ObservedAt: tRejected,
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint rejected: %v", err)
+	}
+	if err := s.Freeze(ctx, frozenID); err != nil {
+		t.Fatalf("Freeze: %v", err)
+	}
+
+	hubs, err := s.ListHubs(ctx)
+	if err != nil {
+		t.Fatalf("ListHubs: %v", err)
+	}
+	var frozen HubSummary
+	for _, h := range hubs {
+		if h.Domain == "sb0.iscc.id" {
+			frozen = h
+		}
+	}
+	if !frozen.Frozen {
+		t.Fatalf("hub not frozen after Freeze: %+v", frozen)
+	}
+	if frozen.LastSize != 100 {
+		t.Fatalf("LastSize = %d, want 100 (freeze must not advance accepted size)", frozen.LastSize)
+	}
+	// §3 time must track the accepted-size row (tAccepted), NOT the rejected
+	// higher-size checkpoint's later timestamp (tRejected).
+	if !frozen.CheckpointObserved.Equal(tAccepted) {
+		t.Errorf("CheckpointObserved = %v, want %v (accepted-size row time, not rejected %v)",
+			frozen.CheckpointObserved, tAccepted, tRejected)
+	}
+}
