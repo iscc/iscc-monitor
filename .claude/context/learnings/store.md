@@ -70,13 +70,19 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   "" through `sql.NullString` in `RecordAt`/`ListRecords`; never parsed (ADR-0008). It is the §6 `· at`
   store prerequisite — the certificate render is still the open follow-up; mutation-proven non-vacuous on
   both the present and the NULL→"" leaf (drop it from `DO UPDATE SET` → `…Idempotent` FAILS).
-- **No on-disk migration story exists for ANY added column — codebase-wide, by design (not a defect of
-  this slice).** `Open` applies `schema.sql` as one `db.Exec` of 9 `CREATE TABLE IF NOT EXISTS` (zero
-  `ALTER TABLE`, no `PRAGMA user_version`, no migration framework), so a column added to an EXISTING
-  table is a silent no-op on a pre-existing DB — an upgraded node would then hit `no such column: <col>`
-  on the new INSERT/SELECT. This is intentional (`next.md` Not-In-Scope: dev DBs are ephemeral; every
-  prior column landed this way). Adding an `ALTER`/migration is a deliberate, design-reviewed step — do
-  NOT introduce the project's first migration mechanism as a side effect of a field slice. Filed `normal`.
+- **Migration runner lives in `Open` after the `schemaSQL` exec (advance `94a5f7a`): a `PRAGMA
+  user_version`-gated, append-only `migrations []func(*sql.Tx) error`.** `len(migrations)` IS the code's
+  current schema version; index `i` lifts the version `i→i+1` inside its OWN `*sql.Tx` (the
+  `AdvanceAccepted` `defer Rollback` idiom; the bump is `fmt.Sprintf("PRAGMA user_version = %d", v+1)`
+  because SQLite won't BIND that pragma — in-code `int`, no injection). Fail-closed + idempotent;
+  `applyMigrations` takes the slice explicitly so it's unit-testable with a synthetic list. **Production
+  slice is EMPTY today** (no-op baseline; fresh DB already at v0=len), so neither edge below is reachable
+  yet — both go LIVE the instant migration index 0 (the planned `iscc_index` composite-PK rebuild) lands:
+  the runner does NOT bound the read-back version, so (a) `user_version > len(migrations)` (a DB from a
+  NEWER binary, downgraded) opens SILENTLY against unsupported schema, and (b) a corrupt NEGATIVE version
+  PANICS on `migs[-1]` once the slice is non-empty (reviewer-reproduced both). Guard `version < 0 ||
+  version > len(migs)` before the loop when adding migration 0 — filed `normal`. **Append migrations,
+  never edit/reorder a released entry.**
 
 ## SQLite store (`internal/store`)
 
@@ -112,25 +118,16 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   "never observed" stays distinct from the unix epoch. `FollowState` reads `last_size`/`last_error`
   through `sql.NullInt64`/`sql.NullString` so a partial/absent row degrades to the zero value, never an
   error — an unknown `hubID` returns `FollowState{}` + nil err by design (follower treats it as "never polled").
-- **Freeze path seam is `RecordViolation` (plain INSERT) + `Freeze` (upsert `frozen=1`).** Verified the
-  two upserts compose: `Freeze` writes `INSERT … (hub_id, frozen) VALUES (?,1) ON CONFLICT(hub_id) DO
-  UPDATE SET frozen=1`, `AdvanceFollowState` omits `frozen` from its `DO UPDATE`, so advance-after-freeze
-  keeps `frozen=1` AND moves `last_size` (no auto-unfreeze, ADR-0006) — `TestFreezeNoAutoUnfreeze` is
-  non-vacuous (asserts both flags). `RecordViolation` is `LastInsertId`-only (no `RowsAffected` dance —
-  no `ON CONFLICT`), so re-detection yields distinct ids/rows (re-detection is itself evidence). The
-  `Kind` string rides on the `Violation` struct exactly as `Status` rides on `CheckpointRecord`, keeping
-  store import-free of `logclient`.
-- **`ListViolations(ctx, hubID)` is the read side of the freeze evidence — a leaf read scoped to one
-  hub, newest-first (`ORDER BY detected_at DESC, id DESC`), now reading `hub_id, kind, detected_at,
-  raw_a, raw_b`** (advance `872ab8b` added `raw_a/raw_b` so the dossier Exhibit can read each
-  contradictory checkpoint's tree size back via `logclient.CheckpointSizeFromRaw`; `proof_json` still
-  left zero — proof-bundle surface). The raws are ALREADY written by `RecordViolation`, so this was a
-  SELECT+Scan-only change, schema byte-unchanged. `detected_at` reads through `sql.NullInt64` (the
-  `unixOrNil` inverse) → zero `time.Time` on NULL; a hub with none → empty slice + nil err. SQLite
-  quirk: a NULL `detected_at` sorts LAST under `DESC`. Mutation-proven: `DESC → ASC` flips
-  `TestListViolations`'s order, AND reverting the SELECT to drop `raw_a/raw_b` FAILS the raw round-trip
-  assertion (`got[0].RawA/RawB`). Store stays a leaf (no logclient import — the Exhibit, in `dossier`,
-  calls `CheckpointSizeFromRaw`, not the store).
+- **settled (landed): freeze seam is `RecordViolation` (plain INSERT, no `ON CONFLICT` → distinct
+  re-detection rows = evidence) + `Freeze` (upsert `frozen=1`).** `AdvanceFollowState` omits `frozen`
+  from its `DO UPDATE`, so advance-after-freeze keeps `frozen=1` AND moves `last_size` (no auto-unfreeze,
+  ADR-0006; `TestFreezeNoAutoUnfreeze` asserts both). `Kind`/`Status` ride structs (not columns) so store
+  stays `logclient`-free. (Detail in git history.)
+- **settled (landed): `ListViolations(ctx, hubID)` reads the freeze evidence** — leaf read, newest-first
+  (`ORDER BY detected_at DESC, id DESC`), returns `hub_id, kind, detected_at, raw_a, raw_b` (the dossier
+  Exhibit reads each contradictory checkpoint's size via `logclient.CheckpointSizeFromRaw`; `proof_json`
+  left zero). `detected_at` via `sql.NullInt64` → zero `time.Time` on NULL (which sorts LAST under
+  `DESC`); none → empty slice. Mutation-proven; store stays leaf. (Detail in git history.)
 - **`ListCheckpoints(ctx, hubID, n) ([]CheckpointSummary, error)` is the §5-observation-log read** (added
   2026-06-23, advance `96e9600`): a leaf read of `tree_size, observed_at FROM checkpoints WHERE hub_id=?
   ORDER BY observed_at DESC, id DESC LIMIT ?`, mirroring `ListViolations`'s shape. `observed_at` reads
@@ -145,11 +142,10 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   with `go list -deps ./internal/store | grep '^net/http'` (empty) and that the package's own `.Imports`
   are exactly `context database/sql embed errors fmt time` + the sqlite driver. Do not flag the bare
   `net` lines as a leak.
-- **settled (landed): `RecordHubKey` is the did:web key cache write** — guarded `UPDATE … WHERE
-  hub_id=? AND key_id=?` then `INSERT` on zero `RowsAffected` (the `SetCoverage` idiom; `hub_keys` has
-  no UNIQUE). UPDATE rewrites *all* mutable columns so a re-resolve tracks the DID doc (clears
-  `pubkey_z`→NULL when the multibase drops, not append-only); `nullStringOrNil`+`unixOrNil` keep "no
-  multibase"/"not revoked" distinct from `""`/epoch; FK enforced (787 on orphan); `key_id uint32→int64`.
+- **settled (landed): `RecordHubKey` is the did:web key cache write** — guarded `UPDATE` then `INSERT`
+  on zero `RowsAffected` (the `SetCoverage` idiom; `hub_keys` has no UNIQUE); UPDATE rewrites ALL mutable
+  columns so a re-resolve tracks the DID doc (clears `pubkey_z`→NULL when multibase drops, not
+  append-only). `nullStringOrNil`+`unixOrNil` keep absent distinct from `""`/epoch; FK enforced (787).
   Leaf-pure, oracle N/A. (Detail in git history.)
 - **Coverage set-once is a guarded `UPDATE … WHERE monitored_since_size IS NULL` keyed on the SIZE
   column being NULL — and that guard is correct even for a size-0 start.** The first `SetCoverage`

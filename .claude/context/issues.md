@@ -37,29 +37,47 @@ filed it and does **not** affect priority.
 - **Spec:** CLAUDE.md "Write evergreen comments that describe the current state" (docstring must match
   behavior); next.md Implementation Note "Prefer nil-tolerant, mirroring the Loop's nil-Logger discipline".
 
-## No on-disk DB migration story — a column added to an existing table never reaches a pre-existing database
+## Migration MECHANISM landed but the production list is still EMPTY — no column-add migration exists yet
 - **Priority:** normal
-- **Source:** [review] (Codex P1, reviewer-confirmed against `store.Open`; codebase-wide pre-existing gap)
-- **What / where / how to verify:** `store.Open` (`internal/store/sqlite.go:72`) applies the embedded
-  `schema.sql` as one `db.Exec(schemaSQL)` whose every statement is `CREATE TABLE IF NOT EXISTS` (9
-  tables, ZERO `ALTER TABLE`, no `PRAGMA user_version`, no migration framework — reviewer grep-confirmed).
-  So a column added to an EXISTING table (here `iscc_index.note_timestamp`, but this applies to EVERY
-  column ever added: `note_schema`, `record_sha256`, the OTS columns, the freeze columns, …) is a silent
-  no-op on a database created before that commit. An upgraded node opening such a DB would then fail the
-  new INSERT/SELECT paths with `no such column: note_timestamp`. This is **not a regression of the
-  timestamp slice** — it is a pre-existing, codebase-wide property: every prior column landed the same
-  way, and `next.md` Not-In-Scope explicitly chose it (dev DBs are ephemeral; no schema-versioning
-  framework). Does NOT block this increment (fresh DBs — the only deployed kind so far — get the column;
-  all gates green). It becomes a real operational hazard the first time the monitor needs an in-place
-  upgrade over a populated production DB. Fix when a deliberate migration step is scheduled: introduce a
-  `PRAGMA user_version`-gated (or `ALTER TABLE ADD COLUMN`-idempotent) migration mechanism applied on
-  `Open` AFTER the `CREATE TABLE IF NOT EXISTS` pass, covering all post-bootstrap columns; this is a
-  design decision (it is the project's FIRST migration mechanism), not a field-slice side effect. Verify
-  fixed: opening a DB seeded with the pre-`note_timestamp` `iscc_index` DDL then running an ingest +
-  `RecordAt` succeeds (column auto-added), with a test that seeds the old schema and asserts no
-  `no such column` error.
+- **Source:** [review] (mechanism added advance `94a5f7a`; originally Codex P1)
+- **What / where / how to verify:** UPDATE — the `PRAGMA user_version`-gated migration RUNNER now exists
+  in `store.Open` (`internal/store/sqlite.go:95,119-152`, advance `94a5f7a`): an append-only
+  `migrations []func(*sql.Tx) error` run after the `schemaSQL` exec, fail-closed + idempotent,
+  mutation-proven. What REMAINS open: the production `migrations` slice ships **EMPTY** (no-op baseline),
+  so no actual column-add/`ALTER` migration has landed — a column added to an existing table in a later
+  image **still** silently never reaches a pre-existing DB until its migration entry is appended (the
+  `OPERATING.md` §Migration-policy "recreate the volume on a schema change" interim still holds today).
+  Does NOT block — fresh DBs (the only deployed kind) get the full baseline; all gates green. Close this
+  when the first real migration lands (the planned `iscc_index` single-global-PK → composite `(hub_id,seq)`
+  rebuild is the scheduled next step — it appends migration index 0). Verify fixed: opening a DB seeded
+  with a pre-`note_timestamp` `iscc_index` DDL (version 0) then running an ingest + `RecordAt` succeeds
+  (column auto-added by a real migration), with a test that seeds the old schema and asserts no
+  `no such column` error; AND `len(migrations) > 0`.
 - **Spec:** ADR-0007 one-file-per-network store; CLAUDE.md "Irreplaceable evidence" (a populated prod DB
   that cannot be upgraded in place is a backup/continuity risk); `next.md` Not-In-Scope migration note.
+
+## Migration runner does not bound the read-back `user_version` — future-version silent-accept + negative-version panic (both go live at migration index 0)
+- **Priority:** normal
+- **Source:** [review] (Codex P2, reviewer-reproduced both halves by probe)
+- **What / where / how to verify:** `applyMigrations` (`internal/store/sqlite.go:119-130`) reads
+  `PRAGMA user_version` into an `int` and loops `for v := version; v < len(migs); v++` WITHOUT bounding
+  `version` against `[0, len(migs)]`. Two fail-open edges, both reviewer-reproduced by a throwaway probe:
+  (a) **future version** — a DB whose `user_version > len(migrations)` (written by a NEWER binary, then
+  DOWNGRADED) opens SILENTLY against an unsupported schema (probe: set version 5 over the empty prod slice →
+  `Open` SUCCEEDS, no error), defeating the "fail-closed" contract the docstring + `OPERATING.md` claim;
+  (b) **negative version** — a corrupt/manual `user_version = -1` PANICS on `migs[-1]` (`index out of
+  range [-1]`) the instant the slice is NON-EMPTY (probe with a 1-entry synthetic slice → panic). NOT
+  reachable in production TODAY because the production `migrations` slice is EMPTY (a fresh/upgraded DB
+  only ever has `user_version == 0 == len(migrations)`; the negative loop `v:=-1; v<0` never enters with
+  an empty slice) — so all gates green, every `next.md` Verify met, this increment is sound. But BOTH go
+  live the moment migration index 0 lands (the explicitly-scheduled next step), so fix WITH or BEFORE that
+  step. Fix: guard `if version < 0 || version > len(migs) { return error }` before the loop, so the runner
+  stays fail-closed on an unsupported on-disk version instead of silently accepting / panicking. Verify
+  fixed: `Open` on a DB whose `user_version` exceeds `len(migrations)` returns a wrapped error (not
+  success), and a `-1` version returns an error (not a panic); reverting the guard makes both FAIL.
+- **Spec:** correctness rule 6 "fail-closed" discipline; `store.Open` docstring + `deploy/OPERATING.md`
+  §Migration-policy ("fail-closed … never leaving a half-migrated database"); CLAUDE.md "fail-closed"
+  posture; `learnings/store.md` migration-runner note.
 
 ## Single-record label test is vacuous on the kind-label constant value
 - **Priority:** low
