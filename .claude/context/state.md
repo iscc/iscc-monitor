@@ -1,49 +1,60 @@
-<!-- assessed-at: 06c77494d28436167fae66b648edff7a331d576c -->
+<!-- assessed-at: 7a3aa929df2a9236240c963ea1aad63f6d149d35 -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: Hub-Dossier critical rework — increment 2a landed and review-verified. The §5 honest
-observation log (size-transition / anchor-confirmation / freeze-pointer lines, derived from the new
-`store.ListCheckpoints` leaf, with NO synthesized per-poll "consistent" verdict) now SERVES at
-`GET /<domain>`. The dossier critical was re-scoped: increment 2 → 2a (§5 log, DONE) + 2b (richer
-frozen Exhibit + the §3/§1/§5 honesty `normal`s, the lone remaining `critical`). DONE stays blocked.
+## Phase: Hub-Dossier critical CLOSED + new M-API milestone opened. The lone code-closable `critical`
+(Hub-Dossier increment 2b) is now DONE and review-deleted: the frozen Exhibit renders each contradictory
+checkpoint's tree size ("size before → presented") read back unverified via the new pure
+`logclient.CheckpointSizeFromRaw`, plus a content-derived evidence ref, and the §5 observation log skips
+non-increasing pairs so a fork/shrink never renders a phantom `size N → N` transition. With that, **0
+`critical` issues remain.** Concurrently a steer added a new v1 milestone — **M-API** (OpenAPI 3.1 +
+hosted Stoplight Elements docs, ADR-0014) — to `target.md` and `Done When`; it is **fully unmet** and is
+now the immediate standing code-closable work.
 
-This window (`c45fe48..06c7749`, 4 commits: update-state `a504f65` → define-next `626df2f` → advance
-`96e9600` → review `06c7749`) is a clean single in-loop increment. The diff touched ONLY
-`internal/dossier/{dossier.html,handler.go,handler_test.go}` + `internal/store/checkpoints{.go,_test.go}`
-(and context files). No M1/M2/M3/WASM/OTS/M-Deploy source was touched — those sections carry forward
-verified. HEAD `06c7749` is level with `origin/develop`; CI `success`, Pages `success`, Publish
-`in_progress` (the push-to-develop run was still running at assessment — not a failure).
+This window (`06c7749..7a3aa92`, 4 commits: update-state `3057661` → define-next `f313be5` → advance
+`872ab8b` → review `7a3aa92`) is a clean single in-loop increment. The Go diff touched ONLY
+`internal/dossier/{dossier.html,handler.go,handler_test.go}`, the new `internal/logclient/checkpointsize{.go,_test.go}`,
+and `internal/store/checkpoints{.go,_test.go}` (the 4th-file `ListViolations` raw read-back). No
+M1/M2/M3/WASM/OTS/M-Deploy source was touched — those sections carry forward verified. HEAD `7a3aa92` is
+level with `origin/develop`; CI / Pages / Publish all `success`.
+
+**Working-tree note:** `target.md` carries the unstaged M-API steer (the version I assess against) and a
+new untracked `.claude/adr/0014-…md` — left for the steer/next cycle to commit; not my files to stage.
 
 ## Convergence
 - **Remaining Verify criteria:**
   - **M1: 0 open (met). M2: 0 open (met). M3: 0 open (met, 4/4).** Carried forward — no M1–M3 trust-path
     source touched this window.
-  - **M-UI: behavioral + named-region Verify met on five surfaces; the hub-dossier surface is now
-    further closed — increment 1 (§1–§4 doc) + increment 2a (§5 observation log) DONE, increment 2b
-    (richer frozen Exhibit + the §3/§1/§5 honesty nits) is the lone remaining `critical`.** Verified in
-    the served template: the `§5 · OBSERVATION LOG` region renders recorded events only (transition /
-    anchor / freeze lines), honest empty state for ≤1 checkpoint. The mandatory M-UI exit visual-pass +
-    human sign-off (ADR-0012) still pending; instance identity config-driven on THREE of six SSR
-    mastheads (proofserve trio still placeholder).
+  - **M-UI: behavioral + named-region Verify met on all five SSR surfaces; the hub dossier is now FULLY
+    closed at the code level** — §1–§4 doc + §5 observation log (skip-non-increasing) + the richer frozen
+    Exhibit (size before→presented + evidence ref, fail-closed) all LANDED + review-verified. No M-UI
+    `critical` remains. Still open (all `normal`/human-blocked, NOT critical): the §3 frozen size/time
+    decouple, the §1 "resolved"-vs-unresolvable wording (a design call), the per-hub-vs-per-checkpoint
+    realm-index Anchor honesty question, instance identity config-driven on THREE of six SSR mastheads
+    (proofserve trio still placeholder), and the mandatory **M-UI exit visual-pass + human sign-off**
+    (ADR-0012) across all surfaces.
   - **WASM verifier: published half CLOSED** (`monitor.iscc.codes/_ds/verify.wasm` → 200 byte-pinned).
     **Still open:** the cross-origin **signature half** (no checkpoint-signature / did:web check), `normal`.
   - **OTS anchoring: 1/1 open (carried).** Only a real Bitcoin confirmation remains (offline-unprovable).
   - **M-Deploy: ALL in-repo Verify items CLOSED.** No open Verify item remains.
-- **Last ~10 iterations: this window was 1 milestone-Verify-advancing increment (dossier §5, the 2a
-  half of the lone `critical`). Over the broader window ~7 milestone-Verify-or-gate-advancing / ~3
-  context-prune.** No drift: the loop has concrete code-closable critical work (the dossier 2b rework)
-  and is steadily peeling it off (increment 1 → 2a → 2b). The new §5 same-size pseudo-transition
-  `normal` filed this window is a natural co-resident of 2b, not new scope creep.
+  - **M-API (NEW — ADR-0014): 0/4 met — fully unmet.** No `/openapi.json` / `/openapi.yaml`, no `/docs`,
+    no OpenAPI document, no Stoplight Elements assets in `internal/web` (grep-confirmed: zero `openapi`/
+    `/docs`/`elements-api` references in the mux or any `.go`). ADR-0014 exists. This is the immediate
+    standing code-closable milestone, with no human/infra dependency.
+- **Last ~10 iterations: this window was 1 milestone-Verify-advancing increment** (closed the lone
+  code-closable `critical`). Over the broader window ~7 milestone-Verify-or-gate-advancing / ~3
+  context-prune. **No drift:** the loop just retired its only `critical`, and the steer immediately reloaded
+  the queue with a fully code-closable milestone (M-API) — there is concrete, non-cosmetic, non-blocked
+  work to advance next.
 
 ## M1 — Read-only Monitor
-**Status**: **met** — carried forward; the `c45fe48..06c7749` diff touched NO M1 source (config, registry,
+**Status**: **met** — carried forward; the `06c7749..7a3aa92` diff touched NO M1 source (config, registry,
 follower, didweb, metrics all untouched). All Verify criteria remain satisfied: `origin`/`vkey` golden;
 fork/shrink/equivocation golden-tested with freeze + alert-once + restart survival; structured logs;
 `/metrics`.
-- **Packages present** (24 internal + 4 cmd): `cmd/{iscc-monitor,notecheck,verifier-site,wasm}`; internal —
+- **Packages present** (25 internal + 4 cmd): `cmd/{iscc-monitor,notecheck,verifier-site,wasm}`; internal —
   `badge, certificate, config, corsmw, dashboard, didweb, dossier, follower, healthz, index, logclient,
   metrics, metricshttp, ots, otsclient, proof, proofserve, registry, store, tiles, tilesserve, verifier,
   version, web`. Module `github.com/iscc/iscc-monitor` (`go 1.26.1`).
@@ -53,41 +64,43 @@ fork/shrink/equivocation golden-tested with freeze + alert-once + restart surviv
 
 ## M2 — Aggregator
 **Status**: **met** — carried forward. No fsck / fetcher / mirror BLOB / follower-ingest path touched this
-window. The new `store.ListCheckpoints` (added in 2a for the §5 log — additive, newest-first leaf read over
-`checkpoints` joining `ots` for confirmations) is a read-only leaf; the M2 mirror/fsck contract is unchanged.
+window. The store change this window (`ListViolations` now SELECTs+Scans the already-persisted `raw_a/raw_b`
+for the Exhibit — a read-back-only change, schema byte-unchanged) is a read-only leaf; the M2 mirror/fsck
+contract is unchanged.
 
 ## M3 — Trust API + dashboard
 **Status**: **met (4/4 Verify criteria)** — carried forward; the M3 HTTP-seam contract is unchanged. The
-dossier 2a work extends the existing `GET /<domain>` surface (an M-UI surface) without touching the
+dossier 2b work extends the existing `GET /<domain>` surface (an M-UI surface) without touching the
 verify-for-me / CORS / log-browser / realm-index Verify bars.
 
 **Known limitations (off the M3 Verify bar):** `inactive` unreachable through the public store API; no
 ETag/Cache-Control on size-dependent proof surfaces (the `/_ds/` static assets DO carry strong ETag).
 
 ## M-UI — Evidence Ledger frontend
-**Status**: **behaviorally + named-region complete on five surfaces; the hub dossier is now FURTHER met —
-increment 1 (§1–§4 doc) + increment 2a (§5 observation log) LANDED + review-verified; increment 2b (richer
-frozen Exhibit + the §3/§1/§5 honesty nits) is the lone remaining `critical`.** Verified by reading the
-served template (`internal/dossier/dossier.html`), the 17 dossier handler tests + the new `TestListCheckpoints`
-pair in `internal/store/checkpoints_test.go`:
-- **Hub dossier — increments 1 + 2a MET, increment 2b OPEN (`critical`).** `dossier.html` renders the
-  numbered trust document: the §1–§4 grid (honesty-gated anchor), and now the `§5 · OBSERVATION LOG` region
-  (`dossier.html:530`) listing recorded events only — size-transition lines (newest-first), an
-  "anchored · block N" line for a confirmed anchor with a real height, and a "froze hub (split view)"
-  freeze pointer — with an honest empty state for ≤1 checkpoint and NO synthesized per-poll "consistent"
-  line (the recurring SSR-honesty trap, tested-against). Derived from the new `store.ListCheckpoints`
-  (`checkpoints.go:356`, `ORDER BY observed_at DESC`, hub-scoped, NULL-safe), wired in `handler.go:230`.
-  **Increment 2b (`critical`, NOW PICKABLE)** fills the richer frozen Exhibit ("size before → presented" +
-  a stable evidence ref derived from `Violation.RawA`/`RawB`, reusing the existing checkpoint parser) and
-  folds in three honesty `normal`s: §3 frozen size/time decouple, §1 "resolved"-vs-unresolvable, and the
-  §5 same-size/shrink pseudo-transition (`size N → N` on a fork — filed this window by 2a's review).
+**Status**: **behaviorally + named-region complete on all five SSR surfaces; the hub dossier is now FULLY
+closed at the code level — no `critical` remains.** Verified by reading the served template
+(`internal/dossier/dossier.html`), the 18 dossier handler tests, and the new `TestCheckpointSizeFromRaw`
+pair in `internal/logclient/checkpointsize_test.go`:
+- **Hub dossier — CODE-COMPLETE.** The richer frozen **Exhibit** renders each contradictory checkpoint's
+  tree size ("tree size <before> → then presented <presented>") read back UNVERIFIED via the new pure
+  `logclient.CheckpointSizeFromRaw` (`checkpointsize.go:40`; `note.Open` empty-verifier-list →
+  `*UnverifiedNoteError` → line-2 size parse mirroring `VerifyCheckpoint`, fail-closed on any malformed
+  raw), plus a deterministic evidence ref over the raw pair; an unparseable raw renders "tree sizes
+  unavailable" with NO fabricated `tree size 0 →`. The **§5 observation log** skips non-increasing
+  consecutive pairs (`handler.go:482` `if newer.TreeSize <= older.TreeSize` skip), so a fork (same size,
+  different root) or shrink never renders a phantom `size N → N` / `larger → smaller` transition; the
+  freeze pointer + honest empty state are kept and the recurring synthesized per-poll "consistent" trap
+  stays tested-against. `TestDossierFrozenExhibit` (real sb0(10183)/sb1(61) fork pair) +
+  `TestDossierObservationLogFrozenNoPseudoTransition` cover both.
 - **Other surfaces met + carried:** `/` realm index (with a "Recently declared" hero row), log browser,
   single record, certificate, badge, DS shell, proof-bundle all render and pass the behavioral +
   named-region HTTP-seam Verify.
-- **Still open (carried, NOT critical):** instance identity config-driven on THREE of six mastheads
-  (proofserve trio still placeholder); the M-UI exit visual-pass + human sign-off (ADR-0012) not executed
-  across all surfaces (review ran a per-increment visual pass on the §5 region and filed no delta); the
-  per-hub-vs-per-checkpoint realm-index Anchor honesty question (`normal`).
+- **Still open (carried, NOT critical):** the §3 frozen size/time decouple (`normal`); the §1
+  "resolved"-vs-unresolvable wording (`normal`, a design call — the mockup specifies the static phrasing);
+  the per-hub-vs-per-checkpoint realm-index Anchor honesty question (`normal`); instance identity
+  config-driven on THREE of six mastheads (proofserve trio still placeholder); the **M-UI exit visual-pass
+  + human sign-off** (ADR-0012) not yet executed across all surfaces (review ran a per-increment visual
+  pass on the Exhibit + §5 and filed no delta).
 
 ## WASM verifier · OTS anchoring
 **Status**: **WASM — published half CLOSED (Pages live); signature half design-blocked. OTS —
@@ -95,10 +108,10 @@ observable halves + both transport guards landed; only a real Bitcoin confirmati
 (offline-unprovable).** Neither core was touched this window.
 - **WASM:** id-binding half closed in source + artifact, reproducible from `mise run build:wasm`
   (`TestWasmVerifyHashPinned` green), publicly served byte-pinned at `monitor.iscc.codes/_ds/verify.wasm`
-  (Pages run on HEAD `06c7749` green). **Still open:** the cross-origin **SIGNATURE-half gap** (no
+  (Pages run on HEAD `7a3aa92` green). **Still open:** the cross-origin **SIGNATURE-half gap** (no
   checkpoint-signature / did:web check; the success copy overstates an unrun key check) — `normal`,
   design-first.
-- **OTS:** `.ots` route, §5 anchor clause (`ots.ConfirmedFor`), store layer, off-path stamp/upgrade loop,
+- **OTS:** `.ots` route, §4 anchor clause (`ots.ConfirmedFor`), store layer, off-path stamp/upgrade loop,
   offline classifier, and both calendar-transport guards are wired. Not-yet-built: a root reaching
   Bitcoin-confirmed (needs a live calendar + real BTC confirmation). 1/1 open. **Carried `low` defect:**
   nil-Stamper + empty-OTSBytes row falls through to the Upgrader (`otsloop.go:144`; test-only path).
@@ -119,44 +132,56 @@ repo-settings work, out of loop scope).
   non-atomic write; `schemaDeclaration/Deletion` URI triplication; the masthead-identity fallback consts
   3x; the dossier overlay-precedence 3x duplication.
 
+## M-API — OpenAPI contract + hosted interactive API docs  (NEW — ADR-0014)
+**Status**: **NOT STARTED — 0/4 Verify met.** A steer added M-API to `target.md` + `Done When` this window;
+`.claude/adr/0014-openapi-contract-and-hosted-api-docs.md` exists (untracked in the working tree). Nothing
+is implemented: grep over all `.go` finds ZERO `openapi` / `/docs` / `elements-api` / `Stoplight`
+references, and `cmd/iscc-monitor/main.go buildMux` mounts no `/openapi.json`, `/openapi.yaml`, or `/docs`
+route. Required (all in-repo / CI-verifiable, no human step): a hand-authored OpenAPI 3.1 doc served
+byte-verbatim at `/openapi.json` + `/openapi.yaml` (CORS `*`), a route-vs-spec **drift test**, and `GET
+/docs` serving self-hosted byte-pinned Stoplight Elements (JS + CSS) under `/_ds/` with no external CDN.
+**This is the immediate standing code-closable milestone** — order-independent, no oracle-gate path.
+
 ## Quality gates
 **Status**: **GREEN.**
 - `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.26.1`); `mise run check` runnable. This
-  window touched Go source (`internal/dossier`, `internal/store/checkpoints`). `gofmt -l .` is **empty
-  (verified clean)** outside the gitignored `cauldron/`.
+  window touched Go source (`internal/dossier`, the new `internal/logclient/checkpointsize`,
+  `internal/store/checkpoints`). `gofmt -l .` is **empty (verified clean)** outside the gitignored
+  `cauldron/`.
 - **CI**: `.github/workflows/` is `ci.yml` (`mise run check` + `notecheck` oracle + docker `/healthz`
-  smoke) + `pages.yml` + `publish.yml`. **HEAD `06c7749` (level with `origin/develop`): CI `success`,
-  Pages `success`, Publish `in_progress`** (the push-to-develop Publish run was still running at
-  assessment — not a failure; confirmed via `gh run list`).
-- **Latest `review` verdict: PASS_WITH_NOTES / CONTINUE** (commit `06c7749`) — covers the dossier §5 (2a)
-  advance: gate-green (all 28 pkgs `ok`, `gofmt` empty), mutation-proven (drop the size-transition append
-  FAILS; `ORDER BY … DESC → ASC` FAILS both store + dossier), with a live `agent-browser` visual pass
-  confirming the §5 region matches the document style (no visual delta filed). One Codex-confirmed honesty
-  nit filed `normal` (§5 `size N → N` pseudo-transition on a fork/shrink frozen hub), folded into 2b;
-  does not block.
+  smoke) + `pages.yml` + `publish.yml`. **HEAD `7a3aa92` (level with `origin/develop`): CI `success`,
+  Pages `success`, Publish `success`** (all three completed/green — confirmed via `gh run list`).
+- **Latest `review` verdict: PASS_WITH_NOTES / CONTINUE** (commit `7a3aa92`) — covers the richer-Exhibit +
+  §5 fork/shrink advance: gate-green (all 28 pkgs `ok`, `gofmt` empty), three mutations confirmed
+  non-vacuous (revert the `<=` skip → §5 test FAILS; `CheckpointSizeFromRaw` off-by-one → ground-truth
+  equality + Exhibit literal FAIL; revert `ListViolations` raw SELECT → round-trip FAILS), `CheckpointSizeFromRaw`'s
+  unverified size byte-EQUALS `VerifyCheckpoint`'s independent parse (genuine ground truth), Codex clean,
+  and a live `agent-browser` visual pass confirmed the Exhibit + §5 match the design intent (no delta filed).
+  One accepted scope deviation (a 4th prod file, `ListViolations` raw read-back — read-only, schema
+  byte-unchanged) and one cosmetic note (a redundant bare `mono` class); neither blocks.
 - **Known non-CI flake (off the gate):** a certificate masthead test asserts an RFC-3339 timestamp in
   local TZ; fails on non-UTC dev hosts only (filed `low`). CI runs UTC and is green.
-- **Open issues: 1 critical, 8 normal, 17 low** (the third `## … critical` match is the format-example
-  block, not a real issue). The lone `critical` is the Hub-Dossier increment-2b rework. The `normal` count
-  rose 7 → 8: the new §5 fork pseudo-transition nit filed this window. DONE requires 0 critical AND 0 normal.
+- **Open issues: 0 critical, 8 normal, 17 low** (the single `## … critical` grep match is the
+  format-example block, not a real issue — verified). The code-closable Hub-Dossier `critical` was deleted
+  by this window's review. DONE requires 0 critical AND 0 normal; the 8 `normal`s + the new unmet M-API
+  milestone keep it `IN_PROGRESS`.
 
 ## Next Milestone
-**Close the lone remaining `critical` — Hub Dossier increment 2b — the immediate, code-closable DONE
-blocker.** Now that §5 (2a) serves, finish the frozen-evidence detail + honesty nits:
-1. **Richer frozen Exhibit:** reuse the existing unexported checkpoint/note parser to read the two
-   contradictory checkpoints' tree sizes from `Violation.RawA`/`RawB` → render "size before → presented" +
-   a stable, honest evidence ref (e.g. a short hash over the pair, never a fabricated id), keeping the
-   kind + detected-at + "do not trust new state".
-2. **§5 fork/shrink honesty:** skip non-increasing (equal/shrunk) consecutive pairs in the transition loop
-   (`handler.go:430-433`) so a fork (same `tree_size`, different root) or a shrink contradictory checkpoint
-   never renders a `size N → N` / `larger → smaller` pseudo-transition; only emit the oldest singleton when
-   at least one REAL (increasing) transition was emitted.
-3. **Fold in the §3/§1 honesty `normal`s** while reworking §3: select `observed_at` for the `f.last_size`
-   row (so size + time describe one checkpoint); neutral §1 source wording or gate "resolved" off the
-   `unresolvable` overlay (a design call).
+**Advance M-API (ADR-0014) — the new standing code-closable v1 milestone, now the only `critical`-free,
+human-unblocked, oracle-gate-N/A work that closes a Done-When bar.** Build it in slices:
+1. **OpenAPI 3.1 doc + serve:** hand-author the document covering the machine surface ONLY (`/healthz`,
+   `/version`, `/metrics` as Prometheus text, the per-hub `inclusion`/`consistency`/`entries`/`checkpoint`/
+   `checkpoint.ots`/`tile` routes, `verify-for-me` flagged as the weaker tier-1 path, `/inclusion/<id>.bundle`;
+   HTML SSR surfaces excluded); serve it byte-verbatim via `go:embed` at `GET /openapi.json` + `/openapi.yaml`
+   under `corsmw` (CORS `*`).
+2. **Drift test:** assert every doc-declared path is mounted in the real mux AND every machine route the mux
+   mounts is declared (HTML SSR routes on an explicit exclusion list) — reverting the alignment must FAIL.
+3. **`GET /docs` + pinned assets:** self-host the Stoplight Elements `<elements-api>` JS + CSS under `/_ds/`,
+   each byte-pinned with a published `internal/web` SHA constant next to `WasmVerifyHash` (same strong-ETag +
+   no-cache + 304 policy), `apiDescriptionUrl="/openapi.json"`, NO external CDN host, no `tryItCorsProxy`.
 
-After the critical: the 8 `normal`s remain (DB migration + the `iscc_index.seq` multi-hub PK collision —
-paired design decisions; the WASM signature-half gap; the per-hub-Anchor honesty question; the three
-dossier edge-state honesty nits folded into 2b; and the `/` "recent declarers" entry — all four of its
-sub-items are CLOSED, so `update-state`/`review` may prune it). The OTS Bitcoin-confirmed half + the M-UI
-exit visual-pass across all surfaces remain offline/human-blocked.
+In parallel, the 8 `normal`s remain DONE blockers: the DB migration + `iscc_index.seq` multi-hub PK
+collision (paired design decisions); the WASM signature-half gap; the per-hub-Anchor honesty question; the
+dossier §3 size/time decouple + §1 wording; and the OpenAPI `normal` (now superseded by the M-API milestone
+itself). The OTS Bitcoin-confirmed half + the M-UI exit visual-pass across all surfaces remain
+offline/human-blocked.
