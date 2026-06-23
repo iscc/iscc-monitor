@@ -1,7 +1,8 @@
 # Target — iscc-monitor v1
 
 > Authoritative specs: `.claude/prd/0001-iscc-monitor-v1.md`, `.claude/plans/cosmic-baking-octopus.md`,
-> `.claude/adr/0001`–`0013` (deployment/packaging = ADR-0013), glossary in `CLAUDE.md`. Where this file
+> `.claude/adr/0001`–`0014` (deployment/packaging = ADR-0013, OpenAPI + hosted API docs = ADR-0014),
+> glossary in `CLAUDE.md`. Where this file
 > and an ADR/PRD disagree, the ADR/PRD wins. This file is the *fixed target* the CID loop advances toward
 > — the desired end-state plus the bar every increment is verified against.
 
@@ -62,9 +63,9 @@ PRD forbids. Revisit only if the testing strategy itself changes.
 
 ## Milestones (advance in ADR-0004 / ADR-0010 order)
 
-> **M-Deploy** (below) is **order-independent**: it depends on no feature milestone and may be advanced
-> at any time. It is the standing source of code-closable work when the feature milestones are design- or
-> human-blocked.
+> **M-Deploy** and **M-API** (below) are **order-independent**: they depend on no feature milestone and
+> may be advanced at any time. They are the standing source of code-closable work when the feature
+> milestones are design- or human-blocked.
 
 ### M1 — Read-only Monitor  `[not started]`
 
@@ -248,6 +249,40 @@ Caddy labels / Compose stack, box selection, and the per-instance `/metrics` exp
   `:9464`, publishes no host port), and the **`/metrics` exposure** decision;
 - `mise run check` stays green and no quality gate is weakened.
 
+### M-API — OpenAPI contract + hosted interactive API docs  `[not started]`  (ADR-0014)
+
+The monitor's machine-consumable HTTP surface is **discoverable and self-describing**, not folklore: the
+app serves its own **OpenAPI 3.1** contract and **interactive API docs**, so a third party can generate a
+client, validate responses, and explore the API in-browser without reading the source — the same
+verifiable-cache logic that makes us publish proof bundles instead of asking for trust. **Order-independent**
+(like M-Deploy): no feature milestone gates it, and it adds no new crypto/proof path (oracle gate N/A), so
+it is standing code-closable work while M-UI/WASM/OTS are design- or human-blocked. ADR-0014 is the
+authoritative decision; the renderer is **Stoplight Elements**, self-hosted and byte-pinned. The contract describes the
+machine surface **only** — the HTML SSR surfaces (M-UI) are documented by their rendered HTML + `CLAUDE.md`,
+never by OpenAPI.
+
+**Verify** (all in-repo / CI against observable outputs at the HTTP seam, golden + drift test):
+- a hand-authored **OpenAPI 3.1** document lives in-repo and is served byte-verbatim (`go:embed`) at
+  `GET /openapi.json` **and** `GET /openapi.yaml`, each returning `200` with `Access-Control-Allow-Origin:
+  *`; the body is a valid OpenAPI 3.1 document covering the machine surface — `/healthz`, `/version`,
+  `/metrics` (described as Prometheus text, not JSON-schema'd), the per-hub `inclusion`/`consistency`/
+  `entries`/`checkpoint`/`checkpoint.ots`/`tile` routes, `verify-for-me`, and `/inclusion/<id>.bundle` —
+  and **excludes** the HTML SSR surfaces; the `verify-for-me` path's `description` flags it as the weaker,
+  non-authoritative path (tier-1 vs the client-verified bundle);
+- a **drift test** asserts every path the document declares is mounted in the real mux **and** every
+  machine-consumable route the mux mounts is declared (HTML SSR routes on an explicit exclusion list), so
+  adding/renaming a JSON route without updating the document — or documenting a removed route — **FAILS**
+  the gate (reverting the spec/route alignment makes it FAIL);
+- `GET /docs` returns `200 text/html`, loads the **self-hosted, byte-pinned** Stoplight Elements assets
+  from `/_ds/` (the `<elements-api>` web-component JS **and** its stylesheet, each served byte-verbatim
+  with the `verify.wasm` strong-ETag + no-cache + 304 policy; each SHA-256 published as an `internal/web`
+  constant next to `WasmVerifyHash`), points it at `/openapi.json` via `apiDescriptionUrl`, and has **no
+  external CDN host in the body and makes no external runtime call** — Elements' "Try It" calls this
+  instance directly (no `tryItCorsProxy`) on the existing CORS `*`;
+- `mise run check` stays green and no quality gate is weakened.
+
+**Out of the loop's scope:** none — M-API is entirely in-repo / CI-verifiable, with no human/infra step.
+
 ### M7 — DEFERRED (out of v1)
 
 multi-monitor gossip + cosigning (C2SP witness cosignatures) + witness endpoint
@@ -255,9 +290,9 @@ multi-monitor gossip + cosigning (C2SP witness cosignatures) + witness endpoint
 
 ## Done When
 
-Every v1 milestone (M1 → M2 → M3 → M-UI → WASM → OTS → **M-Deploy**) meets its **Verify** criteria with
-`mise run check` green and no open `critical` or `normal` issue in `issues.md`, **and a public-facing
-root `README.md` exists** — a human-facing project overview + build/run instructions + pointers to the
+Every v1 milestone (M1 → M2 → M3 → M-UI → WASM → OTS → **M-Deploy** → **M-API**) meets its **Verify**
+criteria with `mise run check` green and no open `critical` or `normal` issue in `issues.md`, **and a
+public-facing root `README.md` exists** — a human-facing project overview + build/run instructions + pointers to the
 specs, distinct from the agent-facing `CLAUDE.md` and the CID context pack's `.claude/context/README.md`.
 M-Deploy's human/infra steps (GHCR-package visibility, DNS, reverse-proxy config, box selection, the
 per-instance `/metrics` exposure choice) live in **iscc-infra** and do **not** gate DONE here — only its
