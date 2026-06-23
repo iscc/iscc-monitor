@@ -306,6 +306,51 @@ func TestRecordProjectionsSchemaAgnostic(t *testing.T) {
 	}
 }
 
+// TestRecordProjectionsMultiHubSeqZero confirms the composite (hub_id, seq) PRIMARY
+// KEY lets two hubs both index leaf seq 0 without one clobbering the other — the
+// multi-hub data-model fix. On the old single-global-PK schema (or with the old
+// ON CONFLICT(seq) target) the second write would overwrite the first hub's row, so
+// one of the two reads would return the wrong id.
+func TestRecordProjectionsMultiHubSeqZero(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hubA := newHub(t, s)
+	hubB, err := s.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub hubB: %v", err)
+	}
+
+	// Both hubs index their own leaf seq 0 — the collision the single global PK could
+	// not represent.
+	if err := s.RecordProjections(ctx, []ProjectionRecord{
+		{HubID: hubA, Seq: 0, IsccID: "ISCC:A", NoteSchema: "iscc-note-0.8.0.json"},
+		{HubID: hubB, Seq: 0, IsccID: "ISCC:B", NoteSchema: "iscc-note-0.8.0.json"},
+	}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+
+	// Two rows survive — neither clobbered the other.
+	if n := countRows(t, s, "iscc_index"); n != 2 {
+		t.Errorf("iscc_index row count = %d, want 2 (both hubs' seq 0)", n)
+	}
+
+	rowA, foundA, err := s.RecordAt(ctx, hubA, 0)
+	if err != nil || !foundA {
+		t.Fatalf("RecordAt(hubA, 0) found = %v, err = %v, want true / nil", foundA, err)
+	}
+	if rowA.IsccID != "ISCC:A" {
+		t.Errorf("RecordAt(hubA, 0) IsccID = %q, want ISCC:A", rowA.IsccID)
+	}
+
+	rowB, foundB, err := s.RecordAt(ctx, hubB, 0)
+	if err != nil || !foundB {
+		t.Fatalf("RecordAt(hubB, 0) found = %v, err = %v, want true / nil", foundB, err)
+	}
+	if rowB.IsccID != "ISCC:B" {
+		t.Errorf("RecordAt(hubB, 0) IsccID = %q, want ISCC:B", rowB.IsccID)
+	}
+}
+
 // seqsOf extracts the seqs from a RecordRow page, so an order assertion reads as a
 // plain []uint64 comparison.
 func seqsOf(rows []RecordRow) []uint64 {

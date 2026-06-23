@@ -1,85 +1,76 @@
-## 2026-06-23 — Review of: Add a `PRAGMA user_version`-gated migration runner to `store.Open`
+## 2026-06-23 — Rebuild `iscc_index` under a composite `(hub_id, seq)` PK as migration index 0, with the out-of-range `user_version` guard
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Re-keyed `iscc_index` from the original single-global `seq` PRIMARY KEY to the composite
+`(hub_id, seq)` PK (fresh DB via `schema.sql`, pre-existing DB via the project's first real migration,
+index 0), so two hubs in a multi-hub realm both index low leaves (both seq 0, 1, …) without one
+clobbering the other. Added the fail-closed out-of-range `user_version` guard to `applyMigrations` so the
+now-non-empty migration slice rejects a future version (silent-accept) or a negative version (the
+`migs[-1]` panic) instead of either. Both paired data-model `normal`s close together.
 
-**Summary:** The advance added the project's first on-disk migration mechanism — a `PRAGMA user_version`-gated,
-append-only `migrations []func(*sql.Tx) error` run inside `store.Open` after the baseline `CREATE TABLE IF
-NOT EXISTS` pass (`applyMigrations` + per-step `applyMigration`, each step in its own `*sql.Tx`,
-fail-closed, idempotent). Exactly in-scope (1 non-test file `sqlite.go` + 1 test file + 1 doc), every gate
-green, both mutation claims independently reproduced. PASS_WITH_NOTES (not PASS) only because Codex surfaced
-a real, currently-latent fail-open in the runner's version handling (no bound on the read-back
-`user_version`) that I reproduced and filed `normal` — it does not block this increment but goes live at the
-very next step.
+**Files changed:**
+- `internal/store/schema.sql`: `iscc_index` `seq INTEGER PRIMARY KEY` → `seq INTEGER NOT NULL` + table-level
+  `PRIMARY KEY (hub_id, seq)` (the shape a FRESH DB gets directly); leading comment rewritten to describe
+  the composite key (evergreen). `iscc_index_by_iscc_id` index unchanged.
+- `internal/store/iscc_index.go`: writer `RecordProjections` conflict target `ON CONFLICT(seq)` →
+  `ON CONFLICT(hub_id, seq)`; dropped the now-meaningless `hub_id = excluded.hub_id` from the `DO UPDATE SET`
+  (hub_id is part of the conflict key, so it can never change on a conflict). Package/`RecordProjections`/
+  `ProjectionRecord` docstrings that named `seq` "the PRIMARY KEY" now say the composite `(hub_id, seq)`.
+  The four readers' SQL is untouched (they already scope by `hub_id`).
+- `internal/store/sqlite.go`: appended migration index 0 (`migrateISCCIndexCompositePK`) doing the standard
+  SQLite table-rebuild dance (create new-shape table → `INSERT … SELECT` copy → drop old → rename → recreate
+  the iscc_id index), all inside the caller's `*sql.Tx`, no `user_version` bump (the runner does that). Added
+  the `version < 0 || version > len(migs)` guard before the loop wrapping a new `errUnsupportedSchemaVersion`
+  sentinel. Updated the `migrations` var + package/`Open`/`applyMigrations` docstrings off the "empty no-op
+  baseline" wording to describe the one entry now present and the new guard.
+- `internal/store/iscc_index_test.go` (test): added `TestRecordProjectionsMultiHubSeqZero` — two hubs both
+  index seq 0; `RecordAt(hubA,0)→"ISCC:A"` and `RecordAt(hubB,0)→"ISCC:B"`, two rows survive.
+- `internal/store/sqlite_test.go` (test): added `TestMigrationIsccIndexCompositePK` (production `migrations`
+  slice over a seeded single-PK v0 DB → seeded row survives, `user_version == len(migrations)`, PK columns
+  are `[hub_id seq]` via `pragma_table_info`, a second hub's matching seq inserts with no collision) and
+  `TestMigrationOutOfRangeVersion` (future + negative `user_version` both return the
+  `errUnsupportedSchemaVersion`-wrapped error). Added `reflect`/`fmt` imports + `oldISCCIndexDDL`,
+  `pkColumns`, `countRows2` helpers.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test, 30 pkgs) — GREEN.
-- [x] `gofmt -l .` — empty (clean).
-- [x] `go test -run TestMigration ./internal/store -v` — all 5 PASS (`FreshDBAtCurrentVersion`,
-  `UpgradesOldDB`, `Idempotent`, `FailClosed`, `AppliesInOrder`).
-- [x] **Fresh-DB version assertion** — `TestMigrationFreshDBAtCurrentVersion` PASS (`user_version ==
-  len(migrations)`); independently confirmed via the broader `TestStoreReopenIdempotent` pass.
-- [x] **Old-DB upgrade assertion** — `TestMigrationUpgradesOldDB` PASS (synthetic 1-entry slice over a v0 DB
-  runs once → version 1 → marker table present).
-- [x] **Idempotency assertion** — `TestMigrationIdempotent` PASS (second run executes zero migrations).
-- [x] **Fail-closed assertion** — `TestMigrationFailClosed` PASS (errored step leaves `user_version` 0,
-  rolls back its write, returns the `%w`-wrapped error via `errors.Is`).
-- [x] **Mutation 1 (reviewer-reproduced):** removing the `PRAGMA user_version = %d` bump → `TestMigrationIdempotent`
-  FAILS (`table migration_marker already exists` — re-ran) AND `TestMigrationUpgradesOldDB` FAILS (version
-  stays 0). Source restored pristine.
-- [x] **Mutation 2 (reviewer-reproduced):** swallowing the migration error in `applyMigration` →
-  `TestMigrationFailClosed` FAILS (`returned nil, want error`). Source restored pristine.
-- [x] **Open ordering correct** — pragmas → `db.Exec(schemaSQL)` → `applyMigrations(db, migrations)` →
-  return Store; the migrate error path mirrors the existing `schemaSQL` path (`db.Close()` + `%w`-wrap).
-- [x] **Store leaf purity intact** — `go list -deps ./internal/store | grep '^net/http$'` empty.
-- [x] `go.mod` / `go.sum` byte-identical to HEAD~1; only the pre-existing `target.md` steer-artifact mod is
-  in the working tree (correctly not committed by advance).
-- [x] Gate-circumvention scan over the 3 unpushed commits — no `nolint`/`t.Skip`/swallowed-err/build-tag
-  dodge, no deleted tests/assertions; the source diff is purely additive. (The `defer _ = tx.Rollback()` is
-  the established post-commit `sql.ErrTxDone` idiom, not an error-swallowing dodge.)
-- [x] `deploy/OPERATING.md` §Migration-policy — accurately describes the mechanism that now exists AND keeps
-  the honest "recreate the volume on a schema change" caveat (the list is still a no-op baseline).
+**Verification:** `mise run check` → GREEN (build + vet + test, 30 pkgs). `gofmt -l .` → empty.
+- Composite-PK multi-hub round-trip (the bug fix): `TestRecordProjectionsMultiHubSeqZero` PASS. Mutation —
+  reverting writer + schema to single-PK makes it FAIL (`ON CONFLICT clause does not match any PRIMARY KEY`,
+  proving the composite target is load-bearing; on a clean single-PK revert the later write would clobber).
+- Migration upgrade-in-place: `TestMigrationIsccIndexCompositePK` PASS (seeded row survives, version → 1,
+  PK = `[hub_id seq]`, no collision on the second-hub insert).
+- Out-of-range guard fail-closed: `TestMigrationOutOfRangeVersion` PASS. Mutation — removing the guard makes
+  it FAIL (future version returns nil; negative would panic on `migs[-1]`).
+- All five existing `TestMigration*` PASS; the fresh-DB test now sees `len(migrations) == 1` automatically
+  (it asserts `userVersion == len(migrations)`).
+- All existing `iscc_index` tests (idempotency, one-to-many, ListRecords/RecordAt/RecentRecords, hub-scope)
+  PASS — the `DO UPDATE SET` body is unchanged, idempotency intact.
+- Store leaf purity intact: `go list -deps ./internal/store | grep '^net/http$'` empty. `go.mod`/`go.sum`
+  byte-unchanged. The `internal/follower` caller of `RecordProjections` is unaffected (signature unchanged) —
+  its suite is green.
 
 **Oracle/conformance gate:** N/A — touches no signature / RFC-6962 / Merkle / did:web / proof path; it is
-`user_version` bookkeeping + DDL plumbing. Reviewer concurs with the advance's N/A call.
+`iscc_index` DDL + `user_version` bookkeeping (the advance and `next.md` both call this N/A).
 
-**Issues found:** One new `normal` (Codex-confirmed, reviewer-reproduced) — the runner does not bound the
-read-back `user_version`, so a future `user_version > len(migrations)` opens SILENTLY (unsupported schema
-accepted) and a negative `user_version = -1` PANICS on `migs[-1]` once the slice is non-empty. Latent today
-(empty production slice → only `version == 0` ever occurs), but BOTH go live at migration index 0 (the
-scheduled next step), so fix the `version < 0 || version > len(migs)` guard with or before it. Filed. Also
-updated the standing "No on-disk DB migration story" `normal` to reflect that the mechanism landed but the
-production list is still empty (close it when the first real migration lands).
-
-**Codex second opinion:** Returned exactly one finding, `[P2]` — "Reject out-of-range user_version values"
-(`sqlite.go:124-125`): the loop treats an out-of-range stored `user_version` as valid — a newer-binary DB
-(`> len(migrations)`) opens silently and a corrupt `-1` panics by indexing `migs[-1]`. **CONFIRMED** —
-reproduced both halves with a throwaway probe (future version 5 over the empty prod slice → `Open` SUCCEEDS;
-`-1` with a 1-entry synthetic slice → `index out of range [-1]` panic). Triaged `normal`, not a blocker:
-not reachable in production today (empty slice → only `version == 0`), all gates green, but it becomes live
-at the next step. Filed as an `issues.md` entry for a later advance; not fixed here (review is read-only).
-No other findings. (Codex ran ~5 min, including its own negative-`user_version` probe program.)
-
-**Visual check:** n/a — no SSR surface changed. The diff touches only `internal/store/sqlite.go`
-(non-rendering data-layer plumbing), its test file, and `deploy/OPERATING.md`; no server-rendered HTML
-template was edited.
-
-**Next:** The migration mechanism is in place, so the scheduled next step is the `iscc_index.seq`
-single-global-PK → composite `(hub_id, seq)` rebuild, landing as migration index 0 (re-keys `iscc_index`,
-copies existing rows under the new PK) plus the `iscc_index.go` writer/reader updates. **Fold the
-out-of-range `user_version` guard into that same step** (or do it first) — the negative-version panic goes
-live the instant the slice becomes non-empty, and the future-version silent-accept undermines the
-fail-closed contract that step relies on. Both data-model `normal`s then close together.
+**Next:** Both paired data-model `normal`s are now closed. The migration mechanism + first real migration are
+proven end-to-end, so the on-disk migration story is no longer a no-op baseline — a future `update-state`
+should close the standing "No on-disk DB migration story" `normal` (the mechanism landed AND now has a real
+entry). No further code-closable migration/iscc_index work is queued; the next deliberate step should come
+from `issues.md` priority or the milestone backlog.
 
 **Notes:**
-- Advance's "reverting the runner call makes the upgrade test FAIL" caveat is accurate: with the empty
-  production slice that mutation is observably a no-op (a fresh DB is already at v0), so the wiring is
-  proven load-bearing only via the synthetic-slice path / a seed-one-prod-migration probe — expected by the
-  deliberate no-op-baseline design, not a gap. I confirmed Mutations 1 and 2 (the user_version bump and the
-  error-propagation) ARE non-vacuous against the synthetic-slice tests.
-- `learnings/store.md` net-reduced this iteration (192 → ~186 lines): collapsed the verbose freeze /
-  `ListViolations` / `RecordHubKey` settled bullets into one-line `settled:` summaries (git history keeps
-  the detail) and replaced the stale "no migration story exists" bullet with the migration-runner note
-  (including the two out-of-range edges to guard).
-- The pre-existing `.claude/context/target.md` working-tree mod (from steer `d2f259e`) is still uncommitted
-  — not review's to commit (must not modify target.md); left for the next `update-state`/`steer`.
+- I dropped `hub_id = excluded.hub_id` from `RecordProjections`' `DO UPDATE SET` because `hub_id` is now
+  part of the conflict-target key: an `ON CONFLICT(hub_id, seq)` only fires when both already match the
+  inserted row, so re-assigning `hub_id` to its own value was dead. The remaining six `SET` columns are
+  byte-identical to before, so the second-write-wins idempotency (incl. `note_timestamp`) is unchanged and
+  `TestRecordProjectionsIdempotent` still passes. Not a behavioural change — flagging it as a deliberate,
+  in-scope tidy of the upsert that the PK change made vacuous.
+- Used a sentinel `errUnsupportedSchemaVersion` (matched via `errors.Is`) rather than a bare string so the
+  test assertion is robust to message wording, per the `next.md` implementation note's "sentinel var or
+  wrapped error" option.
+- The migration's new-table DDL is a verbatim copy of the `schema.sql` `iscc_index` body (composite PK), so
+  the fresh-DB path and the upgrade path converge on one shape; if either is edited later, edit both (the PK
+  rework is append-only — this entry must never be reordered/edited per store.md).
+- Pre-existing `.claude/context/target.md` working-tree mod (from steer `d2f259e`) is still uncommitted — not
+  mine to commit (advance writes only source/test + handoff); left for `update-state`/`steer`.
+- `TestMigrationOutOfRangeVersion` builds the `PRAGMA user_version = N` via `fmt.Sprintf`, not a `?`
+  placeholder — SQLite rejects a bound parameter on that pragma (the exact nuance the production runner
+  already documents; I hit it once and corrected it).

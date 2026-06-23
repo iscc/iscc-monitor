@@ -10,7 +10,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -341,6 +343,168 @@ func TestMigrationFailClosed(t *testing.T) {
 	}
 	if tableSet(t, db)["migration_marker"] {
 		t.Error("failed migration was not rolled back: marker table present")
+	}
+}
+
+// oldISCCIndexDDL is the original single-global-PK iscc_index shape (seq INTEGER
+// PRIMARY KEY), pinned here so the migration test can recreate a pre-existing
+// database the production migration 0 must upgrade in place.
+const oldISCCIndexDDL = `CREATE TABLE iscc_index (
+    hub_id         INTEGER NOT NULL REFERENCES hubs(hub_id),
+    seq            INTEGER PRIMARY KEY,
+    iscc_id        BLOB,
+    iscc_id_str    TEXT,
+    note_schema    TEXT,
+    note_timestamp TEXT,
+    record_sha256  BLOB
+)`
+
+// pkColumns reads the PRIMARY KEY column set of a table from PRAGMA table_info, so a
+// test can assert the migration re-keyed iscc_index onto the composite (hub_id, seq)
+// rather than trusting a row-collision side effect alone.
+func pkColumns(t *testing.T, db *sql.DB, table string) []string {
+	t.Helper()
+	rows, err := db.Query("SELECT name, pk FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk", table)
+	if err != nil {
+		t.Fatalf("pragma_table_info(%s): %v", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var cols []string
+	for rows.Next() {
+		var name string
+		var pk int
+		if err := rows.Scan(&name, &pk); err != nil {
+			t.Fatalf("scan table_info: %v", err)
+		}
+		cols = append(cols, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate table_info: %v", err)
+	}
+	return cols
+}
+
+// TestMigrationIsccIndexCompositePK runs the PRODUCTION migrations slice against a
+// pre-existing single-global-PK iscc_index database (a seeded row at user_version 0)
+// and confirms migration 0 re-keys it onto the composite (hub_id, seq) PRIMARY KEY:
+// the seeded row survives, user_version reaches len(migrations), and a second hub can
+// then index a seq matching the first hub's seq without a PK collision.
+func TestMigrationIsccIndexCompositePK(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "testnet.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	db := rawOpen(t, path)
+	// Recreate the pre-migration world: drop the composite-PK table Open just created
+	// and put back the original single-PK shape with a seeded row, at user_version 0.
+	for _, stmt := range []string{
+		"DROP TABLE iscc_index",
+		oldISCCIndexDDL,
+		"INSERT INTO hubs (hub_id, domain, origin, base_url) VALUES (1, 'sb0.iscc.id', 'sb0.iscc.id/log', 'https://sb0.iscc.id')",
+		"INSERT INTO hubs (hub_id, domain, origin, base_url) VALUES (2, 'sb1.amlet.id', 'sb1.amlet.id/log', 'https://sb1.amlet.id')",
+		"INSERT INTO iscc_index (hub_id, seq, iscc_id, iscc_id_str, note_schema) VALUES (1, 0, X'41', 'ISCC:A', 'iscc-note-0.8.0.json')",
+		"PRAGMA user_version = 0",
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed pre-migration DB (%q): %v", stmt, err)
+		}
+	}
+
+	// Run the PRODUCTION migration slice, not a synthetic one.
+	if err := applyMigrations(db, migrations); err != nil {
+		t.Fatalf("applyMigrations: %v", err)
+	}
+
+	// The version advanced to the code's current schema version.
+	if got := userVersion(t, db); got != len(migrations) {
+		t.Errorf("user_version after migration = %d, want len(migrations) = %d", got, len(migrations))
+	}
+	// The table is now keyed on the composite (hub_id, seq).
+	if got := pkColumns(t, db, "iscc_index"); !reflect.DeepEqual(got, []string{"hub_id", "seq"}) {
+		t.Errorf("iscc_index PRIMARY KEY columns = %v, want [hub_id seq]", got)
+	}
+	// The seeded row survived the rebuild.
+	var idStr string
+	if err := db.QueryRow("SELECT iscc_id_str FROM iscc_index WHERE hub_id = 1 AND seq = 0").Scan(&idStr); err != nil {
+		t.Fatalf("read seeded row after migration: %v", err)
+	}
+	if idStr != "ISCC:A" {
+		t.Errorf("seeded iscc_id_str = %q, want ISCC:A (row must survive the rebuild)", idStr)
+	}
+	// A second hub can now index a seq matching the first hub's seq — the very
+	// collision the single global PK forbade.
+	if _, err := db.Exec(
+		"INSERT INTO iscc_index (hub_id, seq, iscc_id, iscc_id_str, note_schema) VALUES (2, 0, X'42', 'ISCC:B', 'iscc-note-0.8.0.json')",
+	); err != nil {
+		t.Fatalf("insert second hub's seq 0 after migration: %v", err)
+	}
+	if n := countRows2(t, db, "iscc_index"); n != 2 {
+		t.Errorf("iscc_index row count after second-hub insert = %d, want 2 (no PK collision)", n)
+	}
+}
+
+// countRows2 reads a single COUNT(*) from the named table off a raw handle (the
+// store-level countRows helper takes a *Store, which the raw-handle migration tests
+// do not hold).
+func countRows2(t *testing.T, db *sql.DB, table string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow("SELECT count(*) FROM " + table).Scan(&n); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	return n
+}
+
+// TestMigrationOutOfRangeVersion confirms the runner rejects an out-of-range stored
+// user_version fail-closed instead of opening silently or panicking: a version above
+// len(migs) (a database from a NEWER binary) and a negative version (corruption) both
+// return the errUnsupportedSchemaVersion-wrapped error, and migs[-1] is never
+// indexed. Reverting the guard makes the future-version case open silently and the
+// negative case panic.
+func TestMigrationOutOfRangeVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "testnet.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	db := rawOpen(t, path)
+	migs := []func(*sql.Tx) error{
+		func(tx *sql.Tx) error { return nil },
+	}
+
+	// A future version (> len(migs)) must be rejected, not silently accepted. PRAGMA
+	// user_version takes no bound parameter, so the value is formatted in (an in-test
+	// int, never user input).
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", len(migs)+1)); err != nil {
+		t.Fatalf("set future user_version: %v", err)
+	}
+	err = applyMigrations(db, migs)
+	if err == nil {
+		t.Fatal("applyMigrations on a future user_version returned nil, want error")
+	}
+	if !errors.Is(err, errUnsupportedSchemaVersion) {
+		t.Errorf("future-version error = %v, want it to wrap errUnsupportedSchemaVersion", err)
+	}
+
+	// A negative version (corruption) must return an error, not panic on migs[-1].
+	if _, err := db.Exec("PRAGMA user_version = -1"); err != nil {
+		t.Fatalf("set negative user_version: %v", err)
+	}
+	err = applyMigrations(db, migs)
+	if err == nil {
+		t.Fatal("applyMigrations on a negative user_version returned nil, want error")
+	}
+	if !errors.Is(err, errUnsupportedSchemaVersion) {
+		t.Errorf("negative-version error = %v, want it to wrap errUnsupportedSchemaVersion", err)
 	}
 }
 

@@ -3,8 +3,10 @@
 // iscc_index table, and SeqsForISCCID is the one-to-many iscc_id → []seq read.
 //
 // iscc_id → seq is ONE-TO-MANY (a declaration, its deletion, and any future note
-// type sharing an id), so seq is the PRIMARY KEY and a lookup returns a list. The
-// raw ISCC:-prefixed iscc_id string and the raw inner note.$schema are stored
+// type sharing an id), so the table is keyed on the composite (hub_id, seq) — each
+// hub's absolute leaf index, so two hubs both index low leaves without colliding —
+// and a lookup returns a list. The raw ISCC:-prefixed iscc_id string and the raw
+// inner note.$schema are stored
 // verbatim and never interpreted: the index decodes nothing (no ISCC-ID codec, no
 // maintype/subtype check, no known-schema list). iscc_id is stored into BOTH the
 // iscc_id BLOB column (its UTF-8 bytes, so the existing iscc_index_by_iscc_id index
@@ -31,8 +33,9 @@ import (
 
 // ProjectionRecord is one entry-bundle leaf to persist into the iscc_index table —
 // a store-owned plain value struct mirroring CheckpointRecord/HubKey. Its fields map
-// 1:1 to the columns: HubID is the owning hub; Seq is the leaf's absolute index (the
-// PRIMARY KEY); IsccID is the raw ISCC:-prefixed iscc_id string (stored into both the
+// 1:1 to the columns: HubID is the owning hub; Seq is the leaf's absolute index
+// (together they form the composite (hub_id, seq) PRIMARY KEY); IsccID is the raw
+// ISCC:-prefixed iscc_id string (stored into both the
 // iscc_id BLOB and iscc_id_str TEXT columns); NoteSchema is the verbatim inner
 // note.$schema discriminator (never validated); NoteTimestamp is the verbatim optional
 // inner note.timestamp RFC-3339 string (the record's own creation/signing time,
@@ -49,10 +52,11 @@ type ProjectionRecord struct {
 }
 
 // RecordProjections upserts a batch of projection records into iscc_index, one row
-// per record keyed on seq (the PRIMARY KEY). Re-ingesting an already-mirrored bundle
-// is idempotent: an existing seq is overwritten in place via ON CONFLICT(seq) DO
-// UPDATE (the same row count, the latest values win), mirroring RecordTile's
-// composite-PK upsert. iscc_id is bound as both UTF-8 bytes (the BLOB) and the raw
+// per record keyed on the composite (hub_id, seq) PRIMARY KEY. Re-ingesting an
+// already-mirrored bundle is idempotent: an existing (hub_id, seq) is overwritten in
+// place via ON CONFLICT(hub_id, seq) DO UPDATE (the same row count, the latest values
+// win), mirroring RecordTile's composite-PK upsert. iscc_id is bound as both UTF-8
+// bytes (the BLOB) and the raw
 // string (the TEXT column); an empty IsccID writes an empty BLOB + empty string, not
 // NULL. note_timestamp is bound via nullStringOrNil so an absent timestamp ("") is a
 // true SQL NULL distinct from a present empty string (mirroring the key-cache
@@ -64,8 +68,8 @@ func (s *Store) RecordProjections(ctx context.Context, recs []ProjectionRecord) 
 		_, err := s.db.ExecContext(ctx,
 			"INSERT INTO iscc_index (hub_id, seq, iscc_id, iscc_id_str, note_schema, note_timestamp, record_sha256) "+
 				"VALUES (?, ?, ?, ?, ?, ?, ?) "+
-				"ON CONFLICT(seq) DO UPDATE SET "+
-				"hub_id = excluded.hub_id, iscc_id = excluded.iscc_id, "+
+				"ON CONFLICT(hub_id, seq) DO UPDATE SET "+
+				"iscc_id = excluded.iscc_id, "+
 				"iscc_id_str = excluded.iscc_id_str, note_schema = excluded.note_schema, "+
 				"note_timestamp = excluded.note_timestamp, record_sha256 = excluded.record_sha256",
 			r.HubID, int64(r.Seq), []byte(r.IsccID), r.IsccID, r.NoteSchema,
