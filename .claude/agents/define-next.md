@@ -123,6 +123,11 @@ the relevant Correctness rule from learnings.md>
   infrastructure.
 - Every verification criterion should be a command or assertion returning pass/fail. A non-runnable
   criterion (e.g. "doc wording matches the reference") is the rare exception, not the norm.
+- **Keep verification working-tree-checkable.** Every criterion must be checkable against the tree as it
+  is — never phrase it as a before/after comparison vs a clean HEAD or committed baseline. That tempts
+  `advance` to `git stash`/`git reset` to "get a clean tree", which has stranded work and been misread
+  as a concurrent-loop race. To forbid a dependency, assert it directly on the working tree, e.g.
+  `go list -deps ./<pkg> | grep -qx <forbidden> && exit 1 || true` — not "no NEW deps vs HEAD".
 - `## Not In Scope` must have at least one entry.
 - If a step conflicts with `learnings.md`, choose differently and say why.
 - Do not implement anything or write source code. You only scope and define.

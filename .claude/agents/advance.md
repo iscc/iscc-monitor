@@ -95,6 +95,14 @@ less.
   `t.SkipNow`, blank-swallowed errors (`_ = err`) to dodge a check, build-tag exclusions, or deleting
   tests/assertions. Fix the root cause. A genuinely necessary exception (e.g. an FFI boundary) gets a
   comment explaining why.
+- **Never mutate git to inspect it; never invent concurrency.** This loop is single-session — no other
+  process edits your working tree. Do **not** run `git stash`/`git reset`/`git checkout`/`git clean` to
+  "get a clean tree" or to probe deps "at HEAD"; `go list -deps ./...` reads the working tree as-is.
+  Never suppress git output (`>/dev/null 2>&1`) on a state-changing git command. If your tree looks
+  unexpectedly clean or "reset", run `git stash list` and read the reflog **before** concluding anything
+  was lost — it is almost certainly your own stranded stash (a `git stash` shows in the reflog as
+  `reset: moving to HEAD`, which looks exactly like an external reset), and a "modified since read"
+  reminder is normal harness file-state tracking, not a concurrent edit.
 - If a backward-incompatible change to a public API or a design deviation from the plan/ADRs is
   genuinely required, do **not** proceed silently — flag `**HUMAN REVIEW REQUESTED:**` in the handoff
   with the reason, and commit what you have.
