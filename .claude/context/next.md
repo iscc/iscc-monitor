@@ -1,126 +1,89 @@
 # Next Work Package
 
-## Step: Record-list pager parity (part-2b) — top+bottom "seq X–Y of Z" pager + drop the off-mockup Status row
+## Step: Dossier §1 stops claiming "Key resolved from did:web" on the `unresolvable` path
 
 ## Advances
-Closes the **last code-closable half of the lone `critical`** ("Hub-dossier 'Browse the log →' …
-record-list log browser is off-mockup", `issues.md`), whose navigation-closure clause is already MET —
-only its **part-2b cosmetic pager parity** + the human M-UI exit sign-off remain. The `critical`
-preempts milestone-fresh work; it is rooted in the M-UI Verify criterion:
+target.md **M-UI** Verify bar — the SSR-honesty requirement that the served no-JS HTML must not assert
+something the data does not support ("a pre-coverage state never renders as a guarantee (ADR-0001)"; the
+always-loaded learnings rule that a rendered assertion is gated on real data, never overstating a verdict).
+It also closes the open `normal` issue **"Dossier §1 unconditionally says 'Key resolved from did:web:…' even
+on the `unresolvable` overlay path"** (issues.md).
 
-> "the log-browser record list paginates via plain links (`?from=…[&n=…]`, no-JS), newest-first, each
-> row links to its single-record page" — and the design-parity named region: "the **plain-link pager**
-> (newer/older + 'seq X–Y of Z' range, disabled at the ends — the no-JS `?from=…` form of the mockup's
-> buttons)" (`target.md` M-UI "log browser / record list").
+**Why this, not the M-API fixes the handoff named:** those are STALE — commit `53ee328` (already an
+ancestor of HEAD `0673ff0`) already removed the phantom `/{domain}/log/verify` `index` param, fixed
+`/{domain}/log/checkpoint`'s `200` media type to `application/octet-stream`, added the `/healthz` 503
+response, and landed the mermaid no-CDN ban. `go test ./internal/openapi` is green; the M-API
+contract-fidelity criterion is closed in code. The three matching issue entries are resolved-pending-prune,
+NOT open work.
 
-The current `records.html` renders a **single bottom-only** pager labelled "showing N of M" and carries
-a **Status-badge row the mockup's Log Browser omits** — this step brings both to named-region parity.
+**Why this, not the `critical`:** the lone `critical` (dossier→log-browser navigation + record-list parity)
+is fully code-closed and human-blocked on the M-UI exit sign-off — it must NOT be re-attempted in code.
+Of the remaining open `normal`s, the WASM cross-origin signature half and the realm-index per-checkpoint
+Anchor honesty are both explicitly design-first / design-blocked. This §1 honesty fix is the one open
+`normal` that is code-closable WITHOUT a design pass: it does NOT rewrite the mockup-specified copy for the
+normal case — it only suppresses a self-contradiction on the failed-resolution path.
 
 ## Goal
-Rework the record-list pager into the mockup's top+bottom pagers — each with newer/older affordances
-disabled (rendered as a `<span>`) at the ends and a center "seq X – Y of Z" range label — and drop the
-off-mockup Status-badge row, so the served no-JS HTML carries the Log Browser mockup's pager region.
-This is the final code slice needed before the human M-UI exit sign-off.
+On the `unresolvable` overlay path the dossier currently renders §1 Identity as "Key resolved from
+did:web:<domain>" while the soft caution on the SAME page says the signing key "is unresolved" — a direct
+self-contradiction that overstates a key resolution that failed. Make §1 render neutral source wording when
+the live verdict is `unresolvable`, keeping the mockup's "Key resolved from did:web:<domain>" phrasing for
+every other status.
 
 ## Scope
-- **Modify**: `internal/proofserve/handler.go` (add precomputed `RangeTop`/`RangeBottom` fields to
-  `recordsData` in `serveRecords`; no new store read — top/bottom seq come from the already-fetched
-  `records` slice)
-- **Modify**: `internal/proofserve/records.html` (replace the single bottom pager + the `.ledger-status`
-  Status row with the top+bottom "seq X–Y of Z" pager region matching the mockup; remove the now-dead
-  `.ledger-status` / `.row-label` CSS)
-- **Modify (test)**: `internal/proofserve/records_test.go` (new region/golden tests for the pager parity
-  + the dropped Status row; update `olderHref` + the `older &rarr;` / `showing N of M` markers in the
-  EXISTING pagination tests to the reworked pager markup — these are test-only edits, off the ≤3 budget)
+- **Modify**:
+  - `internal/dossier/handler.go` — add one bool field to `dossierData` (e.g. `KeyUnresolved`) and set it
+    in `buildData` when `status == "unresolvable"`; carries the §1-honesty gate (1 of the ≤3 prod files).
+  - `internal/dossier/dossier.html` — gate the §1 `section-value` text on that field: render neutral source
+    wording (e.g. `Key source: <span class="mono">did:web:{{.Domain}}</span>`) when `KeyUnresolved`, else
+    keep today's `Key resolved from <span class="mono">did:web:{{.Domain}}</span>` (`dossier.html:533`).
 - **Reference**:
-  - `.claude/design/ISCC Monitor - Log Browser.dc.html` lines 58–85 (the authoritative top pager / record
-    list / bottom pager markup: `seq {top} – {bottom} of {hubMax}` range label, opacity-disabled at the
-    ends, the append-only footnote in the bottom pager's center)
-  - `.claude/context/learnings/http-surface.md` §"HTML record list at `/records`" + §"Chrome/breadcrumb/
-    head dressing (part-2a)" (the no-`<table>`/CDN rule, the unquoted `[data-status=…]`/`[data-kind=…]`
-    CSS-literal trap, HARDCODED-literal test grounding, the seq-cursor pager liveness rules already settled)
-  - `internal/proofserve/records.html` lines 398–447 (current ledger head, `.ledger-status` Status row,
-    single bottom pager, footnote) and `internal/proofserve/handler.go` lines 846–998 (the `recordsData`
-    view-model + `serveRecords` cursor math — `HasNewer/NewerFrom/HasOlder/OlderFrom`, `Total`, `PageSize`
-    already exist)
+  - `.claude/context/learnings/dossier.md` — §1-static-derived note (lines 34-40): §1 is "WHERE the key
+    comes from", the mockup specifies the static phrasing, the fix is neutral "Key source:" wording or
+    gating "resolved" off `unresolvable`; do NOT silently rewrite the mockup copy for the resolved case.
+  - `.claude/context/learnings/dashboard.md` — the shared overlay/masthead mechanics the dossier ports.
+  - `internal/dossier/handler.go:308` (`ShowCaution = status == "unresolvable" || status == "unverified"`)
+    and `handler.go:370-371` (the `unresolvable` caution copy that §1 contradicts).
+  - `.claude/design/ISCC Monitor - Hub Dossier.dc.html` §1 (~line 88) — confirm the resolved-case phrasing
+    stays mockup-faithful.
 
 ## Not In Scope
-- The **single-record page** (`record.html`) — its navigation closure (part-2) already landed; do not
-  touch `serveRecord`/`record.html`.
-- The **`/<domain>/log/` checkpoint-summary landing** (`browser.html`/`serveBrowser`) — it keeps its
-  Status badge; only the *record-list* (`records.html`) drops the off-mockup Status row.
-- A **"Jump to sequence" input** — the mockup's `<input onKeyDown>` is JS-driven; the no-JS constraint
-  wins (the plain-link `?from=…` pager IS its no-JS equivalent). Do not add a form/input; flag the
-  deviation in a comment, as the existing surfaces do.
-- Type-badge **exact tint/hex** + append-only **footnote wording** micro-deltas beyond moving the
-  append-only line into the bottom pager's center — leave residual aesthetic deltas to the ADR-0012 visual
-  pass / human exit sign-off (they are not named regions).
-- Requesting the **human M-UI exit sign-off** itself — that is the next step *after* this lands.
-- The masthead-identity **const consolidation** (`low`, tracked) — out of scope; would add a 4th file.
+- Do NOT touch the `unverified` path's §1 wording. `unverified` means the signature matched no listed
+  did:web key — the key WAS resolved (the doc fetched/parsed); only the signature failed. So "resolved"
+  stays honest for `unverified`; gate the new wording on `unresolvable` ONLY.
+- Do NOT re-attempt the human-blocked `critical` (dossier→log-browser navigation / record-list parity) in
+  any form — no chrome, breadcrumb, or pager edits.
+- Do NOT consolidate the 3× masthead/overlay duplication or the §2/§3/§4 honesty plumbing (tracked `low`s).
+- Do NOT prune the now-stale M-API issue entries here — that is an `update-state` / `review` bookkeeping job.
+- Do NOT change the §1 phrasing for `verified` / `frozen` / `inactive` — they keep the mockup copy.
 
 ## Implementation Notes
-- **Range label is pure-derived, no new store read.** The page's top seq is `records[0].Seq` (largest,
-  newest-first) and the bottom seq is `records[len(records)-1].Seq` (smallest); `Total` is already in
-  `recordsData`. Add `RangeTop uint64` + `RangeBottom uint64` to `recordsData` and set them inside the
-  EXISTING `if len(records) > 0 {` block in `serveRecords` (alongside the `HasOlder/HasNewer` math at
-  `handler.go:976-998`) — the slice is already in hand, so this adds zero queries and keeps the store a
-  leaf. Render the label as `seq {{.RangeTop}} – {{.RangeBottom}} of {{.Total}}` (the mockup's order: top
-  is the *larger* seq because the list is newest-first; matches mockup line 61/134
-  `${logTop} – ${logBottom} of ${hubMax}`).
-- **Top + bottom pager, both gated.** Port the mockup's two pager blocks (lines 58–63 top, 80–85 bottom).
-  Each block has three slots: Newer (left), center label, Older (right). Reuse the EXISTING liveness flags
-  — `HasNewer` → `<a href="records?from={{.NewerFrom}}&amp;n={{.PageSize}}">` else a disabled `<span>`;
-  `HasOlder` → `<a href="records?from={{.OlderFrom}}&amp;n={{.PageSize}}">` else a `<span>`. The mockup's
-  `opacity`/`cursor` "disabled" styling becomes the `<span>` (no href) form — the no-JS equivalent of the
-  mockup's `op:.4` button, the same pattern the single-record stepper already uses (`record.html`
-  older/newer stepper) and the current bottom pager already uses (`records.html:427-438`). The TOP pager's
-  center is the `seq X–Y of Z` range; the BOTTOM pager's center is the **append-only footnote** ("Records
-  are append-only — a deletion is itself a new entry, never a removal.", mockup line 83). Keep the
-  standalone `<p class="footnote">` (`records.html:447`) for the coverage-honesty clause OR fold its
-  append-only sentence into the bottom pager — either way the append-only statement must appear and the
-  coverage-honesty clause ("guarantees hold only from coverage start") must NOT be dropped.
-- **Drop the Status-badge row.** Remove the `.ledger-status` block (`records.html:402-406`, the
-  `<span class="row-label">Status</span>` + `{{template "hubStatusBadge" .}}` partial) AND its now-unused
-  `.ledger-status` (`:194`) / `.row-label` (`:202`) CSS. NOTE: `serveRecords` still computes
-  `status`/`label` for the `data-status="{{.Status}}"` attribute on `.ledger` (frozen-row tinting) — KEEP
-  that attribute and the `Status`/`Label` fields; only the rendered *badge row* goes. After editing, grep
-  the template to confirm no remaining line references the dropped CSS classes.
-- **CSS-literal trap (learnings, recurring).** `TestRecordsRendersInMemoryStatus` asserts the body
-  contains NO `data-status="verified"`. Any badge-color/frozen-tint CSS that survives MUST use the
-  UNQUOTED attribute selector (`[data-status=verified]`), never the quoted `[data-status="verified"]`
-  form — the quoted form leaks that literal into `<style>` and falsely fails the negative assert. The
-  record list already follows this; do not regress it when editing the CSS block.
-- **Honesty rule (learnings always-loaded).** This surface renders no `✓`/verification — pure store-read,
-  oracle gate N/A. Do not introduce any verification-shaped copy. The range/pager is derived purely from
-  the page window + `Total`.
-- **Test grounding = HARDCODED literals, not constants.** Per the settled record-list rule, seed the
-  pager-region tests against literal seq values + the literal range string the page renders (e.g. a
-  5-record mirror `seq 0..4`, full page → top pager asserts `seq 4 – 0 of 5`; with `n=2` from the newest
-  → `seq 4 – 3 of 5`), NOT against view-model field reads, so a regression of the range math FAILS. Use
-  the existing `buildMirror` / fixture helpers in `records_test.go`.
-- **Update the existing pagination-chain tests' markers.** `TestRecordsPagination`,
-  `TestRecordsOlderLinkReachesSeq0`, and the `olderHref` helper (`records_test.go:330`, keyed on
-  `older &rarr;</a>`) plus `TestRecordsListsNewestFirst`'s `showing N of M` assertion all key off the
-  current pager markup — both change shape in this rework. Update those markers to the reworked pager's
-  anchor text so the link-chain assertions still verify the `?from=…` chain reaches seq 0 (the
-  load-bearing seq-cursor-reaches-0 guard must stay green). These are test-file edits, off the ≤3 budget.
+- The overlaid status the dossier renders is already computed in `buildData` (the `status` string passed in,
+  resolved via `overlayStatus`/`hubStatus`). Add `KeyUnresolved bool` to `dossierData` and set it
+  `status == "unresolvable"` right where `ShowCaution` is set (`handler.go:308`) — one source of truth, no
+  new store read (§1 stays static-derived; this is a pure view-model flag off the already-resolved status).
+- In `dossier.html:533`, gate the `section-value` text with `{{if .KeyUnresolved}}Key source: …{{else}}Key
+  resolved from …{{end}}`, keeping `<span class="mono">did:web:{{.Domain}}</span>` in BOTH arms so the
+  domain still shows (the source is always honest; only the verb "resolved" is gated off the failed path).
+- Honesty rule (always-loaded learnings + target.md M-UI): a served no-JS surface must not assert a verdict
+  the data does not support. On `unresolvable` the monitor cannot fetch/parse the did:web doc, so it has NOT
+  resolved a key — §1 must not say "resolved". This mirrors the §2/§3/§4 honesty gating already in place
+  (`learnings/dossier.md`: every §1–§4 value is honesty-gated against real data).
+- Keep the change behavior-neutral for every non-`unresolvable` status: the resolved-case copy is unchanged,
+  so the mockup-parity and existing region tests (`TestDossierRendersCoveredHub`, the chrome tests) stay green.
 
 ## Verification
-- `mise run check` is green (build + vet + test across all packages; `gofmt -l .` empty).
-- `go test -count=1 -run TestRecords ./internal/proofserve` passes (all existing record-list tests green
-  under the reworked pager, including the updated `TestRecordsPagination` + `TestRecordsOlderLinkReachesSeq0`).
-- A NEW pager-parity test asserts the served `/records` body for a multi-page fixture contains the
-  mockup's range label form `seq <top> – <bottom> of <total>` with hardcoded literal seqs, and contains a
-  newer/older affordance BOTH above (top pager) and below (bottom pager) the record list; reverting the
-  range computation (swapping top/bottom, or dropping one of the two pagers) makes it FAIL.
-- A NEW test asserts the served `/records` body NO LONGER contains the dropped Status-badge row markup
-  (e.g. the `row-label">Status` marker is absent), while `data-status="<overlaid>"` on `.ledger` is still
-  present (frozen-tint attribute kept); re-adding the badge row makes it FAIL.
-- `go list -deps ./internal/proofserve | grep -qx internal/metrics && exit 1 || true` — `internal/metrics`
-  stays out of the proofserve closure (no new dep; this is a template/view-model-only change).
-- `go.mod` / `go.sum` are byte-identical (no new module dependency).
+- `mise run check` is green (`go build ./... && go vet ./... && go test ./...`; `gofmt -l .` empty).
+- `go test -count=1 -run TestDossier ./internal/dossier` passes (existing dossier suite unaffected).
+- NEW test (add to `internal/dossier/handler_test.go`, e.g. `TestDossierUnresolvedKeyWordingHonesty`): drive
+  a store-verified hub with `fakeStatusSource{id: "unresolvable"}` (the `TestDossierRendersInMemoryStatus`
+  seam, handler_test.go:919), GET `/<domain>`, and assert the body does NOT contain `Key resolved from`
+  AND DOES contain the neutral `Key source:` wording (and still shows `did:web:<domain>`).
+- Mutation check (state it; review re-runs it): reverting the §1 gate (so the template always renders "Key
+  resolved from") makes that new test FAIL; a sibling assertion that a `fakeStatusSource{id: "verified"}`
+  (or nil source) hub STILL renders `Key resolved from did:web:<domain>` guards against over-gating.
 
 ## Done When
-`mise run check` is green and the served `/records` HTML carries the mockup's top+bottom "seq X–Y of Z"
-pager region disabled at the ends with no off-mockup Status-badge row, each new assertion mutation-proven
-— closing the last code-closable half of the `critical` so only the human M-UI exit sign-off remains.
+`mise run check` is green and the new `unresolvable`-path test asserts §1 no longer says "Key resolved from"
+while a verified-path assertion confirms the mockup's "Key resolved from did:web:<domain>" copy is unchanged
+for every other status.
