@@ -290,6 +290,182 @@ func TestDossierRendersCoveredHub(t *testing.T) {
 	}
 }
 
+// multiCheckpointHub opens a fresh store and registers one hub with three accepted
+// checkpoints at increasing sizes and times — the state the §5 observation log folds
+// into newest-first size-transition lines. It returns the store and the hub_id.
+func multiCheckpointHub(t *testing.T) (*store.Store, int64) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "obs.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	id, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	for i, cp := range []struct {
+		size     uint64
+		observed time.Time
+	}{
+		{100, time.Unix(1_700_000_001, 0)},
+		{200, time.Unix(1_700_000_002, 0)},
+		{300, time.Unix(1_700_000_003, 0)},
+	} {
+		root := []byte("obs-checkpoint-root-padding-32by")
+		root[len(root)-1] = byte('0' + i) // distinct root per size (UNIQUE(hub,size,root))
+		if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+			HubID:      id,
+			TreeSize:   cp.size,
+			Root:       root,
+			Raw:        []byte("raw"),
+			ObservedAt: cp.observed,
+		}); err != nil {
+			t.Fatalf("AdvanceAccepted size %d: %v", cp.size, err)
+		}
+	}
+	return st, id
+}
+
+// TestDossierObservationLog asserts the §5 observation log renders one honest
+// size-transition line per consecutive recorded-checkpoint pair (newest-first), the
+// oldest checkpoint as a singleton, and every value traceable to a fixture row. It also
+// pins the honesty invariant: NO synthesized per-poll "consistent" / "consistency
+// PASSED" / "verified-poll" line appears (the follower records no such per-poll check).
+func TestDossierObservationLog(t *testing.T) {
+	st, id := multiCheckpointHub(t)
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// The §5 heading and the newest-first size-transition lines for each consecutive
+	// pair (300 newest), plus the oldest checkpoint as a singleton.
+	for _, want := range []string{
+		"§5 · OBSERVATION LOG",
+		"size 200 → 300", // newest pair
+		"size 100 → 200", // older pair
+		"size 100 observed",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing §5 observation marker %q\n%s", want, body)
+		}
+	}
+	// Newest-first ordering: the "200 → 300" transition precedes "100 → 200".
+	if i, j := strings.Index(body, "size 200 → 300"), strings.Index(body, "size 100 → 200"); i < 0 || j < 0 || i > j {
+		t.Errorf("§5 transitions out of newest-first order: idx(200→300)=%d idx(100→200)=%d\n%s", i, j, body)
+	}
+	// Each line carries its checkpoint's observed time (traceable to a fixture row).
+	if !strings.Contains(body, "2023-11-14T22:13:23Z") { // size-300 observed_at
+		t.Errorf("body missing the newest checkpoint's observed time\n%s", body)
+	}
+	// Honesty invariant: no synthesized per-poll "consistent" verdict.
+	for _, banned := range []string{"consistent", "consistency PASSED", "verified-poll", "consistency FAILED"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("§5 contains a synthesized per-poll verdict %q (the follower records no such check)\n%s", banned, body)
+		}
+	}
+	// The empty-state placeholder must NOT appear when there are real observations.
+	if strings.Contains(body, "No observation entries yet") {
+		t.Errorf("§5 renders the empty state despite recorded checkpoints\n%s", body)
+	}
+}
+
+// TestDossierObservationLogEmpty asserts a hub with ≤1 recorded checkpoint and no
+// confirmed anchor renders the honest §5 empty state — no fabricated history line.
+func TestDossierObservationLogEmpty(t *testing.T) {
+	// coveredHub records exactly one accepted checkpoint and no OTS row.
+	st, id := coveredHub(t)
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "No observation entries yet") {
+		t.Errorf("§5 missing the honest empty state for a single-checkpoint hub\n%s", body)
+	}
+	// A single checkpoint yields no size-transition line (no "→" between sizes), and
+	// never a synthesized per-poll verdict.
+	for _, banned := range []string{"size 42 → ", "consistent", "verified-poll"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("§5 fabricates a line for a single-checkpoint hub: %q\n%s", banned, body)
+		}
+	}
+}
+
+// TestDossierObservationLogAnchorAndFreeze asserts a frozen hub's §5 log surfaces the
+// confirmed-anchor confirmation line and the freeze pointer (mapping "fork" to the
+// canonical "split view" vocabulary, never the avoid-listed "fork" wording), and that
+// a confirmed anchor with a non-zero height renders "block N" while never "block 0".
+func TestDossierObservationLogAnchorAndFreeze(t *testing.T) {
+	ctx := context.Background()
+	st, id := frozenHub(t) // records a fork + a shrink violation, then freezes
+	// Seed two accepted checkpoints + a confirmed anchor so §5 has size transitions and
+	// an anchor line beside the freeze pointers.
+	for i, cp := range []struct {
+		size     uint64
+		observed time.Time
+	}{
+		{800, time.Unix(1_700_000_010, 0)},
+		{900, time.Unix(1_700_000_020, 0)},
+	} {
+		root := []byte("frozen-obs-root-padding-32bytes!")
+		root[len(root)-1] = byte('0' + i)
+		if _, _, err := st.RecordCheckpoint(ctx, store.CheckpointRecord{
+			HubID: id, TreeSize: cp.size, Root: root, Raw: []byte("raw"), ObservedAt: cp.observed,
+		}); err != nil {
+			t.Fatalf("RecordCheckpoint size %d: %v", cp.size, err)
+		}
+	}
+	if _, _, err := st.RecordOTS(ctx, store.OTSRecord{
+		HubID:     id,
+		TreeSize:  900,
+		Root:      []byte("frozen-obs-root-padding-32bytes1"),
+		Status:    store.OTSStatusConfirmed,
+		StampedAt: time.Unix(1_700_000_020, 0),
+		BTCHeight: 869440,
+	}); err != nil {
+		t.Fatalf("RecordOTS confirmed: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		"§5 · OBSERVATION LOG",
+		"anchored · block 869440", // confirmed anchor with a real height
+		"size 800 → 900",          // a size transition
+		"split view",              // the freeze pointer maps fork → split view
+		"froze hub",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing §5 anchor/freeze marker %q\n%s", want, body)
+		}
+	}
+	// Never a fabricated "block 0", and never the avoid-listed "fork" wording in the §5
+	// freeze pointer line (the canonical term is "split view"). "fork" may not appear in
+	// the §5 region at all here (the only violations are a fork → split view and a shrink).
+	if strings.Contains(body, "block 0") {
+		t.Errorf("§5 renders a fabricated block 0\n%s", body)
+	}
+	// No synthesized per-poll verdict on the frozen path either.
+	for _, banned := range []string{"consistency PASSED", "verified-poll"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("§5 contains a synthesized per-poll verdict %q\n%s", banned, body)
+		}
+	}
+}
+
 // TestDossierConfirmedAnchorRendersHeight asserts the §4 Bitcoin-anchor section of a
 // hub with a confirmed OTS row carrying a btc_height renders "confirmed", the
 // confirmed dot keyword, and the block height — and NEVER a 5xx or error styling.

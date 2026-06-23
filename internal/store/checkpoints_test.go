@@ -850,6 +850,124 @@ func TestListViolationsNullDetectedAt(t *testing.T) {
 	}
 }
 
+// TestListCheckpoints confirms ListCheckpoints returns a hub's recorded checkpoints
+// newest-first (ORDER BY observed_at DESC) carrying tree_size + observed_at, honors
+// the n cap, scopes to the hub, and returns an empty result (no error) for an absent
+// hub — the read side of the dossier's §5 observation log.
+func TestListCheckpoints(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	otherID, err := s.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub other: %v", err)
+	}
+
+	// An absent hub returns an empty slice and a nil error.
+	none, err := s.ListCheckpoints(ctx, 999, 8)
+	if err != nil {
+		t.Fatalf("ListCheckpoints (absent hub): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("ListCheckpoints for an absent hub = %v, want empty", none)
+	}
+
+	// Seed three checkpoints at increasing sizes/times, plus one on a different hub
+	// the query must not return. Record out of chronological order to prove the
+	// ORDER BY (not insertion order) drives the result.
+	t1 := time.Unix(1_700_000_001, 0)
+	t2 := time.Unix(1_700_000_002, 0)
+	t3 := time.Unix(1_700_000_003, 0)
+	if _, _, err := s.RecordCheckpoint(ctx, CheckpointRecord{
+		HubID: hubID, TreeSize: 100, Root: []byte("list-cp-root-100-padding-32bytes"), Raw: []byte("r1"), ObservedAt: t1,
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint 100: %v", err)
+	}
+	if _, _, err := s.RecordCheckpoint(ctx, CheckpointRecord{
+		HubID: hubID, TreeSize: 300, Root: []byte("list-cp-root-300-padding-32bytes"), Raw: []byte("r3"), ObservedAt: t3,
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint 300: %v", err)
+	}
+	if _, _, err := s.RecordCheckpoint(ctx, CheckpointRecord{
+		HubID: hubID, TreeSize: 200, Root: []byte("list-cp-root-200-padding-32bytes"), Raw: []byte("r2"), ObservedAt: t2,
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint 200: %v", err)
+	}
+	if _, _, err := s.RecordCheckpoint(ctx, CheckpointRecord{
+		HubID: otherID, TreeSize: 999, Root: []byte("list-cp-root-other-padding-32byt"), Raw: []byte("ro"), ObservedAt: t3,
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint other hub: %v", err)
+	}
+
+	got, err := s.ListCheckpoints(ctx, hubID, 8)
+	if err != nil {
+		t.Fatalf("ListCheckpoints: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("ListCheckpoints returned %d rows, want 3 (scoped to the hub)", len(got))
+	}
+	// Newest-first by observed_at: 300 (t3), 200 (t2), 100 (t1).
+	wantSizes := []uint64{300, 200, 100}
+	wantTimes := []time.Time{t3, t2, t1}
+	for i := range got {
+		if got[i].TreeSize != wantSizes[i] {
+			t.Errorf("got[%d].TreeSize = %d, want %d (newest-first)", i, got[i].TreeSize, wantSizes[i])
+		}
+		if !got[i].ObservedAt.Equal(wantTimes[i]) {
+			t.Errorf("got[%d].ObservedAt = %v, want %v", i, got[i].ObservedAt, wantTimes[i])
+		}
+	}
+
+	// The n cap returns only the newest n rows.
+	capped, err := s.ListCheckpoints(ctx, hubID, 2)
+	if err != nil {
+		t.Fatalf("ListCheckpoints capped: %v", err)
+	}
+	if len(capped) != 2 {
+		t.Fatalf("ListCheckpoints with n=2 returned %d rows, want 2", len(capped))
+	}
+	if capped[0].TreeSize != 300 || capped[1].TreeSize != 200 {
+		t.Errorf("capped sizes = [%d %d], want [300 200] (newest two)", capped[0].TreeSize, capped[1].TreeSize)
+	}
+}
+
+// TestListCheckpointsNullObservedAt confirms a checkpoint written with a zero
+// ObservedAt (stored as NULL) reads back as a zero time.Time — the unixOrNil inverse,
+// so the §5 log can render the size without a fabricated instant.
+func TestListCheckpointsNullObservedAt(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	if _, _, err := s.RecordCheckpoint(ctx, CheckpointRecord{
+		HubID: hubID, TreeSize: 7, Root: []byte("null-observed-at-cp-padding-32by"), Raw: []byte("r"),
+		// ObservedAt left zero → NULL.
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint: %v", err)
+	}
+
+	got, err := s.ListCheckpoints(ctx, hubID, 8)
+	if err != nil {
+		t.Fatalf("ListCheckpoints: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListCheckpoints returned %d rows, want 1", len(got))
+	}
+	if got[0].TreeSize != 7 {
+		t.Errorf("TreeSize = %d, want 7", got[0].TreeSize)
+	}
+	if !got[0].ObservedAt.IsZero() {
+		t.Errorf("ObservedAt = %v, want zero (NULL → zero time)", got[0].ObservedAt)
+	}
+}
+
 // TestFreezeNoPriorRow confirms Freeze on a hub with no follow_state row creates
 // the row with frozen=1 (a hub can be frozen before its first verified advance).
 func TestFreezeNoPriorRow(t *testing.T) {

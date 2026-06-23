@@ -1,78 +1,69 @@
-## 2026-06-23 — Review of: Hub dossier increment 1 — numbered trust-document layout + §1–§4
+## 2026-06-23 — Hub dossier §5 honest observation log (increment 2a — checkpoint-event log)
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Filled §5 of the served hub dossier (`GET /<domain>`) with an honest observation log
+derived from recorded `checkpoints` rows: a new `store.ListCheckpoints` leaf read (newest-first by
+`observed_at`), a view-layer derivation that emits one size-transition line per consecutive recorded
+pair (newest-first) plus the oldest checkpoint as a singleton, an "anchored · block N" line only for a
+confirmed anchor with a real height, and a "froze hub (split view)" pointer per recorded violation on
+the frozen path. It never emits a synthesized per-poll "consistent" verdict (the recurring SSR-honesty
+trap). The richer frozen Exhibit and the §3/§1 honesty `normal`s remain the sibling follow-on (not in
+scope).
 
-**Summary:** The advance rebuilt the served hub dossier (`GET /<domain>`) from a flat 5-row ledger card
-into the mockup's numbered trust document — trust-document head, the 2×2 §1–§4 grid (honesty-gated),
-§5 placeholder, the two action links, the `fork → "split view"` map, with the frozen Exhibit + masthead
-intact. The work is clean, well-documented, scope-disciplined (3 prod + 2 test files), gate-green, and
-mutation-proven; a live visual pass confirms full design-parity with the mockup. Two confirmed Codex P2
-honesty nits in edge states (frozen §3 size/time decouple; §1 "resolved" vs unresolvable) are real but
-narrow, do not block, and are filed `normal` for increment 2 / a design pass.
+**Files changed:**
+- `internal/store/checkpoints.go`: added `CheckpointSummary` + `ListCheckpoints(ctx, hubID, n)` — a
+  pure leaf read of `tree_size, observed_at` newest-first (`ORDER BY observed_at DESC, id DESC LIMIT ?`,
+  NULL-safe `sql.NullInt64` → zero `time.Time`, absent hub → empty slice + nil err), mirroring
+  `ListViolations`'s shape. Deliberately `observed_at DESC` (chronological log), distinct from `ListHubs`'s
+  §3 `tree_size DESC` subselect.
+- `internal/dossier/handler.go`: added `observationRow{Line, Tone}` + `Observations` field on
+  `dossierData`; the handler reads `ListCheckpoints(…, observationCap=8)` before `tmpl.Execute` (read
+  error → 500 like the existing reads); `observationRows`/`freezeLine`/`withObservedTime` derive §5 in
+  the view layer (size transitions + confirmed-anchor line + frozen pointer, honesty-gated, no per-poll
+  verdict). `buildData` threads the checkpoints through.
+- `internal/dossier/dossier.html`: replaced the §5 `obs-empty` placeholder with
+  `{{if .Observations}}{{range}}<div class="obs-line" data-tone>…{{else}}<p class="obs-empty">honest empty</p>{{end}}`;
+  added `.obs-line` (+ decorative `[data-tone=freeze]`) styles. No `<script>`, no external/CDN URL.
+- Tests (not counted): `internal/store/checkpoints_test.go` (`TestListCheckpoints`,
+  `TestListCheckpointsNullObservedAt`); `internal/dossier/handler_test.go` (`TestDossierObservationLog`,
+  `TestDossierObservationLogEmpty`, `TestDossierObservationLogAnchorAndFreeze` + a `multiCheckpointHub`
+  helper).
 
-**Verification:**
-- [x] `mise run check` (build + vet + test) — green, all 28 pkgs `ok`; `gofmt -l .` empty.
-- [x] `go test -count=1 -run TestDossier ./internal/dossier` — 12 tests pass (fresh, uncached), incl. the
-  4 new/updated cases (`RendersCoveredHub` §1–§4/head/actions/§5, `ConfirmedAnchorRendersHeight`,
-  `PendingAnchorHonest`, `CautionForUnverified`).
-- [x] `go test -count=1 -run TestListHubs ./internal/store` — `TestListHubsCheckpointAndAnchorHeight` +
-  existing `TestListHubsAnchorStatus` pass (populated + NULL-safe zero-value).
-- [x] §1–§4 each render label + value; confirmed-anchor fixture renders `block 869440`; pending/absent
-  renders honest "pending"/"not anchored", no 5xx, no error styling, no fabricated `block 0`.
-- [x] Action links resolve: `href="/">Prove an ISCC-ID…`, `href="/sb0.iscc.id/log/">Browse the log…`.
-- [x] Frozen Exhibit + soft caution distinct; §5 honest minimal placeholder (heading, no fabricated lines).
-- [x] No-CDN body ban (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`/`http://`) + no-JS (`<script` banned) asserted.
-- [x] Store stays a leaf (additive `HubSummary` fields, NULL-safe subselects mirroring the `Anchor` pattern;
-  `time.Unix(observed,0)` / `uint64(height)` consistent with schema's INTEGER cols + existing read idioms).
-- [x] Mutation checks non-vacuous (reviewer-run): break §3 `ObservedTime` binding → `TestDossierRendersCoveredHub`
-  FAILS; drop the `AnchorHeight` assignment → `TestListHubsCheckpointAndAnchorHeight` FAILS.
-- [x] Gate-integrity scan over 3 unpushed commits — no `nolint`/`t.Skip`/swallowed-err/build-tag/removed
-  assertion; `TestDossierRendersCoveredHub` only ADDED assertions (replaced 2 coverage markers with the
-  §2-format equivalents + many section markers).
-- [x] Oracle/conformance gate N/A — pure HTML render of persisted store rows + in-memory overlay; touches no
-  signature/RFC-6962/Merkle/did:web/fsck/proof path; `go.mod`/`go.sum`/`schema.sql` byte-identical.
+**Verification:** `mise run check` → green (build + vet + all 28 pkgs `ok`; `gofmt -l .` empty).
+- `go test -run TestListCheckpoints ./internal/store` — PASS (newest-first `observed_at DESC` order, `n`
+  cap, NULL `observed_at` → zero time, absent hub → empty + nil err; insertion order ≠ result order to
+  prove ORDER BY drives it).
+- `go test -run TestDossier ./internal/dossier` — PASS, incl. the new §5 cases: a ≥2-checkpoint hub
+  renders a transition line per consecutive pair in newest-first order with each value traceable to a
+  fixture row; a ≤1-checkpoint hub renders the honest empty state; §5 contains NO
+  "consistent"/"consistency PASSED"/"verified-poll" substring; confirmed-anchor renders "block 869440"
+  (never "block 0") and the frozen pointer maps fork → "split view".
+- Mutation checks (non-vacuous, reviewer-runnable): dropping the size-transition append →
+  `TestDossierObservationLog` FAILS; reverting `ORDER BY observed_at DESC` → `ASC` → `TestListCheckpoints`
+  order assertions AND the dossier order assertion FAIL. Both restored.
+- Store stays a leaf: `go list -deps ./internal/store | grep '^net/http$'` empty.
 
-**Issues found:** Two confirmed Codex findings filed `normal` (below); the resolved increment-1 critical
-deleted from issues.md; the increment-2 critical un-gated (now pickable) with the §3 fix folded in.
-
-**Codex second opinion:** Finished (exit 0). Two `[P2]` findings, BOTH reviewer-confirmed real but narrow:
-- **§3 frozen size/time decouple (`hubs.go:69`)** — CONFIRMED against `follower.freeze` (`follower.go:475`
-  does `RecordCheckpoint` of the contradictory, often-higher-tree-size checkpoint without advancing
-  `last_size`; `RecordCheckpoint` never writes `last_size`). So a frozen hub can pair the accepted §3 size
-  with the rejected checkpoint's `observed_at`. Confined to the frozen edge state (the loud Exhibit already
-  says "do not trust new state"); `shrink` can't trigger it. → filed `normal`, folded into increment 2 (it
-  reworks §3). Does not block.
-- **§1 "Key resolved from" vs `unresolvable` (`dossier.html:490`)** — CONFIRMED: §1 renders "Key resolved
-  from did:web:…" unconditionally while the `unresolvable` caution says the key is unresolved — a same-page
-  contradiction. BUT the advance followed next.md's Implementation Note + the mockup literally (static §1
-  phrasing), so this is design-rooted; fix needs neutral wording / a design call, not a silent copy rewrite.
-  → filed `normal`. Does not block.
-- Neither finding touches the trust root; no oracle conflict. Both are honesty-wording nits in edge states,
-  not correctness/verification defects.
-
-**Visual check:** Done (SSR surface changed — `internal/dossier`). `agent-browser` launched headless against
-a fixture-rich confirmed-anchor hub (seeded via a throwaway harness serving the dossier + `/_ds/` assets,
-since the live cold-start index is empty); harness removed before commit. The rendered surface is a full
-design-parity match to `.claude/design/ISCC Monitor - Hub Dossier.dc.html`: logo + instance-identity +
-`verify ↗` masthead, `← Realm index` back-link, trust-document head (eyebrow "HUB DOSSIER", `<h1>`
-`sb0.iscc.id`, `sb0.iscc.id/log`, `md` green Verified badge, heavy rule, "Compiled by monitor.iscc.id · …"),
-the §1–§4 grid with the green confirmed dot + "confirmed · block 869440", the §5 honest placeholder, and the
-two action buttons (filled "Prove an ISCC-ID…", bordered "Browse the log →"). No visual delta filed.
-
-**Next:** Increment 2 (the now-pickable sibling `critical`) — the §5 observation log (a `ListCheckpoints`-style
-leaf read: size transitions + freeze + anchor confirmations, NO synthesized per-poll "consistent" lines) and
-the richer frozen Exhibit ("size before → presented" + a stable evidence ref from `RawA`/`RawB`). Fold in the
-§3 frozen size/time-decouple `normal` while reworking §3 (select `observed_at` for the `f.last_size` row).
+**Next:** The sibling follow-on of the same `critical` (increment 2b): the richer frozen Exhibit
+("Tree size before → Then presented" + a stable evidence ref from `Violation.RawA`/`RawB`) — which needs
+an *unverified* tree-size parse of the two stored checkpoint blobs (no exported pure parser exists today;
+`parseCheckpointBody` is unexported and verifies the signature first), plus folding in the §3 frozen
+size/time-decouple `normal` (select `observed_at` for the row whose `tree_size = f.last_size`) and the §1
+"resolved"-vs-unresolvable `normal`.
 
 **Notes:**
-- `dashboard.md` learnings was over the ~150-line rotation budget (183); created `learnings/dossier.md`
-  (52 lines, with index pointer) and net-reduced dashboard.md to 170 (collapsed the settled dossier-masthead
-  bullet to a one-line `settled:` + trimmed the `/`-identity bullet). Still slightly over 150 but materially
-  reduced this iteration; remaining content is the active dashboard surface.
-- The §2 "N days observed" is a live `time.Since(c.Since)` derivation (grows with wall-clock); tests assert
-  the literal "days observed" suffix, not a fixed number — deterministic. Future-dated `Since` clamps to 0.
-- The §4 height subselect is correctly scoped to `status = OTSStatusConfirmed` (distinct from the pre-existing
-  per-hub `Anchor` status subselect, which is newest-stamped-regardless-of-status) — two subselects by design.
-- 3 unpushed commits in `@{upstream}..HEAD` (update-state, define-next, advance); the two human UI tweaks
-  (`0bb1963`, `f28f57e`) are already on the remote. Pushing `develop` on this PASS_WITH_NOTES.
+- Honesty/empty-state decision: a LONE checkpoint surfaces NO §5 line on its own (a single checkpoint is
+  not a transition); the singleton "size N observed" tail only renders when there were ≥2 checkpoints.
+  This is the literal reading of next.md's "≤1 checkpoint and no anchor → honest empty state" — it
+  corrected an initial draft where `coveredHub`'s single seeded checkpoint produced a spurious
+  "size 42 observed" line and failed `TestDossierObservationLogEmpty`. (A lone checkpoint with a confirmed
+  anchor or a freeze still renders those real event lines — only the bare singleton is suppressed.)
+- The freeze pointer reads ONLY the `violations` slice the handler already fetches on the frozen path
+  (gated on `s.Frozen`); no second `ListViolations` read on the non-frozen path, per next.md.
+- The mock's illustrative `observations` lines (`.dc.html` 118-122) carry "consistency FAILED" /
+  "consistent" — those are ILLUSTRATIVE, NOT a parity requirement, and are deliberately NOT emitted (they
+  would assert un-run per-poll checks). Flagged here as the design deviation next.md asked for.
+- `data-tone` is decorative (grayscale-safe, ADR-0010 inv.4); the `Line` carries the meaning. `Tone` is
+  only "normal" or "freeze" today.
+- Oracle/conformance gate N/A — pure HTML render of persisted `checkpoints` rows + an in-memory overlay;
+  touches no signature/RFC-6962/Merkle/did:web/fsck/proof path. `schema.sql`, `go.mod`, `go.sum`
+  byte-identical. No visual pass run by the implementer; the SSR §5 region changed, so `review` may want a
+  live look (the rendered §5 markup is in the test bodies).

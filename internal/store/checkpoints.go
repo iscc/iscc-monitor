@@ -331,6 +331,61 @@ func (s *Store) ListViolations(ctx context.Context, hubID int64) ([]Violation, e
 	return violations, nil
 }
 
+// CheckpointSummary is one observed checkpoint's size + observed-at instant for the
+// dossier's §5 observation log. It carries plain Go types (no logclient / proof
+// dependency), keeping store a leaf: the view layer derives the size-transition lines
+// from a newest-first slice of these. ObservedAt is the zero time.Time when the
+// checkpoint carries no recorded observed_at (a NULL), so the renderer shows the size
+// without a fabricated instant.
+type CheckpointSummary struct {
+	TreeSize   uint64
+	ObservedAt time.Time
+}
+
+// ListCheckpoints reads a hub's recorded checkpoints newest-first (ORDER BY
+// observed_at DESC, id DESC) capped at n, for the dossier's §5 observation log. It is
+// a pure leaf read returning plain []CheckpointSummary: only tree_size and observed_at
+// are read (the §5 lines render size transitions; the raw bytes / root belong with the
+// future proof-bundle surface). observed_at is read through sql.NullInt64 — the
+// unixOrNil write inverse — so a NULL observed_at degrades to a zero time.Time, exactly
+// as ListViolations does for detected_at. Ordering by observed_at (chronological log)
+// with an id DESC tie-break keeps a NULL/equal observed_at deterministic; this is
+// deliberately distinct from ListHubs's tree_size DESC §3 subselect. A hub with no
+// checkpoints (or an absent hub) returns an empty slice and a nil error (an absent row
+// is not an error, mirroring the other reads).
+func (s *Store) ListCheckpoints(ctx context.Context, hubID int64, n int) ([]CheckpointSummary, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT tree_size, observed_at FROM checkpoints WHERE hub_id = ? "+
+			"ORDER BY observed_at DESC, id DESC LIMIT ?",
+		hubID, n,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store.ListCheckpoints: hub %d: %w", hubID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var checkpoints []CheckpointSummary
+	for rows.Next() {
+		var (
+			c        CheckpointSummary
+			treeSize int64
+			observed sql.NullInt64
+		)
+		if err := rows.Scan(&treeSize, &observed); err != nil {
+			return nil, fmt.Errorf("store.ListCheckpoints: scan: %w", err)
+		}
+		c.TreeSize = uint64(treeSize)
+		if observed.Valid {
+			c.ObservedAt = time.Unix(observed.Int64, 0)
+		}
+		checkpoints = append(checkpoints, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.ListCheckpoints: rows: %w", err)
+	}
+	return checkpoints, nil
+}
+
 // Freeze sets frozen=1 on the hub's follow_state row, upserting so it works
 // whether or not a row exists yet (a hub can be frozen before its first verified
 // advance). It is the only writer of frozen; AdvanceFollowState deliberately omits

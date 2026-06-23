@@ -246,13 +246,25 @@
       background: var(--status-warning-text);
     }
 
-    /* §5 observation log — an honest minimal placeholder this increment. The full
-       observation history is a separate, gated increment; here it renders only the
-       heading + an explicit "no entries yet" note, never a fabricated line. */
+    /* §5 observation log — honest evidence derived only from recorded checkpoint
+       rows (size transitions) and a confirmed Bitcoin anchor; never a synthesized
+       per-poll "consistent" verdict (the follower records no such per-poll check).
+       Each line is one recorded event; the empty state renders when no event exists. */
     .obs {
       border-top: var(--border-width) solid var(--border-subtle);
       padding: var(--space-5) 0 0;
       margin-top: var(--space-2);
+    }
+    .obs-line {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-body);
+      padding: var(--space-1) 0;
+    }
+    /* The freeze pointer line uses the error hue decoratively; the line text carries
+       the meaning grayscale-safe (ADR-0010 inv.4). */
+    .obs-line[data-tone=freeze] {
+      color: var(--status-error-text);
     }
     .obs-empty {
       font-family: var(--font-mono);
@@ -516,7 +528,13 @@
 
       <div class="obs">
         <div class="section-no">§5 · OBSERVATION LOG</div>
-        <p class="obs-empty">No observation entries shown yet — the per-poll observation history is recorded but not yet surfaced here.</p>
+        {{- if .Observations}}
+        {{- range .Observations}}
+        <div class="obs-line" data-tone="{{.Tone}}">{{.Line}}</div>
+        {{- end}}
+        {{- else}}
+        <p class="obs-empty">No observation entries yet — recorded once this hub yields more than one verified checkpoint.</p>
+        {{- end}}
       </div>
 
       <div class="actions">

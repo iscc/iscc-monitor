@@ -103,6 +103,7 @@ type dossierData struct {
 	Operator        string
 	Frozen          bool
 	Violations      []violationRow
+	Observations    []observationRow
 }
 
 // violationRow is one self-consistency violation rendered into the dossier Exhibit:
@@ -116,6 +117,17 @@ type violationRow struct {
 	DetectedAt string
 }
 
+// observationRow is one line of the §5 observation log, each traceable to a recorded
+// checkpoints row or a confirmed ots row (never a synthesized per-poll "consistent"
+// verdict — the follower records no such per-poll check, so emitting one would assert
+// an un-run verification). Line carries the meaning grayscale-safe; Tone is the
+// decorative mock keyword keying the line's color ("normal" / "freeze"), never the
+// load-bearing signal (ADR-0010 inv.4).
+type observationRow struct {
+	Line string
+	Tone string
+}
+
 // Default masthead identity copy used when an identity field is left empty, so an
 // unconfigured deployment renders today's static placeholder rather than a false
 // claim. These MUST stay byte-identical to internal/dashboard's instanceFallback /
@@ -126,6 +138,11 @@ const (
 	instanceFallback = "monitor instance"
 	operatorFallback = "independent Trust & Transparency service · ISCC-Hub network"
 )
+
+// observationCap bounds the §5 observation log to the newest few recorded checkpoints
+// so the dossier reads a small, fixed window rather than the whole history — the §5
+// region is a recent-activity summary, not an exhaustive ledger.
+const observationCap = 8
 
 // resolveIdentity applies the dossier-side fail-safe for the masthead identity,
 // mirroring dashboard.Identity.resolve semantics so the dossier and dashboard
@@ -207,8 +224,16 @@ func Handler(st *store.Store, hubID int64, statuses StatusSource, id dashboard.I
 				return
 			}
 		}
+		// §5 observation log: the newest recorded checkpoints (a small cap) the view
+		// layer folds into honest size-transition lines. A store read error maps to a
+		// 500 before any 200 is committed, like the ListHubs / ListViolations reads.
+		checkpoints, err := st.ListCheckpoints(r.Context(), summary.HubID, observationCap)
+		if err != nil {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, buildData(summary, status, violations, instance, operator)); err != nil {
+		if err := tmpl.Execute(&buf, buildData(summary, status, violations, checkpoints, instance, operator)); err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -241,8 +266,9 @@ func findHub(summaries []store.HubSummary, hubID int64) (store.HubSummary, bool)
 // (empty for a non-frozen hub, which never reads them); buildData folds them into
 // the Exhibit rows and sets Frozen so the template renders the panel. instance and
 // operator are the already-resolved masthead identity strings (resolveIdentity has
-// applied the fail-safe fallback) carried verbatim onto the view-model.
-func buildData(s store.HubSummary, status string, violations []store.Violation, instance, operator string) dossierData {
+// applied the fail-safe fallback) carried verbatim onto the view-model. checkpoints is
+// the newest-first recorded-checkpoint window the §5 observation log is derived from.
+func buildData(s store.HubSummary, status string, violations []store.Violation, checkpoints []store.CheckpointSummary, instance, operator string) dossierData {
 	label, ok := badge.Label(status)
 	if !ok {
 		label = status
@@ -270,6 +296,7 @@ func buildData(s store.HubSummary, status string, violations []store.Violation, 
 		Operator:        operator,
 		Frozen:          status == "frozen",
 		Violations:      violationRows(violations),
+		Observations:    observationRows(checkpoints, s, violations),
 	}
 }
 
@@ -357,6 +384,90 @@ func violationTime(t time.Time) string {
 		return ""
 	}
 	return t.UTC().Format("2006-01-02T15:04:05Z")
+}
+
+// observationRows derives the §5 observation log from the hub's newest-first recorded
+// checkpoints plus the confirmed-anchor state. Every line is traceable to a recorded
+// checkpoints row or a confirmed ots row — it NEVER emits a per-poll "consistent"
+// verdict (the follower records no such per-poll check, so emitting one would assert an
+// un-run verification). It emits, in this order:
+//
+//   - a "froze hub" line for each recorded violation when the hub is frozen (off the
+//     already-fetched violations slice, mapping "fork" to the canonical "split view"
+//     vocabulary), newest-first — the loud Exhibit already shows the full evidence, so
+//     this §5 line is a brief, honest pointer, not a second read;
+//   - one size-transition line per consecutive recorded-checkpoint pair, newest-first
+//     ("size <older> → <newer>" with the newer checkpoint's observed time when known);
+//   - the oldest recorded checkpoint as a singleton ("size <n> observed"), only when
+//     there were transitions (≥2 checkpoints) — a lone checkpoint is no event.
+//
+// A checkpoint with a NULL observed_at renders the size without a time (the "" idiom),
+// never a fabricated instant. With ≤1 checkpoint and no confirmed anchor and no freeze,
+// it returns nil so the template renders the honest empty state (a single checkpoint is
+// not a transition, so it surfaces no §5 line on its own).
+func observationRows(checkpoints []store.CheckpointSummary, s store.HubSummary, violations []store.Violation) []observationRow {
+	var rows []observationRow
+
+	if s.Frozen {
+		for _, v := range violations {
+			rows = append(rows, observationRow{Line: freezeLine(v), Tone: "freeze"})
+		}
+	}
+
+	// Anchor confirmation line: only a confirmed anchor with a real (non-zero) height
+	// (never "block 0"). It is the newest evidence after any freeze, above the
+	// checkpoint history.
+	if s.Anchor == store.OTSStatusConfirmed && s.AnchorHeight > 0 {
+		rows = append(rows, observationRow{
+			Line: fmt.Sprintf("anchored · block %d", s.AnchorHeight),
+			Tone: "normal",
+		})
+	}
+
+	// Size transitions between consecutive recorded checkpoints (newest-first), then
+	// the oldest checkpoint as a singleton. A lone checkpoint is not a transition, so
+	// it surfaces no §5 line on its own (the honest empty state covers it).
+	for i := 0; i+1 < len(checkpoints); i++ {
+		newer, older := checkpoints[i], checkpoints[i+1]
+		rows = append(rows, observationRow{
+			Line: withObservedTime(fmt.Sprintf("size %d → %d", older.TreeSize, newer.TreeSize), newer.ObservedAt),
+			Tone: "normal",
+		})
+	}
+	if len(checkpoints) > 1 {
+		oldest := checkpoints[len(checkpoints)-1]
+		rows = append(rows, observationRow{
+			Line: withObservedTime(fmt.Sprintf("size %d observed", oldest.TreeSize), oldest.ObservedAt),
+			Tone: "normal",
+		})
+	}
+	return rows
+}
+
+// freezeLine renders a frozen hub's §5 pointer to a recorded violation, mapping the
+// avoid-listed "fork" kind to the canonical "split view" vocabulary (CLAUDE.md
+// Language) and appending the detected time only when it is known (never a fabricated
+// epoch). The loud Exhibit carries the full evidence; this is a one-line pointer.
+func freezeLine(v store.Violation) string {
+	kind := v.Kind
+	if kind == "fork" {
+		kind = "split view"
+	}
+	line := fmt.Sprintf("froze hub (%s)", kind)
+	if t := violationTime(v.DetectedAt); t != "" {
+		line += " · detected " + t
+	}
+	return line
+}
+
+// withObservedTime appends an RFC-3339 observed time to a §5 line when the checkpoint
+// carries one, or leaves the line time-less when the observed_at is a NULL (zero) —
+// the same coverage-honesty discipline observedTime applies, never a fabricated instant.
+func withObservedTime(line string, observed time.Time) string {
+	if observed.IsZero() {
+		return line
+	}
+	return line + " · " + observed.UTC().Format("2006-01-02T15:04:05Z")
 }
 
 // overlayStatus resolves a hub's displayed status from the store-provable subset
