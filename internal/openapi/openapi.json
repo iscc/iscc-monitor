@@ -1,0 +1,547 @@
+{
+  "components": {
+    "parameters": {
+      "Domain": {
+        "description": "A realm hub domain followed by this instance (e.g. `sb0.iscc.id`).",
+        "in": "path",
+        "name": "domain",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "schemas": {
+      "ConsistencyEvidence": {
+        "description": "An RFC-6962 consistency proof relating a prior tree size to the accepted size.",
+        "properties": {
+          "consistencyProof": {
+            "description": "The RFC-6962 proof hashes, each base64-Std encoded.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "firstSize": {
+            "description": "The client's prior trusted tree size (the `from` query param).",
+            "type": "integer"
+          },
+          "secondSize": {
+            "description": "The monitor's accepted tree size.",
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "VerifyVerdict": {
+        "description": "The verify-for-me verdict. The monitor REPORTS this (tier-1, weaker); verify the proof bundle yourself for the authoritative result (tier-2).",
+        "properties": {
+          "hub_status": {
+            "description": "The store-provable hub status (frozen, else verified).",
+            "type": "string"
+          },
+          "included": {
+            "type": "boolean"
+          },
+          "iscc_id": {
+            "type": "string"
+          },
+          "leaf_index": {
+            "type": "integer"
+          },
+          "reason": {
+            "description": "A human-readable reason when `verified` is false.",
+            "type": "string"
+          },
+          "root": {
+            "description": "The accepted checkpoint root, base64-Std encoded.",
+            "type": "string"
+          },
+          "tree_size": {
+            "description": "The accepted checkpoint tree size.",
+            "type": "integer"
+          },
+          "verified": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Machine-consumable HTTP surface of an ISCC Monitor instance: the tlog-tiles mirror artifacts, the computed RFC-6962 inclusion/consistency proofs, single-leaf record bytes, the downloadable proof bundle, the verify-for-me verdict, and the liveness/version/metrics endpoints.\n\nThis contract describes ONLY the machine surface (JSON, opaque-byte artifacts, and Prometheus text). The human-facing server-rendered HTML surfaces — the realm index (`/`), the hub dossier (`/{domain}`), the log browser, and the HTML Certificate of Inclusion (`/inclusion/{iscc_id}`) — are deliberately OUT of this contract; they are documented by their rendered HTML and CLAUDE.md, not by OpenAPI.\n\nEvery public GET answers cross-origin browser requests with `Access-Control-Allow-Origin: *`. The monitor is a verifiable cache, not a trusted oracle: prefer the client-verified proof bundle over the verify-for-me verdict (see that operation's description).",
+    "title": "ISCC Monitor API",
+    "version": "1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/healthz": {
+      "get": {
+        "description": "Reports process liveness and SQLite store readiness. A non-200 means the instance is not ready to serve.",
+        "operationId": "getHealthz",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The instance is live and the store is ready."
+          }
+        },
+        "summary": "Liveness and store readiness.",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/inclusion/{iscc_id}.bundle": {
+      "get": {
+        "description": "Returns a self-contained proof bundle — the hub-signed checkpoint, the inclusion proof, the record bytes, the hub key, and an OTS proof when anchored — that a client verifies on its own, removing the monitor from the trust path (the authoritative tier-2 path). The id is the self-describing ISCC-IDv1; the issuing hub is resolved realm-wide. The bundle is offered only when the monitor re-verified the inclusion proof against the accepted root; a non-certifiable id is an honest 200 \"no proof bundle available\", never a fabricated bundle and never a 5xx.",
+        "operationId": "getProofBundle",
+        "parameters": [
+          {
+            "description": "The self-describing ISCC-IDv1 (the `.bundle` suffix selects the machine artifact).",
+            "in": "path",
+            "name": "iscc_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The proof bundle as a JSON attachment, OR an honest \"no proof bundle available\" verdict for a non-certifiable id."
+          }
+        },
+        "summary": "Downloadable self-contained proof bundle.",
+        "tags": [
+          "verify"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "description": "Prometheus text exposition of the monitor's series — hub status, last-observed sizes, poll failures, and violations. This is the Prometheus text format, not a JSON document, so it carries no JSON response schema.",
+        "operationId": "getMetrics",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Prometheus text exposition."
+          }
+        },
+        "summary": "Prometheus exposition.",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "description": "The in-repo OpenAPI document, served byte-verbatim as JSON.",
+        "operationId": "getOpenAPIJSON",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The OpenAPI 3.1 document."
+          }
+        },
+        "summary": "This OpenAPI 3.1 contract as JSON.",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/openapi.yaml": {
+      "get": {
+        "description": "The in-repo OpenAPI document, served byte-verbatim as YAML.",
+        "operationId": "getOpenAPIYAML",
+        "responses": {
+          "200": {
+            "content": {
+              "application/yaml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The OpenAPI 3.1 document."
+          }
+        },
+        "summary": "This OpenAPI 3.1 contract as YAML.",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/version": {
+      "get": {
+        "description": "Returns the build-provenance string (the git short SHA, or the `dev` default for an un-stamped build), so an operator can confirm exactly which build is live.",
+        "operationId": "getVersion",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "version": {
+                      "examples": [
+                        "dev"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The build version string."
+          }
+        },
+        "summary": "Build provenance.",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/{domain}/log/checkpoint": {
+      "get": {
+        "description": "Returns the hub-signed checkpoint note (the tlog-tiles `checkpoint` artifact) for the accepted `(size, root)`, served verbatim from the local mirror. Distinct from the `.ots` Bitcoin-anchor proof.",
+        "operationId": "getCheckpoint",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Domain"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The mirrored signed checkpoint note."
+          },
+          "404": {
+            "description": "The checkpoint is not mirrored."
+          }
+        },
+        "summary": "Mirrored signed checkpoint note.",
+        "tags": [
+          "mirror"
+        ]
+      }
+    },
+    "/{domain}/log/checkpoint.ots": {
+      "get": {
+        "description": "Returns the OpenTimestamps proof for the accepted `(size, root)`, served verbatim as an opaque byte stream so a client can run the standard `ots` toolchain against it. A different artifact from the signed `/checkpoint` note: this is the Bitcoin-anchor timestamp proof.",
+        "operationId": "getCheckpointOTS",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Domain"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The OpenTimestamps proof bytes."
+          },
+          "404": {
+            "description": "No accepted checkpoint yet, or the root is not yet anchored."
+          }
+        },
+        "summary": "Mirrored OpenTimestamps proof for the accepted root.",
+        "tags": [
+          "mirror"
+        ]
+      }
+    },
+    "/{domain}/log/consistency": {
+      "get": {
+        "description": "Returns the RFC-6962 consistency proof relating a client's prior trusted tree size (`from`) to the monitor's accepted tree size, computed from the local mirror. The degenerate `from == 0` and `from == accepted size` cases return an empty proof (200).",
+        "operationId": "getConsistencyProof",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Domain"
+          },
+          {
+            "description": "The client's prior trusted tree size (M ≤ N, the accepted size).",
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsistencyEvidence"
+                }
+              }
+            },
+            "description": "The computed consistency proof."
+          },
+          "400": {
+            "description": "Missing or non-numeric `from`, or `from` exceeds the accepted size."
+          },
+          "404": {
+            "description": "No accepted checkpoint yet, `from` has no recorded checkpoint, or a tile is not mirrored."
+          }
+        },
+        "summary": "Computed consistency proof to the accepted checkpoint.",
+        "tags": [
+          "proofs"
+        ]
+      }
+    },
+    "/{domain}/log/entries": {
+      "get": {
+        "description": "Returns the raw bytes of exactly one accepted leaf, addressed by its absolute leaf sequence (`index`), decoded from the mirrored entry bundle. This is one leaf's bytes, distinct from the raw whole-bundle BLOB served under `/tile/entries/...`.",
+        "operationId": "getEntry",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Domain"
+          },
+          {
+            "description": "The absolute leaf sequence (schema-agnostic).",
+            "in": "query",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The single leaf's record bytes."
+          },
+          "400": {
+            "description": "Missing or non-numeric `index`."
+          },
+          "404": {
+            "description": "No accepted checkpoint yet, or the leaf is not covered by the accepted checkpoint."
+          }
+        },
+        "summary": "Single-leaf record bytes from the mirror.",
+        "tags": [
+          "proofs"
+        ]
+      }
+    },
+    "/{domain}/log/inclusion": {
+      "get": {
+        "description": "Returns the RFC-6962 inclusion proof for the named ISCC-ID against the monitor's accepted checkpoint, computed entirely from the local mirror (never re-hitting the hub). The default leaf is the lowest committed sequence for the id; an explicit `index` selects a specific committed sequence. The response mirrors the hub's `IsccLogInclusionProof` shape.",
+        "operationId": "getInclusionProof",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Domain"
+          },
+          {
+            "description": "The ISCC-ID to prove inclusion for (with or without the `ISCC:` prefix).",
+            "in": "query",
+            "name": "iscc_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "An explicit committed leaf sequence; must match a committed seq for the id.",
+            "in": "query",
+            "name": "index",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The computed inclusion proof."
+          },
+          "400": {
+            "description": "Missing or malformed `iscc_id` / `index`."
+          },
+          "404": {
+            "description": "The id is unknown, the leaf is not covered by the accepted checkpoint, or a tile is not mirrored."
+          }
+        },
+        "summary": "Computed inclusion proof for an ISCC-ID.",
+        "tags": [
+          "proofs"
+        ]
+      }
+    },
+    "/{domain}/log/tile/{tile}": {
+      "get": {
+        "description": "Returns a raw mirrored tlog-tiles hash tile or entry bundle BLOB at its canonical tlog-tiles path (e.g. `tile/0/000`, `tile/entries/000`), served verbatim from the local mirror.",
+        "operationId": "getTile",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Domain"
+          },
+          {
+            "description": "The canonical tlog-tiles tile/bundle path suffix (may contain slashes).",
+            "in": "path",
+            "name": "tile",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The raw tile or entry-bundle BLOB."
+          },
+          "404": {
+            "description": "The tile or bundle is not mirrored."
+          }
+        },
+        "summary": "Raw mirrored tlog-tiles BLOB.",
+        "tags": [
+          "mirror"
+        ]
+      }
+    },
+    "/{domain}/log/verify": {
+      "get": {
+        "description": "Returns a JSON verdict the caller TRUSTS the monitor for: the monitor reports the hub status, the accepted checkpoint `(size, root)`, and a Merkle-verified inclusion result for the id. This is the EXPLICITLY WEAKER, NON-AUTHORITATIVE tier-1 path — \"the monitor reports\". The authoritative path is tier-2: fetch the proof bundle (`GET /inclusion/{iscc_id}.bundle`) and verify it yourself, removing the monitor from the trust path. An id-shaped fault (unknown id, no accepted checkpoint, leaf out of tree, tile not mirrored) is a `200 {verified:false, reason}`, never a 4xx/5xx.",
+        "operationId": "getVerifyForMe",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Domain"
+          },
+          {
+            "description": "The ISCC-ID to verify (with or without the `ISCC:` prefix).",
+            "in": "query",
+            "name": "iscc_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "An explicit committed leaf sequence to verify.",
+            "in": "query",
+            "name": "index",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyVerdict"
+                }
+              }
+            },
+            "description": "The verify-for-me verdict (verified true or false with a reason)."
+          },
+          "500": {
+            "description": "A genuine infrastructure fault (store read error or store inconsistency)."
+          }
+        },
+        "summary": "verify-for-me verdict (the explicitly weaker, non-authoritative path).",
+        "tags": [
+          "verify"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "This monitor instance (relative to its own origin).",
+      "url": "/"
+    }
+  ],
+  "tags": [
+    {
+      "description": "Liveness, build provenance, and metrics.",
+      "name": "health"
+    },
+    {
+      "description": "Computed RFC-6962 inclusion/consistency proofs and record bytes.",
+      "name": "proofs"
+    },
+    {
+      "description": "Raw mirrored tlog-tiles artifacts (checkpoint, tiles, OTS).",
+      "name": "mirror"
+    },
+    {
+      "description": "Client-verifiable proof bundle and the weaker verify-for-me verdict.",
+      "name": "verify"
+    }
+  ]
+}

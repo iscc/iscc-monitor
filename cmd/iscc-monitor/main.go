@@ -36,6 +36,7 @@ import (
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/metrics"
 	"github.com/iscc/iscc-monitor/internal/metricshttp"
+	"github.com/iscc/iscc-monitor/internal/openapi"
 	"github.com/iscc/iscc-monitor/internal/otsclient"
 	"github.com/iscc/iscc-monitor/internal/proofserve"
 	"github.com/iscc/iscc-monitor/internal/registry"
@@ -61,15 +62,18 @@ type hubRoute struct {
 
 // reservedMountNames is the set of single-label tokens that, used as a realm
 // domain, would mount the dossier at a path that collides with a built-in exact
-// route (metrics, healthz, version) or the web.Prefix subtree segment (_ds). The
-// _ds entry is derived from web.Prefix (not hardcoded) so it tracks the const if it
-// changes. registerHubs rejects any realm Domain in this set before mounting so a
+// route (metrics, healthz, version, the two openapi document routes) or the
+// web.Prefix subtree segment (_ds). The _ds and openapi.* entries are derived from
+// the package consts (not hardcoded) so they track the consts if they change.
+// registerHubs rejects any realm Domain in this set before mounting so a
 // misconfigured realm fails loudly at startup instead of panicking http.ServeMux.
 var reservedMountNames = map[string]struct{}{
 	"metrics":                     {},
 	"healthz":                     {},
 	"version":                     {},
 	strings.Trim(web.Prefix, "/"): {},
+	strings.TrimPrefix(openapi.JSONPath, "/"): {},
+	strings.TrimPrefix(openapi.YAMLPath, "/"): {},
 }
 
 // otsUpgradeInterval is the cadence of the background OpenTimestamps upgrade loop:
@@ -256,7 +260,8 @@ func stampFunc() follower.Stamper {
 // buildMux assembles the monitor's single request multiplexer: GET / (the
 // server-rendered hub-list dashboard), GET /metrics, GET /healthz (liveness +
 // store readiness), GET /version (the build-provenance string — git SHA or the
-// "dev" default), the GET /inclusion/ subtree (the realm-wide Certificate of
+// "dev" default), GET /openapi.json + GET /openapi.yaml (the hand-authored OpenAPI
+// 3.1 contract for the machine surface, served byte-verbatim), the GET /inclusion/ subtree (the realm-wide Certificate of
 // Inclusion, keyed on the self-describing ISCC-IDv1), the GET /_ds/ subtree (the
 // shared ISCC Design System v2 token stylesheet, the self-hosted @font-face
 // stylesheet, and the woff2 font binaries every SSR page links), plus every hub's
@@ -274,9 +279,9 @@ func stampFunc() follower.Stamper {
 // /metrics handler exposes is also passed to the dashboard and the certificate as
 // their in-memory status overlay (the StatusSource), so the pages can render the
 // live unresolvable / unverified verdicts the store cannot prove. /metrics,
-// /healthz, and /version all mount as exact paths next to the per-hub mirror
-// subtrees on the same mux, so the single-listener invariant holds (no second
-// socket). The assembled
+// /healthz, /version, /openapi.json, and /openapi.yaml all mount as exact paths next
+// to the per-hub mirror subtrees on the same mux, so the single-listener invariant
+// holds (no second socket). The assembled
 // mux is wrapped once in corsmw.Handler — the lone convergence point all public
 // routes pass through — so every served surface answers cross-origin browser GETs
 // uniformly (Access-Control-Allow-Origin: * on every response; OPTIONS preflights
@@ -291,6 +296,8 @@ func buildMux(st *store.Store, routes []hubRoute, hubList *registry.HubList, m *
 	mux.Handle("/metrics", metricshttp.Handler(m))
 	mux.Handle("/healthz", healthz.Handler(st))
 	mux.Handle("/version", version.Handler())
+	mux.Handle(openapi.JSONPath, openapi.Handler())
+	mux.Handle(openapi.YAMLPath, openapi.Handler())
 	mux.Handle(certificate.PathPrefix, certificate.Handler(hubList, st, m, id))
 	mux.Handle(web.Prefix, web.Handler())
 	return corsmw.Handler(mux)

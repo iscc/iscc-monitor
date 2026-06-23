@@ -101,6 +101,15 @@ After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSO
   in-browser inclusion verifier client-side.
 - `GET /healthz` — liveness + store readiness.
 - `GET /metrics` — Prometheus: hub status, last-observed, poll failures, violations.
+- `GET /openapi.json` + `GET /openapi.yaml` — the hand-authored **OpenAPI 3.1** contract (ADR-0014),
+  served byte-verbatim (`go:embed`) under the same CORS `*` wrap with the `no-cache` + strong-ETag + 304
+  policy. It describes only the **machine-consumable** surface (the proof / artifact / Prometheus
+  endpoints — `/healthz`, `/version`, `/metrics`, the per-hub `/<domain>/log/*` routes, the
+  `/inclusion/<iscc_id>.bundle` proof bundle, and these two endpoints); the HTML SSR surfaces (`/`, the
+  dossier, the log browser, the HTML certificate, `/_ds/`) are **excluded** by design. The
+  `verify-for-me` (`/<domain>/log/verify`) operation is flagged in-band as the explicitly weaker,
+  non-authoritative tier-1 path ("the monitor reports") vs the client-verified proof bundle. A route↔spec
+  drift test fails the gate the moment the document and the real mux's machine routes diverge.
 - `GET /<domain>/log/` — server-rendered HTML log browser: the mirrored accepted checkpoint
   `(size, root)` for that hub plus links into its `entries`/proof routes (e.g. `/sb0.iscc.id/log/`).
   The hub status renders via the five-status `HubStatusBadge` partial — the store-provable subset
