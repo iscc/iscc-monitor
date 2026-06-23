@@ -8,20 +8,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## SQLiteFetcher / mirror read-back (`internal/store/tiles.go` + `fetcher.go`)
 
-- **settled (landed):** `SQLiteFetcher` satisfies `fsck.Fetcher` via a *byte-identical copied*
-  `fsckFetcher` interface (pinned `var _ fsckFetcher = SQLiteFetcher{}`), never by importing `fsck`
-  (that pulls `net/http`/`otel`/`klog` and breaks leaf purity). `widthForP` is the SINGLE `p→width`
-  authority (`fetcher.go`): `p==0 → tiles.TileWidth (256)`, else `int(p)`; the write API speaks `p` and
-  **full coords MUST be written as the literal `0`, never `uint8(256)`** (wraps to 0 only by luck) —
-  runtime-`width` test sites guard `if width == tiles.TileWidth { p = 0 }`. `is_full=1` only at
-  width==256; partials overwrite in place via composite-PK `ON CONFLICT … DO UPDATE`. Both invariants
-  are mutation-proven and covered by `TestIngestTilesWidthMapping`/`TestRecordTilePartialOverwrite`.
-- **The partial→full fallback wraps `os.ErrNotExist` on BOTH legs, so `errors.Is` survives a double
-  miss.** `ReadTile`/`ReadEntryBundle` retry at width 256 only when `p>0 && errors.Is(err,
-  os.ErrNotExist)`; if the full leg also misses it returns *that* wrapped `os.ErrNotExist`
-  (TestFetcherReadTilePartialNoFallbackNoFull). `readTileAt`/`readEntryBundleAt` are the no-fallback
-  inner reads; a `p==0` miss returns the wrapped sentinel directly. Matches tessera's
-  `PartialOrFullResource` (which is `internal/` and not importable) exactly.
+- **settled (landed, detail in git history at-2026-06-21):** `SQLiteFetcher` satisfies `fsck.Fetcher` via a
+  *byte-identical copied* `fsckFetcher` interface (pinned `var _`), never importing `fsck` (pulls
+  `net/http`/`otel`/`klog` → breaks leaf purity). `widthForP` is the SINGLE `p→width` authority: `p==0 →
+  tiles.TileWidth (256)`, else `int(p)`; full coords MUST be written as the literal `0`, never `uint8(256)`
+  (runtime sites guard `if width == tiles.TileWidth { p = 0 }`); `is_full=1` only at width 256, partials
+  overwrite via composite-PK `ON CONFLICT … DO UPDATE`. The partial→full fallback wraps `os.ErrNotExist` on
+  BOTH legs so `errors.Is` survives a double miss (retry at 256 only when `p>0 && errors.Is(…ErrNotExist)`).
+  All mutation-proven (`TestIngestTilesWidthMapping`/`TestRecordTilePartialOverwrite`/`TestFetcherReadTilePartialNoFallbackNoFull`).
 - **Oracle/conformance gate correctly N/A for this slice** — plain CRUD + BLOB round-trip with
   synthetic in-test bytes; no signature/RFC-6962/Merkle/did:web/`fsck`-rebuild path. The actual
   `fsck.New(...).Check(...)` root-rebuild + inclusion cross-check is the *next* conformance slice
@@ -163,15 +157,12 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   observation never starts coverage (ADR-0001) — the fork/unverified tests assert `cov.Set == false`.
 - **settled (landed, detail in git history): the verified-advance + OTS CRUD seams are leaf,
   struct-carried, mutation-proven, oracle N/A.** `AdvanceAccepted(ctx, CheckpointRecord)` is the repo's
-  first `*sql.Tx` — it collapses the verified-advance triad (the `RecordCheckpoint` `DO NOTHING` insert,
-  the `SetCoverage` set-once UPDATE, the `AdvanceFollowState` `frozen`-omitting upsert) into one
-  transaction (`defer Rollback` after `Commit` → benign `sql.ErrTxDone`, NOT a swallowed dodge). The OTS
-  seam (`ots.go`) is idiom-identical to the checkpoint family: `RecordOTS` (`ON CONFLICT … DO NOTHING` +
-  `RowsAffected`), `OTSForRoot` (`sql.ErrNoRows → (zero,false,nil)` → honest pending, never 5xx),
-  `PendingOTS(now)` (`status=? AND (next_retry IS NULL OR next_retry<=?) ORDER BY stamped_at ASC, id
-  ASC`), and the `MarkOTS*` no-op-on-absent UPDATEs. `OTSStatusPending`/`OTSStatusConfirmed` consts are
-  the single source for the two literals (drift trap); `Status`/`ots_bytes` carried opaque so store stays
-  leaf-pure.
+  first `*sql.Tx`, collapsing the verified-advance triad (`RecordCheckpoint` `DO NOTHING`, `SetCoverage`
+  set-once, `AdvanceFollowState` `frozen`-omitting upsert) in one tx (`defer Rollback` after `Commit` →
+  benign `sql.ErrTxDone`, NOT a dodge). The OTS seam (`ots.go`) is idiom-identical: `RecordOTS` (`DO
+  NOTHING` + `RowsAffected`), `OTSForRoot` (`ErrNoRows → (zero,false,nil)`, never 5xx), `PendingOTS`
+  (`next_retry` filter + `stamped_at ASC`), `MarkOTS*` no-op-on-absent. `OTSStatus{Pending,Confirmed}`
+  consts are the single literal source; `Status`/`ots_bytes` carried opaque so store stays leaf-pure.
 - **settled (landed): the realm-index `Anchor` projection is a read-only column on `ListHubs`.** A
   correlated subselect `(SELECT o.status FROM ots o WHERE o.hub_id=h.hub_id ORDER BY o.stamped_at DESC,
   o.id DESC LIMIT 1)` read through `sql.NullString` (NULL→"") gives the hub's latest-stamped-root OTS
@@ -179,3 +170,10 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   per-checkpoint attestation — see `dashboard.md` for the honesty rationale and the open design `normal`.
   Store stays a leaf (no new import; `go list -deps … | grep '^net/http$'` empty); schema/go.mod/go.sum
   byte-unchanged; mutation-proven (subselect→`''` FAILS `TestListHubsAnchorStatus`).
+- **TRAP (advance `820a831`): the §3 observed-time subselect now ties to the accepted size
+  (`AND c.tree_size = f.last_size ORDER BY c.id DESC LIMIT 1`) — `id DESC` is BACKWARDS for a same-size
+  FORK.** It closes the equivocation/higher-size decouple but a fork records a contradictory row at
+  `tree_size == last_size` (later `id`), so `id DESC` still picks the rejected row. The accepted row at a
+  size is the EARLIEST (`store.CheckpointAt` uses `ORDER BY rowid`; two rows at `last_size` ⇒ a fork, since
+  same-root re-observation deduped by `ON CONFLICT(hub_id,tree_size,root)`); the fix is `id ASC`. See
+  `dossier.md` + the open `normal`. [Codex P2, reviewer-reproduced.]

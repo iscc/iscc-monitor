@@ -1,56 +1,73 @@
-## 2026-06-23 — Tie the dossier §3 observed-time to the accepted `last_size` checkpoint row (frozen-hub honesty fix)
+## 2026-06-23 — Review of: Tie the dossier §3 observed-time to the accepted `last_size` checkpoint row (frozen-hub honesty fix)
 
-**Done:** Changed the §3 `observed_at` correlated subselect in `store.ListHubs` so it reads the
-`observed_at` of the checkpoint row whose `tree_size = f.last_size` (the accepted size §3 renders),
-instead of the newest-by-`tree_size` row. A frozen hub no longer pairs its accepted size with a
-rejected (higher-tree-size) checkpoint's timestamp. Renderer is unchanged — the fix is store-side.
+**Verdict:** PASS_WITH_NOTES
+**Loop:** CONTINUE
 
-**Files changed:**
-- `internal/store/hubs.go`: subselect now `(SELECT c.observed_at FROM checkpoints c WHERE c.hub_id =
-  h.hub_id AND c.tree_size = f.last_size ORDER BY c.id DESC LIMIT 1)`; `id DESC LIMIT 1` keeps a
-  re-observed same-size row deterministic. Rewrote the `CheckpointObserved` doc comment and the
-  in-query comment block to describe the "tied to the accepted size" semantics (evergreen).
-- `internal/store/hubs_test.go`: added `TestListHubsFrozenObservedTracksAcceptedSize` — seeds an
-  accepted checkpoint (`TreeSize 100 @ tAccepted`) via `AdvanceAccepted`, then a rejected higher-size
-  row (`TreeSize 200 @ tRejected`) via `RecordCheckpoint` + `Freeze` (no `last_size` advance, mirroring
-  `follower.freeze`), and asserts `CheckpointObserved == tAccepted` (plus `Frozen` true, `LastSize` 100).
+**Summary:** The advance re-ties the §3 `observed_at` subselect in `store.ListHubs` to the accepted size
+(`AND c.tree_size = f.last_size ORDER BY c.id DESC LIMIT 1`), with a mutation-proven frozen-hub test. This
+genuinely CLOSES the higher-tree-size / equivocation decouple (a rejected LARGER checkpoint no longer
+supplies §3's time) and regresses nothing — all gates green, scope clean, store stays a leaf. But Codex's
+P2, reviewer-confirmed by reproduction, shows the increment does NOT close the SAME-SIZE FORK case: a fork
+records a contradictory row at `tree_size == last_size`, so `id DESC` still picks the rejected row. The §3
+honesty `normal` is therefore PARTIALLY closed; the issue stays open, narrowed to the fork remainder.
 
-**Verification:** `mise run check` → green (build + vet + test across all 30 packages; `gofmt -l .`
-empty). Per-criterion:
-- [x] `go test -count=1 -run TestListHubs ./internal/store` passes — existing
-  `TestListHubsCheckpointAndAnchorHeight` (verified-hub size 42 = last_size 42; bare-hub zero) unchanged
-  and green; `TestListHubsAnchorStatus` unchanged; the new frozen-hub test passes.
-- [x] New frozen test mutation-proven load-bearing: reverting the subselect to
-  `ORDER BY c.tree_size DESC, c.id DESC LIMIT 1` (dropping `AND c.tree_size = f.last_size`) makes it
-  FAIL — it reports `tRejected` (`2023-11-15 00:59:59`) instead of `tAccepted` (`2023-11-14 22:13:20`);
-  `TestListHubsCheckpointAndAnchorHeight` still passed under the mutation (verified-path no-regression).
-  Restore confirmed clean (`go.mod`/`go.sum` byte-unchanged, subselect back in place).
-- [x] Store leaf purity intact: `go list -deps ./internal/store | grep '^net/http$'` empty.
-- [x] No schema/migration/`user_version` change (query-shape change inside the existing statement only).
+**Verification:**
+- [x] `mise run check` — green (build + vet + test across all 30 packages).
+- [x] `gofmt -l .` — empty (clean).
+- [x] `go test -count=1 -run TestListHubs ./internal/store` — PASS; new `TestListHubsFrozenObservedTracksAcceptedSize`
+  + existing `TestListHubsCheckpointAndAnchorHeight` (verified size 42 = last_size 42; bare-hub zero) +
+  `TestListHubsAnchorStatus` all green.
+- [x] New frozen test mutation-proven load-bearing (reviewer re-ran): reverting the subselect to
+  `ORDER BY c.tree_size DESC, c.id DESC LIMIT 1` makes it FAIL (reports tRejected 2023-11-15 00:59:59 vs
+  tAccepted 2023-11-14 22:13:20); the existing verified-hub test stays GREEN under the mutation. Restore
+  left `hubs.go` byte-clean and `go.mod`/`go.sum` unchanged.
+- [x] Store leaf purity intact — `go list -deps ./internal/store | grep '^net/http$'` empty.
+- [x] No schema/migration/`user_version` change — query-shape change inside the existing statement only.
+- [x] Scope discipline — only the two `next.md`-scoped files touched (`hubs.go` + `hubs_test.go`); no SSR
+  template changed. The dirty `target.md` is a pre-existing steer mod, correctly excluded by advance.
+- [x] Gate-circumvention scan over unpushed commits — clean (no `nolint`/`t.Skip`/build-tag/swallowed-err).
+- [x] Oracle/conformance gate — N/A (no signature/RFC-6962/Merkle/did:web/proof path; pure `checkpoints`
+  read-shape change). Confirmed by inspection.
+- [ ] Closes the §3 size/time-decouple `normal` — PARTIAL: equivocation/higher-size case closed; SAME-SIZE
+  FORK case still pairs the accepted size with the rejected fork checkpoint's time (see Issues + Codex).
 
-**Oracle/conformance gate:** N/A — touches no signature / RFC-6962 / Merkle / did:web / proof path; it
-is a pure `checkpoints`/`follow_state` read-shape change. (Confirmed by inspection; `next.md` calls this
-N/A.)
+**Issues found:** One (Codex-originated, reviewer-confirmed by reproduction) — the §3 fork remainder. The
+existing §3 `normal` in `issues.md` is REWRITTEN to record the partial fix: the equivocation/higher-size
+case is closed, the same-size fork case remains, durable fix is `ORDER BY c.id ASC` (accepted row at a size
+is the earliest — `store.CheckpointAt` precedent via `ORDER BY rowid`) or key by accepted root. Not deleted.
 
-**Next:** This closes the §3 size/time-decouple `normal`. The two remaining dossier/realm-index honesty
-`normal`s are both DESIGN-BLOCKED (the §1 "Key resolved from did:web:…" unconditional-wording-vs-
-`unresolvable` nit and the realm-index `/` per-hub-vs-per-checkpoint Anchor honesty), per their issues +
-`learnings/dossier.md`/`learnings/store.md` — neither is code-closable without a design pass, so do not
-pull them as an advance. `define-next` should pull from the remaining open `normal` backlog after the
-4 stale M-API entries are pruned (bookkeeping, not advance work — see Notes); the two `low`
-hardening follow-ups (guard-hoist ahead of the baseline DDL; `seq` ordering index) remain the natural
-fold-ins WHEN `Open`/the migration runner or the dashboard-recent path is next touched.
+**Codex second opinion:** One P2 finding at `internal/store/hubs.go:77` — "same-size fork violations still
+select the rejected checkpoint's timestamp." **CONFIRMED by reviewer reproduction** (throwaway probe:
+accepted size 100 @ tAccepted, fork at size 100 different root @ tForkRejected, Freeze → `CheckpointObserved
+== tForkRejected`, not tAccepted). Grounded in the violation taxonomy (`logclient/checkconsistency.go:35-37`:
+fork = `next == prev`) and `follower.freeze` (records the contradictory checkpoint at `info.TreeSize ==
+last_size`). The new subselect's `tree_size = f.last_size` matches both rows; `id DESC LIMIT 1` picks the
+later (rejected) one. Real, in-scope, and the same defect class the increment targeted — kept the §3 `normal`
+open and narrowed it to the fork case rather than deleting it. Not a regression (the pre-fix query was also
+wrong for forks) and the increment's stated higher-size goal IS met + mutation-proven, so PASS_WITH_NOTES
+not NEEDS_WORK.
+
+**Visual check:** n/a — no SSR surface changed. The diff is store-side only (`internal/store/hubs.go` + its
+test); the §3 renderer (`internal/dossier`) is untouched.
+
+**Next:** Finish the §3 honesty fix — change the `ListHubs` §3 subselect `ORDER BY c.id DESC` → `ORDER BY
+c.id ASC` (the accepted checkpoint at a given size is the EARLIEST `id`; `store.CheckpointAt` already uses
+`ORDER BY rowid LIMIT 1` for exactly this "the accepted row at this size" selection). Add a same-size-fork
+regression test (accepted root @ t1, forked root @ t2>t1, no `last_size` advance, Freeze) asserting §3 time
+== t1; keep the higher-size `TestListHubsFrozenObservedTracksAcceptedSize` green (distinct sizes → only one
+row matches, ordering irrelevant). One-file + test, ≤3 budget, oracle N/A. This is the natural immediate
+follow-up since it completes the very `normal` this increment opened against itself.
 
 **Notes:**
-- The §3 subselect references `f.last_size` from the already-joined `follow_state` LEFT JOIN (alias `f`).
-  NULL-safety holds three ways: a never-polled hub (`f.last_size` NULL → `c.tree_size = NULL` matches no
-  row → SQL NULL → `observedAt.Valid == false` → zero `time.Time` → renderer "observed time unknown"),
-  a hub whose accepted size has no recorded checkpoint row, and a checkpoint row with a NULL
-  `observed_at`. The existing bare-hub assertion (`CheckpointObserved.IsZero()`) still holds and pins
-  this. Verified-hub path is unchanged (accepted size == the accepted row's `tree_size`, same row picked).
-- The 4 stale M-API `normal` issue entries (phantom `verify` `index` param, `/checkpoint` media-type,
-  `/healthz` 200/503) are ALREADY satisfied in the served `internal/openapi/openapi.{yaml,json}` per the
-  prior define-next read — they await a prune by `update-state`/`review`, not an advance code change.
-- Pre-existing `.claude/context/target.md` working-tree mod (from steer `d2f259e`) is still uncommitted
-  and is NOT mine to commit (advance commits only implementation/test files + handoff.md); left for
-  `update-state`/`steer`. My commit excludes it.
+- The advance's handoff justified `id DESC LIMIT 1` as "keeps a re-observed same-size row deterministic" —
+  but that rationale is exactly backwards for honesty: a re-observed ACCEPTED checkpoint (same root) is
+  deduped by `RecordCheckpoint`'s `ON CONFLICT(hub_id,tree_size,root) DO NOTHING`, so the ONLY way two rows
+  share `tree_size = last_size` is a fork (different root), and the accepted row is always the EARLIER `id`.
+  `id ASC` is the correct tiebreak. Recorded in both `learnings/store.md` and `learnings/dossier.md`.
+- The two remaining dossier/realm-index honesty `normal`s (§1 "Key resolved from did:web:…"
+  unconditional-wording on the `unresolvable` path, realm-index `/` per-hub-vs-per-checkpoint Anchor) are
+  still DESIGN-BLOCKED — do not pull either as a code advance.
+- The 4 stale M-API `normal` entries (phantom `verify` `index` param, `/checkpoint` media-type, `/healthz`
+  200/503) remain pending a prune by `update-state` per the prior handoff — bookkeeping, not advance work.
+- Pre-existing `.claude/context/target.md` working-tree mod (steer `d2f259e`) is still uncommitted; not the
+  review's to commit (review commits learnings/handoff/issues + any minor fixes only). Left for steer/update-state.

@@ -507,28 +507,39 @@ filed it and does **not** affect priority.
 - **Spec:** DRY (CLAUDE.md code standards); ADR-0008 (schema interpretation lives in the view layer, not
   the store); no spec contract.
 
-## Dossier §3 latest-checkpoint size and observed-time can come from different rows on a FROZEN hub
+## Dossier §3 observed-time still tracks the REJECTED row for a same-size FORK violation (equivocation/higher-size case CLOSED)
 - **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-confirmed against `follower.freeze`)
-- **What / where / how to verify:** The §3 observed-time subselect added in `internal/store/hubs.go:69-70`
-  picks the newest `checkpoints` row by `tree_size DESC, id DESC`, but §3 renders its SIZE from `.LastSize`
-  (= accepted `follow_state.last_size`). For a verified hub these agree. For a FROZEN hub they can diverge:
-  `follower.freeze` (`internal/follower/follower.go:475`) calls `RecordCheckpoint` for the contradictory
-  (often HIGHER-tree-size) checkpoint WITHOUT advancing `last_size` (reviewer-confirmed: `RecordCheckpoint`
-  never writes `last_size`; only `AdvanceAccepted`/`AdvanceFollowState` do). So a frozen hub whose rejected
-  checkpoint is larger renders the accepted size (`§3 N entries`) paired with the REJECTED checkpoint's
-  `observed_at` — an accepted size with a rejected timestamp. Confined to the frozen edge state, where the
-  loud non-dismissable Exhibit already renders "do not trust new state from this hub" ABOVE §3, and a
-  `shrink` violation cannot trigger it (the rejected size is smaller, so `tree_size DESC` still picks the
-  accepted row). Does NOT block this increment — all gates green, the verified/pending/confirmed primary
-  paths are correct, and increment 2 reworks §3 + the Exhibit. Fix when §3 is next touched (likely
-  increment 2): select `observed_at` for the row whose `tree_size = f.last_size` (or render §3 size + time
-  from ONE checkpoint row), so the two halves always describe the same checkpoint. Verify fixed: a frozen
-  fixture whose rejected checkpoint has a higher tree_size renders §3 size + observed-time from the SAME
-  (accepted) checkpoint; reverting makes the time track the rejected row.
+- **Source:** [review] (Codex P2 on advance `820a831`, reviewer-confirmed by reproduction)
+- **PARTIAL FIX (advance `820a831`):** the §3 subselect (`internal/store/hubs.go:76-77`) was re-tied from
+  `tree_size DESC, id DESC` to `AND c.tree_size = f.last_size ORDER BY c.id DESC LIMIT 1`. That CLOSES the
+  EQUIVOCATION / higher-tree-size case — a rejected checkpoint LARGER than the accepted size no longer
+  matches `tree_size = last_size`, so §3 reads the accepted row's time (mutation-proven by the new
+  `TestListHubsFrozenObservedTracksAcceptedSize`; reviewer-reproduced). It does NOT close the SAME-SIZE
+  FORK case, the focus of this remaining entry.
+- **What / where / how to verify:** The violation taxonomy (`internal/logclient/checkconsistency.go:35-37`,
+  `consistency.go:7-18`) is size-partitioned: **shrink** `next<prev`, **fork** `next==prev` (differing root),
+  **equivocation** `next>prev`. For a FORK, `follower.freeze` (`follower.go:486`) records the contradictory
+  checkpoint at `info.TreeSize == prevSize == last_size` — SAME size as the accepted row, later `id`. The
+  new subselect's `AND c.tree_size = f.last_size` matches BOTH the accepted and the rejected-fork rows, and
+  `ORDER BY c.id DESC LIMIT 1` deterministically picks the LATER (rejected fork) row — so §3 STILL pairs the
+  accepted `LastSize` with the rejected fork checkpoint's `observed_at`. Reviewer-reproduced with a throwaway
+  probe (accepted size 100 @ tAccepted, fork at size 100 different root @ tForkRejected, Freeze) →
+  `CheckpointObserved == tForkRejected`, NOT tAccepted. This is NOT a regression (pre-fix, `tree_size DESC,
+  id DESC` ALSO picked the rejected fork row) and the increment is genuine, mutation-proven forward progress
+  on the higher-size case; the loud non-dismissable Exhibit still renders "do not trust new state" ABOVE §3.
+  The `id DESC` choice is exactly backwards for honesty: a re-observed ACCEPTED checkpoint (same root) is
+  deduped by `RecordCheckpoint`'s `ON CONFLICT(hub_id,tree_size,root) DO NOTHING`, so the only way two rows
+  share `tree_size = last_size` is a fork (different root) — the accepted row is always the EARLIER `id`.
+  Fix when §3 / `ListHubs` is next touched: change `ORDER BY c.id DESC` → `ORDER BY c.id ASC` (the accepted
+  row at that size is the earliest, exactly as `store.CheckpointAt` already selects via `ORDER BY rowid LIMIT
+  1`), OR key the subselect by the accepted root (`AND c.root = (accepted root)`) per Codex's suggestion.
+  Verify fixed: a frozen fixture with a SAME-SIZE fork (accepted root @ t1, forked root @ t2>t1, no last_size
+  advance) renders §3 observed-time == t1 (accepted), NOT t2; reverting the ASC makes it track t2. Keep the
+  higher-size `TestListHubsFrozenObservedTracksAcceptedSize` green (the ASC fix must not regress it — distinct
+  sizes, only one row matches `tree_size = last_size`, so ordering is irrelevant there).
 - **Spec:** CLAUDE.md "Coverage" / "Self-consistency violation" (never imply a guarantee the data does not
-  support); ADR-0001 coverage honesty; learnings.md always-loaded SSR-honesty rule; `learnings/dossier.md`
-  §3 size/time-decouple note.
+  support); ADR-0001 coverage honesty; learnings.md always-loaded SSR-honesty rule; `internal/store/checkpoints.go`
+  `CheckpointAt` `ORDER BY rowid` precedent; `learnings/dossier.md` + `learnings/store.md` §3 size/time-decouple note.
 
 ## The out-of-range `user_version` guard runs AFTER `db.Exec(schemaSQL)`, so a downgrade-from-newer-binary still re-applies the baseline DDL before the reject
 - **Priority:** low
