@@ -1,184 +1,172 @@
-<!-- assessed-at: b0804098e71773e9f785befb76db03710b400b9e -->
+<!-- assessed-at: 6220744d2d243185ab22bf5bba0ab53d6c8b6145 -->
 
 # Project State
 
 ## Status: IN_PROGRESS
 
-## Phase: M-UI honesty polish — the dossier §3 observed-time is now tied to the accepted checkpoint row.
-All feature milestones (M1→M3, M-UI named-region, WASM published half, OTS observable halves) plus both
-order-independent code-closable milestones (M-Deploy + M-API) meet their `target.md` Verify bars in-repo.
-This window re-tied the hub-dossier §3 "latest checkpoint observed-time" to the accepted `last_size`
-checkpoint row, closing the equivocation / higher-tree-size decouple. What remains for DONE is the
-design/human-blocked `normal`s (incl. the SAME-SIZE fork remainder of this very §3 fix) plus the M-UI
-exit visual-pass + human sign-off.
+## Phase: M-UI parity regression surfaced — a steer reopened a `critical` navigation/log-browser gap.
+The §3 dossier observed-time honesty fix is now CLOSED end-to-end (equivocation/higher-size + same-size
+fork, both mutation-pinned, review PASS `c102fc3`, CI fully green). But the latest steer (`6220744`)
+filed — and this assessment VERIFIED in code — a `critical`: the hub dossier's "Browse the log →" lands
+on a no-JS dead-end and the record-list log browser is off-mockup. That reopens an M-UI Verify criterion
+(navigation closure + log-browser named-region parity) the prior state had carried as met. DONE is
+blocked on this critical first, then the residual design/human-blocked `normal`s + the M-UI exit sign-off.
 
-This window (`c213dd9..b080409`, 4 commits: update-state `b565f4e` → define-next `6d52014` → advance
-`820a831` → review `b080409`) is a clean single in-loop increment. The source diff touched ONLY
-`internal/store/hubs.go` (the §3 `observed_at` subselect) + `internal/store/hubs_test.go` (plus context
-files). **No M1/M2/M3/M-UI-template/WASM/OTS/M-Deploy/M-API milestone-criterion source was touched** —
-those sections carry forward verified. HEAD `b080409` is level with `origin/develop`; the working tree
-carries only an uncommitted `target.md` steer mod (`d2f259e`), not this role's to commit. **Pages is
-`success` on HEAD; CI + Publish are still `in_progress` on HEAD `b080409`** (the previous HEAD `c213dd9`
-was fully green across all three).
+This window (`b080409..6220744`, 6 commits): update-state `d56e00f` → define-next `6bb9d46` → advance
+`244d450` → review `c102fc3` → steer `3e51de1` (M-API to target.md — already landed in code) → steer
+`6220744` (file the log-browser critical + sharpen M-UI nav/parity criteria). The only SOURCE diff was
+`internal/store/hubs.go` (§3 subselect `ORDER BY c.id DESC` → `ASC`) + `hubs_test.go` (same-size-fork
+regression test) — verified present (`hubs.go:86`). The two steer commits touched `target.md` +
+`issues.md` only; no other source. Working tree clean; HEAD `6220744` level with `origin/develop`.
 
 ## Convergence
-- **Remaining Verify criteria (all milestone Verify bars MET; what's left is `normal`/`low` issues, not
-  milestone criteria):**
-  - **M1: 0 open. M2: 0 open. M3: 0 open (4/4). M-API: 0 open (4/4). M-Deploy: 0 open.** Carried forward —
-    none of their source was touched this window (the diff is the §3 `ListHubs` subselect only).
-  - **M-UI: behavioral + named-region Verify met on all five SSR surfaces; no `critical`.** Still open
-    (all `normal`/design- or human-blocked): the dossier **§3 SAME-SIZE FORK** remainder (this window
-    closed the equivocation/higher-size case; the fork case still pairs the accepted size with the
-    rejected fork checkpoint's time — `id ASC` is the recorded fix), the §1 unconditional
-    "resolved"-vs-unresolvable wording, the per-hub-vs-per-checkpoint realm-index Anchor honesty question,
-    instance identity config-driven on only THREE of six SSR mastheads (proofserve trio still placeholder),
+- **Remaining Verify criteria:**
+  - **M1: 0 open. M2: 0 open. M3: 0 open (4/4). M-API: 4/4 MET. M-Deploy: 0 open.** Carried forward —
+    none of their source touched this window.
+  - **M-UI: 1 Verify criterion REOPENED (navigation closure + log-browser record-list named-region
+    parity) — now `critical`.** Verified in code: `dossier.html:573` links "Browse the log →" to
+    `/{{.Origin}}/` (the `/<domain>/log/` checkpoint-summary page, which carries no link to `records`, a
+    no-JS dead end), NOT the record list the mockup points at; `records.html:303` head reads "Records"
+    (not eyebrow "Log browser" + hub + "N records mirrored"), has no `← dossier` breadcrumb, omits the
+    instance-identity + `verify ↗` chrome, and uses a bottom-only "showing N of M" pager instead of the
+    mockup's top+bottom "seq X–Y of Z" pagers. Also still open (all `normal`/design- or human-blocked):
+    §1 unconditional "resolved"-vs-unresolvable wording, the per-hub-vs-per-checkpoint realm-index Anchor
+    honesty question, instance identity on only THREE of six SSR mastheads (proofserve trio placeholder),
     and the mandatory **M-UI exit visual-pass + human sign-off** (ADR-0012).
-  - **WASM verifier: published half CLOSED** (`monitor.iscc.codes/_ds/verify.wasm` → 200 byte-pinned).
-    **Still open:** the cross-origin **signature half** (no checkpoint-signature / did:web check), `normal`.
-  - **OTS anchoring: 1/1 open (carried).** Only a real Bitcoin confirmation remains (offline-unprovable).
-- **Last ~10 iterations: ~6 milestone-Verify-or-gate-advancing / ~4 honesty/data-model.** Recent windows
-  closed M-API (slices 1→4), landed the migration mechanism + the FIRST real migration (composite PK,
-  closing 3 data-model `normal`s), and this window advanced the §3 honesty `normal` (equivocation case
-  closed, fork remainder narrowed). **No drift:** the loop is working the remaining honesty `normal`s to
-  completion rather than spinning on cosmetic chrome — the §3 fork remainder (`id DESC` → `id ASC`) is the
-  natural code-closable follow-up and SHOULD be the next advance, exactly the convergence move the
-  loop-stalls-on-blocked-DONE memory prescribes.
+  - **WASM verifier: published half CLOSED.** Still open: cross-origin **signature half** (no
+    checkpoint-signature / did:web check), `normal`, design-first.
+  - **OTS anchoring: 1/1 open.** Only a real Bitcoin confirmation remains (offline-unprovable).
+- **Last ~10 iterations: ~6 milestone-Verify-or-gate-advancing / ~4 honesty/data-model.** This window
+  CLOSED the §3 same-size-fork honesty `normal` (the sole code-closable convergence move at the time);
+  the steer then surfaced a genuine M-UI parity regression. **No drift** — the loop is working real
+  named-region/honesty gaps to completion. The log-browser `critical` is the clear next code-closable
+  move (a [human] host-machine review found it), exactly the convergence work the steer intends.
 
 ## M1 — Read-only Monitor
-**Status**: **met** — carried forward; the `c213dd9..b080409` diff touched NO M1 source (config, registry,
-follower, didweb, metrics all untouched). All Verify criteria remain satisfied: `origin`/`vkey` golden;
-fork/shrink/equivocation golden-tested with freeze + alert-once + restart survival; structured logs;
-`/metrics`.
-- **Packages present** (26 internal + 4 cmd): `cmd/{iscc-monitor,notecheck,verifier-site,wasm}`; internal —
-  `badge, certificate, config, corsmw, dashboard, didweb, docs, dossier, follower, healthz, index,
-  logclient, metrics, metricshttp, openapi, ots, otsclient, proof, proofserve, registry, store, tiles,
-  tilesserve, verifier, version, web`. Module `github.com/iscc/iscc-monitor` (`go 1.26.1`).
+**Status**: **met** — carried forward; the `b080409..6220744` source diff touched NO M1 path (config,
+registry, follower, didweb, metrics all untouched). `origin`/`vkey` golden; fork/shrink/equivocation
+golden-tested with freeze + alert-once + restart survival; structured logs; `/metrics`.
+- **Packages**: `cmd/{iscc-monitor,notecheck,verifier-site,wasm}`; internal — `badge, certificate,
+  config, corsmw, dashboard, didweb, docs, dossier, follower, healthz, index, logclient, metrics,
+  metricshttp, openapi, ots, otsclient, proof, proofserve, registry, store, tiles, tilesserve, verifier,
+  version, web`. Module `github.com/iscc/iscc-monitor` (`go 1.26.1`).
 - **Reuse imports wired**: `golang.org/x/mod/sumdb/note`, `modernc.org/sqlite`,
   `transparency-dev/{merkle,tessera,formats}`, `gopkg.in/yaml.v3`, `github.com/iscc/iscc-lib/packages/go`,
   `github.com/nbd-wtf/opentimestamps`.
 
 ## M2 — Aggregator
-**Status**: **met** — carried forward. No fsck / fetcher / mirror BLOB / follower-ingest / `iscc_index`
-path touched this window (the store touch was the `checkpoints` read-shape in `ListHubs` §3 only). The
-`SQLiteFetcher` / `ProofBuilder` read side is unchanged. The M2 mirror/fsck contract holds.
+**Status**: **met** — carried forward. No fsck / fetcher / mirror BLOB / `iscc_index` path touched this
+window (the store touch was the `checkpoints` read-order in `ListHubs` §3 only). The `SQLiteFetcher` /
+`ProofBuilder` read side is unchanged; the M2 mirror/fsck contract holds.
 
 ## M3 — Trust API + dashboard
-**Status**: **met (4/4 Verify criteria)** — carried forward; the M3 HTTP-seam contract is unchanged (no
-handler source touched — only the store query feeding §3 changed shape, observably correct).
+**Status**: **met (4/4 Verify criteria)** — carried forward; no M3 handler source touched (only the
+store query feeding §3 changed shape, observably correct).
 - **Known limitations (off the M3 Verify bar):** `inactive` unreachable through the public store API; no
-  ETag/Cache-Control on size-dependent proof surfaces (the `/_ds/` static assets and the `/openapi.*`
-  routes DO carry strong ETag + no-cache + 304).
+  ETag/Cache-Control on size-dependent proof surfaces (the `/_ds/` static assets and `/openapi.*` routes
+  DO carry strong ETag + no-cache + 304).
 
 ## M-UI — Evidence Ledger frontend
-**Status**: **behaviorally + named-region complete on all five SSR surfaces; no `critical` remains.**
-Carried forward — no `internal/dashboard|dossier|certificate|web|proofserve` template or `.html` source
-touched this window (the §3 renderer `internal/dossier` is untouched; the change is store-side, feeding it
-honest data).
-- **§3 honesty (this window, advance `820a831`):** the `ListHubs` §3 `observed_at` subselect is re-tied to
-  `AND c.tree_size = f.last_size ORDER BY c.id DESC LIMIT 1`, mutation-proven by
-  `TestListHubsFrozenObservedTracksAcceptedSize`. This CLOSES the equivocation/higher-tree-size decouple (a
-  rejected LARGER checkpoint no longer supplies §3's time). It does **NOT** close the SAME-SIZE FORK case
-  (a fork records a contradictory row at `tree_size == last_size`, later `id`, so `id DESC` still picks the
-  rejected row) — review confirmed this via reproduction and kept the §3 `normal` open, narrowed to the
-  fork remainder. Recorded fix: `ORDER BY c.id ASC` (the accepted row at a size is the earliest `id`).
-- **Still open (carried, NOT critical):** the §3 same-size-fork remainder (`normal`); the §1
-  "resolved"-vs-unresolvable wording (`normal`); the per-hub-vs-per-checkpoint realm-index Anchor honesty
-  question (`normal`); instance identity config-driven on THREE of six mastheads (proofserve trio still
-  placeholder); the **M-UI exit visual-pass + human sign-off** (ADR-0012) not yet executed across all
-  surfaces. The `/` realm-index hero/logo/Checkpoint/Anchor sub-items are all CLOSED — that entry is fully
-  resolved and prunable.
+**Status**: **NOT fully met — one Verify criterion REOPENED as `critical` this window.** The §3 store
+honesty fix is CLOSED (renderer was already correct; the query now picks the accepted row), but the
+dossier→log-browser navigation leg is broken and the record-list surface is off-mockup.
+- **`critical` (steer `6220744`, verified in code this assessment):** (1) the dossier's "Browse the log
+  →" (`internal/dossier/dossier.html:573`) links to `/{{.Origin}}/` — the `/<domain>/log/`
+  checkpoint-summary page (`internal/proofserve/browser.html`), which has no link to `records`, so with
+  JS disabled the record-list browser is unreachable from the dossier (navigation-closure dead end). (2)
+  the record list (`internal/proofserve/records.html`) does not render `ISCC Monitor - Log Browser.dc.html`
+  landmark regions: head reads "Records" (line 303) not "Log browser"/hub/"N records mirrored"; no
+  `← <hub> dossier` breadcrumb; missing instance-identity + `verify ↗` chrome; one bottom-only "showing
+  N of M" pager (line 338) instead of the mockup's top+bottom "seq X–Y of Z" pagers disabled at the ends.
+- **§3 honesty (CLOSED this window, advance `244d450`, review PASS `c102fc3`):** `ListHubs` §3
+  `observed_at` subselect is `AND c.tree_size = f.last_size ORDER BY c.id ASC LIMIT 1` (`hubs.go:86`),
+  mutation-proven by `TestListHubsFrozenObservedTracksAcceptedSameSizeFork` (reverting to `id DESC`
+  fails it). Both the equivocation/higher-size and same-size-fork cases are now pinned.
+- **Other open (carried, NOT critical):** §1 "resolved"-vs-unresolvable wording (`normal`); per-hub-vs-
+  per-checkpoint realm-index Anchor honesty (`normal`, design question); instance identity on THREE of
+  six mastheads (proofserve trio placeholder); the **M-UI exit visual-pass + human sign-off** (ADR-0012)
+  not yet executed. The `/` realm-index hero/logo/Checkpoint/Anchor sub-items are CLOSED (prunable).
 
 ## WASM verifier · OTS anchoring
-**Status**: **WASM — published half CLOSED (Pages live); signature half design-blocked. OTS —
-observable halves + both transport guards landed; only a real Bitcoin confirmation remains
-(offline-unprovable).** Neither core was touched this window.
-- **WASM:** id-binding half closed in source + artifact, reproducible from `mise run build:wasm`, publicly
-  served byte-pinned at `monitor.iscc.codes/_ds/verify.wasm` (Pages run on HEAD `b080409` green). **Still
-  open:** the cross-origin **SIGNATURE-half gap** (no checkpoint-signature / did:web check; the success
-  copy overstates an unrun key check) — `normal`, design-first.
+**Status**: **WASM — published half CLOSED (Pages live, byte-pinned); signature half design-blocked.
+OTS — observable halves + both transport guards landed; only a real Bitcoin confirmation remains
+(offline-unprovable).** Neither core touched this window.
+- **WASM:** id-binding half closed in source + artifact, reproducible from `mise run build:wasm`, served
+  byte-pinned at `monitor.iscc.codes/_ds/verify.wasm` (Pages green on `c102fc3`). **Still open:** the
+  cross-origin **SIGNATURE-half gap** (no checkpoint-signature / did:web check; success copy overstates
+  an unrun key check) — `normal`, design-first.
 - **OTS:** `.ots` route, §4 anchor clause (`ots.ConfirmedFor`), store layer, off-path stamp/upgrade loop,
-  offline classifier, and both calendar-transport guards are wired. Not-yet-built: a root reaching
+  offline classifier, and both calendar-transport guards wired. Not-yet-built: a root reaching
   Bitcoin-confirmed (needs a live calendar + real BTC confirmation). 1/1 open. **Carried `low` defect:**
   nil-Stamper + empty-OTSBytes row falls through to the Upgrader (`otsloop.go:144`; test-only path).
 
 ## M-Deploy — Packaged & operable instance
-**Status**: **ALL in-repo Verify items CLOSED.** No open Verify item remains. Carried forward — no
-M-Deploy source touched this window. Verified previously: SIGTERM trap, version-stamped binary +
-`/version`, production `Dockerfile` + CI `/healthz` smoke, GHCR `publish.yml` (`:develop` + `:sha-<short>`),
-canonical `deploy/realm-testnet.txt` (golden-accepted), `deploy/OPERATING.md`, root `README.md`. The
-on-disk migration mechanism + its FIRST real entry (composite-PK rebuild, `len(migrations)==1`) are live,
-backing the `OPERATING.md` §Migration-policy.
-- **Carried `low` traps:** (1) the out-of-range `user_version` guard runs AFTER `db.Exec(schemaSQL)`
-  (downgrade-from-newer re-applies the idempotent baseline DDL before the reject — hoist the guard ahead of
-  the schema pass when `Open` is next touched); (2) the composite-PK rebuild dropped `seq`'s standalone
-  ordering path, so `RecentRecords`' `ORDER BY i.seq DESC` sorts instead of index-walking (perf-only,
-  negligible at 2-hub testnet; add a `seq` index WITH the next `iscc_index` schema edit). Both
-  correctness-neutral, latent, skipped by the loop.
+**Status**: **ALL in-repo Verify items CLOSED.** Carried forward — no M-Deploy source touched. Verified
+previously: SIGTERM trap, version-stamped binary + `/version`, production `Dockerfile` + CI `/healthz`
+smoke, GHCR `publish.yml` (`:develop` + `:sha-<short>`), canonical `deploy/realm-testnet.txt`,
+`deploy/OPERATING.md`, root `README.md`, on-disk migration mechanism + its first real entry (composite-PK).
+- **Carried `low` traps:** (1) out-of-range `user_version` guard runs AFTER `db.Exec(schemaSQL)`
+  (downgrade re-applies idempotent baseline DDL before the reject — hoist when `Open` is next touched);
+  (2) composite-PK rebuild dropped `seq`'s standalone ordering path (`RecentRecords` sorts instead of
+  index-walking; perf-only, negligible at 2-hub testnet). Both correctness-neutral, latent.
 - **Carried `low`:** `docker/login-action@v3` + `docker/build-push-action@v6` still Node-20;
-  `.dockerignore` slashless globs; §Footprint qualitative disk-growth answer; `cmd/verifier-site`
-  non-atomic write; `schemaDeclaration/Deletion` URI triplication; the masthead-identity fallback consts
-  3x; the dossier overlay-precedence 3x duplication.
+  `.dockerignore` slashless globs; §Footprint qualitative disk-growth; `cmd/verifier-site` non-atomic
+  write; `schemaDeclaration/Deletion` URI triplication; masthead-fallback consts 3x; dossier overlay 3x.
 
 ## M-API — OpenAPI contract + hosted interactive API docs  (ADR-0014)
-**Status**: **4/4 Verify MET** — re-verified this window by reading the served `internal/openapi/openapi.yaml`
-against the handlers (the doc was NOT touched this window; spot-checked it still matches).
-- **Slice 1 (serve):** OpenAPI **3.1** (`openapi.yaml` + JSON twin, `go:embed`-ed) served byte-verbatim at
-  `GET /openapi.json` + `/openapi.yaml` (no-cache + strong ETag + 304) under CORS `*`.
-- **Slice 2 (drift test):** `cmd/iscc-monitor/openapi_drift_test.go` asserts path↔mux alignment both ways.
-- **Slice 3 (`/docs` + Stoplight Elements):** `/docs` mounts `<elements-api apiDescriptionUrl="/openapi.json">`
-  against same-origin byte-pinned `/_ds/elements.min.{js,css}` (SHA-256 pinned). No external CDN body.
+**Status**: **4/4 Verify MET** — re-verified this window by reading the served
+`internal/openapi/openapi.yaml` against the handlers.
+- **Slice 1 (serve):** OpenAPI **3.1** (`openapi.yaml` + JSON twin, `go:embed`-ed) served byte-verbatim
+  at `GET /openapi.json` + `/openapi.yaml` (no-cache + strong ETag + 304) under CORS `*`.
+- **Slice 2 (drift test):** `cmd/iscc-monitor/openapi_drift_test.go` present, asserts path↔mux alignment.
+- **Slice 3 (`/docs` + Stoplight Elements):** `/docs` mounts `<elements-api>` against same-origin
+  byte-pinned `/_ds/elements.min.{js,css}` (SHA-256 `web.ElementsJSHash`/`ElementsCSSHash`). No CDN body.
 - **Slice 4 (contract accuracy):** RE-VERIFIED in the YAML this window: `/{domain}/log/verify` (line 220)
-  advertises ONLY `Domain` + `iscc_id` — **no phantom `index`** (the `index` param appears only on
-  `inclusion` (line 141) and `entries` (line 201), both legitimate); `/{domain}/log/checkpoint` (line 252)
-  `200` is **`application/octet-stream`** (line 267); `/healthz` (line 37) documents its **`503`** (line 52).
-  Pinned by per-operation golden (`contract_test.go`) + a `TestNoMermaidInContract` fence ban.
-  **Bookkeeping lag (NOT a code gap):** `issues.md` STILL carries 4 now-RESOLVED M-API entries (the phantom
-  `index` `normal`, the `checkpoint` media-type `normal`, the `healthz` 503 `low`, and the umbrella "No
-  machine-readable API contract" `normal`) — all FIXED + re-verified-in-doc this assessment, awaiting a
-  `review` prune. **Carried `low`:** the mermaid ban is substring-only (misses `~~~mermaid` forms).
+  has ONLY `Domain` + `iscc_id` — **no phantom `index`**; `/{domain}/log/checkpoint` (line 252) 200 is
+  **`application/octet-stream`** (line 267). Pinned by per-operation golden (`contract_test.go`).
+  **Bookkeeping lag (NOT a code gap):** `issues.md` STILL carries 3 now-RESOLVED M-API `normal` entries
+  (phantom `index`; `/checkpoint` media-type; "No machine-readable API contract" umbrella) — all
+  verified fixed in the served doc this assessment, awaiting a `review`/`update-state` prune.
 
 ## Quality gates
-**Status**: **GREEN (review-confirmed; CI re-running on HEAD, previous HEAD fully green).**
-- `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.26.1`); `mise run check` runnable. This
-  window touched only `internal/store/hubs.go` (1 source file) + `hubs_test.go`. Review recorded `mise run
-  check` GREEN over 30 packages and `gofmt -l .` empty; `go.mod`/`go.sum` byte-unchanged; store leaf-purity
-  intact (`go list -deps ./internal/store | grep net/http` empty per review).
-- **CI**: `.github/workflows/` = `ci.yml` (`mise run check` + `notecheck` oracle + docker `/healthz` smoke)
-  + `pages.yml` + `publish.yml`. On HEAD `b080409` (via `gh run list`): **Pages `success`; CI + Publish
-  `in_progress`** (not yet concluded at assessment time). The previous HEAD `c213dd9` was `success` on all
-  three.
-- **Latest `review` verdict: PASS_WITH_NOTES / CONTINUE** (commit `b080409`) — §3 observed-time tie:
-  gate-green (30 pkgs), `gofmt` empty, the new frozen test mutation-proven load-bearing (reverting the
-  subselect to `tree_size DESC, id DESC` FAILS it; the verified-hub test stays green), store leaf purity
-  intact, scope = exactly the asked 2 files. Oracle gate N/A (pure `checkpoints` read-shape change, no
-  crypto/RFC-6962/did:web path). One Codex `[P2]` finding CONFIRMED by reviewer reproduction (the §3
-  same-size-fork remainder) — does NOT block; the §3 `normal` is kept open and narrowed to the fork case
-  rather than deleted.
-- **Known non-CI flake (off the gate):** a certificate masthead test asserts an RFC-3339 timestamp in local
-  TZ; fails on non-UTC dev hosts only (filed `low`). CI runs UTC and is green.
-- **Open issues: 0 critical, 8 normal, 21 low** (the single `## … critical` grep match is the
-  format-example line, not a real issue). Of the 8 normals: 4 are stale-but-resolved (the realm-index hero
-  entry — all 4 sub-items closed — plus 3 M-API entries re-verified fixed in the served doc this
-  assessment) awaiting a prune; the remaining 4 real normals (the WASM signature half, the realm-index
-  Anchor honesty, the §3 same-size-fork remainder, the §1 wording) plus the M-UI human/design gate keep it
-  `IN_PROGRESS`. DONE requires 0 critical AND 0 normal.
+**Status**: **GREEN (review-confirmed + CI green on the last code commit).**
+- `go.mod` present (`module github.com/iscc/iscc-monitor`, `go 1.26.1`); `mise run check` runnable. The
+  one source commit this window (`244d450`) touched `internal/store/hubs.go` + `hubs_test.go`. Review
+  `c102fc3` recorded `mise run check` GREEN over 30 packages, `gofmt -l .` empty, `go.mod`/`go.sum`
+  byte-unchanged, store leaf-purity intact, the new fork test mutation-proven load-bearing.
+- **CI**: `.github/workflows/` = `ci.yml` + `pages.yml` + `publish.yml`. On the last code commit
+  `c102fc3` (HEAD `6220744` is a docs-only steer): **CI, Publish, Pages all `success`** (`gh run list`).
+- **Latest `review` verdict: PASS / CONTINUE** (commit `c102fc3`) — §3 `id ASC` fork fix: gate-green
+  (30 pkgs), `gofmt` empty, new same-size-fork test mutation-proven (reverting to `id DESC` FAILS it),
+  store leaf purity intact, scope = exactly the 2 asked files, oracle gate N/A (pure `checkpoints`
+  read-order change), Codex concurs clean. The §3 honesty `normal` was deleted from `issues.md`.
+- **Known non-CI flake (off the gate):** a certificate masthead test asserts an RFC-3339 timestamp in
+  local TZ; fails on non-UTC dev hosts only (filed `low`). CI runs UTC and is green.
+- **Open issues: 1 critical, 7 normal, 21 low** (the bare `## <short title>` grep matches are the
+  format-example lines, not real issues). The **1 critical** is the dossier→log-browser dead-end +
+  off-mockup record list (verified real). Of the 7 normals: 4 are stale-but-resolved (the realm-index
+  hero entry — all 4 sub-items closed — plus 3 M-API entries re-verified fixed in the served doc this
+  assessment) awaiting a prune; the real open normals are the WASM signature half, the realm-index Anchor
+  honesty, the §1 wording. DONE requires 0 critical AND 0 normal.
 
 ## Next Milestone
-**The §3 same-size-fork remainder is the next code-closable advance; the other open `normal`s are design-
-or human-blocked.**
-1. **Finish the §3 honesty fix** (review's recorded next step, code-closable): change the `ListHubs` §3
-   subselect `ORDER BY c.id DESC` → `ORDER BY c.id ASC` (the accepted checkpoint at a given size is the
-   EARLIEST `id` — `store.CheckpointAt` already uses `ORDER BY rowid LIMIT 1` for this exact selection); add
-   a same-size-fork regression test (accepted root @ t1, forked root @ t2>t1, no `last_size` advance, Freeze)
-   asserting §3 time == t1; keep `TestListHubsFrozenObservedTracksAcceptedSize` green. One-file + test, ≤3
-   budget, oracle N/A.
-2. **Prune the 5 resolved-but-unpruned issues** (next `update-state`/`review`): the fully-closed realm-index
-   hero entry (all 4 sub-items closed) + the 3 resolved M-API entries (re-verified fixed in the served
-   `openapi.yaml` this assessment: `/verify` has no `index`, `/checkpoint` is `application/octet-stream`,
-   `/healthz` documents `503`) + the "No machine-readable API contract" umbrella — so the normal count
-   reflects reality (would drop the real open-normal count to 4, three after the §3 fix lands).
+**Fix the `critical` log-browser navigation/parity gap first — it is the clear code-closable move and a
+[human] host-machine finding; it reopens an M-UI Verify criterion.**
+1. **Close the dossier→log-browser `critical`** (steer `6220744`): repoint the dossier's "Browse the log
+   →" (`dossier.html:573`) at the record-list browser (`/<domain>/log/records`, not `/<domain>/log/`),
+   and dress `records.html` to `ISCC Monitor - Log Browser.dc.html` named regions — `← <hub> dossier`
+   breadcrumb; "Log browser"/hub/"N records mirrored" head; instance-identity + `verify ↗` chrome;
+   top+bottom "seq X–Y of Z" pager disabled at the ends; `Seq·Type·ISCC-ID·Logged` rows each linking to
+   its single record; append-only footnote. Keep the `/<domain>/log/` checkpoint-summary page (M3 +
+   CLAUDE.md-documented) but it must not be the dossier's log-browser target. Add region/golden tests so
+   removing a region FAILS; `mise run check` green; the no-JS dossier → record list → single record →
+   back chain must be unbroken. Visual pass vs the mockup (ADR-0012) files residual deltas.
+2. **Prune the 4 resolved-but-unpruned `normal`s** (next `update-state`/`review`): the fully-closed
+   realm-index hero entry (all 4 sub-items closed) + the 3 resolved M-API entries (re-verified fixed in
+   the served `openapi.yaml`: `/verify` has no `index`, `/checkpoint` is `application/octet-stream`, plus
+   the "No machine-readable API contract" umbrella) — dropping the real open-normal count to 3.
 3. **Design/human-blocked `normal`s (need a design pass or human sign-off):** the WASM cross-origin
-   signature half (browser did:web resolution + note-signature verify); the realm-index
-   per-hub-vs-per-checkpoint Anchor honesty (a design semantics decision); the §1 "resolved" wording on the
-   `unresolvable` path; the proofserve-trio masthead identity; and the **M-UI exit visual-pass + human
-   sign-off** (ADR-0012). The OTS Bitcoin-confirmed half remains offline-unprovable.
+   signature half (browser did:web resolution + note-signature verify); the realm-index per-hub-vs-per-
+   checkpoint Anchor honesty; the §1 "resolved" wording on the `unresolvable` path; the proofserve-trio
+   masthead identity; and the **M-UI exit visual-pass + human sign-off** (ADR-0012). The OTS
+   Bitcoin-confirmed half remains offline-unprovable.
