@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/proofserve"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -313,10 +314,14 @@ func TestDossierRendersCoveredHub(t *testing.T) {
 		}
 	}
 	// The two action links resolve: "Prove an ISCC-ID in this hub →" → the realm
-	// index claim-lookup hero ("/"), "Browse the log →" → /{{.Origin}}/.
+	// index claim-lookup hero ("/"), "Browse the log →" → /{{.Origin}}/records — the
+	// paginated record-list browser (every row links to its single record), NOT the
+	// /<domain>/log/ checkpoint-summary page (which carries no link to the record
+	// list and is therefore a no-JS dead end). Reverting the href to /{{.Origin}}/
+	// fails this assertion (mutation-proven).
 	for _, want := range []string{
 		`href="/">Prove an ISCC-ID in this hub →`,
-		`href="/sb0.iscc.id/log/">Browse the log →`,
+		`href="/sb0.iscc.id/log/records">Browse the log →`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing action link %q\n%s", want, body)
@@ -339,6 +344,44 @@ func TestDossierRendersCoveredHub(t *testing.T) {
 		if strings.Contains(body, banned) {
 			t.Errorf("body contains external CDN reference %q\n%s", banned, body)
 		}
+	}
+}
+
+// TestDossierBrowseLogLandsOnLiveRecordList proves the no-JS forward navigation leg
+// dossier → record list is unbroken: the dossier's "Browse the log →" href resolves
+// to a live 200 text/html record list, not the /<domain>/log/ checkpoint-summary
+// dead end. It exercises the SAME fixture store through BOTH the dossier Handler and
+// proofserve.Handler (both read the same *store.Store), renders the dossier, confirms
+// its "Browse the log →" href is /<origin>/records, then requests the path suffix
+// (/records) the inner proofserve path switch is mounted at and asserts the record
+// list renders 200 text/html. Reverting the dossier href to /{{.Origin}}/ would point
+// the human at the checkpoint-summary page (no link onward to the record list) — the
+// no-JS dead end the critical issue names.
+func TestDossierBrowseLogLandsOnLiveRecordList(t *testing.T) {
+	st, id := coveredHub(t)
+
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dossier status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	const wantHref = `href="/sb0.iscc.id/log/records">Browse the log →`
+	if !strings.Contains(body, wantHref) {
+		t.Fatalf("dossier missing forward record-list link %q\n%s", wantHref, body)
+	}
+
+	// The dossier links the record list at /<domain>/log/records; proofserve.Handler
+	// is mounted at the hub-log origin, so it sees the /records suffix. A 200 text/html
+	// record list (proofserve renders an honest empty-state 200 even with no records
+	// seeded) proves the repointed href is live, not a 404 dead end.
+	recList := httptest.NewRecorder()
+	proofserve.Handler(st, id, "sb0.iscc.id", nil, dashboard.Identity{}).ServeHTTP(recList, httptest.NewRequest(http.MethodGet, "/records", nil))
+	if recList.Code != http.StatusOK {
+		t.Fatalf("GET /records status = %d, want 200 (the repointed href must be live, not a dead end)", recList.Code)
+	}
+	if got := recList.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Errorf("GET /records Content-Type = %q, want text/html record list", got)
 	}
 }
 
