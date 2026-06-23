@@ -18,6 +18,47 @@ filed it and does **not** affect priority.
 
 ---
 
+## Hub-dossier "Browse the log →" lands on a dead-end checkpoint page; the record-list log browser is off-mockup
+- **Priority:** critical
+- **Source:** [human] (Titusz, host-machine frontend review)
+- **What / where / how to verify:** Two coupled defects break the dossier→log-browser leg of the no-JS
+  navigation chain and miss `ISCC Monitor - Log Browser.dc.html` parity.
+  **(1) Wrong link target / dead end.** The hub dossier's "Browse the log →" action
+  (`internal/dossier/dossier.html:573`) links to `/{{.Origin}}/` → the `/<domain>/log/`
+  checkpoint-summary landing (`internal/proofserve/browser.html`), not the record-list log browser the
+  mockup's "Browse the log →" points at (`.claude/design/ISCC Monitor - Hub Dossier.dc.html:103` →
+  `ISCC Monitor - Log Browser.dc.html`). That landing shows only `(status, accepted size, accepted root)`
+  plus a "Proof surface" list of placeholder example links (`entries?index=0`, `inclusion?iscc_id=ISCC:…`)
+  and carries **no link to `records`** — so with JavaScript disabled the record-list browser
+  (`/<domain>/log/records`) is unreachable by clicking from the dossier (a navigation-closure dead end).
+  **(2) Record list off-mockup.** The record-list surface (`/<domain>/log/records`,
+  `internal/proofserve/records.html`) does not render `ISCC Monitor - Log Browser.dc.html`'s landmark
+  regions: no `← <hub> dossier` breadcrumb; head reads "Records" instead of the eyebrow "Log browser" +
+  hub name + "<domain> · N records mirrored"; the document chrome omits the instance-identity block +
+  `verify ↗ monitor.iscc.codes` link (the cross-cutting handoff header, target.md M-UI); one bottom-only
+  pager labelled "showing N of M" instead of the mockup's top+bottom pagers with a "seq X – Y of Z" range
+  disabled at the ends; it carries a Status badge row the mockup's log browser does not; type-badge tint
+  and the append-only footnote copy diverge. Implement to follow the mockup as closely as the hard
+  constraints allow (no-JS → the "Jump to sequence" input becomes a plain `GET` form or is dropped;
+  self-hosted fonts/tokens; grayscale-safe badge), flagging any forced deviation.
+  **Candidate fix (not mandated — `define-next` chooses the mechanism):** repoint "Browse the log →" at
+  the record list and dress `records.html` to the mockup. The `/<domain>/log/` checkpoint+proof-surface
+  page is M3-functional and CLAUDE.md-documented, so keep it (do not delete) — but it must not be the
+  "log browser" the dossier sends a human to, and must not be a no-JS dead end.
+  **How to verify fixed (HTTP seam, fixture store):** (a) the dossier's "Browse the log →" href resolves
+  to the record-list log browser, and the no-JS click path dossier → record list → single record → back
+  is unbroken (forward links + `←` breadcrumbs both present, no dead end); (b) the record-list HTML carries
+  the `ISCC Monitor - Log Browser.dc.html` landmark regions named in target.md M-UI (breadcrumb;
+  "Log browser"/hub/"N records mirrored" head; chrome with instance identity + verify link; top+bottom
+  "seq X–Y of Z" pager disabled at the ends; `Seq·Type·ISCC-ID·Logged` rows each linking to its single
+  record; append-only footnote); (c) golden/region tests assert each region so removing one FAILS; (d)
+  `mise run check` green. A headless `agent-browser` visual pass (ADR-0012) against the mockup files the
+  residual visual deltas.
+- **Spec:** target.md M-UI "log browser / record list" landmark regions + "Navigation closure" +
+  "Document chrome + instance identity"; `.claude/design/ISCC Monitor - Log Browser.dc.html` (authoritative
+  for layout/affordances, subordinate to the no-JS / no-CDN / self-host / grayscale-safe constraints);
+  `.claude/design/ISCC Monitor - Hub Dossier.dc.html:103` (the mockup's "Browse the log →" target).
+
 ## Nil-Stamper + an empty-OTSBytes row falls through to the Upgrader instead of being left untouched
 - **Priority:** low
 - **Source:** [review] (Codex P3, reviewer-confirmed by probe)

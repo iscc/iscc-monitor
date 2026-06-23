@@ -156,8 +156,11 @@ requirements hold on every surface:
   (handoff invariant 9) and the tier-1/tier-2 split present on the page itself.
 - **Navigation closure.** The `/` → hub dossier → log browser → single record → certificate chain is
   fully traversable with **JavaScript disabled**: forward links *and* `←` breadcrumb back-links both
-  present, so the index is enterable and no surface is a dead end (this is what the realm-index→dossier
-  row link, today absent, must restore).
+  present, so the index is enterable and no surface is a dead end. Two links this concretely requires: the
+  realm-index→dossier row link, and the dossier's **"Browse the log →"** action — which must land on the
+  **log-browser record list** (`ISCC Monitor - Log Browser.dc.html`), **never** the `/<domain>/log/`
+  checkpoint-summary / proof-link landing, which carries no link to the record list and is therefore a
+  no-JS dead end for a human browsing the log.
 
 Per-surface landmark regions (each keyed to its mockup file under `.claude/design/`):
 - **`/` realm index** — `ISCC Monitor - Realm Index.dc.html`: the **claim-lookup hero** foregrounded
@@ -175,7 +178,10 @@ Per-surface landmark regions (each keyed to its mockup file under `.claude/desig
   per-poll check, so emitting one would assert an un-run verification); the frozen **Exhibit** (required
   above) above the sections; the two actions ("Prove an ISCC-ID in this hub →" certificate, "Browse the
   log →").
-- **log browser / record list** — `ISCC Monitor - Log Browser.dc.html`: `← <hub> dossier` back-link; the
+- **log browser / record list** — `ISCC Monitor - Log Browser.dc.html`: this is the surface the dossier's
+  "Browse the log →" reaches **directly** (not the `/<domain>/log/` checkpoint-summary page), and — like
+  every surface — it carries the shared document chrome with instance identity + the `verify ↗` link. Its
+  named regions: `← <hub> dossier` back-link; the
   head (eyebrow "Log browser", hub name, "<domain> · N records mirrored"); the **plain-link pager**
   (newer/older + "seq X–Y of Z" range, disabled at the ends — the no-JS `?from=…` form of the mockup's
   buttons); the record table (`Seq · Type · ISCC-ID · Logged`) with a per-row **type badge**
