@@ -105,3 +105,22 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   The robust fix when next touched is a tokenizer-grade check (only treat `//` as a comment outside a
   quoted string / `url(...)` token), not another delimiter blocklist. Until then, do not add an asset
   with a whitespace-prefixed protocol-relative URL.
+- **Stoplight Elements assets (`/_ds/elements.min.js` + `.css`) are served via the same `case`+`writeAsset`
+  no-cache/strong-ETag/304 leaf (JS→`contentTypeJS`, CSS→`contentTypeCSS`), SHA-256-pinned in
+  `ElementsJSHash`/`ElementsCSSHash` (TestElementsAssetsHashPinned, sibling of the wasm pin).** They join
+  the "verify.wasm pin is fragile" discipline: vendored byte-verbatim from `@stoplight/elements@9.0.23`,
+  NEVER hand-edited (the JS is a 2 MB minified bundle), re-fetch+re-pin on a version bump. CRITICAL no-CDN
+  nuance: do NOT run a substring CDN ban over the 2 MB JS bytes — it carries hundreds of inert baked
+  `http(s)://` example strings that are DATA, not fetches (the no-CDN ban runs ONLY over the rendered
+  `/docs` HTML body; doc-commented in `web.go` + `TestElementsJSServed`). The CSS has no `@import`/external
+  `url()` (reviewer re-confirmed) so it makes no external request.
+- **Latent no-CDN gap in the Elements bundle (open `normal` issue, Codex P2, reviewer-confirmed): the
+  vendored `elements.min.js` hardcodes `https://unpkg.com/mermaid@9.4.3/dist/mermaid.min.js`** and
+  lazy-loads it the first time a Markdown description renders a fenced ```mermaid block. Our served
+  `/openapi.json` has ZERO `mermaid` today (reviewer-grepped), so `/docs` makes no external request now
+  (live smoke + visual pass confirmed) — but ANY future OpenAPI description with a mermaid block would fire
+  a third-party CDN fetch, breaking the no-CDN invariant. Forward rule: never put a fenced `mermaid` block
+  in a served OpenAPI description; the durable guard is a test banning `mermaid` in the served doc body
+  (hand-patching the pinned minified bundle would violate the never-hand-edit pin discipline). The bundle
+  has exactly ONE such dynamic external asset loader (the mermaid `bE` const); speakerdeck/vimeo strings
+  are oEmbed example data, not unconditional loads.

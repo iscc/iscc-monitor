@@ -418,6 +418,31 @@ filed it and does **not** affect priority.
 - **Spec:** repo `.gitignore` "Local secrets / state — never commit"; ADR-0013 server packaging;
   `learnings/ci.md` (`.dockerignore` matching is not `.gitignore` matching).
 
+## `/docs` Elements bundle can fetch Mermaid from unpkg — a latent break of the no-CDN invariant
+- **Priority:** normal
+- **Source:** [review] (Codex P2, reviewer-confirmed against the bundle bytes + the served OpenAPI doc)
+- **What / where / how to verify:** The vendored Stoplight Elements bundle
+  (`internal/web/elements.min.js`) hardcodes `bE="https://unpkg.com/mermaid@9.4.3/dist/mermaid.min.js"`
+  and its Markdown renderer LAZY-LOADS that script the first time a description renders a fenced
+  ` ```mermaid ` block (reviewer grep-confirmed the const + that it is the bundle's ONLY dynamic
+  external-asset loader; the speakerdeck/vimeo strings are oEmbed example DATA, not unconditional loads).
+  So `/docs` CAN make a third-party CDN request despite self-hosting `elements.min.js`, breaking the
+  hard no-external-runtime-call invariant (target.md M-UI / ADR-0014 §4). **NOT triggered today:** the
+  served `/openapi.json` contains ZERO `mermaid` (reviewer-grepped both YAML + JSON), so no mermaid block
+  exists to render — the live smoke test + agent-browser visual pass both showed `/docs` making no
+  external request and no external host in the body. This is a LATENT defense-in-depth gap (same class as
+  the `.dockerignore`-slashless / `noExternalCDN`-whitespace lows), but `normal` because it punctures a
+  HARD project invariant and is reachable the moment anyone adds a mermaid diagram to an OpenAPI
+  description. Does NOT block this increment — every `next.md` Verify criterion is met and all gates green.
+  Fix: add a durable guard that the served OpenAPI doc body contains no fenced ` ```mermaid ` block (a
+  test banning `mermaid` in `openapi.{yaml,json}`), since the doc is the only trigger and hand-patching
+  the pinned minified bundle would violate the never-hand-edit pin discipline. (If a mermaid diagram is
+  ever genuinely wanted in a description, the assets must additionally vendor Mermaid locally + patch the
+  loader's source URL — a deliberate, larger change.) Verify fixed: a test asserts the served OpenAPI body
+  has no ` ```mermaid ` fence; adding one to a description FAILS it; reverting the guard makes it pass.
+- **Spec:** target.md M-UI hard CDN-free constraint; ADR-0014 §4 ("No external CDN, no external runtime
+  call"); CLAUDE.md "Verifier app"/"no external CDN at runtime"; `learnings/web.md` Elements no-CDN nuance.
+
 ---
 
 <!-- The entries below are pre-deployment asks from the iscc-infra ops side, raised
@@ -635,17 +660,21 @@ filed it and does **not** affect priority.
 ## No machine-readable API contract (OpenAPI) and no interactive API docs hosted by the app
 - **Priority:** normal
 - **Source:** [human]
-- **STATUS — slices 1+2 LANDED (advance `e2de5e6`, reviewer-verified):** the in-repo OpenAPI 3.1 document
-  (`internal/openapi/openapi.yaml` + byte-distinct JSON twin) is served byte-verbatim at `GET /openapi.json`
-  + `GET /openapi.yaml` under the CORS `*` wrap with the `no-cache`+strong-ETag+304 policy, covering the 13
-  machine paths, excluding the HTML SSR surfaces, with `verify-for-me` flagged weaker in-band — and a
-  NON-VACUOUS route↔spec drift test (`cmd/iscc-monitor/openapi_drift_test.go`, reviewer mutation-confirmed
-  both directions). What REMAINS to close this issue is **slice 3: `GET /docs` + the self-hosted, byte-pinned
-  Stoplight Elements assets** (the `<elements-api>` JS+CSS under `/_ds/` with published `internal/web` hash
-  constants, `apiDescriptionUrl="/openapi.json"`, no `tryItCorsProxy`). Three contract-accuracy defects the
-  drift test cannot catch (it gates PATHS, not params/media-types/responses) are filed as their own entries
+- **STATUS — slices 1+2+3 LANDED (advances `e2de5e6` + `2250d53`, reviewer-verified):** the in-repo OpenAPI
+  3.1 document (`internal/openapi/openapi.yaml` + byte-distinct JSON twin) is served byte-verbatim at
+  `GET /openapi.json` + `GET /openapi.yaml` under the CORS `*` wrap with the `no-cache`+strong-ETag+304
+  policy, covering the 13 machine paths, excluding the HTML SSR surfaces, with `verify-for-me` flagged
+  weaker in-band — and a NON-VACUOUS route↔spec drift test
+  (`cmd/iscc-monitor/openapi_drift_test.go`, reviewer mutation-confirmed both directions). **Slice 3 NOW
+  LANDED (advance `2250d53`):** `GET /docs` serves the self-hosted Stoplight Elements API reference
+  (`<elements-api apiDescriptionUrl="/openapi.json">`) with the two assets byte-pinned under `/_ds/`
+  (`ElementsJSHash`/`ElementsCSSHash`), no `tryItCorsProxy`, no external CDN in the body — reviewer-verified
+  live (real binary: `/docs`→200, hash-match served assets, agent-browser visual pass shows Elements fully
+  mounted against `/openapi.json`). What REMAINS to fully close this issue is the **contract-accuracy
+  doc-fix** (slice 4): the three defects the path-only drift test cannot catch — filed as their own entries
   above (the phantom `verify` `index` param + the `checkpoint` media type are `normal`; the `healthz` 503 is
-  `low`) — fold those fixes into slice 3 or a doc-touch.
+  `low`) — PLUS the NEW latent Elements-mermaid-from-unpkg no-CDN gap (`normal`, above). Those close the last
+  M-API contract-fidelity criterion.
 - **What / where / how to verify:** The monitor exposes a machine-consumable HTTP surface
   (`/healthz`, `/version`, `/metrics`, the per-hub `inclusion`/`consistency`/`entries`/`checkpoint`/
   `checkpoint.ots`/`tile` routes, `verify-for-me` at `/<domain>/log/verify`, and the

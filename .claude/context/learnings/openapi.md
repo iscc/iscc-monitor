@@ -34,6 +34,12 @@ is where doc-paths meet the real mux).
   list, NOT in the contract.** proofserve mixes machine (`inclusion`/`consistency`/`entries`/`verify`) and
   HTML (`records`/`record`) routes; "served by proofserve" is not the machine/SSR boundary — the rendered
   shape is.
+- **`/docs` (the Stoplight Elements API reference, `internal/docs`) is an HTML SSR surface → `ssrExclusions()`,
+  NEVER the contract or `machineProbes()`.** It has no path params, so it appears literally on the exclusion
+  list; the drift test then probes it MOUNTED (non-404) and asserts it is NOT declared in the doc. Adding it
+  to the contract or `machineProbes()` would FAIL the SSR "must be excluded" assertion. The Elements JS/CSS it
+  loads are byte-pinned `/_ds/` assets (see `learnings/web.md`); the no-CDN-over-HTML-body-only nuance and the
+  latent mermaid-from-unpkg gap live there too.
 
 settled: leaf-purity (only itself in the internal closure), CORS-rides-outer-wrap, no-cache+ETag+304
 parity with `internal/web`, and the byte-verbatim serve are all gate-green and mutation-confirmed this
