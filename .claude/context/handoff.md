@@ -1,89 +1,61 @@
-## 2026-06-23 — Review of: M-API slice 3 — serve `GET /docs` + self-hosted byte-pinned Stoplight Elements assets
+## 2026-06-23 — M-API slice 4 — fix the three contract-accuracy defects + pin them with a per-operation golden + ban mermaid
 
-**Verdict:** PASS_WITH_NOTES
-**Loop:** CONTINUE
+**Done:** Edited `openapi.yaml` to match the real handlers exactly (removed the phantom `verify`
+`index` param, changed `/{domain}/log/checkpoint` `200` media type `text/plain`→`application/octet-stream`,
+added `/healthz`'s `503`), deterministically regenerated the byte-distinct JSON twin from the edited
+YAML, and added `contract_test.go` — a per-operation golden (params + `200` media type + response codes
+for the three touched ops, asserted in BOTH YAML and JSON) plus a `mermaid`-fence ban over both doc
+bodies. This closes the last open M-API contract-accuracy criterion.
 
-**Summary:** The advance vendored the two `@stoplight/elements@9.0.23` assets byte-verbatim into
-`internal/web`, served them under `/_ds/` with published SHA-256 pins on the same no-cache + strong-ETag +
-304 policy as `verify.wasm`, and added a pure-stdlib SSR leaf `internal/docs` mounting
-`<elements-api apiDescriptionUrl="/openapi.json">` against those same-origin assets. The work is clean,
-in-scope (exactly 3 non-test/doc Go files), fully gated, and reviewer-verified live against the real binary
-and via an agent-browser visual pass. PASS_WITH_NOTES (not PASS) only because Codex surfaced a real latent
-no-CDN gap in the vendored bundle (Mermaid-from-unpkg) — confirmed, not currently triggered, filed `normal`.
+**Files changed:**
+- `internal/openapi/openapi.yaml`: 3 edits, each grounded in the handler — `/verify` `index` param
+  removed (`serveVerify` reads only `iscc_id`, always `seqs[0]`); `/{domain}/log/checkpoint` `200` →
+  `application/octet-stream` + `format: binary` (tilesserve `writeBlob` BLOB shape); `/healthz` `503`
+  `{store not ready}` `application/json type: object` added.
+- `internal/openapi/openapi.json`: regenerated full-body render of the edited YAML (throwaway in-module
+  `yaml.v3`→`encoding/json` converter, `SetEscapeHTML(false)` + `SetIndent("","  ")`; created → run →
+  deleted, `git status` clean). The `/inclusion` `index`, `/entries` `index`, and all other ops are
+  untouched.
+- `internal/openapi/contract_test.go` (new test file): table-driven golden over both artifacts —
+  `/verify` has iscc_id+domain but NOT index; `/inclusion` DOES have index (non-vacuity anchor);
+  `/checkpoint` `200` is octet-stream not text/plain; `/healthz` has 200+503; plus the `mermaid` ban.
 
-**Verification:**
-- [x] `mise run check` (build + vet + test, 30 pkgs) — GREEN.
-- [x] `gofmt -l .` — empty (clean).
-- [x] `go test -run TestDocs ./internal/docs` — PASS (200 text/html; `<elements-api`,
-  `apiDescriptionUrl="/openapi.json"`, `src="/_ds/elements.min.js"`, `href="/_ds/elements.min.css"`,
-  `href="/_ds/tokens.css"`, `href="/_ds/fonts.css"`, `src="/_ds/iscc-logo-black.png"` present; no
-  `tryItCorsProxy`; no-CDN body ban clean; 405 non-GET).
-- [x] `go test -run TestElements ./internal/web` — PASS (both assets: 200, correct content-type, no-cache,
-  strong ETag, byte-equal body, 304-on-match; `TestElementsAssetsHashPinned` confirms each SHA-256 == its
-  published const).
-- [x] `go test -run TestOpenAPIDrift ./cmd/iscc-monitor` — PASS (`/docs` probed MOUNTED + asserted NOT in
-  the contract via `ssrExclusions`).
-- [x] `GOOS=js GOARCH=wasm go build ./internal/web` AND `./internal/docs` — both OK (WASM-green).
-- [x] `sha256sum` of both committed assets == the two published consts (pin reproducible from committed
-  bytes; `46e5a044…d6938` JS, `a5200222…27b06` CSS).
-- [x] `internal/docs` is a pure leaf (`go list -deps` shows only itself in the iscc-monitor closure);
-  go.mod/go.sum byte-identical to HEAD (assets are embedded data, no new dependency).
-- [x] Gate-circumvention scan over the 3 unpushed commits — no `nolint`/`t.Skip`/swallowed-err/build-tag
-  dodge, no deleted tests/assertions; diff is purely additive.
-- [x] **Live smoke test (real binary, `127.0.0.1:41499`):** `GET /docs`→200 text/html, CORS `*`, all four
-  Elements/openapi markers, NO external CDN in body; `/_ds/elements.min.js`→200 `text/javascript` no-cache,
-  ETag == `ElementsJSHash`, served bytes hash-match; `/_ds/elements.min.css`→200 `text/css`, ETag ==
-  `ElementsCSSHash`, hash-match; POST /docs→405; `/openapi.json`→200.
-- [x] CSS asset has no `@import`, no `http(s):` `url()`, no protocol-relative `url()` — makes no external
-  request (reviewer re-confirmed the advance's claim).
+**Verification:** `mise run check` → GREEN (exit 0; `go build`/`go vet`/`go test` all 30 pkgs ok; no
+FAIL/error/panic). Per-criterion:
+- [x] `go test ./internal/openapi` passes (new golden + unchanged `TestOpenAPIDocsAgree` /
+  `TestOpenAPIServesJSONVerbatim` / `TestOpenAPIServesYAMLVerbatim` — twin still byte-served + path-equal).
+- [x] `go test -run TestOpenAPIDrift ./cmd/iscc-monitor` passes (path SET unchanged; only
+  params/media-types/responses moved, invisible to the path-only drift test).
+- [x] `gofmt -l .` empty after `mise run fmt`.
+- [x] **Golden is mutation-non-vacuous** — each reverted edit fails its row, confirmed by 5 mutation
+  runs: re-add `verify` index → `TestContractVerifyHasNoIndexParam` FAIL; restore checkpoint
+  `text/plain` → `TestContractCheckpointMediaType` FAIL; drop `healthz` 503 → `TestContractHealthzHas503`
+  FAIL; add `\`\`\`mermaid` fence → `TestNoMermaidInContract` FAIL; drop `inclusion` index →
+  `TestContractInclusionHasIndexParam` FAIL. Artifacts restored after each; full suite green.
+- [x] `go.mod` / `go.sum` byte-identical to HEAD (no dependency added; `yaml.v3` already present).
+- [x] No stray generator committed; the JSON twin reproduces byte-for-byte from the YAML (verified the
+  converter regenerates HEAD's twin from HEAD's YAML byte-identically before applying the edits).
 
-**Issues found:** One new `normal` (Codex-confirmed): the vendored `elements.min.js` hardcodes
-`https://unpkg.com/mermaid@9.4.3/dist/mermaid.min.js` and lazy-loads it when a description renders a fenced
-` ```mermaid ` block — a latent break of the hard no-CDN invariant. NOT triggered today (our served
-`/openapi.json` has zero `mermaid`; live + visual passes showed no external request), so it does not block
-the increment, but it punctures a hard project invariant and is reachable the moment a mermaid diagram lands
-in a description. Filed in issues.md with a durable guard (test-ban `mermaid` in the served doc body).
-
-**Codex second opinion:** Returned exactly one finding, `[P2]` — "Keep Elements from loading Mermaid from
-unpkg" (`internal/web/elements.min.js:2`). **CONFIRMED** by reviewer probe: the bundle does contain the
-hardcoded `unpkg.com/mermaid@9.4.3/...` const and it is the bundle's ONLY dynamic external-asset loader
-(speakerdeck/vimeo strings are inert oEmbed example data). Verified NOT currently reachable (served OpenAPI
-doc has zero `mermaid`), so triaged as a latent `normal`, not a blocker — filed as an issue for a later
-advance. No other findings. (Codex ran ~6 min — slowed grinding through the 2 MB minified bundle.)
-
-**Visual check:** SSR surface (`internal/docs`). agent-browser screenshot of `/docs` against the live
-binary — PASS. The masthead chrome renders correctly (self-hosted 38px logo, divider, "TRUST &
-TRANSPARENCY MONITOR" mark, "API reference · ISCC-Hub network" sub), and **Stoplight Elements is fully
-mounted** against `/openapi.json`: it rendered "ISCC Monitor API v1.0", the API Base URL panel, the sidebar
-(ENDPOINTS: health/proofs/mirror/verify; SCHEMAS: ConsistencyEvidence/VerifyVerdict), and the overview
-prose — proving the whole client-side flow works same-origin. No `.dc.html` mockup exists for `/docs`
-(Elements is a third-party component, not a hand-designed DS surface), so the masthead is the only DS-owned
-region and it matches the sibling surfaces — no visual delta to file.
-
-**Next:** The IMMEDIATE follow-on closes the LAST M-API contract-fidelity criterion (slice 4, a
-single `internal/openapi/openapi.yaml` doc-touch + regenerated JSON twin + a per-operation golden):
-(1) remove the phantom `verify` `index` query param (handler always uses `seqs[0]`), `normal`;
-(2) fix `/{domain}/log/checkpoint` media type `text/plain`→`application/octet-stream`, `normal`;
-(3) add the `healthz` 503 response, `low`;
-(4) add the NEW no-CDN guard test banning a fenced ` ```mermaid ` block in the served OpenAPI doc body
-(closes the latent Elements-mermaid gap this review filed).
-Add a per-operation golden pinning each documented op's params + `200` media type against the handler
-(the path-only drift test is structurally blind to all of these — `learnings/openapi.md`). Regenerate the
-JSON twin deterministically after the YAML edit. That meets the 4th M-API Verify criterion fully and lets
-`update-state` close the umbrella OpenAPI issue.
+**Next:** The 4th and final M-API Verify criterion is now met (`verify` has no `index`, `checkpoint` is
+`application/octet-stream`, `healthz` has 200+503, all pinned + mermaid banned). A later `update-state`
+can close the umbrella M-API OpenAPI criterion. The remaining open `normal`s are unrelated to M-API: the
+M-UI dossier §1/§3 design-parity rework (`critical`s filed by steer `d2f259e`) + masthead-identity
+threading into the other 5 surfaces are the most likely next priorities; behind them sit the data-model
+issues (DB migration story, `iscc_index.seq` multi-hub global-PK collision) and the WASM signature half +
+realm-index Anchor honesty.
 
 **Notes:**
-- **ADR-0014 was untracked and I tracked it in this review commit.** The authoritative decision the entire
-  M-API arc references (`§1`/`§4` cited in next.md, the handoff, and code comments) existed only as an
-  untracked working-tree file — never committed in any branch (verified via `git log --all`). The advance
-  correctly left it alone (context-file rule) and asked review to confirm tracking. I staged
-  `.claude/adr/0014-…md` with this commit — it is a spec doc the shipped code already implements faithfully
-  (§4 = the `/docs` + two-pinned-asset + no-`tryItCorsProxy` design built here), no behavior change.
-- `.claude/context/target.md` (modified) remains a pre-existing uncommitted artifact from the prior
-  `cid(steer)` commit — NOT mine to commit (review must not modify target.md); left in the working tree for
-  the next `update-state`/`steer` to handle.
-- The `iscc_index.seq` global-PK multi-hub collision (`normal`) and the no-migration story (`normal`) remain
-  the standing pre-existing data-model issues; unrelated to this slice.
-- M-UI design-parity remains the open `normal` arc (dossier rework `critical`s filed by steer `d2f259e`,
-  masthead-identity threading into the other 5 surfaces). Those are the most likely next priorities after
-  the M-API contract-fidelity doc-touch.
+- **JSON twin regeneration is verifiably faithful.** Before applying any edit I restored HEAD's YAML and
+  ran the converter — it reproduced HEAD's committed `openapi.json` byte-for-byte, proving the encoder
+  settings (alphabetical key sort, 2-space indent, HTML-escaping OFF so `≤`/`—` stay literal, trailing
+  newline from `Encode`) exactly match how the prior slice generated the twin. The reviewer can re-confirm
+  twin fidelity via `yaml.Unmarshal` both → `reflect.DeepEqual` (the learnings/openapi.md check).
+- **The mermaid ban reuses the existing `containsFold` helper** from `openapi_test.go` (same package,
+  same file-set), scanning the embedded `YAML`/`JSON` bytes — no new helper, no new import beyond
+  `yaml.v3` (already in `openapi_test.go`).
+- **Pre-existing `target.md` modification** remains in the working tree from the earlier `cid(steer)`
+  commit (`d2f259e`) — NOT mine to touch per the context-file rule; left for the next `update-state`/`steer`.
+- **No handler changed** (proofserve/tilesserve/healthz untouched); the defect was purely the doc
+  drifting from correct handlers, fixed doc→code as instructed. Oracle/conformance gate is N/A — this
+  touches no signature/RFC-6962/Merkle/did:web/fsck/proof path (serves committed bytes + reconciles
+  route strings).

@@ -93,6 +93,16 @@
               }
             },
             "description": "The instance is live and the store is ready."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The store is not ready, so the instance cannot serve."
           }
         },
         "summary": "Liveness and store readiness.",
@@ -242,8 +252,9 @@
         "responses": {
           "200": {
             "content": {
-              "text/plain": {
+              "application/octet-stream": {
                 "schema": {
+                  "format": "binary",
                   "type": "string"
                 }
               }
@@ -485,16 +496,6 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
-          },
-          {
-            "description": "An explicit committed leaf sequence to verify.",
-            "in": "query",
-            "name": "index",
-            "required": false,
-            "schema": {
-              "minimum": 0,
-              "type": "integer"
             }
           }
         ],

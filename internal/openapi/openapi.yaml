@@ -49,6 +49,12 @@ paths:
             application/json:
               schema:
                 type: object
+        "503":
+          description: The store is not ready, so the instance cannot serve.
+          content:
+            application/json:
+              schema:
+                type: object
   /version:
     get:
       tags: [health]
@@ -234,13 +240,6 @@ paths:
           description: The ISCC-ID to verify (with or without the `ISCC:` prefix).
           schema:
             type: string
-        - name: index
-          in: query
-          required: false
-          description: An explicit committed leaf sequence to verify.
-          schema:
-            type: integer
-            minimum: 0
       responses:
         "200":
           description: The verify-for-me verdict (verified true or false with a reason).
@@ -265,9 +264,10 @@ paths:
         "200":
           description: The mirrored signed checkpoint note.
           content:
-            text/plain:
+            application/octet-stream:
               schema:
                 type: string
+                format: binary
         "404":
           description: The checkpoint is not mirrored.
   /{domain}/log/checkpoint.ots:
