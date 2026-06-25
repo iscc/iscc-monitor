@@ -13,7 +13,11 @@
 //
 //	ISCC_MONITOR_DB     required — path to the network's SQLite file (ADR-0007:
 //	                    one database file per network, so this is a single path).
-//	ISCC_MONITOR_REALM  required — path to the realm-membership document on disk.
+//	ISCC_MONITOR_REALM  required — the realm-membership document source: an
+//	                    http(s):// URL to the authoritative iscc-hub Hub-List YAML
+//	                    (carrying each hub's real embedded hub_id, re-fetched hourly)
+//	                    or a filesystem path. config only carries the string; the
+//	                    binary fetches/reads and parses it.
 //	ISCC_MONITOR_NORMAL optional — clean-hub poll interval (default 5m).
 //	ISCC_MONITOR_FROZEN optional — frozen-hub backed-off poll interval, the
 //	                    evidence-only re-poll cadence (ADR-0006); default 1h.

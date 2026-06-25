@@ -39,10 +39,20 @@ The monitor is a single binary (`cmd/iscc-monitor`) configured entirely through 
 (`internal/config`):
 
 - `ISCC_MONITOR_DB` (required) — path to the network's SQLite file (one file per network, ADR-0007).
-- `ISCC_MONITOR_REALM` (required) — path to the realm-membership document (one hub domain per line).
-  `deploy/realm-testnet.txt` is the canonical, mountable/bakeable testnet realm doc (`sb0.iscc.id` +
-  `sb1.amlet.id`); the image bakes it at `/etc/iscc-monitor/realm.txt`. `internal/registry/testdata/realm.txt`
-  is the identical in-tree test fixture.
+- `ISCC_MONITOR_REALM` (required) — the realm-membership source: an `http(s)://` URL to the
+  authoritative **iscc-hub Hub-List YAML** (`{version, network, hubs:[{hub_id, url, active}]}`, e.g.
+  `https://raw.githubusercontent.com/iscc/iscc-hub/refs/heads/main/hubs/mainnet.yaml` /
+  `…/testnet.yaml`) **or** a filesystem path. The Hub-List carries each hub's **real embedded 12-bit
+  `hub_id`** — what the realm-wide certificate decodes from an ISCC-IDv1 and resolves to the issuing hub;
+  a domains-only doc cannot supply it (a mainnet hub_id is `1`/`2`, not a document-order index). The binary
+  re-fetches a URL source **hourly** (`runRealmRefresh`) and atomically swaps the certificate's hub_id
+  resolver, so a membership/slot change takes effect without a redeploy (a brand-new hub still needs a
+  restart to be *followed* and gain its mirror routes). The store is **domain-keyed** (`UpsertHub`)
+  independent of the 12-bit slot, so switching sources / refreshing changes only resolution — never the
+  mirrored log data. A legacy line-based domains-only document (`deploy/realm-testnet.txt`,
+  `internal/registry/testdata/realm.txt`) still loads via the interim document-order slot mapping (with a
+  logged warning); the image bakes `deploy/realm-testnet.txt` at `/etc/iscc-monitor/realm.txt` as the
+  fallback when no URL override is set.
 - `ISCC_MONITOR_NORMAL` (optional, default `5m`) — clean-hub poll interval.
 - `ISCC_MONITOR_FROZEN` (optional, default `1h`) — frozen-hub evidence-only re-poll interval; must be
   `>= NORMAL` (the freeze back-off, ADR-0006).

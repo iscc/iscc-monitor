@@ -149,9 +149,14 @@ func ParseHubList(data []byte) (*HubList, error) {
 // for any listed slot, including an inactive hub: the monitor still follows and
 // mirrors inactive hubs (ADR-0010) and lets the downstream badge convey
 // inactivity, so resolution returns the domain regardless of Active. ok is false
-// only for an unknown slot (no such hub_id in the list). A linear scan suffices —
-// a realm has at most 4096 slots and a Hub-List a handful of hubs.
+// only for an unknown slot (no such hub_id in the list). A nil receiver resolves
+// nothing (the fail-closed empty-realm state), so the AtomicHubList holder can
+// delegate to it without a seeded snapshot. A linear scan suffices — a realm has
+// at most 4096 slots and a Hub-List a handful of hubs.
 func (hl *HubList) Resolve(hubID uint16) (domain string, ok bool) {
+	if hl == nil {
+		return "", false
+	}
 	for _, h := range hl.Hubs {
 		if h.HubID == nil || *h.HubID != hubID {
 			continue

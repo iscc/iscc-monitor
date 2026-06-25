@@ -448,6 +448,40 @@ func TestCertificateUnresolvableSlot(t *testing.T) {
 	}
 }
 
+// TestCertificateResolvesEmbeddedHubID is the handler-level regression for the live
+// monitor.iscc.io bug: with a mainnet-shape Hub-List (hub_id 2 -> amlet.id, hub_id 1
+// -> iscc.id), an id embedding hub_id 2 must get PAST realm resolution. The
+// document-order mapping the binary built before (slot i = entry i) assigned slots
+// 0,1 to those two hubs and so rendered "not found in this realm" for hub_id 2 — the
+// exact reported symptom. The store here does not follow amlet.id, so the honest
+// next state is "hub not followed by this monitor", which proves resolution
+// succeeded (it got one step past the realm lookup).
+func TestCertificateResolvesEmbeddedHubID(t *testing.T) {
+	st := fixtureStore(t, "sb1.amlet.id", goldenID, 1)
+	mainnet := &registry.HubList{
+		Version: 1,
+		Network: "mainnet",
+		Hubs: []registry.Hub{
+			{HubID: hubID(1), URL: "https://iscc.id", Active: true},
+			{HubID: hubID(2), URL: "https://amlet.id", Active: true},
+		},
+	}
+	h := Handler(mainnet, st, nil, dashboard.Identity{})
+
+	// slot2ID decodes to hub_id 2 — amlet.id in the mainnet realm.
+	rec := get(t, h, slot2ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "not found in this realm") {
+		t.Errorf("hub_id 2 still renders 'not found in this realm'; resolution regressed\n%s", body)
+	}
+	if !strings.Contains(body, "hub not followed by this monitor") {
+		t.Errorf("body missing the resolved-but-not-followed state expected after resolution\n%s", body)
+	}
+}
+
 // TestCertificateResolvedButNotFollowed asserts an id resolving to a domain the
 // monitor does not follow renders the "hub not followed" 200 state. The Hub-List
 // resolves slot 1 to an unlisted domain, while the store holds only sb0/sb1.

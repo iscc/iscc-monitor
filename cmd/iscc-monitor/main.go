@@ -1,10 +1,12 @@
-// Command iscc-monitor is the monitor process entrypoint: it wires the four M1
-// leaves — config.Load, registry.Parse, store.Open/UpsertHub, and follower.Loop
-// — into a running follower that polls every hub in the realm document on a
-// cadence and persists its observations into the network's SQLite database. It
-// also constructs the in-memory metrics registry, threads it into the loop, and
-// serves it at /metrics on the configured address so production both collects and
-// exposes the alert-worthy series.
+// Command iscc-monitor is the monitor process entrypoint: it wires the core leaves
+// — config.Load, the realm Hub-List loader (loadRealm over registry.ParseHubList),
+// store.Open/UpsertHub, and follower.Loop — into a running follower that polls
+// every hub in the realm document on a cadence and persists its observations into
+// the network's SQLite database. The realm source is re-fetched hourly
+// (runRealmRefresh) so the certificate's hub_id resolver tracks the authoritative
+// Hub-List without a redeploy. It also constructs the in-memory metrics registry,
+// threads it into the loop, and serves it at /metrics on the configured address so
+// production both collects and exposes the alert-worthy series.
 //
 // main stays thin and owns process exit (config/file/store failures print to
 // stderr and exit non-zero); all the registry -> store -> target wiring lives in
@@ -18,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -136,11 +139,14 @@ func run() error {
 		return err
 	}
 
-	data, err := os.ReadFile(cfg.RealmPath)
-	if err != nil {
-		return fmt.Errorf("read realm document %q: %w", cfg.RealmPath, err)
-	}
-	entries, err := registry.Parse(data)
+	ctx, stop := notifyShutdown()
+	defer stop()
+
+	// loadRealm reads the realm Hub-List from cfg.RealmPath — an http(s):// URL (the
+	// authoritative iscc-hub Hub-List, fetched fresh) or a filesystem path — and
+	// returns BOTH the certificate's hub_id resolver (carrying each hub's REAL
+	// embedded 12-bit hub_id) and the follower's realm entries (the domains to poll).
+	hubList, entries, err := loadRealm(ctx, cfg.RealmPath, httpGetBytes, logger)
 	if err != nil {
 		return err
 	}
@@ -151,25 +157,23 @@ func run() error {
 	}
 	defer func() { _ = st.Close() }()
 
-	ctx, stop := notifyShutdown()
-	defer stop()
-
 	targets, routes, err := registerHubs(ctx, st, entries)
 	if err != nil {
 		return err
 	}
 
-	// hubList maps a decoded ISCC-IDv1 hub_id slot to the issuing hub's domain for
-	// the realm-wide certificate (internal/certificate). Production has no Hub-List
-	// document path yet (realm.txt is line-based domains, a different format), so for
-	// now the slot mapping is the interim realm-entry-order mapping (slot i = entry
-	// i), which matches the testnet fixture (sb0 = slot 0, sb1 = slot 1). Swapping in
-	// a real Hub-List source later replaces only this construction.
-	hubList := hubListFromEntries(entries)
+	// resolver maps a decoded ISCC-IDv1 hub_id slot to the issuing hub's domain for
+	// the realm-wide certificate (internal/certificate). It is the hot-swappable
+	// holder runRealmRefresh updates hourly, so a Hub-List membership/slot change at
+	// the authoritative source takes effect without a redeploy. The store is
+	// domain-keyed (UpsertHub) independent of this 12-bit slot, so a refresh changes
+	// only resolution — never the mirrored log data.
+	resolver := registry.NewAtomicHubList(hubList)
 
 	m := metrics.New()
-	go serveMetrics(ctx, cfg.Addr, st, routes, hubList, m, identity(cfg), logger)
+	go serveMetrics(ctx, cfg.Addr, st, routes, resolver, m, identity(cfg), logger)
 	go runOTSLoop(ctx, st, stampFunc(), otsclient.NewUpgrader(), logger)
+	go runRealmRefresh(ctx, cfg.RealmPath, httpGetBytes, resolver, logger)
 
 	loop := &follower.Loop{
 		Store:   st,
@@ -197,7 +201,7 @@ func run() error {
 // (mirroring how Run treats context.Canceled as clean) and is logged, not
 // surfaced; any other listen error is logged so a misconfigured address is never
 // silent.
-func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hubRoute, hubList *registry.HubList, m *metrics.Registry, id dashboard.Identity, logger *slog.Logger) {
+func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hubRoute, hubList registry.HubResolver, m *metrics.Registry, id dashboard.Identity, logger *slog.Logger) {
 	srv := &http.Server{Addr: addr, Handler: buildMux(st, routes, hubList, m, id)}
 
 	go func() {
@@ -295,7 +299,7 @@ func stampFunc() follower.Stamper {
 // httptest.ResponseRecorder without binding a socket. The operator-supplied
 // instance identity (id) is rendered on the dashboard masthead; an empty field
 // falls back to the static placeholder copy inside dashboard.Handler.
-func buildMux(st *store.Store, routes []hubRoute, hubList *registry.HubList, m *metrics.Registry, id dashboard.Identity) http.Handler {
+func buildMux(st *store.Store, routes []hubRoute, hubList registry.HubResolver, m *metrics.Registry, id dashboard.Identity) http.Handler {
 	mux := mirrorHandler(st, routes, m, id)
 	mux.Handle("/", dashboard.Handler(st, m, id))
 	mux.Handle("/metrics", metricshttp.Handler(m))
@@ -323,17 +327,194 @@ func identity(cfg config.Config) dashboard.Identity {
 	}
 }
 
-// hubListFromEntries builds the interim realm-wide Hub-List for the certificate
-// route from the realm document's entries, assigning each entry's slot from its
-// document order (slot i = entry i). Production has no Hub-List document path yet
-// (realm.txt is line-based domains, a different format from the YAML Hub-List), so
-// this order mapping stands in until a real Hub-List source lands; it matches the
-// testnet fixture (sb0 = slot 0, sb1 = slot 1). The certificate decodes an
-// ISCC-IDv1's 12-bit hub_id and resolves it through this list to the issuing hub's
-// domain. The hubs carry only the slot and a https://<domain> base url (no key —
-// keys come from did:web, ADR-0009); Active is true since realm.txt lists only
-// followed domains. TODO: replace with a real Hub-List source (its own decision,
-// not this skeleton's) once production carries one.
+// realmRefreshInterval is how often runRealmRefresh re-fetches the realm Hub-List
+// to pick up membership/slot changes without a redeploy (the hourly poll). It
+// mirrors otsUpgradeInterval's const-not-config shape: an operational cadence, not
+// a tuned knob.
+const realmRefreshInterval = time.Hour
+
+// realmFetchTimeout bounds a single Hub-List fetch so a hung remote never stalls
+// startup or a refresh tick.
+const realmFetchTimeout = 30 * time.Second
+
+// realmDocMaxBytes caps a fetched realm document; a Hub-List is a few hundred
+// bytes, so this guards against a runaway/HTML response without truncating any real
+// document.
+const realmDocMaxBytes = 1 << 20
+
+// realmGetter fetches the raw bytes of a realm document at a URL. It is injected so
+// loadRealm stays testable without a network; the binary backs it with
+// httpGetBytes.
+type realmGetter func(ctx context.Context, url string) ([]byte, error)
+
+// httpGetBytes is the production realmGetter: a timeout-bounded, size-capped HTTP
+// GET of the realm document URL. A non-200 status is an error so a GitHub-raw
+// 404/5xx never parses as an empty realm. It pulls in no dependency beyond the
+// already-imported net/http.
+func httpGetBytes(ctx context.Context, url string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, realmFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %q: status %s", url, resp.Status)
+	}
+	// Read one byte past the cap so an oversize body fails closed with an error
+	// rather than being silently truncated to a still-parseable prefix.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, realmDocMaxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > realmDocMaxBytes {
+		return nil, fmt.Errorf("GET %q: realm document exceeds %d bytes", url, realmDocMaxBytes)
+	}
+	return data, nil
+}
+
+// isURLSource reports whether the realm source is an http(s):// URL (the
+// authoritative Hub-List) rather than a filesystem path. The legacy domains-only
+// fallback applies only to file sources, so loadRealm uses this to decide whether a
+// ParseHubList failure is a malformed Hub-List (URL) or a possible legacy document
+// (file).
+func isURLSource(source string) bool {
+	return strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
+}
+
+// readRealmSource reads the realm document bytes from source: an http(s):// URL
+// fetched via get, or otherwise a filesystem path read from disk. Splitting the
+// source resolution out keeps loadRealm format-focused and lets tests drive a file
+// path while production drives the authoritative URL.
+func readRealmSource(ctx context.Context, source string, get realmGetter) ([]byte, error) {
+	if isURLSource(source) {
+		data, err := get(ctx, source)
+		if err != nil {
+			return nil, fmt.Errorf("fetch realm document %q: %w", source, err)
+		}
+		return data, nil
+	}
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return nil, fmt.Errorf("read realm document %q: %w", source, err)
+	}
+	return data, nil
+}
+
+// loadRealm reads the realm document from source and returns BOTH the certificate's
+// hub_id resolver (a *registry.HubList carrying each hub's REAL embedded 12-bit
+// hub_id) and the follower's realm entries (the domains to poll). The authoritative
+// source is the iscc-hub Hub-List YAML (registry.ParseHubList), whose explicit
+// hub_id is what lets the certificate resolve a decoded ISCC-IDv1 to the right
+// issuing hub — a mainnet hub_id is 1 or 2, not a document-order index.
+//
+// For backward compatibility with the legacy line-based domains-only document
+// (deploy/realm-testnet.txt), a FILE source whose body does not parse as a Hub-List
+// falls back to registry.Parse with the interim document-order slot mapping (slot i
+// = entry i) and a logged warning. That mapping is correct ONLY when each hub's real
+// hub_id equals its line position — true for the old testnet fixture, FALSE in
+// general (e.g. mainnet hub_ids 1,2) — so production must point source at the
+// Hub-List URL.
+//
+// The legacy fallback is gated to file sources: the authoritative URL always serves
+// the Hub-List YAML, so a URL body that fails ParseHubList is a malformed Hub-List,
+// not a legacy document. Surfacing the real parse error (rather than misparsing YAML
+// keys like "version:"/"hubs:" as bogus document-order domains) is what lets
+// refreshRealmOnce keep the last-good resolver on a bad remote response instead of
+// swapping in garbage entries.
+//
+// A realm that lists no hubs is rejected: ParseHubList/Parse treat zero hubs as a
+// valid empty document (the pure-leaf contract), but a running monitor with nothing
+// to follow is a misconfiguration, not a state to boot into. Rejecting here fails
+// the binary closed at startup and — because refreshRealmOnce keeps the last-good
+// snapshot on any loadRealm error — stops an hourly fetch of an empty/placeholder
+// document from wiping a working resolver mid-run.
+func loadRealm(ctx context.Context, source string, get realmGetter, logger *slog.Logger) (*registry.HubList, []registry.Entry, error) {
+	data, err := readRealmSource(ctx, source, get)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var (
+		hl      *registry.HubList
+		entries []registry.Entry
+	)
+	if parsed, hlErr := registry.ParseHubList(data); hlErr == nil {
+		hl = parsed
+		if entries, err = parsed.Entries(); err != nil {
+			return nil, nil, err
+		}
+	} else if isURLSource(source) {
+		return nil, nil, fmt.Errorf("parse realm Hub-List %q: %w", source, hlErr)
+	} else {
+		if entries, err = registry.Parse(data); err != nil {
+			return nil, nil, fmt.Errorf("realm document %q is neither an iscc-hub Hub-List nor a domains-only document: %w", source, err)
+		}
+		logger.Warn("realm document is the legacy domains-only format; hub_id slots are derived from document order and are correct only when each hub's real hub_id equals its line position — point ISCC_MONITOR_REALM at the iscc-hub Hub-List YAML for authoritative hub_ids",
+			"source", source)
+		hl = hubListFromEntries(entries)
+	}
+
+	if len(entries) == 0 {
+		return nil, nil, fmt.Errorf("realm document %q lists no hubs; refusing to run an empty realm", source)
+	}
+	return hl, entries, nil
+}
+
+// runRealmRefresh re-fetches the realm Hub-List every realmRefreshInterval and
+// atomically swaps the certificate's resolver, so a membership/slot change at the
+// authoritative source takes effect within the hour without a redeploy. It is
+// best-effort and fault-tolerant exactly like runOTSLoop: a failed fetch/parse is
+// logged and the LAST GOOD snapshot is kept (resolver is never cleared on error),
+// so a transient remote outage never breaks resolution. It refreshes only the
+// hub_id RESOLVER — a brand-new hub still needs a restart to be FOLLOWED and gain
+// its mirror routes (the follower target set and the per-hub mux are built once at
+// startup). The loop exits cleanly on ctx cancellation.
+func runRealmRefresh(ctx context.Context, source string, get realmGetter, resolver *registry.AtomicHubList, logger *slog.Logger) {
+	ticker := time.NewTicker(realmRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refreshRealmOnce(ctx, source, get, resolver, logger)
+		}
+	}
+}
+
+// refreshRealmOnce performs one realm-refresh pass: it re-loads the Hub-List and,
+// on success, atomically swaps it into resolver; on any fetch/parse failure it logs
+// and returns WITHOUT touching resolver, so the last good snapshot is preserved
+// (the keep-last-good contract). It is the unit-testable tick body of
+// runRealmRefresh, factored out so the swap/keep-last-good decision is asserted
+// without waiting on the hour-long ticker.
+func refreshRealmOnce(ctx context.Context, source string, get realmGetter, resolver *registry.AtomicHubList, logger *slog.Logger) {
+	hl, _, err := loadRealm(ctx, source, get, logger)
+	if err != nil {
+		logger.ErrorContext(ctx, "realm refresh failed; keeping last good Hub-List", "source", source, "err", err)
+		return
+	}
+	resolver.Store(hl)
+	logger.InfoContext(ctx, "realm Hub-List refreshed", "source", source, "hubs", len(hl.Hubs))
+}
+
+// hubListFromEntries builds the interim document-order Hub-List from a domains-only
+// realm document's entries, assigning each entry's slot from its line position
+// (slot i = entry i). It is the legacy fallback loadRealm uses when source is the
+// line-based domains-only format rather than the authoritative iscc-hub Hub-List
+// YAML; the certificate decodes an ISCC-IDv1's 12-bit hub_id and resolves it
+// through this list. The mapping is correct ONLY when each hub's real hub_id equals
+// its line position (true for the old testnet fixture sb0=0/sb1=1, false for
+// mainnet hub_ids 1,2), which is why loadRealm logs a warning and production points
+// at the Hub-List URL. The hubs carry only the slot and a https://<domain> base url
+// (no key — keys come from did:web, ADR-0009); Active is true since the domains-only
+// document lists only followed domains.
 func hubListFromEntries(entries []registry.Entry) *registry.HubList {
 	hubs := make([]registry.Hub, 0, len(entries))
 	for i, e := range entries {

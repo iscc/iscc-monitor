@@ -526,11 +526,14 @@ const bundleSuffix = ".bundle"
 // fault (a ListHubs / SeqsForISCCID DB error or a template render error) is a 500,
 // detected before any 200 is committed (buffer-then-200).
 //
-// hubList resolves a decoded hub_id slot to the issuing hub's domain. st must be
-// non-nil (the binary always passes the real store). statuses is the in-memory
-// status overlay accepted for forward-compatible wiring; the skeleton does not
-// consult it. A nil hubList or nil statuses is tolerated: a nil hubList makes every
-// id resolve to "not in this realm".
+// hubList resolves a decoded hub_id slot to the issuing hub's domain. It is the
+// registry.HubResolver behavior, not a fixed snapshot, so the binary passes its
+// hot-swappable *registry.AtomicHubList and an hourly realm refresh updates the
+// mapping under the handler without a restart. st must be non-nil (the binary
+// always passes the real store). statuses is the in-memory status overlay accepted
+// for forward-compatible wiring; the skeleton does not consult it. A nil hubList or
+// nil statuses is tolerated: a nil hubList makes every id resolve to "not in this
+// realm".
 //
 // id is this deployment's configured masthead identity (the SAME dashboard.Identity
 // value the / and dossier mastheads render), resolved once via resolveIdentity and
@@ -539,7 +542,7 @@ const bundleSuffix = ".bundle"
 // today's static placeholder copy. The masthead renders on EVERY path (certifiable
 // AND cannot-certify), so the fields are set on both the HTML and the .bundle branch
 // (serveBundle ignores them — the assignment is harmless and kept uniform).
-func Handler(hubList *registry.HubList, st *store.Store, statuses StatusSource, id dashboard.Identity) http.Handler {
+func Handler(hubList registry.HubResolver, st *store.Store, statuses StatusSource, id dashboard.Identity) http.Handler {
 	instance, operator := resolveIdentity(id)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -725,7 +728,7 @@ func serveBundle(w http.ResponseWriter, data certData, arts bundleArtifacts) {
 //     note.$schema and labelled by recordKind (declaration / deletion / unknown). It
 //     renders unconditionally (a store read, no crypto gate); a RecordAt miss is an
 //     honest gap (the seq lists with the unknown label), only a real DB fault is a 500.
-func buildData(r *http.Request, hubList *registry.HubList, st *store.Store, rawID string) (certData, bundleArtifacts, int) {
+func buildData(r *http.Request, hubList registry.HubResolver, st *store.Store, rawID string) (certData, bundleArtifacts, int) {
 	var arts bundleArtifacts
 	if rawID == "" {
 		return certData{Reason: "no ISCC-ID supplied"}, arts, http.StatusOK
