@@ -190,8 +190,11 @@ ADRs (where they disagree, the ADR/PRD wins — flag it).
 
 **No cosigning in v1 (ADR-0004).** The v1 independent attestation is **OTS-anchoring observed roots** (trustless
 timestamp + anti-rewrite; no monitor signing key in the trust path). Cosigning + gossip + witness endpoint are deferred
-to M7. **OTS = daily per hub**, keyed by `(hub, tree_size, root)` UNIQUE (each distinct root anchored once); calendar-
-attested server-side, authoritative via the user's `ots verify`; never blocks the follower.
+to M7. **OTS = daily per hub** (ADR-0004 amendment 2026-06-28): once per day, anchor each **non-frozen** hub's
+**latest accepted** `(hub, tree_size, root)`, deduped on the `UNIQUE(hub, tree_size, root)` key — NOT one stamp per
+observed checkpoint (earlier entries are covered transitively by RFC-6962 consistency, so intermediate roots are not
+individually anchored); calendar-attested server-side, authoritative via the user's `ots verify`; never blocks the
+follower.
 
 **API contracts.** REST over stdlib `net/http`, all public GET endpoints **CORS-enabled** (`Access-Control-Allow-Origin:
 *`): hubs/status (incl. coverage); latest checkpoint (+ots); `consistency?hub&from&to`; entry/range fetch;
@@ -259,7 +262,8 @@ correct `violations.kind`, freeze, one alert, other hubs unaffected, evidence su
 `unverified` status (keep mirroring, no advance); did:web rotation (key change does not break status); coverage/cold
 start (late start backfills + records `monitored_since`, guarantees scoped); schema-agnostic indexing (an unknown
 `note.$schema` is indexed and proof-able and does not gate verification); partial-tile discipline (partials re-fetched,
-only `width==256` marked full); OTS daily + UNIQUE dedupe of unchanged roots.
+only `width==256` marked full); OTS daily (latest accepted root per non-frozen hub, off the poll path — ADR-0004
+amendment) + UNIQUE dedupe.
 
 **Prior art:** the iscc-hub conformance tooling (`conformance/runfsck`, `conformance/notecheck`) is the model for the
 oracle gates and ships a reusable leaf hasher; `tessera/client/client_test.go` and `fetcher.go` show fetcher-driven

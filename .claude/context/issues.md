@@ -18,6 +18,49 @@ filed it and does **not** affect priority.
 
 ---
 
+## OTS stamping is per-poll (anchors every observed root) — switch to the daily latest-root cadence the PRD/ADR-0004 specify
+- **Priority:** normal
+- **Source:** [human] (Titusz — production review of `monitor.iscc.io` OTS overgrowth)
+- **What / where / how to verify:** The OTS anchor row is created on the **poll path**:
+  `PollHub` calls `stampRoot` on every verified, non-frozen advance (`internal/follower/follower.go:256`
+  → `stampRoot` at `:410` → `store.RecordOTS`). At the production 5-minute poll cadence this anchors
+  **every distinct observed root**, deduped only by `UNIQUE(hub_id, tree_size, root)` — so an
+  actively-growing hub accrues one OTS row **and one calendar submission** per observed advance. Confirmed
+  on production: `amlet.id` carried **56 anchored roots over ~51 h** (the bulk from +1/+2-entry advances),
+  vs `iscc.id` (a static empty log) with 1. This scales with **traffic, not time**, and is unbounded for a
+  busy hub (PRD/OPERATING.md anticipate millions of records/day). The PRD already specifies the correct
+  behavior — "**OTS = daily per hub**" (`.claude/prd/0001-iscc-monitor-v1.md:193`) — so the per-poll
+  stamping is a **drift from spec**, now pinned by the ADR-0004 amendment (2026-06-28).
+  **Fix (mechanism is `define-next`'s call):**
+  1. **Remove the stamp from the poll path** — `PollHub` no longer calls `stampRoot` (drop `stampRoot` +
+     its test; `RecordOTS` stays, now driven by the daily pass).
+  2. **Add a daily anchor pass:** once per day, for each **non-frozen** followed hub, read its **latest
+     accepted `(size, root)`** (e.g. `ListHubs` → `Frozen`/`LastSize`, then `CheckpointAt(hubID, LastSize)`
+     → root) and `RecordOTS` it (deduped). A frozen hub is **not** anchored (PRD freeze rule: "no
+     advance/anchor/OTS"). The simplest landing folds this pass into the existing 24 h OTS loop tick
+     (`runOTSLoop` / `OTSTick`, `cmd/iscc-monitor/main.go:236` / `internal/follower/otsloop.go`) — run
+     "anchor latest non-frozen roots" before the stamp/upgrade sweep; decoupling the anchor cadence from a
+     future faster *upgrade* cadence stays possible.
+  The background OTS loop (`OTSTick`: calendar-submit the empty-`ots_bytes` sentinel rows, then upgrade
+  pending → Bitcoin-confirmed) is **unchanged** — only **where the pending row is created** moves.
+  **Backward-compatible — NO schema change, NO DB reset:** the `ots` table is untouched; existing rows
+  (incl. every Bitcoin-confirmed anchor — *irreplaceable evidence*) stay valid; the unchanged
+  `UNIQUE(hub_id, tree_size, root)` dedupe means the daily pass never conflicts with a prior row, and the
+  one in-flight pending row finishes its normal upgrade. Do **not** write a migration or reset production.
+  **How to verify fixed (store/follower seam, fixtures — `OTS`-prefixed test names):** (a) a fixture poll
+  that advances the tree leaves the `ots` table **empty** (`PollHub` records no OTS row); reverting the
+  stampRoot removal makes it FAIL; (b) the daily pass records **exactly one** pending row for a non-frozen
+  hub's latest accepted root, **dedupes** a re-run and an unchanged latest root (no second row), and
+  **skips a frozen hub** (no row) — each mutation-proven; (c) `mise run check` green, no gate weakened.
+- **Spec:** ADR-0004 "Amendment (2026-06-28) — OTS anchoring cadence: daily, latest-root-only";
+  `.claude/prd/0001-iscc-monitor-v1.md:193,262` ("OTS = daily per hub"; freeze rule `:157` "no
+  advance/anchor/OTS"); target.md "OTS / Bitcoin anchoring" (daily latest-root Verify criteria);
+  `learnings/ots.md` / `learnings/follower.md` (the "stamp each distinct observed root" criterion the
+  amendment supersedes). Related (do NOT merge): the realm-index per-hub-vs-per-checkpoint **Anchor display
+  honesty** `normal` below — daily cadence makes the badge behave far better (the latest-stamped root
+  confirms within ~a day instead of chasing a fresh pending root every 5 min), but the display-semantics
+  decision is a separate design question.
+
 ## Hub-dossier "Browse the log →" lands on a dead-end checkpoint page; the record-list log browser is off-mockup
 - **Priority:** critical
 - **Source:** [human] (Titusz, host-machine frontend review)

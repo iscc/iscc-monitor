@@ -213,9 +213,18 @@ published value; a `(size, root)` mismatch renders the guided split-view alert, 
 
 ### OTS / Bitcoin anchoring  `[not started]`
 
-stamp each distinct observed root daily (`UNIQUE(hub, tree_size, root)`) + background upgrade loop
-(pending → Bitcoin-confirmed) + serve `.ots`; **never blocks the follower**. **Verify:** a stamped
-root upgrades to Bitcoin-confirmed and the served `.ots` verifies with the standard `ots` client.
+**Daily, latest-root cadence (ADR-0004 amendment 2026-06-28).** Once per day, anchor each **non-frozen**
+hub's **latest accepted** root (deduped on `UNIQUE(hub, tree_size, root)`) — **not** one stamp per observed
+checkpoint; earlier entries are covered transitively by RFC-6962 consistency. Stamping is **off the poll
+path** (a daily pass — never `PollHub → stampRoot` per advance, which drifted to per-root anchoring at the
+5-minute poll cadence and overgrew the `ots` table + over-taxed the calendar). Plus the background upgrade
+loop (pending → Bitcoin-confirmed) and the served `.ots`; **never blocks the follower**.
+**Verify:** `PollHub` creates **no** OTS row (a fixture poll that advances the tree leaves the `ots` table
+untouched); the daily pass records **exactly one** pending row for a non-frozen hub's latest accepted root,
+**dedupes** a re-run and an unchanged latest root (no second row), and **skips a frozen hub** (no anchor);
+a stamped root upgrades to Bitcoin-confirmed and the served `.ots` verifies with the standard `ots` client.
+**Backward-compatible — no schema change, no DB reset** (existing confirmed anchors are irreplaceable
+evidence and are preserved; the unchanged UNIQUE dedupe means the daily pass never conflicts with a prior row).
 
 ### M-Deploy — Packaged & operable instance  `[not started]`  (ADR-0013, PRD story 13)
 
