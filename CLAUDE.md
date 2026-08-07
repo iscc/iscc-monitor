@@ -239,7 +239,11 @@ The monitor's complete copy of a hub's hash tiles and entry bundles — stored a
 BLOBs in SQLite (not a filesystem tree), served at canonical tlog-tiles paths, and
 `fsck`-verifiable via a SQLite-backed fetcher. Makes the monitor an *Aggregator*
 (ISCC-Log §2.3): an availability backstop that keeps a hub's log verifiable even
-if the hub goes offline.
+if the hub goes offline. It is also the follower's **fetch cache**: a completed
+(full-width) tile or bundle is immutable, so once mirrored it is never re-fetched,
+and a poll's outbound cost tracks the tree's growth rather than its size. Partials
+(`.p/<W>`) and the checkpoint are always fetched fresh — see target.md's
+*Follow-traffic contract*.
 
 **Irreplaceable evidence**:
 The monitor records that can never be regenerated: observed checkpoints, split-view

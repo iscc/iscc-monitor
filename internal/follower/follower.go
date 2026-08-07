@@ -61,6 +61,14 @@ import (
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
+// fsckTimeout bounds one mirror root-rebuild. It exists because the rebuild can wedge
+// rather than fail on a malformed mirror (see fsckMirror), and Loop.Tick polls hubs
+// sequentially: an unbounded rebuild would stall every other hub in the realm. Sized
+// far above a healthy rebuild (which is local SQLite reads plus hashing) so it only
+// ever fires on a genuine wedge. A var, not a const, so a test can shorten it rather
+// than spend the production budget proving the guard fires.
+var fsckTimeout = 2 * time.Minute
+
 // AlertFunc is the minimal injected alert sink the follower fires once per
 // not-frozen -> frozen transition. It is a func seam (not an interface) for
 // YAGNI: a test passes a counter, production passes a real transport. Delivery
@@ -169,12 +177,15 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	// error that CheckConsistency swallows as a clean pass, and the hub silently
 	// advances to the inconsistent root (the closed critical gap). A
 	// fetch/store fault here is a genuine transport error (NOT a violation): it is
-	// surfaced so accepted state does not advance, and the next poll re-fetches any
-	// missing coords via the idempotent upsert. On a violation the candidate tiles
-	// are already mirrored but the cursor is not advanced — tiles are
+	// surfaced so accepted state does not advance, and the next poll fetches any coords
+	// still missing from the mirror. On a violation the candidate's PARTIAL and
+	// not-yet-mirrored coords are mirrored but the cursor is not advanced — tiles are
 	// rebuildable/evidence, not accepted state (partial-tile discipline + ADR-0006
-	// "preserve evidence").
-	if err := ingestTiles(ctx, st, fetcher, hubID, baseURL, info.TreeSize, observedAt); err != nil {
+	// "preserve evidence"). Note the walk skips coords already mirrored at full width,
+	// so on a split view the proof is built from the honest tree's completed bytes plus
+	// the candidate's partials; the candidate's own completed-coord bytes are NOT
+	// captured (issues.md "The mirror has no repair path" covers the same skip).
+	if err := ingestTiles(ctx, st, fetcher, hubID, baseURL, info.TreeSize, observedAt, false); err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: ingest tiles: %w", hubID, err)
 	}
 
@@ -183,6 +194,23 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	violated, kind, prevRaw, err := checkConsistency(ctx, st, hubID, fs.LastSize, info)
 	if err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err)
+	}
+	if violated {
+		// Never convict on cached bytes. The equivocation proof is built from the local
+		// mirror, and the walk above serves completed coords from it without revalidating
+		// them, so one wrong completed tile — a truncated body a hub once served, a torn
+		// write, bit-rot — forges a consistency failure for an HONEST hub. A freeze is
+		// irreversible in v1 (no unfreeze) and alerts, so re-fetch every enumerated coord
+		// authoritatively and re-derive the verdict once before acting on it. Overwriting
+		// the mirror here is safe: tiles are rebuildable, and the irreplaceable evidence
+		// (the two contradictory signed checkpoints) is captured by freeze() below.
+		if err := ingestTiles(ctx, st, fetcher, hubID, baseURL, info.TreeSize, observedAt, true); err != nil {
+			return status, fmt.Errorf("follower.PollHub: hub %d: re-ingest before freeze: %w", hubID, err)
+		}
+		violated, kind, prevRaw, err = checkConsistency(ctx, st, hubID, fs.LastSize, info)
+		if err != nil {
+			return status, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err)
+		}
 	}
 	if violated {
 		// A violation froze the hub: record the glossary "frozen" status (not the
@@ -242,7 +270,18 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	// origin (info.Origin, <domain>/log) come from this poll's AcceptCheckpoint, so
 	// fsckMirror reuses them instead of re-resolving did.json.
 	if err := fsckMirror(ctx, st, hubID, vctx.VKey, info.Origin); err != nil {
-		return status, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err)
+		// The rebuild reads the mirror, so a failure may be local corruption at a
+		// completed coord the walk skipped rather than anything wrong with the hub.
+		// Re-fetch every coord authoritatively and rebuild once; only a rebuild that
+		// still fails against freshly-fetched bytes is reported. This is the mirror's
+		// repair path — without it a single bad byte fails the rebuild on every future
+		// poll with no way back short of manual SQL.
+		if rerr := ingestTiles(ctx, st, fetcher, hubID, baseURL, info.TreeSize, observedAt, true); rerr != nil {
+			return status, fmt.Errorf("follower.PollHub: hub %d: repair mirror after %v: %w", hubID, err, rerr)
+		}
+		if err := fsckMirror(ctx, st, hubID, vctx.VKey, info.Origin); err != nil {
+			return status, fmt.Errorf("follower.PollHub: hub %d: %w", hubID, err)
+		}
 	}
 	// Record the newly-accepted root for later OpenTimestamps stamping (the OTS
 	// milestone's "stamp each distinct observed root" criterion). This is a local
@@ -387,11 +426,32 @@ func cacheHubKeyResolve(ctx context.Context, st *store.Store, hubID int64, vctx 
 // to the caller without freezing the hub; since the checkpoint is already
 // recorded/advanced, a transient mirror fault is simply re-attempted next poll. The
 // RunFsck error is wrapped with %w.
+//
+// The rebuild runs under fsckTimeout on its own goroutine because it can WEDGE on a
+// malformed mirror: with a corrupt COMPLETED hash tile the upstream fsck blocks
+// forever on an internal channel send and does NOT observe context cancellation, so
+// calling it inline would hang the poll — and Loop.Tick polls hubs sequentially, so
+// one such hub would silently stop the whole realm from being monitored. On timeout
+// the wedged goroutine is abandoned; done is buffered so its eventual send (if any)
+// never blocks, and it holds no store handle of its own beyond the SQLiteFetcher's
+// short-lived reads.
 func fsckMirror(ctx context.Context, st *store.Store, hubID int64, vkey, origin string) error {
-	if err := logclient.RunFsck(ctx, vkey, origin, store.SQLiteFetcher{Store: st, HubID: hubID}); err != nil {
-		return fmt.Errorf("fsck: %w", err)
+	fctx, cancel := context.WithTimeout(ctx, fsckTimeout)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- logclient.RunFsck(fctx, vkey, origin, store.SQLiteFetcher{Store: st, HubID: hubID})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("fsck: %w", err)
+		}
+		return nil
+	case <-fctx.Done():
+		return fmt.Errorf("fsck: root rebuild did not complete within %s: %w", fsckTimeout, fctx.Err())
 	}
-	return nil
 }
 
 // stampRoot records the newly-accepted checkpoint root as a pending OTS row for

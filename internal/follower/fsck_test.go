@@ -247,16 +247,23 @@ func buildVerifiedMirror(t *testing.T, leaves int) verifiedMirror {
 	// served tiles are byte-accurate across the 256-leaf tile boundary and the upper
 	// hash-tile levels (level >= 1). fsck rebuilds the root from the level-0 tiles +
 	// bundles; the upper tiles are mirrored by ingestTiles but byte-accurate anyway.
+	//
+	// A tile carries exactly the hash count its path advertises — c.Partial for a
+	// `.p/<W>` path, TileWidth for a full one — which is what a real hub serves
+	// (verified against a live 300258-leaf log: `.p/226` is 7232 bytes, `.p/148` is
+	// 4736, and the level-2 `.p/4` is 128). Bounding the loop on "the subtree starts
+	// below size" instead would append hashes for INCOMPLETE subtrees, which no hub
+	// publishes because they are not yet stable.
 	for _, c := range tiles.TileCoords(size) {
 		treeLevel := c.Level * uint64(tiles.TileHeight)
 		first := c.Index * tiles.TileWidth
+		width := uint64(tiles.TileWidth)
+		if c.Partial != 0 {
+			width = uint64(c.Partial)
+		}
 		var nodes [][]byte
-		for n := uint64(0); n < tiles.TileWidth; n++ {
-			treeIndex := first + n
-			if (treeIndex << treeLevel) >= size {
-				break
-			}
-			nodes = append(nodes, equivNodeHash(t, tree, treeLevel, treeIndex, size))
+		for n := uint64(0); n < width; n++ {
+			nodes = append(nodes, equivNodeHash(t, tree, treeLevel, first+n, size))
 		}
 		raw, err := api.HashTile{Nodes: nodes}.MarshalText()
 		if err != nil {
@@ -344,8 +351,10 @@ func TestPollHubFsck(t *testing.T) {
 		}
 
 		// fsckMirror is called directly (not through PollHub, whose ingestTiles would
-		// re-fetch and overwrite the corruption first) to prove the rebuild genuinely
-		// compares the re-derived root against the signed root. It now takes the
+		// re-fetch and overwrite this PARTIAL coord first — a partial is never served
+		// from the mirror cache) to prove the rebuild genuinely compares the re-derived
+		// root against the signed root. A COMPLETED coord behaves differently: ingest
+		// skips it, so the corruption survives every poll. It now takes the
 		// verifier key + origin from the poll's AcceptCheckpoint (here m.vkey +
 		// fsckOrigin), so it makes no did.json fetch.
 		if err := fsckMirror(ctx, s, hubID, m.vkey, fsckOrigin); err == nil {

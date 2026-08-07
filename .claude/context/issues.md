@@ -18,6 +18,149 @@ filed it and does **not** affect priority.
 
 ---
 
+## Mirror-repair residuals after the corrupt-completed-coord fix (the critical itself is CLOSED)
+- **Priority:** low
+- **Source:** [review] + [codex] (residuals of the now-closed critical; every load-bearing half landed
+  and is mutation-proven)
+- **What / where / how to verify:** **CLOSED this pass** — `store.RecordTile` rejects a FULL tile that
+  is not exactly `TileWidth*32` bytes; `ingestEntryBundles` rejects a FULL bundle that decodes to fewer
+  than `TileWidth` records (an empty body decodes to zero leaves without error, so this is the nasty
+  case); `MirroredFullEntryBundles` requires the bundle's `iscc_index` projection to exist before
+  calling it skippable, so a legacy/half-written database re-folds instead of freezing its index gap;
+  `PollHub` re-fetches every coord authoritatively (`ingestTiles(..., force=true)`) BOTH before
+  convicting a hub of a self-consistency violation and after a failed root rebuild; and `fsckMirror`
+  runs under `fsckTimeout` on its own goroutine so a wedged rebuild cannot stall `Loop.Tick`'s
+  sequential realm walk. All five are mutation-proven (reverting each fails its test).
+  Residuals, none blocking:
+  (a) **The `sha256` column is still never read.** `RecordTile` writes it "for fsck cross-checks" but
+      nothing `SELECT`s it anywhere. The length gate covers every width (`width*32`, verified against a
+      live 300258-leaf log — full 8192, level-0 `.p/226` 7232, level-1 `.p/148` 4736, level-2 `.p/4`
+      128), so the malformed-body class is closed at the door; a right-length WRONG-bytes tile is still
+      admitted and is *repaired* (the forced re-walk) rather than *prevented*. Re-checking the stored
+      digest for the coords a proof is about to read would close that remainder at admission.
+  (b) **A legacy bundle whose projection fold died PART-way through still reads as projected.** The
+      skip's completeness check is an EXISTS on the bundle's FIRST leaf seq (a PK seek, chosen so the
+      per-poll cost stays one seek per bundle). `RecordProjections` is a per-row loop, not one
+      transaction, so a half-written OLD fold is missed. Exact for anything the current write order
+      produces (projections land before the BLOB, so a mirrored full bundle has all its rows or none).
+  (c) **`tilesserve` serves full-width rows `public, max-age=31536000, immutable`**
+      (`tilesserve/handler.go:39`). A row poisoned before the admission gate existed is now repaired
+      locally, but any downstream cache that already fetched it keeps the bad bytes for up to a year
+      with no invalidation path.
+  (d) **The repair walk is all-or-nothing.** `force` re-fetches EVERY enumerated coord for that hub, so
+      a large tree pays a full re-download to fix one bad byte. Bounding it to the coords the failed
+      proof/rebuild actually read would be far cheaper, but needs the fsck to report which coord failed.
+- **Spec:** target.md "Follow-traffic contract" (incl. "a full entry bundle present in the mirror
+  implies its `iscc_index` projection was written"); ADR-0005 (tiles are rebuildable, evidence is not);
+  ADR-0006 (freezing is reserved for genuine self-consistency violations).
+
+## `deploy/realm-testnet.txt` names hubs that no longer serve — the authoritative Hub-List has different hosts
+- **Priority:** normal
+- **Source:** [review] (found while verifying tile widths against a live hub)
+- **What / where / how to verify:** The baked fallback realm document `deploy/realm-testnet.txt` (and
+  the fixture `internal/registry/testdata/realm.txt`) list `sb0.iscc.id` and `sb1.amlet.id`. Neither
+  serves today: `sb0.iscc.id` fails the TLS handshake outright (`tlsv1 alert internal error`) and
+  `sb1.amlet.id` presents a certificate that does not cover that name. The **authoritative iscc-hub
+  Hub-List** (`https://raw.githubusercontent.com/iscc/iscc-hub/refs/heads/main/hubs/testnet.yaml`)
+  instead names `https://staging.iscc.id` (hub_id 1) and `https://staging.amlet.id` (hub_id 2), and the
+  mainnet list names `https://iscc.id` / `https://amlet.id` — all four of which serve a checkpoint
+  (verified: `amlet.id` is at tree size 300258, `staging.amlet.id` at 146, both `iscc.id` and
+  `staging.iscc.id` at 1). So the image's baked fallback points a fresh deploy at two dead hosts; an
+  operator who does not set `ISCC_MONITOR_REALM` to a URL gets a monitor that follows nothing and
+  reports every hub unresolvable. CLAUDE.md documents this file as "the fallback when no URL override
+  is set", which is exactly the path that breaks. Fix: update the baked document to the current
+  staging hosts (or drop the domains-only fallback in favour of the authoritative URL default, which
+  also carries the real 12-bit `hub_id` the interim document-order mapping only guesses). Verify fixed:
+  the baked realm's hosts each return a `200` on `/log/checkpoint`. NOT urgent for the loop's own
+  tests (they use in-process fixtures, not the network) — it is a deploy-correctness issue.
+- **Spec:** CLAUDE.md `ISCC_MONITOR_REALM` (the baked `/etc/iscc-monitor/realm.txt` fallback);
+  ADR-0009 realm registry advertises domains; ADR-0013 server packaging.
+
+## `tessera/fsck` DEADLOCKS rather than erroring on a corrupt completed hash tile — report upstream
+- **Priority:** low
+- **Source:** [review] (reproduced locally with a throwaway probe during the mirror-repair pass)
+- **What / where / how to verify:** With a corrupt COMPLETED (width-256) hash tile in the mirror,
+  `logclient.RunFsck` never returns: `tessera@v1.0.2` blocks forever on a channel send in
+  `fsck.(*fsckTree).flushPartialTiles` (`fsck/fsck.go:313`, reached from `Fsck.Check` `:144`), and it
+  does **NOT** observe context cancellation (probe: still blocked at 10s with a 5s ctx deadline long
+  passed). A corrupt PARTIAL tile returns an error cleanly, which is why
+  `TestPollHubFsck/RejectsCorruptedMirror` (which corrupts a partial) never surfaced it. Reproduce: seed
+  a 300-leaf `buildVerifiedMirror`, run one clean `PollHub`, flip a byte in the width-256 tile `{0,0}`,
+  then call `fsckMirror` — it blocks. **Locally mitigated** by the `fsckTimeout` bound in `fsckMirror`
+  (a wedged rebuild is abandoned rather than allowed to stall the realm), and the abandoned goroutine is
+  proven not to strand the single-connection store (`TestPollHubBoundsAndRepairsWedgedRootRebuild` runs
+  the repair walk and a second rebuild after it). The upstream report is FILED (2026-08-07, by Titusz +
+  Claude outside the loop): transparency-dev/tessera#1098, with a self-contained in-memory repro that
+  reproduces the deadlock on v1.0.2 AND v1.0.4 (no fsck change between; bare `expectedResources` sends
+  in `visit`/`flushPartialTiles` + plain `errgroup.Group` + the lone `Opts{N:1}` worker exiting on the
+  mismatch error). The repro's goroutine dump also settled the open question: the abandoned goroutine is
+  parked on `chan send` and is NOT reclaimable — it leaks for the process's lifetime, so the local bound
+  trades a guaranteed realm-wide stall for a bounded goroutine leak (the right trade, but not free).
+  What remains here: track #1098 and drop `fsckTimeout`'s wedge rationale once a fixed release ships
+  (the bound itself can stay as belt-and-braces).
+- **Spec:** CLAUDE.md "Mirror" (`fsck`-verifiable); `learnings/follower.md` `fsckMirror`.
+
+## `MirroredFullTiles` / `MirroredFullEntryBundles` scan the whole per-hub tree on EVERY poll
+- **Priority:** low
+- **Source:** [review] (architecture/efficiency, filed alongside the mirror-repair pass)
+- **What / where / how to verify:** Both are unbounded per-hub scans materialized into whole-set maps
+  once per poll, so while the follow-traffic contract makes the poll's OUTBOUND cost proportional to the
+  tree's GROWTH, the LOCAL cost stays proportional to its total SIZE. `width` is the LAST column of
+  `PRIMARY KEY (hub_id, level, tile_index, width)`, so `WHERE hub_id = ? AND width = ?` seeks on
+  `hub_id` and then scans every row that hub owns — including the stale partial-width rows that
+  accumulate forever (see the partial-accumulation issue above) — on the `SetMaxOpenConns(1)` pool every
+  other store user shares. The entry-bundle query now also does one `iscc_index` PK seek per candidate
+  bundle. At millions of leaves that is hundreds of thousands of rows scanned and map entries allocated
+  per poll per hub, plus the walk still enumerates every `TileCoord`/`BundleCoord`. `PollHub` already
+  holds `fs.LastSize` one line above the ingest call, so enumerating only the delta (or keeping a
+  per-level watermark) would make the local cost growth-proportional too and would need no set read at
+  all. Verify fixed: a poll of an unchanged large tree reads O(1) rows, not O(tree). Low — correctness
+  is unaffected and the realm is small today.
+- **Spec:** target.md "Follow-traffic contract" (outbound bar; this is its local-cost twin);
+  ADR-0007 single-writer sizing.
+
+## `learnings/` detail files are over their rotation cap (follower 208 / store 181 vs ~150 lines)
+- **Priority:** low
+- **Source:** [advance] (observed while appending to both; the overflow predates the append)
+- **What / where / how to verify:** `.claude/context/README.md` Hygiene caps each `learnings/<name>.md`
+  at "~40 bullets / ~150 lines" and says to **net-reduce** on overflow by collapsing settled notes to a
+  one-line `settled:` summary. `learnings/follower.md` (208) and `learnings/store.md` (181) are both
+  well over; they were already over (192 / 166) before the follow-traffic append, which collapsed four
+  ceremony-heavy bullets but did not close the pre-existing gap. Over-cap detail files cost every cold
+  subagent context on a step that touches those packages — the exact thing the index/detail split
+  exists to avoid. `review` owns rotation, so the pass belongs to it rather than to an advance that
+  merely appends. Fix: collapse the remaining verification-ceremony bullets (the ones recording *that*
+  a mutation was reproduced, rather than the forward-looking pitfall) to `settled:` one-liners, keeping
+  every DURABLE TRAP and every load-bearing-order rule verbatim. Verify fixed: both files are ≤ ~150
+  lines and no bullet tagged `DURABLE TRAP` or `LOAD-BEARING` was removed. Low — hygiene, no gate impact.
+- **Spec:** `.claude/context/README.md` Hygiene ("Rotation, not unbounded append"; "Record the
+  forward-looking pitfall, not the verification ceremony").
+
+## Partial tile/bundle rows accumulate — the PK includes `width`, so a growing partial inserts instead of overwriting
+- **Priority:** low
+- **Source:** [advance] (observed while reading the mirror write path; pre-existing, unrelated to the
+  change that surfaced it)
+- **What / where / how to verify:** `tiles` and `entry_bundles` are keyed
+  `PRIMARY KEY (hub_id, level, tile_index, width)` / `(hub_id, bundle_index, width)`
+  (`internal/store/schema.sql:85,98`), and `RecordTile`/`RecordEntryBundle` upsert on that key. A
+  partial's `width` **is its leaf count**, so as a tree grows through a tile the same coord is written
+  at width 224, then 234, then 241… — each a *new row*, not an overwrite. Up to 255 partial rows can
+  accumulate per tile index before the coord completes; for entry bundles each such row holds up to
+  256 whole records, so on a busy hub polled every 5 minutes this, not the completed data, is the
+  dominant mirror-growth term. The ADR-0005 / `store/tiles.go` wording "partials are re-fetched and
+  overwritten in place every poll via the composite-PK upsert" is only true at *constant* width and
+  should be corrected alongside any fix. Superseded partials are pure garbage: nothing reads them
+  (`SQLiteFetcher.readTileAt` asks for one exact width and falls back to the full row), they are not
+  evidence (rebuildable, ADR-0005), and the completed full-width row supersedes all of them.
+  **Candidate fix:** when writing a coord, delete that coord's rows at a *smaller* width in the same
+  statement/transaction (`DELETE … WHERE hub_id=? AND … AND width < ?`), so at most one partial row
+  per coord exists and it vanishes when the coord completes. Verify fixed: record a coord at widths
+  10, 20, then full, and assert exactly one row remains (the full one); a `SELECT COUNT(*)` probe
+  before the fix shows 3. Low — a storage/vacuum concern, not a correctness one, and it interacts with
+  the disk-growth-rate measurement issue below (fix them together when live sizing data exists).
+- **Spec:** ADR-0005 partial-tile discipline (the "overwritten in place" claim this contradicts);
+  ADR-0007 per-network DB sizing; `learnings/store.md` p↔width seam.
+
 ## OTS stamping is per-poll (anchors every observed root) — switch to the daily latest-root cadence the PRD/ADR-0004 specify
 - **Priority:** normal
 - **Source:** [human] (Titusz — production review of `monitor.iscc.io` OTS overgrowth)

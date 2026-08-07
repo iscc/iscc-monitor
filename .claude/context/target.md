@@ -61,6 +61,40 @@ the seam-based integration tests + golden vectors + the external oracles above �
 number, which would force brittle tests on wiring / `main` and tempt the internal-detail assertions the
 PRD forbids. Revisit only if the testing strategy itself changes.
 
+## Follow-traffic contract (the network-conduct bar — non-negotiable)
+
+The monitor is a guest on every hub it follows, and a hub's cost of being monitored must stay **flat
+as its log grows**. The outcome: **per-poll outbound cost is proportional to what CHANGED since the
+last poll, never to the hub's total log size.** A monitor that starts late or falls behind pays for
+the gap once, not for the whole history on every cycle.
+
+What makes that reachable is the tlog-tiles immutability contract hubs already publish (completed
+tiles ship `cache-control: public, max-age=31536000, immutable`):
+
+- **A completed (full-width) tile or entry bundle is fetched at most once.** Once mirrored it is read
+  from the local mirror — the mirror IS the cache (ADR-0005: one store, never a second copy on disk).
+- **A partial (`.p/<W>`) tile or entry bundle is never cached.** It gains leaves on every append, so
+  it is re-fetched fresh every poll (the ADR-0005 partial-tile discipline, unchanged).
+- **The signed checkpoint is never cached.** Fetching it fresh *is* the observation; a cached
+  checkpoint would blind the monitor to the state it exists to witness. The same holds for the hub's
+  `did.json` — a key rotation or revocation must be seen the poll it happens.
+
+**Verify** (asserted at the outbound-fetch seam against fixtures — the URLs the injected `Fetcher`
+actually saw, never follower internals):
+- a second poll of an **unchanged** tree fetches the checkpoint **and not one completed tile or entry
+  bundle** (making the mirror-skip never fire must FAIL the test);
+- a poll of a **grown** tree fetches only the coords the mirror lacks — including a coord promoted
+  from partial to full — and no coord already mirrored at full width;
+- a coord already mirrored at full width but enumerated as a **partial** (a shrunk observation) is
+  still fetched, so a `.p/<W>` path is never served from cache (skipping partials too must FAIL);
+- a full entry bundle present in the mirror implies its `iscc_index` projection was written, so a
+  skipped re-fetch can never leave a permanent index gap (reversing the write order must FAIL).
+
+This bar binds **every** outbound path, present and future (the follower's ingest walk today; any
+backfill/export command, and M7 gossip, tomorrow) — not only the code that first satisfied it. It is
+a hard constraint like the no-JS / no-CDN frontend constraints: where a design would re-walk a hub's
+history per cycle, the constraint wins and the deviation is flagged, not silently accepted.
+
 ## Milestones (advance in ADR-0004 / ADR-0010 order)
 
 > **M-Deploy** and **M-API** (below) are **order-independent**: they depend on no feature milestone and
@@ -84,7 +118,9 @@ tiles + entry bundles as SQLite BLOBs (partial-tile discipline: `is_full` only a
 `iscc_index` (schema-agnostic; `iscc_id → seq` one-to-many; stores raw `note.$schema`) +
 `inclusion`/`consistency`/`entries` served from the local store via `ProofBuilder` (never re-hitting
 the hub). **Verify:** `fsck` rebuilds each accepted root from the `SQLiteFetcher`; computed inclusion
-proof matches the hub's `evidence.IsccLogInclusionProof` for sampled `iscc_id`s.
+proof matches the hub's `evidence.IsccLogInclusionProof` for sampled `iscc_id`s; and the mirror-fill
+walk meets the **Follow-traffic contract** above (completed coords fetched at most once, partials and
+the checkpoint never cached) — the mirror is both the aggregator's copy and the follower's fetch cache.
 
 ### M3 — Trust API + dashboard  `[not started]`
 
@@ -306,7 +342,8 @@ multi-monitor gossip + cosigning (C2SP witness cosignatures) + witness endpoint
 ## Done When
 
 Every v1 milestone (M1 → M2 → M3 → M-UI → WASM → OTS → **M-Deploy** → **M-API**) meets its **Verify**
-criteria with `mise run check` green and no open `critical` or `normal` issue in `issues.md`, **and a
+criteria with `mise run check` green, the **Follow-traffic contract**'s Verify criteria holding, and no
+open `critical` or `normal` issue in `issues.md`, **and a
 public-facing root `README.md` exists** — a human-facing project overview + build/run instructions + pointers to the
 specs, distinct from the agent-facing `CLAUDE.md` and the CID context pack's `.claude/context/README.md`.
 M-Deploy's human/infra steps (GHCR-package visibility, DNS, reverse-proxy config, box selection, the

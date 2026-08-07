@@ -19,6 +19,18 @@ touch it. Everything package-local stays in the detail file. See `README.md` for
   never interpreted and never gate checkpoint acceptance.
 - **Partial-tile discipline (ADR-0005).** Mark a tile/bundle BLOB `is_full` (immutable) only at
   `width == 256`; re-fetch partials (`.p/<W>`) every poll and overwrite. Never promote a partial.
+- **Fetch only what can have changed (target.md Follow-traffic contract).** A completed (full-width)
+  tile/bundle is immutable, so it is fetched **at most once** and thereafter read from the mirror —
+  the mirror IS the cache, never a second on-disk copy. Per-poll outbound cost must track a hub's
+  **growth**, never its total log size; a design that re-walks the history per cycle is a gate
+  failure, not a performance note. The exceptions are absolute: the signed **checkpoint** and
+  **`did.json`** are never cached (fetching them fresh *is* the observation), and a `.p/<W>` path is
+  never served from cache even when the same coord is already mirrored in full — that case arises on
+  a **shrunk** observation, where the contradicting bytes are the evidence.
+- **Make a write that gates a future skip the LAST write for that unit.** Once "row present" means
+  "never fetched again", every derived write for that row (e.g. the `iscc_index` projection beside a
+  mirrored entry bundle) must commit *before* the gating row, or a fault between them leaves a gap
+  nothing will ever repair. Ordering is the cheap fix; a repair pass is the expensive one.
 - **A self-consistency violation freezes, never crashes (ADR-0006).** Three triggers —
   fork / shrink / equivocation. Persist both raw checkpoints + proof permanently, set `frozen=1`,
   alert once, keep polling evidence-only at a backed-off cadence, no auto-unfreeze, survive restart,

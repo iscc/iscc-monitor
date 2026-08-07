@@ -72,11 +72,9 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   through would just back it off. Oracle gate correctly N/A (opaque `pending`→`confirmed` over an
   already-fsck-verified root; no signature/RFC-6962/Merkle/did:web/proof code).
 - **`backoff(attempts)` is a pure capped-exponential helper** (base 1h, doubling, shift cap 5 = 32h
-  pre-clamp, max 24h); `attempts` is the post-increment count so `attempts==1` waits one base, non-
-  positive → 1. Tests drive the public store seam (`RecordOTS`/`seedNotStampedOTS` seed → `OTSTick` with
-  fake `Stamper`+`Upgrader` → `OTSForRoot`/`PendingOTS` read-back), never loop internals. New tests
-  (`TestOTSStampThenUpgrade` full transit, `TestOTSStampBacksOff` fault) are mutation-proven (disabling
-  the stamp branch → both FAIL; no-op `MarkOTSStamped` → store AND follower stamp tests FAIL), reverted.
+  pre-clamp, max 24h); `attempts` is the post-increment count so `attempts==1` waits one base,
+  non-positive → 1. OTS tests drive the public store seam (seed → `OTSTick` with fake `Stamper`/`Upgrader`
+  → `OTSForRoot`/`PendingOTS` read-back), never loop internals.
 
 ## Structured logging (`log/slog`) at the loop + binary boundary
 
@@ -87,22 +85,15 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   (log-and-continue invariant intact — verified the `_ = l.Tick(ctx, t)` line is genuinely gone, replaced
   by an `if err != nil { logger().ErrorContext }` branch that never `return`s). `go.mod`/`go.sum` +
   all six leaf packages byte-identical; oracle gate correctly N/A (stdlib, no signature/merkle/didweb path).
-- **A faulting single-hub `Tick` emits EXACTLY one ERROR record — reviewer probed it.** Drove the fault
-  through the real outbound-fetch seam (an `errFetcher` whose `Fetch` always errors → `FetchCheckpoint`
-  fails → `PollHub` returns non-nil → `Tick` logs at `loop.go:119` `"poll hub failed"` with `hub_id` +
-  populated `err`, then folds into `firstErr`). A throwaway record-count probe confirmed `total records: 1`
-  with the `err` carrying the full wrapped chain (`follower.PollHub: hub 1: fetch checkpoint …`), so the
-  test's `len(errorRecs) != 1` assertion is non-vacuous and the "swallowed error is now observable" claim
-  is real, not asserted. The second log site (`"follow state read failed"` at `loop.go:109`) is reachable
-  only via a store fault; `Loop.Store` is a concrete `*store.Store` (not an interface), so it can't be
-  cleanly fault-injected without a wider seam — accepted limitation, documented in the handoff, NOT dead code.
-- **Alert severity is WARN, not ERROR — a deliberate, documented distinction.** `alertFunc(logger)` in
-  `main.go` returns a `follower.AlertFunc` closure emitting `logger.Warn("hub frozen", "hub_id", …, "kind",
-  …)`; a freeze is an operator-actionable, evidence-preserved hub condition (distinct from a monitor-process
-  fault, which is ERROR). The once-per-transition gating still lives in `PollHub`/`freeze` (untouched), the
-  `AlertFunc func(int64,string)` signature is unchanged, and the old `func alert(…) { fmt.Fprintf(os.Stderr …) }`
-  is fully removed. Logger is captured in the closure (injectable/testable), not read from a global —
-  though `run()` also calls `slog.SetDefault(logger)` so any future leaf-free call site inherits it.
+- **settled:** a faulting single-hub `Tick` emits exactly one ERROR record (probe-confirmed via an
+  always-erroring `errFetcher`), so the `len(errorRecs) != 1` assertion is non-vacuous. Durable residue:
+  the `"follow state read failed"` site is reachable only via a store fault, and `Loop.Store` is a
+  concrete `*store.Store` (not an interface), so it cannot be fault-injected without a wider seam —
+  an accepted limitation, NOT dead code.
+- **Alert severity is WARN, not ERROR — a deliberate distinction.** A freeze is an operator-actionable,
+  evidence-preserved HUB condition; ERROR is reserved for a monitor-process fault. `alertFunc(logger)` in
+  `main.go` captures the logger in the closure (injectable, never a global read); the once-per-transition
+  gating stays in `PollHub`/`freeze`.
 
 ## Equivocation trigger wiring (`internal/follower/checkConsistency`)
 
@@ -119,12 +110,10 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   guard, ADR-0006). `CheckEquivocation`'s own (unreachable-by-type) `err` is propagated, not swallowed;
   a genuine `st` fault still surfaces via `CheckpointAt` above. The branch is **dormant in production**
   until M2 writes tiles — today the live path always hits the missing-tile skip.
-- **Reviewer mutation-proved non-vacuousness three ways (throwaway copy, reverted):** (1) `if eq`→`if !eq`
-  inverts the verdict → freeze case fails; (2) forcing the proof-build-error skip to always fire → freeze
-  case fails, proving the happy/freeze cases genuinely build the proof over seeded tiles (NOT the
-  missing-tile skip); (3) `if eq`→`if false` is a compile error (unused `eq`) — use an inverting mutation
-  instead. So a green-but-wrong always/never-freezes wiring cannot ship. Oracle gate APPLIES (RFC-6962)
-  and is satisfied by the in-test merkle ground truth + the unchanged `derive_vkey.py` vectors.
+- **settled (mutation-proven both ways):** an inverted verdict and an always-firing proof-build skip each
+  break the freeze case, so a green-but-wrong always/never-freezes wiring cannot ship. Durable technique:
+  **`if x`→`if false` is a compile error** (the condition's variable goes unused) — mutate by INVERTING
+  the condition, or by `&& false`, never by replacing it.
 - **The p↔width seam is exercised end-to-end here:** test seeds the full tile (index 0, width 256) and
   the 44-leaf partial (index 1, width 44); the proof builder requests `p=0`→256 and `p=44`→44 over the
   SQLiteFetcher, so the equivocation proof crosses the 256-leaf tile boundary against real mirror reads,
@@ -162,6 +151,33 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   re-completes the mirror via idempotent upsert. `projectEntryBundle` folds `iscc_index` after each
   `RecordEntryBundle` (reuses `raw`); store stays a leaf (`logclient.Projection → store.ProjectionRecord`
   copied field-by-field). Two durable traps below.
+- **The walk fetches only what can have changed — the mirror is the fetch cache.** Both walks read
+  the store's already-mirrored-in-full sets (`store.MirroredFullTiles` / `MirroredFullEntryBundles`,
+  filtered on `widthForP(0)`) once per poll and skip a coord when `c.Partial == 0 && alreadyFull`, so
+  a poll costs one request per missing coord plus one per partial — never one per coord in the tree.
+  **Both halves of that condition are load-bearing.** Dropping `Partial == 0` looks harmless (a
+  partial coord is normally absent from a full-width set) but breaks the **shrink** case: after a
+  coord completes, a *smaller* observed size enumerates it as a `.p/<W>` partial again, and the full
+  row would suppress the fetch of the contradicting hub's own bytes — evidence `ingestTiles` exists to
+  capture before `checkConsistency` runs (ADR-0006). Mutation-proven by
+  `TestIngestTilesAlwaysFetchesPartials`; the two skips by `TestIngestTilesSkipsMirroredFullCoords` /
+  `GrowthFetchesOnlyNewCoords` / `TestPollHubRefetchesCheckpointNotCompletedTiles`.
+- **Equivocation detection survives the skip — re-derive this before touching the walk.** On a
+  rewriting hub the mirror becomes a MIX (first-observed completed tiles + freshly-fetched newer
+  ones), and `checkConsistency` builds its proof over that mix. It still holds because `ingestTiles`
+  runs BEFORE `checkConsistency` (unchanged), so every coord the proof needs is present and the
+  missing-tile swallow is not newly reachable; a mixed tree cannot reconstruct both the stored prior
+  root and the new signed root, so the verdict is still `violated`. For an honest hub the mix is
+  byte-identical to the real tree (completed tiles are immutable), so no false freeze. Net effect is a
+  STRONGER evidence property: first-observed tile bytes are preserved instead of being overwritten by
+  a re-serve. The cost is the loss of the incidental self-heal a full re-fetch gave a corrupt mirror
+  row (open `normal` issue).
+- **`projectEntryBundle` runs BEFORE `RecordEntryBundle` — the order is the invariant.** The bundle
+  row is what makes a coord skippable, so writing it last is what upholds "a full bundle in the mirror
+  implies its projection was written". Swapped, a projection fault after a successful bundle write
+  leaves a row every later walk skips and a permanent `iscc_index` gap. Mutation-proven by
+  `TestIngestEntryBundleProjectionFaultLeavesCoordRefetchable` (an undecodable frame must leave the
+  coord UNMIRRORED and re-fetchable).
 - **The `widthForP` p↔width translation is the load-bearing bug surface (triple-pinned).** The follower
   re-derives store's unexported `p==0 → tiles.TileWidth (256)`, else `int(p)` — store's copy stays
   private. Mutation-proved: breaking `p==0 → 256` FAILS `TestWidthForP`/`TestIngestTilesWidthMapping`

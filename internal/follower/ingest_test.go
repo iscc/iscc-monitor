@@ -9,6 +9,19 @@
 // observable store outputs (ReadTileBlob / ReadEntryBundleBlob), never follower
 // internals.
 //
+// The rest of the file pins the follow-traffic contract (target.md) at the
+// outbound-fetch seam — the URLs the injected Fetcher actually saw, never follower
+// internals: an unchanged tree re-fetches only partials
+// (TestIngestTilesSkipsMirroredFullCoords), a grown tree fetches only the coords the
+// mirror lacks including a partial→full promotion
+// (TestIngestTilesGrowthFetchesOnlyNewCoords), a `.p/<W>` path is never served from
+// cache even when the coord is mirrored in full (TestIngestTilesAlwaysFetchesPartials
+// — the guard against an over-eager skip), the same split holds at the PollHub seam
+// with the checkpoint always re-fetched
+// (TestPollHubRefetchesCheckpointNotCompletedTiles), and a bundle whose projection
+// fold fails is left un-mirrored so the coord stays re-fetchable
+// (TestIngestEntryBundleProjectionFaultLeavesCoordRefetchable).
+//
 // The width-mapping unit test uses synthetic per-URL bytes (the writer is transport +
 // CRUD, no crypto). The PollHub integration test must use byte-accurate bytes because
 // PollHub now fscks the mirror against the signed root after ingest.
@@ -16,6 +29,8 @@ package follower
 
 import (
 	"context"
+	"crypto/sha256"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,31 +43,68 @@ import (
 // recordingFetcher returns deterministic, URL-unique bytes for every fetch and
 // records each requested URL, so a test can assert both the bytes that round-tripped
 // into the store and which coords were fetched. It serves any URL (tile, bundle, or
-// otherwise) — the writer under test fetches only tile/bundle URLs. Entry-bundle
-// URLs (the entries path) must return a VALID tlog-tiles frame because ingestTiles
-// now folds each mirrored bundle into the iscc_index projection, so for those URLs it
-// frames a single valid JSON record embedding the URL (still URL-unique); every other
-// URL keeps the opaque "body:" + url synthetic byte form.
+// otherwise) — the writer under test fetches only tile/bundle URLs.
+//
+// Both coord kinds must be WELL-FORMED for their width, because the store and the
+// walk now gate on shape: a hash tile is exactly width*32 bytes (store.RecordTile
+// rejects anything else) and a full entry bundle carries exactly TileWidth records
+// (ingestEntryBundles rejects a short one). So a tile URL gets widthFromTileURL(url)
+// 32-byte hashes with the URL written into the leading bytes, and a bundle URL gets
+// that many framed JSON records. Only a non-coord URL keeps the opaque "body:" + url
+// form.
 type recordingFetcher struct {
 	urls []string
 }
 
-// recordingBundleBody is the byte-accurate body recordingFetcher serves for an entry
-// bundle: one valid log-entry envelope (its iscc_id embeds the URL so the bytes stay
-// URL-unique) framed as a one-record tlog-tiles entry bundle, so the projection fold
-// decodes it cleanly. A store read-back compares against this same body.
-func recordingBundleBody(url string) []byte {
-	record := []byte(`{"iscc_id":"ISCC:` + url + `","note":{"$schema":"log-entry"}}`)
-	return encodeBundle([][]byte{record})
+// widthFromTileURL derives the leaf count a coord's body must carry from its path: a
+// `.p/<W>` partial names its own width, a plain path is a full TileWidth coord.
+func widthFromTileURL(url string) int {
+	if i := strings.LastIndex(url, ".p/"); i >= 0 {
+		if w, err := strconv.Atoi(url[i+len(".p/"):]); err == nil {
+			return w
+		}
+	}
+	return tiles.TileWidth
 }
 
-// Fetch records the URL and returns deterministic URL-unique bytes: a valid framed
-// entry bundle for the entries path (so the projection fold decodes it), otherwise
-// the opaque "body:" + url synthetic form a store read-back can match to the coord.
+// recordingTileBody is the well-formed hash-tile body recordingFetcher serves: exactly
+// widthFromTileURL(url) 32-byte hashes, with the URL written into the leading bytes so
+// the body stays URL-unique for a store read-back to match.
+func recordingTileBody(url string) []byte {
+	b := make([]byte, widthFromTileURL(url)*sha256.Size)
+	copy(b, "body:"+url)
+	return b
+}
+
+// recordingBundleBody is the body recordingFetcher serves for an entry bundle:
+// widthFromTileURL(url) valid log-entry envelopes framed as a tlog-tiles entry
+// bundle, so the projection fold decodes it and a full bundle carries its full
+// TileWidth records. The FIRST record's iscc_id is "ISCC:" + url (so a test can look
+// the bundle's base seq up by URL); later records suffix their offset to stay
+// distinct. A store read-back compares against this same body.
+func recordingBundleBody(url string) []byte {
+	n := widthFromTileURL(url)
+	records := make([][]byte, n)
+	for i := range records {
+		id := "ISCC:" + url
+		if i > 0 {
+			id += "#" + strconv.Itoa(i)
+		}
+		records[i] = []byte(`{"iscc_id":"` + id + `","note":{"$schema":"log-entry"}}`)
+	}
+	return encodeBundle(records)
+}
+
+// Fetch records the URL and returns deterministic URL-unique bytes: a framed entry
+// bundle for the entries path, a well-formed hash tile for a tile path, otherwise the
+// opaque "body:" + url synthetic form.
 func (f *recordingFetcher) Fetch(_ context.Context, url string) ([]byte, error) {
 	f.urls = append(f.urls, url)
-	if strings.Contains(url, "/tile/entries/") {
+	switch {
+	case strings.Contains(url, "/tile/entries/"):
 		return recordingBundleBody(url), nil
+	case strings.Contains(url, "/tile/"):
+		return recordingTileBody(url), nil
 	}
 	return []byte("body:" + url), nil
 }
@@ -75,7 +127,7 @@ func TestIngestTilesWidthMapping(t *testing.T) {
 	observedAt := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
 	const treeSize = 300
 
-	if err := ingestTiles(ctx, s, fetcher, hubID, "https://sb0.iscc.id", treeSize, observedAt); err != nil {
+	if err := ingestTiles(ctx, s, fetcher, hubID, "https://sb0.iscc.id", treeSize, observedAt, false); err != nil {
 		t.Fatalf("ingestTiles: %v", err)
 	}
 
@@ -100,7 +152,7 @@ func TestIngestTilesWidthMapping(t *testing.T) {
 			t.Errorf("tile L%d I%d not found at width %d (p=%d -> width mismatch?)", tc.level, tc.index, tc.wantWidth, tc.partial)
 			continue
 		}
-		if string(data) != "body:"+wantURL {
+		if string(data) != string(recordingTileBody(wantURL)) {
 			t.Errorf("tile L%d I%d W%d bytes = %q, want body for %q", tc.level, tc.index, tc.wantWidth, data, wantURL)
 		}
 	}
@@ -275,4 +327,305 @@ func TestPollHubRecordsProjections(t *testing.T) {
 	} else if len(seqs) != 0 {
 		t.Errorf("SeqsForISCCID(absent id) = %v, want empty", seqs)
 	}
+}
+
+// tileURL returns the absolute URL ingestTiles requests for one hash-tile coord, so a
+// test states its expectation in coordinates and compares against what the fetcher
+// actually saw.
+func tileURL(level, index uint64, p uint8) string {
+	return "https://sb0.iscc.id/log/" + tiles.TilePath(level, index, p)
+}
+
+// bundleURL is tileURL's entry-bundle twin: the absolute URL for one bundle coord.
+func bundleURL(index uint64, p uint8) string {
+	return "https://sb0.iscc.id/log/" + tiles.EntriesPath(index, p)
+}
+
+// assertFetched compares the exact set of URLs a walk requested against the wanted
+// set, reporting both the missing and the surplus URLs. Surplus is the load-bearing
+// half here: a re-fetched immutable coord shows up as surplus.
+func assertFetched(t *testing.T, got, want []string) {
+	t.Helper()
+	wantSet := make(map[string]bool, len(want))
+	for _, u := range want {
+		wantSet[u] = true
+	}
+	gotSet := make(map[string]bool, len(got))
+	for _, u := range got {
+		gotSet[u] = true
+	}
+	for u := range wantSet {
+		if !gotSet[u] {
+			t.Errorf("coord NOT fetched but expected: %s", u)
+		}
+	}
+	for u := range gotSet {
+		if !wantSet[u] {
+			t.Errorf("coord fetched but must have been served from the mirror: %s", u)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("fetched %d URLs, want %d", len(got), len(want))
+	}
+}
+
+// TestIngestTilesSkipsMirroredFullCoords proves a re-ingest at an unchanged tree size
+// re-fetches ONLY the partial coords. Tree 300 names hash tiles {0,0,full},
+// {0,1,p44}, {1,0,p1} and entry bundles {0,full}, {1,p44}; the second walk must
+// request exactly the three partials, because a completed tile/bundle is immutable
+// and already mirrored. The assertion is on the outbound-fetch seam (the URLs the
+// injected Fetcher saw), never on follower internals.
+func TestIngestTilesSkipsMirroredFullCoords(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	fetcher := &recordingFetcher{}
+	observedAt := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	const treeSize = 300
+
+	if err := ingestTiles(ctx, s, fetcher, hubID, "https://sb0.iscc.id", treeSize, observedAt, false); err != nil {
+		t.Fatalf("first ingestTiles: %v", err)
+	}
+	if len(fetcher.urls) != 5 {
+		t.Fatalf("cold walk fetched %d URLs, want 5 (3 tiles + 2 bundles)", len(fetcher.urls))
+	}
+
+	fetcher.urls = nil
+	if err := ingestTiles(ctx, s, fetcher, hubID, "https://sb0.iscc.id", treeSize, observedAt, false); err != nil {
+		t.Fatalf("second ingestTiles: %v", err)
+	}
+	assertFetched(t, fetcher.urls, []string{
+		tileURL(0, 1, 44), // partial hash tile — gains hashes as the tree grows
+		tileURL(1, 0, 1),  // partial hash tile at level 1
+		bundleURL(1, 44),  // partial entry bundle
+	})
+}
+
+// TestIngestTilesGrowthFetchesOnlyNewCoords drives the walk across a real tree growth
+// (300 -> 600) and pins both halves of the rule: the coords already mirrored in full
+// are not re-fetched, while a coord previously mirrored only as a PARTIAL is fetched
+// again once it completes. At 600 the level-0 tile {0,1} and bundle 1 have been
+// promoted from 44-leaf partials to full, so they MUST be fetched; tile {0,0} and
+// bundle 0 were already full at 300 and must not be.
+func TestIngestTilesGrowthFetchesOnlyNewCoords(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	fetcher := &recordingFetcher{}
+	observedAt := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+
+	if err := ingestTiles(ctx, s, fetcher, hubID, "https://sb0.iscc.id", 300, observedAt, false); err != nil {
+		t.Fatalf("ingestTiles(300): %v", err)
+	}
+
+	fetcher.urls = nil
+	if err := ingestTiles(ctx, s, fetcher, hubID, "https://sb0.iscc.id", 600, observedAt, false); err != nil {
+		t.Fatalf("ingestTiles(600): %v", err)
+	}
+	assertFetched(t, fetcher.urls, []string{
+		tileURL(0, 1, 0),  // 44-leaf partial promoted to full — must be re-fetched
+		tileURL(0, 2, 88), // new partial hash tile
+		tileURL(1, 0, 2),  // level-1 partial, wider than at size 300
+		bundleURL(1, 0),   // 44-leaf partial bundle promoted to full
+		bundleURL(2, 88),  // new partial bundle
+	})
+
+	// The promoted coords are mirrored at full width, so the next walk skips them.
+	fetcher.urls = nil
+	if err := ingestTiles(ctx, s, fetcher, hubID, "https://sb0.iscc.id", 600, observedAt, false); err != nil {
+		t.Fatalf("ingestTiles(600) re-walk: %v", err)
+	}
+	assertFetched(t, fetcher.urls, []string{
+		tileURL(0, 2, 88),
+		tileURL(1, 0, 2),
+		bundleURL(2, 88),
+	})
+}
+
+// TestPollHubRefetchesCheckpointNotCompletedTiles asserts the split at the PollHub
+// seam: the signed checkpoint is fetched fresh on EVERY poll (that fetch is the
+// observation, and it is never served from the mirror), while the completed hash
+// tiles and entry bundles of an unchanged tree are not fetched at all. Both halves
+// matter — a cached checkpoint would blind the monitor, and a re-fetched full tile is
+// the wasted traffic.
+func TestPollHubRefetchesCheckpointNotCompletedTiles(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	m := buildVerifiedMirror(t, mirrorLeaves)
+	fetcher := &countingFetcher{inner: m.fetcher}
+
+	if _, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", time.Unix(1, 0), noopAlert, nil); err != nil {
+		t.Fatalf("first PollHub: %v", err)
+	}
+
+	fetcher.urls = nil
+	status, err := PollHub(ctx, s, fetcher, hubID, "https://sb0.iscc.id", time.Unix(2, 0), noopAlert, nil)
+	if err != nil {
+		t.Fatalf("second PollHub: %v", err)
+	}
+	if status != logclient.StatusVerified {
+		t.Fatalf("status = %s, want verified", status)
+	}
+
+	const checkpointURL = "https://sb0.iscc.id/log/checkpoint"
+	var sawCheckpoint bool
+	for _, u := range fetcher.urls {
+		if u == checkpointURL {
+			sawCheckpoint = true
+		}
+	}
+	if !sawCheckpoint {
+		t.Errorf("second poll did not fetch %s — the checkpoint must never be cached", checkpointURL)
+	}
+
+	// Every completed coord of the unchanged tree must be absent from the second
+	// poll's fetches; the partials may (and must) still be re-fetched.
+	for _, c := range tiles.TileCoords(m.size) {
+		if c.Partial != 0 {
+			continue
+		}
+		for _, u := range fetcher.urls {
+			if u == tileURL(c.Level, c.Index, 0) {
+				t.Errorf("second poll re-fetched completed tile L%d I%d (%s)", c.Level, c.Index, u)
+			}
+		}
+	}
+	for _, c := range tiles.BundleCoords(m.size) {
+		if c.Partial != 0 {
+			continue
+		}
+		for _, u := range fetcher.urls {
+			if u == bundleURL(c.Index, 0) {
+				t.Errorf("second poll re-fetched completed entry bundle I%d (%s)", c.Index, u)
+			}
+		}
+	}
+}
+
+// healingFetcher serves an undecodable body for one entry-bundle path until healed,
+// and delegates everything else to the embedded recordingFetcher (so the bundle
+// framing the projection assertions rely on has exactly one definition). It lets a
+// test fail the iscc_index projection fold of one bundle and then observe whether the
+// next walk re-fetches that bundle.
+type healingFetcher struct {
+	recordingFetcher
+	badPath string
+	healed  bool
+}
+
+// Fetch serves a two-byte frame promising 65535 record bytes that are not there for
+// the bad path (so api.EntryBundle.UnmarshalText fails and the projection fold
+// errors), otherwise the embedded recordingFetcher's bytes.
+func (f *healingFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
+	if !f.healed && strings.HasSuffix(url, f.badPath) {
+		f.urls = append(f.urls, url)
+		return []byte{0xff, 0xff}, nil
+	}
+	return f.recordingFetcher.Fetch(ctx, url)
+}
+
+// TestIngestEntryBundleProjectionFaultLeavesCoordRefetchable pins the invariant that
+// makes the mirror safe to use as the fetch cache: a full entry bundle present in the
+// mirror implies its iscc_index projection was written. A bundle whose projection
+// fold fails must NOT be left recorded, or the walk would skip it forever and the
+// index gap would never heal. The assertion is on observable outputs — the URLs the
+// second walk requested, and the projections finally in the store.
+func TestIngestEntryBundleProjectionFaultLeavesCoordRefetchable(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	observedAt := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	const treeSize = 300
+	badBundle := tiles.EntriesPath(0, 0) // the FULL bundle — the skippable kind
+
+	fetcher := &healingFetcher{badPath: badBundle}
+	if err := ingestTiles(ctx, s, fetcher, hubID, "https://sb0.iscc.id", treeSize, observedAt, false); err == nil {
+		t.Fatal("ingestTiles over an undecodable bundle = nil, want the wrapped projection fault")
+	}
+
+	// The faulting bundle must not be mirrored — being mirrored in full is exactly
+	// what would make the next walk skip it.
+	if _, found, err := s.ReadEntryBundleBlob(ctx, hubID, 0, tiles.TileWidth); err != nil {
+		t.Fatalf("ReadEntryBundleBlob: %v", err)
+	} else if found {
+		t.Error("bundle 0 mirrored despite its projection fold failing — the next walk would skip it and the iscc_index gap would be permanent")
+	}
+
+	fetcher.healed = true
+	fetcher.urls = nil
+	if err := ingestTiles(ctx, s, fetcher, hubID, "https://sb0.iscc.id", treeSize, observedAt, false); err != nil {
+		t.Fatalf("healed ingestTiles: %v", err)
+	}
+
+	var refetched bool
+	for _, u := range fetcher.urls {
+		if u == bundleURL(0, 0) {
+			refetched = true
+		}
+	}
+	if !refetched {
+		t.Errorf("healed walk did not re-fetch bundle 0 (%s); fetched %v", bundleURL(0, 0), fetcher.urls)
+	}
+	// The projection the failed fold owed is now present.
+	seqs, err := s.SeqsForISCCID(ctx, hubID, "ISCC:"+bundleURL(0, 0))
+	if err != nil {
+		t.Fatalf("SeqsForISCCID: %v", err)
+	}
+	if len(seqs) != 1 || seqs[0] != 0 {
+		t.Errorf("SeqsForISCCID after the heal = %v, want [0] (the projection was re-folded)", seqs)
+	}
+}
+
+// TestIngestTilesAlwaysFetchesPartials pins the other half of the rule: a `.p/<W>`
+// path is ALWAYS fetched fresh, even when the same coord is already mirrored at full
+// width. A coord can be enumerated as a partial after it is mirrored in full when the
+// observed tree SHRINKS — the walk runs at the observed size before the
+// self-consistency check, so the contradicting hub's own partial bytes are mirrored as
+// evidence (ADR-0006) rather than silently served from the full row. Only its PARTIAL
+// bytes: a completed coord the mirror already holds is skipped, so the contradicting
+// hub's completed-coord bytes are never captured.
+func TestIngestTilesAlwaysFetchesPartials(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	fetcher := &recordingFetcher{}
+	observedAt := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+
+	// At 600 the level-0 tile {0,1} and bundle 1 are complete and mirrored in full.
+	if err := ingestTiles(ctx, s, fetcher, hubID, "https://sb0.iscc.id", 600, observedAt, false); err != nil {
+		t.Fatalf("ingestTiles(600): %v", err)
+	}
+
+	// A shrink back to 300 names those same coords as 44-leaf PARTIALS. Their bytes
+	// differ from the full rows, so they must be fetched, not skipped.
+	fetcher.urls = nil
+	if err := ingestTiles(ctx, s, fetcher, hubID, "https://sb0.iscc.id", 300, observedAt, false); err != nil {
+		t.Fatalf("ingestTiles(300) after 600: %v", err)
+	}
+	assertFetched(t, fetcher.urls, []string{
+		tileURL(0, 1, 44), // mirrored in full at 600 — still re-fetched as a partial
+		tileURL(1, 0, 1),
+		bundleURL(1, 44), // ditto for the entry bundle
+	})
 }

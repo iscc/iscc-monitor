@@ -164,3 +164,18 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   `store.CheckpointAt`'s `ORDER BY rowid`). `id DESC` was backwards (picked the rejected fork row); both
   the higher-size and same-size-fork cases are now mutation-pinned
   (`TestListHubsFrozenObservedTracksAcceptedSize`/`…SameSizeFork`). The §3 honesty `normal` is CLOSED.
+
+## Mirrored-in-full set reads (`internal/store/tiles.go`)
+
+- **`MirroredFullTiles` / `MirroredFullEntryBundles` filter on `widthForP(0)`, not `is_full`.** The two
+  cannot currently disagree, but the skip decision they feed must key on the SAME p→width authority the
+  write side (`RecordTile`) and read side (`SQLiteFetcher.readTileAt`) use, so a change to that
+  translation moves all three together. They return a SET (two queries per poll), not a per-coord
+  `Has…` predicate: the store opens `SetMaxOpenConns(1)`, so per-coord lookups would serialise
+  thousands of round-trips on the single writer connection every hub in the realm shares.
+- **A partial row must never appear in these sets** — the ingest walk would skip it and never re-fetch
+  it as the tree grew. Pinned by `TestMirroredFullTiles` + `TestMirroredFullSetsAreHubScoped` (a
+  cross-hub leak would leave a permanent hole in a mirror that never fetched those coords).
+- **Partial rows accumulate (open `low`).** The PK includes `width` and a partial's width IS its leaf
+  count, so a growing partial INSERTs per distinct width rather than overwriting — up to 255 superseded
+  rows per coord. ADR-0005's "overwritten in place" holds only at constant width; fix that wording too.

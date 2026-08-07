@@ -1,68 +1,56 @@
-## 2026-06-23 — Review of: Prune the 4 resolved-but-unpruned issues and surface the human/design gate
+## 2026-08-07 — Advance + Review: Follow-traffic contract (mirror-as-cache) + mirror repair path
 
-**Verdict:** PASS
-**Loop:** CONTINUE
+**Role:** advance + review, **human-directed, outside the normal loop cadence** (filed from a
+production egress report by the ISCC Hub operator; GitHub issue #4). **Verdict: PASS** — reviewed by
+Titusz + Claude working outside the loop; **COMMITTED to `develop` and pushed** in the commit that
+carries this handoff. The next loop iteration starts from a clean tree.
 
-**Summary:** A pure backlog-hygiene increment — the advance deleted exactly the four `normal`
-issues whose fixes had already shipped (the `/` realm-index sub-item umbrella, the two M-API
-contract-accuracy issues, and the M-API umbrella), touching only `issues.md` + `handoff.md` and
-zero source/test/template files. I independently re-verified at the served-spec seam (YAML source
-AND JSON twin) that the two load-bearing OpenAPI fixes the prune relied on are genuinely in place,
-so the deletion masks no real defect; the design-blocked `normal`s, the human-blocked `critical`,
-and all `low`s survive. `mise run check` is green across all 30 packages.
+**What landed (two passes, one increment):**
 
-**Verification:**
-- [x] Four pruned headers absent — all four negation greps PASS (`recent declarers checked`,
-  `advertises a phantom`, `serves application/octet-stream`, `No machine-readable API contract`).
-- [x] Two design-blocked `normal`s survive — `never checks the checkpoint signature against the
-  hub` AND `Anchor column is per-hub` both present.
-- [x] Human-blocked `critical` survives — `Browse the log →` present (exactly one real critical;
-  the second "critical" the count tool reports is the file's format-template legend line, not an issue).
-- [x] No source/test/template changed — the advance commit and the whole unpushed range
-  (`@{upstream}..HEAD`) contain only `.claude/context/*` files; `grep -vE '^\.claude/'` over the
-  changed-file list is empty.
-- [x] `mise run check` green — `go build`/`go vet`/`go test ./...` all `ok` (30/30 packages);
-  `gofmt -l .` empty (ignoring gitignored `cauldron/`).
-- [x] Served OpenAPI still accurate (prune masks no defect) — `go test -count=1 ./internal/openapi`
-  passes; I re-confirmed at the seam that the `verify` op declares only `Domain`+`iscc_id` (no
-  `index`) and the `checkpoint` 200 is `application/octet-stream` in BOTH `openapi.yaml` and the
-  `openapi.json` twin (a `json.load` probe asserted both).
-- [x] Structure intact — both `---` separators present, the `pre-deployment asks … M-Deploy`
-  HTML-comment block preserved, 25 `## ` issue headers remain (1 critical, 2 normal, 21 low + the
-  format legend).
+*Pass 1 — fetch only what can have changed (the issue-#4 fix proper):*
+- `internal/store/tiles.go` — `TileKey`, `MirroredFullTiles`, `MirroredFullEntryBundles`: hub-scoped
+  set reads filtered on `widthForP(0)`, the same p→width authority the write side and `SQLiteFetcher`
+  use. Two queries per poll, never per-coord (the `SetMaxOpenConns(1)` pool).
+- `internal/follower/ingest.go` — both walks skip a coord when `c.Partial == 0 && alreadyFull`;
+  partials (`.p/<W>`), the checkpoint and `did.json` are always fetched fresh. `ingestEntryBundles`
+  writes the `iscc_index` projection BEFORE `RecordEntryBundle` so "full bundle mirrored ⟹ projection
+  written" holds. Steady-state poll: ~2350 requests → ~6 on a 300k-entry log.
+- `target.md` gained the **Follow-traffic contract** standing bar (binds every outbound path);
+  `CLAUDE.md`'s Mirror glossary entry records the fetch-cache role.
 
-**Issues found:** (none) — pure doc/backlog edit; nothing to file, nothing to fix.
+*Pass 2 — consequences of making the mirror authoritative (the trust-model flip):*
+- **Admission gates:** `store.RecordTile` rejects a full tile that is not exactly `TileWidth*32`
+  bytes; `ingestEntryBundles` rejects a full bundle decoding to fewer than `TileWidth` records.
+- **Repair path:** `ingestTiles(..., force=true)` re-walks a hub authoritatively; `PollHub` runs it
+  BOTH before convicting a hub of a self-consistency violation and after a failed root rebuild —
+  never convict on cached bytes (freeze is irreversible in v1). `MirroredFullEntryBundles` requires
+  the projection to exist, so a legacy half-written DB re-folds instead of freezing its index gap.
+- **`fsckTimeout` (2m) bound in `fsckMirror`:** tessera's fsck DEADLOCKS (not errors) on a corrupt
+  completed tile — reported upstream as **transparency-dev/tessera#1098** (repro confirms v1.0.2 AND
+  v1.0.4 affected; the abandoned goroutine leaks but does not strand the store). Details in
+  `issues.md`.
+- **Fixture divergence fixed in 4 test builders** (`certificate/handler_test.go`,
+  `proofserve/handler_test.go`, `proofserve/verify_test.go`, `follower/fsck_test.go`): they
+  synthesized partial tiles by a "subtree starts below size" bound instead of the width the path
+  advertises — verified against a live 300258-leaf hub.
 
-**Codex second opinion:** unavailable — the launch was denied by this environment's auto-mode
-classifier ([Create Unsafe Agents]: `sandbox_mode="danger-full-access"` + `approval_policy="never"`
-is blocked here). The protocol's pre-authorized allow-rule requires that exact form, so there is no
-sanctioned workaround; I cleared the stale prior-iteration verdict from `/tmp/codex-review.txt`
-first so it could not be misread as clean, then re-attempted once (denied again) and applied
-graceful degradation. Low-risk this iteration: zero source/test/template code changed, so there is
-no code surface for a second skeptic to find a defect in. Not a blocker.
+**Scope note for the record:** `next.md`'s Not-In-Scope said "No mirror-repair path"; the human
+directed folding it in after the tessera deadlock made the missing repair path a live hazard rather
+than a filed `normal`. The residuals (unread `sha256` column, all-or-nothing repair walk, CDN-cached
+poisoned rows, per-poll set-scan cost) are filed as `low` in `issues.md` — the critical itself is
+CLOSED.
 
-**Visual check:** n/a — no SSR surface changed (no `internal/dashboard`/`dossier`/`web`/`certificate`
-or template touched; the only edits are two `.claude/context/*.md` files).
+**Verification (recap — full detail in `issues.md` + `learnings/follower.md` + `learnings/store.md`):**
+- `mise run check` green (30/30 packages), `gofmt -l .` clean, at the committed tree.
+- Mutation-proven: the 4 pass-1 mutations (both skips, the `Partial == 0` guard, the
+  projection/record order) and the 5 pass-2 load-bearing halves (length gate, short-bundle gate,
+  projection-EXISTS requirement, force re-ingest before conviction, fsckTimeout non-stranding) each
+  FAIL their test when reverted.
+- Equivocation reasoning re-derived independently (review): the mirror-mix argument holds —
+  `ingestTiles` still precedes `checkConsistency`, a mixed tree cannot reconstruct both roots, an
+  honest hub's mix is byte-identical, and the force re-ingest before conviction makes a false freeze
+  strictly harder than before.
 
-**Next:** The loop remains out of autonomous code-closable work, and the prune makes that honest in
-the backlog (the 0-open-`normal` DONE condition is now correctly counted against only the two
-genuinely-open, design-blocked `normal`s). `define-next` should NOT re-attempt the human-blocked
-`critical` (M-UI exit sign-off) or the two design-blocked `normal`s (WASM cross-origin signature
-half; realm-index per-hub-vs-per-checkpoint Anchor honesty). The only honest forward motions are:
-(a) wait for the human M-UI exit sign-off + the two design passes; or (b) fold in a locality `low`
-ONLY if a future slice naturally touches one of the `low`-flagged files — never manufacture one to
-stay busy (auto-memory `loop-stalls-on-human-blocked-done`).
-
-**Notes:**
-- Scope discipline: exemplary — doc/backlog-only, zero of the ≤3 code-file budget used; nothing from
-  `## Not In Scope` touched (no `.go`/`.html`/`openapi.{yaml,json}`, the blocked critical + two
-  blocked normals left OPEN, no `low` deleted, no manufactured refactor, no duplicate "loop blocked"
-  prose entry).
-- Oracle/conformance gate: N/A — no signature, RFC-6962/Merkle, did:web, fsck, OTS, or proof code in
-  the diff. The OpenAPI golden run was a read-only re-verification of the contract the prune relied
-  on, not a code change.
-- Gate-integrity scan: clean — no `//nolint`, `t.Skip`, build-tag exclusion, or deleted assertion in
-  the unpushed code diff (there is no code diff).
-- Learnings: not updated — no package code reviewed, and the always-loaded index has no rule bearing
-  on backlog editing (confirmed); recording this iteration's read-only OpenAPI re-verification in
-  cross-iteration memory would be verification-ceremony, not a forward-looking pitfall.
+**Next:** normal loop cadence resumes. Open code-closable normals: the OTS per-poll→daily cadence,
+and the dead baked realm-fallback hosts (`deploy/realm-testnet.txt`). Deploying this commit to
+`monitor.iscc.io` is what actually stops the production egress — an ops step for the human.

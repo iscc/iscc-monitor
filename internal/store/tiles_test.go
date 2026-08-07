@@ -13,6 +13,28 @@ import (
 	"time"
 )
 
+// tileBytes builds a well-formed hash-tile body for the partial qualifier p: exactly
+// widthForP(p) 32-byte hashes, each filled with fill. RecordTile rejects any other
+// length, so every tile fixture is sized through this helper rather than by hand.
+func tileBytes(p uint8, fill byte) []byte {
+	return bytes.Repeat([]byte{fill}, widthForP(p)*sha256.Size)
+}
+
+// seedProjection writes one iscc_index row at the FIRST leaf seq of a bundle, which
+// is what MirroredFullEntryBundles requires before it will call that bundle
+// skippable. Fixtures that want a bundle treated as fully mirrored call this.
+func seedProjection(t *testing.T, s *Store, hubID int64, bundleIndex uint64) {
+	t.Helper()
+	if err := s.RecordProjections(context.Background(), []ProjectionRecord{{
+		HubID:      hubID,
+		Seq:        bundleIndex * 256,
+		IsccID:     "ISCC:SEED",
+		NoteSchema: "seed",
+	}}); err != nil {
+		t.Fatalf("seedProjection bundle %d: %v", bundleIndex, err)
+	}
+}
+
 // readIsFull reads the raw is_full column for a tiles row (1 for a full tile, 0 for
 // a partial), so the test pins the ADR-0005 partial-tile discipline from the column
 // itself rather than trusting the writer.
@@ -129,8 +151,8 @@ func TestRecordTilePartialOverwrite(t *testing.T) {
 	s := openTemp(t)
 	hub := newHub(t, s)
 
-	first := bytes.Repeat([]byte{0x01}, 64)
-	second := bytes.Repeat([]byte{0x02}, 96)
+	first := tileBytes(100, 0x01)
+	second := tileBytes(100, 0x02)
 	if err := s.RecordTile(ctx, hub, 0, 0, uint8(100), first, time.Unix(1, 0)); err != nil {
 		t.Fatalf("first RecordTile: %v", err)
 	}
@@ -266,5 +288,200 @@ func mustRecordCP(t *testing.T, s *Store, hubID int64, size uint64, root, raw []
 	})
 	if err != nil {
 		t.Fatalf("RecordCheckpoint size %d: %v", size, err)
+	}
+}
+
+// TestMirroredFullTiles pins the set-shaped read the ingest walk skips on: only
+// coords stored at the FULL width appear, partial rows never do, and a coord that
+// holds both a stale partial row and a full row is reported once (as full). The
+// partial-must-be-absent half is the load-bearing one — a partial that leaked into
+// the set would be skipped by the walk and never re-fetched as the tree grew.
+func TestMirroredFullTiles(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hub := newHub(t, s)
+
+	// (0,0) full; (0,1) partial only; (0,2) partial first, then promoted to full;
+	// (1,0) full at a higher tile-level.
+	if err := s.RecordTile(ctx, hub, 0, 0, 0, tileBytes(0, 0x11), time.Unix(1, 0)); err != nil {
+		t.Fatalf("RecordTile full: %v", err)
+	}
+	if err := s.RecordTile(ctx, hub, 0, 1, 44, tileBytes(44, 0x11), time.Unix(1, 0)); err != nil {
+		t.Fatalf("RecordTile partial: %v", err)
+	}
+	if err := s.RecordTile(ctx, hub, 0, 2, 44, tileBytes(44, 0x11), time.Unix(1, 0)); err != nil {
+		t.Fatalf("RecordTile partial-then-full: %v", err)
+	}
+	if err := s.RecordTile(ctx, hub, 0, 2, 0, tileBytes(0, 0x11), time.Unix(2, 0)); err != nil {
+		t.Fatalf("RecordTile promoted full: %v", err)
+	}
+	if err := s.RecordTile(ctx, hub, 1, 0, 0, tileBytes(0, 0x11), time.Unix(1, 0)); err != nil {
+		t.Fatalf("RecordTile level 1 full: %v", err)
+	}
+
+	got, err := s.MirroredFullTiles(ctx, hub)
+	if err != nil {
+		t.Fatalf("MirroredFullTiles: %v", err)
+	}
+	want := map[TileKey]struct{}{
+		{Level: 0, Index: 0}: {},
+		{Level: 0, Index: 2}: {},
+		{Level: 1, Index: 0}: {},
+	}
+	if len(got) != len(want) {
+		t.Errorf("MirroredFullTiles = %v (%d coords), want %v (%d)", got, len(got), want, len(want))
+	}
+	for k := range want {
+		if _, ok := got[k]; !ok {
+			t.Errorf("full tile L%d I%d missing from the set", k.Level, k.Index)
+		}
+	}
+	// The partial-only coord must NOT be reported as mirrored-in-full.
+	if _, ok := got[TileKey{Level: 0, Index: 1}]; ok {
+		t.Error("partial-only tile L0 I1 reported as mirrored in full, want absent (it must stay re-fetchable)")
+	}
+}
+
+// TestMirroredFullEntryBundles is the entry-bundle twin of TestMirroredFullTiles:
+// full indexes appear, a partial-only index does not. It also pins the projection
+// half — a full bundle whose iscc_index projection is MISSING must stay out of the
+// set, so a legacy or half-written database re-fetches and re-folds it instead of
+// skipping it forever with a permanent index gap.
+func TestMirroredFullEntryBundles(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hub := newHub(t, s)
+
+	data := bytes.Repeat([]byte{0x22}, 32)
+	if err := s.RecordEntryBundle(ctx, hub, 0, 0, data, time.Unix(1, 0)); err != nil {
+		t.Fatalf("RecordEntryBundle full: %v", err)
+	}
+	seedProjection(t, s, hub, 0)
+	if err := s.RecordEntryBundle(ctx, hub, 1, 44, data, time.Unix(1, 0)); err != nil {
+		t.Fatalf("RecordEntryBundle partial: %v", err)
+	}
+	// Bundle 2: mirrored in FULL but never projected — the legacy shape.
+	if err := s.RecordEntryBundle(ctx, hub, 2, 0, data, time.Unix(1, 0)); err != nil {
+		t.Fatalf("RecordEntryBundle unprojected full: %v", err)
+	}
+
+	got, err := s.MirroredFullEntryBundles(ctx, hub)
+	if err != nil {
+		t.Fatalf("MirroredFullEntryBundles: %v", err)
+	}
+	if _, ok := got[0]; !ok {
+		t.Error("full bundle 0 missing from the set")
+	}
+	if _, ok := got[1]; ok {
+		t.Error("partial-only bundle 1 reported as mirrored in full, want absent")
+	}
+	if _, ok := got[2]; ok {
+		t.Error("full-but-unprojected bundle 2 reported as mirrored in full, want absent (it must stay re-fetchable so its iscc_index gap heals)")
+	}
+	if len(got) != 1 {
+		t.Errorf("MirroredFullEntryBundles = %v, want exactly {0}", got)
+	}
+
+	// Once the missing projection lands, bundle 2 becomes skippable like any other.
+	seedProjection(t, s, hub, 2)
+	healed, err := s.MirroredFullEntryBundles(ctx, hub)
+	if err != nil {
+		t.Fatalf("MirroredFullEntryBundles after backfill: %v", err)
+	}
+	if _, ok := healed[2]; !ok {
+		t.Error("bundle 2 still absent after its projection landed, want present")
+	}
+}
+
+// TestRecordTileRejectsWrongLength pins the admission gate: a hash tile body that is
+// not exactly width*32 bytes is refused, so a truncated body, an HTML error page, or
+// an empty body can never be admitted at full width and then trusted forever by the
+// ingest walk's skip.
+//
+// The width*32 rule holds at EVERY tile level, verified against a live 300258-leaf
+// log: the full tiles are 8192 bytes, the level-0 `.p/226` is 7232, the level-1
+// `.p/148` is 4736, and the level-2 `.p/4` is 128. The partial cases below are the
+// ones that matter for the gate's reach — an upper-level partial carrying the hashes
+// of INCOMPLETE subtrees (which no hub publishes) is rejected too.
+func TestRecordTileRejectsWrongLength(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hub := newHub(t, s)
+
+	rejected := []struct {
+		name         string
+		level, index uint64
+		p            uint8
+		data         []byte
+	}{
+		{"empty at full width", 0, 0, 0, nil},
+		{"truncated full tile", 0, 0, 0, bytes.Repeat([]byte{0x01}, 8191)},
+		{"html error page at full width", 0, 0, 0, []byte("<html>502 Bad Gateway</html>")},
+		{"over-long full tile", 0, 0, 0, bytes.Repeat([]byte{0x01}, 8193)},
+		{"not a whole number of hashes", 0, 0, 0, bytes.Repeat([]byte{0x01}, 8190)},
+		{"empty partial", 0, 1, 44, nil},
+		{"truncated partial", 0, 1, 44, bytes.Repeat([]byte{0x01}, 44*32-1)},
+		{"upper-level partial with an incomplete subtree's hash", 1, 0, 1, bytes.Repeat([]byte{0x01}, 64)},
+	}
+	for _, tc := range rejected {
+		if err := s.RecordTile(ctx, hub, tc.level, tc.index, tc.p, tc.data, time.Unix(1, 0)); err == nil {
+			t.Errorf("%s: RecordTile = nil, want a rejection", tc.name)
+		}
+	}
+	if n := countRows(t, s, "tiles"); n != 0 {
+		t.Errorf("tiles row count after %d rejected writes = %d, want 0", len(rejected), n)
+	}
+
+	// The well-formed body at each of those widths is accepted.
+	accepted := []struct {
+		name         string
+		level, index uint64
+		p            uint8
+	}{
+		{"full tile", 0, 0, 0},
+		{"level-0 partial", 0, 1, 44},
+		{"level-1 partial", 1, 0, 1},
+	}
+	for _, tc := range accepted {
+		if err := s.RecordTile(ctx, hub, tc.level, tc.index, tc.p, tileBytes(tc.p, 0x01), time.Unix(1, 0)); err != nil {
+			t.Errorf("%s: RecordTile with a well-formed body = %v, want accepted", tc.name, err)
+		}
+	}
+}
+
+// TestMirroredFullSetsAreHubScoped proves one hub's mirrored coords never leak into
+// another's set — a leak would make the walk skip a coord this hub has never
+// fetched, leaving a permanent mirror hole. It also pins the empty-is-not-an-error
+// contract for a hub with nothing mirrored.
+func TestMirroredFullSetsAreHubScoped(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hubA := newHub(t, s)
+	hubB, err := s.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub B: %v", err)
+	}
+
+	if err := s.RecordTile(ctx, hubA, 0, 7, 0, tileBytes(0, 0x33), time.Unix(1, 0)); err != nil {
+		t.Fatalf("RecordTile hubA: %v", err)
+	}
+	if err := s.RecordEntryBundle(ctx, hubA, 7, 0, bytes.Repeat([]byte{0x33}, 32), time.Unix(1, 0)); err != nil {
+		t.Fatalf("RecordEntryBundle hubA: %v", err)
+	}
+	seedProjection(t, s, hubA, 7)
+
+	tilesB, err := s.MirroredFullTiles(ctx, hubB)
+	if err != nil {
+		t.Fatalf("MirroredFullTiles hubB: %v", err)
+	}
+	if len(tilesB) != 0 {
+		t.Errorf("MirroredFullTiles(hubB) = %v, want empty (hubA's tiles must not leak)", tilesB)
+	}
+	bundlesB, err := s.MirroredFullEntryBundles(ctx, hubB)
+	if err != nil {
+		t.Fatalf("MirroredFullEntryBundles hubB: %v", err)
+	}
+	if len(bundlesB) != 0 {
+		t.Errorf("MirroredFullEntryBundles(hubB) = %v, want empty", bundlesB)
 	}
 }

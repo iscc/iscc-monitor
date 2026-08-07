@@ -124,13 +124,17 @@ func buildMirror(t *testing.T, leaves int) mirrorTree {
 	for _, c := range tiles.TileCoords(size) {
 		treeLevel := c.Level * uint64(tiles.TileHeight)
 		first := c.Index * tiles.TileWidth
+		// A tile carries exactly the hash count its path advertises — c.Partial for a
+		// `.p/<W>` path, TileWidth for a full one — which is what a real hub serves.
+		// Bounding on "the subtree starts below size" instead would append hashes for
+		// INCOMPLETE subtrees, which no hub publishes because they are not yet stable.
+		width := uint64(tiles.TileWidth)
+		if c.Partial != 0 {
+			width = uint64(c.Partial)
+		}
 		var nodes [][]byte
-		for n := uint64(0); n < tiles.TileWidth; n++ {
-			treeIndex := first + n
-			if (treeIndex << treeLevel) >= size {
-				break
-			}
-			nodes = append(nodes, nodeHash(t, tree, treeLevel, treeIndex, size))
+		for n := uint64(0); n < width; n++ {
+			nodes = append(nodes, nodeHash(t, tree, treeLevel, first+n, size))
 		}
 		raw, err := api.HashTile{Nodes: nodes}.MarshalText()
 		if err != nil {

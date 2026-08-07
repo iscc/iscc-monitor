@@ -45,16 +45,20 @@ func (f compositeFetcher) Fetch(_ context.Context, url string) ([]byte, error) {
 	return f.checkpoint, nil
 }
 
-// countingFetcher wraps a Fetcher and tallies how many times a did.json URL is
-// fetched, so a test can prove the cache-hit fast path skips the second did.json
-// resolution. It counts only did.json (the did:web resolution) — checkpoint
-// fetches are not the thing under test.
+// countingFetcher wraps a Fetcher and records what one observation costs on the wire:
+// urls holds every requested URL in order (so a test can assert which coords a poll
+// fetched, and which it served from the mirror instead), and didFetch tallies just the
+// did.json resolutions (so the hub-key cache-hit fast path can be proven to skip the
+// second one). A test that only cares about one of the two ignores the other; setting
+// urls back to nil between polls scopes the record to a single observation.
 type countingFetcher struct {
 	inner    logclient.Fetcher
 	didFetch int
+	urls     []string
 }
 
 func (f *countingFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
+	f.urls = append(f.urls, url)
 	if strings.HasSuffix(url, "did.json") {
 		f.didFetch++
 	}
