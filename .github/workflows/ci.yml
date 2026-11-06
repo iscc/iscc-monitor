@@ -25,7 +25,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version-file: go.mod
 
       # The quality gate — identical to `mise run check`, inlined so the runner
       # does not need mise installed.

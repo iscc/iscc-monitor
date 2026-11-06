@@ -120,10 +120,10 @@ marshaling adapter). Durable cross-cutting rules live in the index
   reproducible-from-command with `mise run build:wasm && git status` showing `verify.wasm` clean (NOT just
   `mise run check` green — that only checks committed-bytes-vs-const, never reproducibility from the
   documented command).
-- **settled (`dc657f8`): `mise.toml` pins the EXACT patch `go = "1.26.4"` (not the floating minor
-  `1.26`), and `WasmVerifyHash = 2c91e61f…` is that toolchain's deterministic output.** Reviewer-confirmed
-  reproducible: two consecutive `mise run build:wasm` both emit `2c91e61f…` and leave the tree clean; the
-  artifact embeds `go1.26.4`; `TestWasmVerifyHashPinned` green. Keep the patch pinned to an EXACT version
+- **settled: `mise.toml` pins the EXACT patch `go = "1.26.10"` (not the floating minor
+  `1.26`), and `WasmVerifyHash = ab3488c5…` is that toolchain's deterministic output.** Reproducible: two
+  consecutive `mise run build:wasm` both emit `ab3488c5…`; the
+  artifact embeds `go1.26.10`; `TestWasmVerifyHashPinned` green. Keep the patch pinned to an EXACT version
   when bumping — a floating minor reintroduces the divergence (whatever patch mise happens to have
   installed wins, drifting the pin off the documented build). On a Go bump: change `mise.toml` to the new
   exact patch, `mise run build:wasm`, re-pin `WasmVerifyHash` to the new SHA, in ONE increment.

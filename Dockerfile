@@ -14,8 +14,8 @@
 
 # --- Stage 1: build the static binary --------------------------------------
 # Pin the concrete toolchain tag for reproducibility; matches go.mod's
-# `go 1.26.1` directive and mise.toml's `go = "1.26.4"`.
-FROM golang:1.26.4 AS build
+# `go 1.26.10` directive and mise.toml's `go = "1.26.10"`.
+FROM golang:1.26.10 AS build
 WORKDIR /src
 
 # Cache module downloads independently of the source tree.

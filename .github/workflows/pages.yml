@@ -43,7 +43,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version-file: go.mod
 
       # The reproducible build command. The generator fails closed on any non-200,
       # so a non-zero exit here aborts the deploy and a broken render is never

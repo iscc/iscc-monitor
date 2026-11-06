@@ -103,7 +103,7 @@ const ElementsCSSPath = "/_ds/elements.min.css"
 // metadata into the wasm data section and the hash is unreproducible. Re-running that
 // task without re-pinning this const fails TestWasmVerifyHashPinned. The bytes are
 // toolchain-dependent, so this value tracks `mise run build:wasm`, not a bare go build.
-const WasmVerifyHash = "2c91e61f20560fa98e0fbd6813746c40687861d4b4b3be604d4216557df0f48e"
+const WasmVerifyHash = "ab3488c549a638474550d4943b10b1bdd6025b49c4d3c9cdfd01ee50a9c159cc"
 
 // ElementsJSHash is the published lowercase-hex SHA-256 of the committed
 // elements.min.js bytes — the build-pinned hash a reviewer compares against to
@@ -176,7 +176,7 @@ var fontsCSS []byte
 var fontsFS embed.FS
 
 // wasmExecJS is the embedded Go WASM runtime loader — a byte-verbatim copy of the Go
-// 1.26.1 toolchain's lib/wasm/wasm_exec.js (BSD-licensed). It is a build-pinned,
+// 1.26.10 toolchain's lib/wasm/wasm_exec.js (BSD-licensed). It is a build-pinned,
 // version-locked asset (the same posture as the committed woff2 binaries); never
 // hand-edit it. The later tier-2 enhancement loads it to bootstrap the verifier .wasm.
 //
