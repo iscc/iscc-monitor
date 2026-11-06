@@ -121,6 +121,11 @@ jobs:
           echo "healthz: $(curl -fsS http://localhost:9464/healthz)"
           echo "version: $(curl -fsS http://localhost:9464/version)"
 
+          # The published image must carry the license terms it redistributes.
+          for f in LICENSE NOTICE THIRD_PARTY_NOTICES.txt; do
+            docker cp "mon:/usr/share/doc/iscc-monitor/$f" - > /dev/null
+          done
+
       - name: Cleanup
         if: always()
         run: docker rm -f mon || true

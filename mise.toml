@@ -50,6 +50,10 @@ run = "gofmt -w ."
 description = "Full gate: build + vet + test (must stay green; '&&' is portable across sh and cmd)"
 run = "go build ./... && go vet ./... && go test ./..."
 
+[tasks.notices]
+description = "Regenerate THIRD_PARTY_NOTICES.txt after a dependency or vendored-asset change"
+run = "go run ./cmd/notices"
+
 [tasks."build:wasm"]
 description = "Reproducibly build the verifier WASM artifact (byte-identical across a clean cache; pin its SHA-256 in web.WasmVerifyHash)"
 env = { GOOS = "js", GOARCH = "wasm", CGO_ENABLED = "0" }

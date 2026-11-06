@@ -74,3 +74,10 @@ The specifications are the source of truth:
 `CLAUDE.md` is the agent-facing contributor reference and
 [`.claude/context/README.md`](.claude/context/README.md) is the CID-loop-internal context pack; this
 `README.md` is the human-facing front door for the repository.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE). Copyright 2026 ISCC Foundation; see
+[`NOTICE`](NOTICE). Third-party software and assets keep their own licenses, collected in
+[`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt). The license does not grant rights to the ISCC
+name or logo.

@@ -39,6 +39,10 @@ FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build /iscc-monitor /iscc-monitor
 
+# Carry the license terms of the monitor and everything compiled into it, which the
+# Apache, MIT and BSD licenses require when redistributing binaries.
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.txt /usr/share/doc/iscc-monitor/
+
 # Bake the canonical testnet realm document so a fresh container has a valid
 # ISCC_MONITOR_REALM out of the box. deploy/realm-testnet.txt is the canonical
 # mountable/bakeable membership doc (domains only, ADR-0009); a deploy may instead

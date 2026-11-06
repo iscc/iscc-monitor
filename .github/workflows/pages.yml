@@ -55,6 +55,11 @@ jobs:
       - name: Add CNAME
         run: cp .github/pages/CNAME dist/CNAME
 
+      # The site redistributes third-party fonts and the Go WASM runtime, so it
+      # carries their license terms next to them.
+      - name: Add license files
+        run: cp LICENSE NOTICE THIRD_PARTY_NOTICES.txt dist/
+
       - name: Configure Pages
         uses: actions/configure-pages@v6
 
