@@ -77,7 +77,7 @@ The image bakes the canonical testnet realm document at
 `ISCC_MONITOR_REALM` out of the box — you need not pass it. A deploy may instead mount
 its own realm document and override `ISCC_MONITOR_REALM` by passing its own var.
 
-## Migration policy (interim)
+## Migration policy
 
 `store.Open` applies the baseline schema as `CREATE TABLE IF NOT EXISTS`, then runs a
 `PRAGMA user_version`-gated migration runner that applies an ordered, append-only
@@ -87,19 +87,15 @@ version. The mechanism is fail-closed (a failed step rolls back its own transact
 and aborts `Open`, never leaving a half-migrated database) and idempotent (a database
 already at the code's version runs zero migrations).
 
-**The migration list is still an empty no-op baseline today** — no real `ALTER`/
-rebuild step has been added yet. So while the *mechanism* now exists, a column added
-to an existing table in a later image **still silently never reaches a pre-existing
-database** until a migration entry for it is appended: the first `:develop` bump that
-adds a column over a populated volume without also adding its migration would fail the
-new code path with `no such column`.
+Upgrades migrate automatically on start. **Do not recreate a volume to apply a schema
+change:** the database holds irreplaceable evidence that cannot be regenerated. A schema
+change in the code must append its migration to the list, because the baseline DDL never
+reaches an existing table.
 
-**Interim policy: recreate the volume on a schema change.** This still holds today,
-because the migration list is a no-op baseline. It is acceptable for a throwaway
-testnet instance, where the data is reconstructable by re-fetch + fsck. Operate the
-testnet instance with this as the explicit assumption until real migration entries
-land (the `iscc_index` composite-PK rebuild is the first planned one); revisit before
-any deployment that must preserve a populated production database across an image bump.
+**Snapshot the database before every upgrade, and keep the snapshot until the upgrade is
+proven.** A binary refuses a database whose `user_version` is above its own, so rolling
+back across a migration means restoring that snapshot, which loses whatever was observed
+after it. Rolling back between versions with the same schema needs no restore.
 
 ## Reverse-proxy & port contract
 

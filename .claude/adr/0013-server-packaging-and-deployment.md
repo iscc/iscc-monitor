@@ -49,12 +49,12 @@ path. A server image embeds and serves its own `/_ds/` assets (incl. `verify.was
    points at a file on a mounted volume; that single file (+ its `-wal`/`-shm`
    siblings) is the entire durable state and the unit of backup (ADR-0007;
    restart-survival per story 16 = point a fresh container at the same file). The
-   volume directory must be writable by the non-root image uid. **In-place schema
-   migration is out of v1 scope** (the open "no on-disk DB migration story" item):
-   the interim policy is **recreate the volume on a schema change**, which is
-   acceptable for the testnet instance and MUST be documented, never silently
-   assumed — the first `:develop` bump that adds a column over a populated volume
-   would otherwise fail with `no such column`.
+   volume directory must be writable by the non-root image uid. **Schema changes
+   migrate in place on start** through the `user_version`-gated runner in
+   `store.Open`; a volume is never recreated to apply one, because the file holds
+   irreplaceable evidence. A column added without its migration would fail on a
+   populated volume with `no such column`. Operators snapshot before every upgrade,
+   since a binary refuses a database migrated by a newer version.
 
 5. **Runs behind a TLS-terminating reverse proxy.** The container binds `:9464` on
    the internal Docker network and **publishes no host port** — only the reverse
