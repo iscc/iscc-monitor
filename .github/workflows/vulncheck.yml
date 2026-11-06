@@ -1,0 +1,50 @@
+# Scans the monitor for known vulnerabilities its code actually reaches, in both
+# the Go standard library and third-party modules, using the Go version pinned in
+# go.mod. It fails on any reachable finding and passes when an advisory only touches
+# code the monitor does not call. The weekly schedule is load-bearing: advisories are
+# published independently of our commits, so a push-only scan would miss them while
+# the repo is quiet. GitHub disables scheduled workflows on public repos after 60 days
+# without repository activity, and shows that state on the Actions page. Separate from
+# ci.yml so a newly published advisory does not re-run the full build and test jobs.
+name: Vulncheck
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: govulncheck (server + verifier wasm)
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # Installed for the host before the scans run: the wasm scan sets GOOS=js, and
+      # `go run` under that setting would build a scanner the runner cannot execute.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+
+      - name: Scan server and tools
+        run: govulncheck ./...
+
+      - name: Scan verifier wasm
+        env:
+          GOOS: js
+          GOARCH: wasm
+        run: govulncheck ./cmd/wasm
