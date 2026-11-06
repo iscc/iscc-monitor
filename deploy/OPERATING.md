@@ -20,22 +20,31 @@ cannot drift.
 
 ## Image & tags
 
-The image is `ghcr.io/iscc/iscc-monitor`, published on every push to `develop` by
-`.github/workflows/publish.yml`, with two tags:
+The image is `ghcr.io/iscc/iscc-monitor`. Tagged releases are published by
+`.github/workflows/release.yml`, and every push to `develop` is published by
+`.github/workflows/publish.yml`:
 
+- **`:vX.Y.Z`** — a versioned release from `main`, described in `CHANGELOG.md`. **Pin
+  production instances to this tag.** A released version is never re-tagged.
+- **`:latest`** — floating, always the newest release. Do not use it for pinning.
 - **`:develop`** — floating, always the latest `develop` build. Track this for
   continuous testnet deploys.
-- **`:sha-<short>`** — immutable, keyed on the build's git SHA. **Pin and roll back
-  with this tag** — a `:develop` re-pull can move under you, a `:sha-<short>` cannot.
+- **`:sha-<short>`** — immutable, keyed on the build's git SHA, and published for both
+  releases and `develop` builds. **Roll back with this tag or a `:vX.Y.Z`** — a
+  floating tag can move under you on re-pull.
 
 The image is self-contained: it embeds `/_ds/` (including `verify.wasm`) and carries
 the CA root bundle for outbound HTTPS, so there is no CDN dependency at runtime. It
 is built on the distroless `static-debian12:nonroot` base and runs as the
 **unprivileged uid 65532**.
 
-Confirm exactly which build is live with **`GET /version`** — it returns
-`{"version":"<git-sha>"}` stamped at build time. Do not guess the running build from
-the floating `:develop` tag; ask the binary.
+Confirm exactly which build is live with **`GET /version`** — it returns the value
+stamped at build time: the release and its commit on a release image
+(`{"version":"v0.1.0+ac65974"}`), or the full git SHA on a `develop` image. Do not guess
+the running build from a floating tag; ask the binary.
+
+The image carries its license terms in `/usr/share/doc/iscc-monitor/` (`LICENSE`,
+`NOTICE` and `THIRD_PARTY_NOTICES.txt`).
 
 ## State, volume & backup
 
@@ -245,4 +254,4 @@ docker run --rm \
 ```
 
 After the first poll (a few seconds) the HTTP surface is live. Confirm with
-`GET /healthz` (200) and `GET /version` (the live build's git SHA).
+`GET /healthz` (200) and `GET /version` (the live build's version or git SHA).

@@ -1,0 +1,63 @@
+# Changelog
+
+All notable changes to iscc-monitor are recorded here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the version is below 1.0.0, a minor
+release may include breaking changes.
+
+## [0.1.0] - 2026-11-06
+
+First versioned release. It packages the service that has followed the ISCC testnet and mainnet hubs
+from `monitor-test.iscc.io` and `monitor.iscc.io`.
+
+### Added
+
+- **Log following and verification:** follows each hub's tlog-tiles log from the authoritative Hub-List,
+  verifies checkpoint signatures against the hub's did:web key, and checks RFC-6962 consistency. A
+  self-consistency violation freezes the hub and preserves the evidence.
+- **Mirror:** stores each hub's tiles and entry bundles in one SQLite file per network and serves them at
+  canonical tlog-tiles paths, so a log stays verifiable if its hub goes offline.
+- **Proofs and verdicts:** computed inclusion and consistency proofs, a downloadable proof bundle, and a
+  verify-for-me endpoint that is flagged as the weaker path compared with verifying a bundle yourself.
+- **Web interface:** server-rendered dashboard, hub dossiers, log and record browsers, and a Certificate of
+  Inclusion for any ISCC-ID in the realm. These pages work without JavaScript, and no page loads anything
+  from a CDN.
+- **In-browser verification:** a reproducible, hash-pinned WebAssembly verifier, used on certificate pages
+  and by the standalone verifier site at `monitor.iscc.codes`.
+- **Bitcoin anchoring:** OpenTimestamps proofs for checkpoint roots.
+- **API and operations:** OpenAPI 3.1 contract with hosted reference docs, Prometheus metrics, health and
+  build-version endpoints, a non-root container image, and an operator guide
+  ([`deploy/OPERATING.md`](deploy/OPERATING.md)).
+- **Project licensing:** Apache License 2.0, with third-party terms collected in
+  [`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt) and shipped in the image.
+- **Release process:** tagged releases publish `:vX.Y.Z` and `:latest` images and a GitHub Release.
+- **Vulnerability scanning:** `govulncheck` runs on every push and pull request, weekly, and before a
+  release.
+
+### Security
+
+- Builds now use Go 1.26.10. This fixes 19 standard-library vulnerabilities that the previously deployed
+  Go 1.26.4 build could reach, in `net/http`, `net/url`, `net/textproto`, `crypto/tls`, `crypto/x509`,
+  `encoding/asn1` and `html/template`.
+- Updated `golang.org/x/mod`, `golang.org/x/crypto`, `golang.org/x/sys` and OpenTelemetry. The monitor did
+  not call the affected code in these modules.
+
+### Known limitations
+
+- **Rollback across a schema change:** a binary refuses a database migrated by a newer version, so rolling
+  back across a migration means restoring the pre-upgrade snapshot, which loses what was observed since.
+- **New hubs need a restart:** Hub-List changes apply hourly, but following a newly added hub still requires
+  a restart ([#5](https://github.com/iscc/iscc-monitor/issues/5)).
+- **Bitcoin anchoring cadence:** every newly accepted root is stamped, rather than the newest root once a
+  day as ADR-0004 specifies. Confirmation works but takes 24–48 hours, because the check runs daily and not
+  at startup ([#6](https://github.com/iscc/iscc-monitor/issues/6)).
+- **Verifier site scope:** the standalone site checks Merkle proofs but not the hub's signature on the
+  checkpoint.
+- **Split views:** detected only when a client compares its view against a monitor. Monitor gossip and
+  witness cosigning are not included.
+- **Baked testnet realm:** the image's fallback realm document names hosts that no longer serve, so set
+  `ISCC_MONITOR_REALM` to the Hub-List URL.
+- **Reverse proxy expected:** the HTTP server sets no connection timeouts, so run it behind a proxy such as
+  Caddy rather than exposing it directly.
+
+[0.1.0]: https://github.com/iscc/iscc-monitor/releases/tag/v0.1.0

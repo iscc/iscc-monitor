@@ -1,9 +1,9 @@
 // Package version exposes the monitor's build-provenance string over net/http as
 // a tiny HTTP leaf, mirroring internal/metricshttp and internal/healthz. The
 // exported Version var defaults to "dev" and is the -ldflags -X injection target:
-// a release build overrides it with the git short SHA via
+// a published build overrides it with its release and commit, or its git SHA, via
 //
-//	go build -ldflags "-X github.com/iscc/iscc-monitor/internal/version.Version=<sha>"
+//	go build -ldflags "-X github.com/iscc/iscc-monitor/internal/version.Version=<value>"
 //
 // so an operator (and a CI smoke check) can confirm exactly which build is live by
 // reading GET /version. It is a build-time stamp, not a runtime config value, so it
@@ -21,7 +21,7 @@ import (
 // Version is the build-provenance string the binary reports at GET /version. It
 // defaults to "dev" for an un-stamped build (the quality gate's plain
 // `go build ./...`); a release build overrides it at link time via
-// `-ldflags "-X github.com/iscc/iscc-monitor/internal/version.Version=<sha>"`. It
+// `-ldflags "-X github.com/iscc/iscc-monitor/internal/version.Version=<value>"`. It
 // must stay a plain string var initialized to a constant — -X only overrides such
 // a var, never a const or a computed/concatenated value.
 var Version = "dev"

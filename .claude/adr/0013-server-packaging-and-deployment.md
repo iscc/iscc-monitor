@@ -30,12 +30,13 @@ path. A server image embeds and serves its own `/_ds/` assets (incl. `verify.was
    or distroless), running as a **non-root** user, carrying CA roots (egress is
    HTTPS) and the baked default realm document.
 
-2. **Build from `develop`, pre-release-tags (interim).** Until v1 cuts release tags,
-   the publish workflow runs on push to `develop` and pushes two tags: `develop`
-   (floating = latest develop) and `sha-<short>` (immutable = pin + rollback). When
-   v1 tagging lands, add `vX.Y.Z` + `latest` (the "matches the hub's release flow"
-   half of story 13); the `develop`/`sha` channel stays for the loop's continuous
-   deploys.
+2. **Two channels: `develop` builds and tagged releases.** The publish workflow runs on
+   push to `develop` and pushes two tags: `develop` (floating = latest develop) and
+   `sha-<short>` (immutable = pin + rollback). The release workflow runs on a `vX.Y.Z`
+   tag on `main` and pushes `vX.Y.Z` + `latest` + `sha-<short>` (the "matches the hub's
+   release flow" half of story 13); production instances pin `vX.Y.Z`. Tagging starts
+   below 1.0.0: `v1.0.0` marks reaching the v1 target (`target.md`, "Done When"). The
+   `develop`/`sha` channel stays for the loop's continuous deploys.
 
 3. **12-factor config, no secrets.** All config is env (`internal/config`):
    `ISCC_MONITOR_DB`, `ISCC_MONITOR_REALM`, `ISCC_MONITOR_NORMAL`/`FROZEN`/`ADDR`,

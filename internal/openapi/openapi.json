@@ -212,7 +212,7 @@
     },
     "/version": {
       "get": {
-        "description": "Returns the build-provenance string (the git short SHA, or the `dev` default for an un-stamped build), so an operator can confirm exactly which build is live.",
+        "description": "Returns the build-provenance string (the release and commit such as `v0.1.0+ac65974` on a release build, a git SHA on other builds, or the `dev` default for an un-stamped build), so an operator can confirm exactly which build is live.",
         "operationId": "getVersion",
         "responses": {
           "200": {
