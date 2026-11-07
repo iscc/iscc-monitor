@@ -69,6 +69,9 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   trivial later add. Smoke-verified: builds, starts with the goroutine, SIGINT exits 0. CAVEAT for the next
   toucher: `runOTSLoop` has no `recover`, so a panic in the `otsclient` Upgrader (see `learnings/otsclient.md`
   unimplemented-op trap) would crash the process — the fix belongs in the Upgrader closure, not here.
+  *(Superseded 2026-11-07, #6: the const is gone. `runOTSLoop` takes `cfg.OTSInterval`
+  (`ISCC_MONITOR_OTS_INTERVAL`, default 1h), runs one `otsPass` at startup, and `otsPass` logs one `ots pass`
+  INFO line from the `follower.OTSPass` counts that `OTSTick` now returns.)*
 - **`/healthz` is a `metricshttp`-style leaf that pings the store WITHOUT importing it.** `internal/
   healthz` declares its own 1-method `Pinger interface { Ping(context.Context) error }` (NOT a `store`
   import); `*store.Store` satisfies it structurally via a thin `Ping(ctx) error` → `db.PingContext`

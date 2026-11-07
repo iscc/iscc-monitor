@@ -64,6 +64,15 @@ type Upgrader func(ctx context.Context, r store.OTSRecord) (UpgradeResult, error
 // OTSTick runs the Stamper off the poll path to fill those rows in.
 type Stamper func(ctx context.Context, root [32]byte) (otsBytes []byte, calendars string, err error)
 
+// OTSPass counts what one OTSTick pass did with the rows that were due, so the caller
+// can log a one-line summary of each pass.
+type OTSPass struct {
+	Stamped   int // submitted to a calendar
+	Confirmed int // recorded as Bitcoin-confirmed
+	Pending   int // checked, not yet confirmed; retried after the back-off
+	Failed    int // a calendar or store fault; retried after the back-off
+}
+
 // otsBackoffBase is the first retry interval for a still-pending or erroring root,
 // doubled on each subsequent attempt up to otsBackoffShiftCap and clamped to
 // otsBackoffMax. The exact cadence is not safety-critical (OTS is best-effort) — it
@@ -124,15 +133,17 @@ func backoff(attempts int64) time.Duration {
 // fault on one row is logged with the hub_id/tree_size, folded into the first error,
 // and the pass continues to the next due row — OTS is best-effort and never blocks
 // the follower (ADR-0004), so the first error is returned only for observability,
-// never to freeze a hub or stop the loop. logger is the optional structured-logging
-// sink; a nil logger falls back to slog.Default().
-func OTSTick(ctx context.Context, st *store.Store, stamper Stamper, up Upgrader, now time.Time, logger *slog.Logger) error {
+// never to freeze a hub or stop the loop. The returned OTSPass counts each due row's
+// outcome. logger is the optional structured-logging sink; a nil logger falls back to
+// slog.Default().
+func OTSTick(ctx context.Context, st *store.Store, stamper Stamper, up Upgrader, now time.Time, logger *slog.Logger) (OTSPass, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	var pass OTSPass
 	pending, err := st.PendingOTS(ctx, now)
 	if err != nil {
-		return fmt.Errorf("follower.OTSTick: pending: %w", err)
+		return pass, fmt.Errorf("follower.OTSTick: pending: %w", err)
 	}
 	var firstErr error
 	for _, r := range pending {
@@ -146,6 +157,7 @@ func OTSTick(ctx context.Context, st *store.Store, stamper Stamper, up Upgrader,
 			copy(root[:], r.Root)
 			otsBytes, calendars, stampErr := stamper(ctx, root)
 			if stampErr != nil {
+				pass.Failed++
 				attempts := r.Attempts + 1
 				if err := st.MarkOTSAttempted(ctx, r.HubID, r.TreeSize, r.Root, attempts, now.Add(backoff(attempts))); err != nil {
 					logger.ErrorContext(ctx, "ots mark attempted failed", "hub_id", r.HubID, "tree_size", r.TreeSize, "err", err)
@@ -160,31 +172,43 @@ func OTSTick(ctx context.Context, st *store.Store, stamper Stamper, up Upgrader,
 				continue
 			}
 			if err := st.MarkOTSStamped(ctx, r.HubID, r.TreeSize, r.Root, otsBytes, calendars); err != nil {
+				pass.Failed++
 				logger.ErrorContext(ctx, "ots mark stamped failed", "hub_id", r.HubID, "tree_size", r.TreeSize, "err", err)
 				if firstErr == nil {
 					firstErr = err
 				}
+				continue
 			}
+			pass.Stamped++
 			continue
 		}
 		res, upErr := up(ctx, r)
 		if upErr == nil && res.Confirmed {
 			if err := st.MarkOTSUpgraded(ctx, r.HubID, r.TreeSize, r.Root, res.OTSBytes, res.BTCHeight, now); err != nil {
+				pass.Failed++
 				logger.ErrorContext(ctx, "ots mark upgraded failed", "hub_id", r.HubID, "tree_size", r.TreeSize, "err", err)
 				if firstErr == nil {
 					firstErr = err
 				}
+				continue
 			}
+			pass.Confirmed++
 			continue
 		}
 		// Still pending (calendar not yet Bitcoin-confirmed) or a transport fault:
 		// record a backed-off retry so the row re-surfaces once NextRetry elapses.
 		attempts := r.Attempts + 1
-		if err := st.MarkOTSAttempted(ctx, r.HubID, r.TreeSize, r.Root, attempts, now.Add(backoff(attempts))); err != nil {
-			logger.ErrorContext(ctx, "ots mark attempted failed", "hub_id", r.HubID, "tree_size", r.TreeSize, "err", err)
+		markErr := st.MarkOTSAttempted(ctx, r.HubID, r.TreeSize, r.Root, attempts, now.Add(backoff(attempts)))
+		if markErr != nil {
+			logger.ErrorContext(ctx, "ots mark attempted failed", "hub_id", r.HubID, "tree_size", r.TreeSize, "err", markErr)
 			if firstErr == nil {
-				firstErr = err
+				firstErr = markErr
 			}
+		}
+		if markErr != nil || upErr != nil {
+			pass.Failed++
+		} else {
+			pass.Pending++
 		}
 		if upErr != nil {
 			logger.ErrorContext(ctx, "ots upgrade failed", "hub_id", r.HubID, "tree_size", r.TreeSize, "err", upErr)
@@ -193,5 +217,5 @@ func OTSTick(ctx context.Context, st *store.Store, stamper Stamper, up Upgrader,
 			}
 		}
 	}
-	return firstErr
+	return pass, firstErr
 }

@@ -14,7 +14,7 @@ testnet test instance at **`monitor-test.iscc.io`** on an existing DigitalOcean 
 The monitor is configured entirely through environment variables. CLAUDE.md's
 [Running a local dev instance](../CLAUDE.md#running-a-local-dev-instance) section
 is the **authoritative env-var table** (`ISCC_MONITOR_DB`, `ISCC_MONITOR_REALM`,
-the `NORMAL`/`FROZEN`/`ADDR` cadence + bind, the optional masthead identity
+the `NORMAL`/`FROZEN`/`OTS_INTERVAL`/`ADDR` cadence + bind, the optional masthead identity
 keys, and the operator co-branding keys described under [Branding](#branding)). This
 doc references those keys but does not duplicate the table, so the two
 cannot drift.
@@ -153,7 +153,8 @@ The monitor makes outbound **HTTPS** connections to:
 - **Each realm hub's `/.well-known/did.json`** — did:web key resolution (ADR-0009);
   the hub's signing key comes from its did:web document, not the realm registry.
 - **The OpenTimestamps calendar `https://alice.btc.calendar.opentimestamps.org`**
-  (ADR-0004) — for Bitcoin-anchor timestamping of checkpoint roots.
+  (ADR-0004) — for Bitcoin-anchor timestamping of checkpoint roots. The monitor contacts it at
+  startup and then every `ISCC_MONITOR_OTS_INTERVAL` (default 1h); each pass logs one `ots pass` line.
 
 There is **no fixed IP allow-list**: hub egress is per-realm DNS and changes as the
 realm membership changes. DigitalOcean droplets default-allow outbound egress, so this

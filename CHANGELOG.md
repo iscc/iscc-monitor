@@ -36,7 +36,9 @@ from `monitor-test.iscc.io` and `monitor.iscc.io`.
   each hub's last confirmed anchor and the entries it covers. A certificate shows the earliest confirmed
   anchor that covers its record, with a download of that anchor's proof and the `ots verify` command to
   check it, and the proof bundle carries the evidence that ties the record to that anchor.
-  `checkpoint.ots?size=N` serves the proof of an earlier root.
+  `checkpoint.ots?size=N` serves the proof of an earlier root. The monitor submits new roots to the
+  calendar and checks them for confirmation at startup and then hourly (`ISCC_MONITOR_OTS_INTERVAL`), and
+  logs one summary line per pass ([#6](https://github.com/iscc/iscc-monitor/issues/6)).
 - **API and operations:** OpenAPI 3.1 contract with hosted reference docs, Prometheus metrics, health and
   build-version endpoints, a non-root container image, and an operator guide
   ([`deploy/OPERATING.md`](deploy/OPERATING.md)).
@@ -60,10 +62,8 @@ from `monitor-test.iscc.io` and `monitor.iscc.io`.
   back across a migration means restoring the pre-upgrade snapshot, which loses what was observed since.
 - **New hubs need a restart:** Hub-List changes apply hourly, but following a newly added hub still requires
   a restart ([#5](https://github.com/iscc/iscc-monitor/issues/5)).
-- **Bitcoin anchoring cadence:** every newly accepted root is stamped, rather than the newest root once a
-  day as ADR-0004 specifies. Confirmation works but usually takes one to two and a half days and has taken
-  up to five, because the check runs daily and not at startup
-  ([#6](https://github.com/iscc/iscc-monitor/issues/6)).
+- **Bitcoin anchoring selection:** every newly accepted root is stamped, rather than the newest root once a
+  day as ADR-0004 specifies ([#6](https://github.com/iscc/iscc-monitor/issues/6)).
 - **Verifier site scope:** the standalone site checks Merkle proofs but not the hub's signature on the
   checkpoint, and it ignores the bundle's Bitcoin anchor, which `ots verify` checks.
 - **Split views:** detected only when a client compares its view against a monitor. Monitor gossip and

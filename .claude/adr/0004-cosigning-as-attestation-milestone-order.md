@@ -82,7 +82,10 @@ hub's latest accepted `(size, root)` and `RecordOTS`-es it (deduped). The existi
 background OTS loop (`OTSTick`: calendar-submit the empty-sentinel rows, then upgrade pending
 → Bitcoin-confirmed) is unchanged — only **where the pending row is created** moves. The
 simplest landing folds the daily pass into the existing 24 h OTS loop tick; decoupling the
-anchor cadence (daily) from a future faster *upgrade* cadence stays possible.
+anchor cadence (daily) from a future faster *upgrade* cadence stays possible. *(Note 2026-11-07: that
+decoupling happened first. The OTS loop now runs at startup and every `ISCC_MONITOR_OTS_INTERVAL`,
+default 1h (#6), so the daily pass needs its own once-a-day schedule; folding it into the loop tick would
+anchor hourly.)*
 
 **Unchanged.** OTS remains best-effort and **never blocks the follower** (the core of this
 ADR). The `.ots` route, certificate §5, and the `Confirmed`/`ConfirmedFor` classifiers are

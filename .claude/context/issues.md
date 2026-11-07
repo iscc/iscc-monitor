@@ -186,10 +186,9 @@ filed it and does **not** affect priority.
   2. **Add a daily anchor pass:** once per day, for each **non-frozen** followed hub, read its **latest
      accepted `(size, root)`** (e.g. `ListHubs` → `Frozen`/`LastSize`, then `CheckpointAt(hubID, LastSize)`
      → root) and `RecordOTS` it (deduped). A frozen hub is **not** anchored (PRD freeze rule: "no
-     advance/anchor/OTS"). The simplest landing folds this pass into the existing 24 h OTS loop tick
-     (`runOTSLoop` / `OTSTick`, `cmd/iscc-monitor/main.go:236` / `internal/follower/otsloop.go`) — run
-     "anchor latest non-frozen roots" before the stamp/upgrade sweep; decoupling the anchor cadence from a
-     future faster *upgrade* cadence stays possible.
+     advance/anchor/OTS"). The OTS loop (`runOTSLoop` / `OTSTick`) now runs at startup and every
+     `ISCC_MONITOR_OTS_INTERVAL` (default 1h, #6), so this pass needs its own once-a-day schedule (for
+     example a per-hub "anchored today" check); folding it into the loop tick would anchor hourly.
   The background OTS loop (`OTSTick`: calendar-submit the empty-`ots_bytes` sentinel rows, then upgrade
   pending → Bitcoin-confirmed) is **unchanged** — only **where the pending row is created** moves.
   **Backward-compatible — NO schema change, NO DB reset:** the `ots` table is untouched; existing rows

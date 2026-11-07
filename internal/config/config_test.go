@@ -29,14 +29,16 @@ func fromMap(m map[string]string) func(string) (string, bool) {
 func TestLoadGolden(t *testing.T) {
 	// A full input round-trips every field verbatim.
 	get := fromMap(map[string]string{
-		keyDB:        "/var/lib/iscc-monitor/testnet.db",
-		keyRealm:     "/etc/iscc-monitor/realm.txt",
-		keyNormal:    "30s",
-		keyFrozen:    "10m",
-		keyAddr:      "127.0.0.1:41234",
-		keyInstance:  "monitor.iscc.id",
-		keyOperator:  "ISCC Foundation",
-		keyRealmName: "ISCC mainnet",
+		keyDB:     "/var/lib/iscc-monitor/testnet.db",
+		keyRealm:  "/etc/iscc-monitor/realm.txt",
+		keyNormal: "30s",
+		keyFrozen: "10m",
+		keyAddr:   "127.0.0.1:41234",
+
+		keyOTSInterval: "30m",
+		keyInstance:    "monitor.iscc.id",
+		keyOperator:    "ISCC Foundation",
+		keyRealmName:   "ISCC mainnet",
 
 		keyOperatorName: "Example GmbH",
 		keyOperatorURL:  "https://example.com/",
@@ -53,9 +55,11 @@ func TestLoadGolden(t *testing.T) {
 		Normal:    30 * time.Second,
 		Frozen:    10 * time.Minute,
 		Addr:      "127.0.0.1:41234",
-		Instance:  "monitor.iscc.id",
-		Operator:  "ISCC Foundation",
-		RealmName: "ISCC mainnet",
+
+		OTSInterval: 30 * time.Minute,
+		Instance:    "monitor.iscc.id",
+		Operator:    "ISCC Foundation",
+		RealmName:   "ISCC mainnet",
 
 		OperatorName: "Example GmbH",
 		OperatorURL:  "https://example.com/",
@@ -72,7 +76,7 @@ func TestLoadGolden(t *testing.T) {
 
 func TestLoadDefaults(t *testing.T) {
 	// A minimal input with only the two required paths loads with the documented
-	// default intervals (Normal=5m, Frozen=1h).
+	// default intervals (Normal=5m, Frozen=1h, OTSInterval=1h).
 	get := fromMap(map[string]string{
 		keyDB:    "/data/mainnet.db",
 		keyRealm: "/data/realm.txt",
@@ -87,9 +91,14 @@ func TestLoadDefaults(t *testing.T) {
 		Normal:    defaultNormal,
 		Frozen:    defaultFrozen,
 		Addr:      defaultAddr,
+
+		OTSInterval: defaultOTSInterval,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Load(minimal) = %#v, want %#v", got, want)
+	}
+	if got.OTSInterval != time.Hour {
+		t.Errorf("Load(minimal) OTSInterval = %s, want default 1h", got.OTSInterval)
 	}
 	if got.Addr != ":9464" {
 		t.Errorf("Load(minimal) Addr = %q, want default %q", got.Addr, ":9464")
@@ -112,48 +121,53 @@ func TestLoad(t *testing.T) {
 		{
 			name: "only normal overridden, frozen defaults",
 			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyNormal: "1m"},
-			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: time.Minute, Frozen: defaultFrozen, Addr: defaultAddr},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: time.Minute, Frozen: defaultFrozen, OTSInterval: defaultOTSInterval, Addr: defaultAddr},
 		},
 		{
 			name: "only frozen overridden, normal defaults",
 			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyFrozen: "2h"},
-			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: 2 * time.Hour, Addr: defaultAddr},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: 2 * time.Hour, OTSInterval: defaultOTSInterval, Addr: defaultAddr},
 		},
 		{
 			name: "frozen equal to normal is accepted",
 			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyNormal: "15m", keyFrozen: "15m"},
-			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: 15 * time.Minute, Frozen: 15 * time.Minute, Addr: defaultAddr},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: 15 * time.Minute, Frozen: 15 * time.Minute, OTSInterval: defaultOTSInterval, Addr: defaultAddr},
 		},
 		{
 			name: "addr overridden, intervals default",
 			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyAddr: ":40080"},
-			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, Addr: ":40080"},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, OTSInterval: defaultOTSInterval, Addr: ":40080"},
 		},
 		{
 			name: "empty addr falls back to default",
 			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyAddr: ""},
-			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, Addr: defaultAddr},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, OTSInterval: defaultOTSInterval, Addr: defaultAddr},
 		},
 		{
 			name: "only instance identity set, operator and realm name stay empty",
 			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyInstance: "monitor.example"},
-			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, Addr: defaultAddr, Instance: "monitor.example"},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, OTSInterval: defaultOTSInterval, Addr: defaultAddr, Instance: "monitor.example"},
 		},
 		{
 			name: "only realm name set, distinct from realm path",
 			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyRealmName: "ISCC mainnet"},
-			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, Addr: defaultAddr, RealmName: "ISCC mainnet"},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, OTSInterval: defaultOTSInterval, Addr: defaultAddr, RealmName: "ISCC mainnet"},
+		},
+		{
+			name: "ots interval overridden",
+			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyOTSInterval: "15m"},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, OTSInterval: 15 * time.Minute, Addr: defaultAddr},
 		},
 		{
 			name: "operator name alone needs no url or logo",
 			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyOperatorName: "Example GmbH"},
-			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, Addr: defaultAddr, OperatorName: "Example GmbH"},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, OTSInterval: defaultOTSInterval, Addr: defaultAddr, OperatorName: "Example GmbH"},
 		},
 		{
 			name: "footer links trim whitespace, skip empty pairs, accept mailto, keep = in a query",
 			in: map[string]string{keyDB: "/db", keyRealm: "/realm",
 				keyFooterLinks: " Contact = mailto:info@example.com | | Terms=https://example.com/t?lang=en |"},
-			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, Addr: defaultAddr,
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, OTSInterval: defaultOTSInterval, Addr: defaultAddr,
 				FooterLinks: []Link{
 					{Label: "Contact", URL: "mailto:info@example.com"},
 					{Label: "Terms", URL: "https://example.com/t?lang=en"},
@@ -218,6 +232,16 @@ func TestLoadErrors(t *testing.T) {
 			name:    "negative frozen interval",
 			in:      map[string]string{keyDB: "/db", keyRealm: "/realm", keyFrozen: "-1m"},
 			wantKey: keyFrozen,
+		},
+		{
+			name:    "unparseable ots interval",
+			in:      map[string]string{keyDB: "/db", keyRealm: "/realm", keyOTSInterval: "hourly"},
+			wantKey: keyOTSInterval,
+		},
+		{
+			name:    "non-positive ots interval",
+			in:      map[string]string{keyDB: "/db", keyRealm: "/realm", keyOTSInterval: "0s"},
+			wantKey: keyOTSInterval,
 		},
 		{
 			name:    "frozen shorter than normal",

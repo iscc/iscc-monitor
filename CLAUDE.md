@@ -79,6 +79,10 @@ The monitor is a single binary (`cmd/iscc-monitor`) configured entirely through 
 - `ISCC_MONITOR_NORMAL` (optional, default `5m`) — clean-hub poll interval.
 - `ISCC_MONITOR_FROZEN` (optional, default `1h`) — frozen-hub evidence-only re-poll interval; must be
   `>= NORMAL` (the freeze back-off, ADR-0006).
+- `ISCC_MONITOR_OTS_INTERVAL` (optional, default `1h`) — how often the OpenTimestamps pass submits pending
+  roots to the calendar and checks them for Bitcoin confirmation. It also runs once at startup, and each pass
+  logs one `ots pass` line with the roots stamped, confirmed, still pending and failed. A per-root back-off
+  (1h, doubling, capped at 24h) limits how often the calendar is asked about one root.
 - `ISCC_MONITOR_ADDR` (optional, default `:9464`) — HTTP listen address.
 - `ISCC_MONITOR_INSTANCE` (optional) — this instance's domain, rendered on the server-rendered
   masthead. Empty falls back to the static placeholder copy.

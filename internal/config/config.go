@@ -21,6 +21,9 @@
 //	ISCC_MONITOR_NORMAL optional — clean-hub poll interval (default 5m).
 //	ISCC_MONITOR_FROZEN optional — frozen-hub backed-off poll interval, the
 //	                    evidence-only re-poll cadence (ADR-0006); default 1h.
+//	ISCC_MONITOR_OTS_INTERVAL optional — how often the OpenTimestamps pass submits
+//	                    pending roots to the calendar and checks them for Bitcoin
+//	                    confirmation (default 1h). It runs once at startup too.
 //	ISCC_MONITOR_ADDR   optional — listen address for the /metrics HTTP server;
 //	                    default :9464.
 //	ISCC_MONITOR_INSTANCE   optional — this instance's domain, rendered on the
@@ -71,6 +74,8 @@ const (
 	keyNormal = "ISCC_MONITOR_NORMAL"
 	keyFrozen = "ISCC_MONITOR_FROZEN"
 	keyAddr   = "ISCC_MONITOR_ADDR"
+
+	keyOTSInterval = "ISCC_MONITOR_OTS_INTERVAL"
 )
 
 // Instance-identity key names: the optional operator-supplied display strings
@@ -107,6 +112,12 @@ const (
 	defaultFrozen = time.Hour
 )
 
+// defaultOTSInterval is the OpenTimestamps pass cadence when ISCC_MONITOR_OTS_INTERVAL
+// is absent. A calendar usually has a root's Bitcoin attestation within hours, and the
+// per-root retry back-off (internal/follower) keeps the calendar requests of an hourly
+// pass low.
+const defaultOTSInterval = time.Hour
+
 // defaultAddr is the listen address for the /metrics HTTP server when
 // ISCC_MONITOR_ADDR is absent: an exotic non-standard port per the project port
 // convention, fixed so the same deployment reuses it across restarts.
@@ -115,8 +126,9 @@ const defaultAddr = ":9464"
 // Config is the validated, typed startup configuration for the monitor binary.
 // DBPath is the single network's SQLite file (ADR-0007), RealmPath the on-disk
 // realm-membership document, Normal/Frozen the follower loop's poll intervals
-// (Frozen >= Normal encodes the freeze back-off, ADR-0006), and Addr the listen
-// address for the /metrics HTTP server (default :9464).
+// (Frozen >= Normal encodes the freeze back-off, ADR-0006), OTSInterval the
+// OpenTimestamps pass cadence, and Addr the listen address for the /metrics HTTP
+// server (default :9464).
 //
 // Instance, Operator, and RealmName are the optional free-form masthead-identity
 // display strings (empty when their keys are unset); the binary builds the shared
@@ -132,6 +144,7 @@ type Config struct {
 	RealmPath    string
 	Normal       time.Duration
 	Frozen       time.Duration
+	OTSInterval  time.Duration
 	Addr         string
 	Instance     string
 	Operator     string
@@ -154,9 +167,9 @@ type Link struct {
 // get(key) returns a value and whether the key was present (the closure the
 // binary builds from os.LookupEnv has this shape). DBPath and RealmPath are
 // required: an absent or empty value yields a wrapped error naming the missing
-// key. The intervals default to Normal=5m and Frozen=1h when absent, are parsed
-// with time.ParseDuration (an unparseable value is wrapped and named, never
-// swallowed), and must each be positive. The cross-check Frozen >= Normal is
+// key. The intervals default to Normal=5m, Frozen=1h and OTSInterval=1h when
+// absent, are parsed with time.ParseDuration (an unparseable value is wrapped and
+// named, never swallowed), and must each be positive. The cross-check Frozen >= Normal is
 // enforced so the loop's freeze back-off (loop.go due()) actually backs a frozen
 // hub off; a Frozen < Normal config is rejected. The co-branding values are
 // validated as described in the package documentation.
@@ -184,6 +197,10 @@ func Load(get func(key string) (string, bool)) (Config, error) {
 	if frozen < normal {
 		return Config{}, fmt.Errorf("config: %q (%s) must be >= %q (%s): freeze cadence backs off, never speeds up", keyFrozen, frozen, keyNormal, normal)
 	}
+	otsInterval, err := duration(get, keyOTSInterval, defaultOTSInterval)
+	if err != nil {
+		return Config{}, err
+	}
 	addr := optional(get, keyAddr, defaultAddr)
 	instance := optional(get, keyInstance, "")
 	operator := optional(get, keyOperator, "")
@@ -208,6 +225,7 @@ func Load(get func(key string) (string, bool)) (Config, error) {
 		RealmPath:    realmPath,
 		Normal:       normal,
 		Frozen:       frozen,
+		OTSInterval:  otsInterval,
 		Addr:         addr,
 		Instance:     instance,
 		Operator:     operator,

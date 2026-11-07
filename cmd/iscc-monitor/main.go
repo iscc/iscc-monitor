@@ -84,16 +84,6 @@ var reservedMountNames = map[string]struct{}{
 	strings.TrimPrefix(openapi.YAMLPath, "/"): {},
 }
 
-// otsUpgradeInterval is the cadence of the background OpenTimestamps upgrade loop:
-// how often runOTSLoop asks the calendar whether each pending stamped root has been
-// Bitcoin-confirmed yet. Daily matches the milestone ("upgrade loop … pending ->
-// Bitcoin-confirmed") and the reality of Bitcoin confirmation latency — a root takes
-// hours to confirm, so polling a calendar more often only spams it (OTSTick's own
-// per-row back-off further spaces retries). It is deliberately decoupled from the
-// follower's poll intervals: OTS is best-effort and NEVER blocks the follower
-// (ADR-0004), so it runs on its own goroutine off the poll path at its own cadence.
-const otsUpgradeInterval = 24 * time.Hour
-
 // reservedDomain reports whether a realm domain cannot be safely mounted: it is
 // empty/whitespace (the dossier would mount the exact "/", colliding with the
 // dashboard) or a reserved mount name (its exact "/"+domain dossier mount would
@@ -179,7 +169,7 @@ func run() error {
 
 	m := metrics.New()
 	go serveMetrics(ctx, cfg.Addr, st, routes, resolver, m, site(cfg, logo), logger)
-	go runOTSLoop(ctx, st, stampFunc(), otsclient.NewUpgrader(), logger)
+	go runOTSLoop(ctx, st, stampFunc(), otsclient.NewUpgrader(), cfg.OTSInterval, logger)
 	go runRealmRefresh(ctx, cfg.RealmPath, httpGetBytes, resolver, logger)
 
 	loop := &follower.Loop{
@@ -226,33 +216,41 @@ func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hu
 }
 
 // runOTSLoop drives the background OpenTimestamps stamp-then-upgrade loop until ctx
-// is cancelled: on every otsUpgradeInterval tick it calls follower.OTSTick(ctx, st,
-// stamper, upgrader, t, logger), which first submits any not-yet-stamped pending
-// root's digest to a calendar (through the real otsclient Stamper) and then asks the
-// calendar (through the real otsclient Upgrader) whether each stamped root has been
-// Bitcoin-confirmed, either records the confirmation or backs the row off. It is the
-// first production caller of follower.OTSTick, the sibling of serveMetrics: started
-// in its own background goroutine off the follower's poll path so OTS is best-effort
-// and NEVER blocks the follower (ADR-0004) — the calendar HTTP round-trips happen
-// here, never on the poll path. A non-nil OTSTick result is logged and the loop
-// continues — the documented never-block / log-and-continue discipline (identical to
-// loop.go's Run), so a flaky calendar pass never aborts the loop or freezes a hub.
-// The ticker is defer-stopped and the loop exits cleanly on ctx cancellation
-// (SIGINT). The ticker's t is the injected now, so OTSTick stays wall-clock-free and
-// testable.
-func runOTSLoop(ctx context.Context, st *store.Store, stamper follower.Stamper, upgrader follower.Upgrader, logger *slog.Logger) {
-	ticker := time.NewTicker(otsUpgradeInterval)
+// is cancelled. It runs otsPass once at startup, so a restart never postpones pending
+// anchors, and then on every interval tick (ISCC_MONITOR_OTS_INTERVAL, default 1h).
+// Each pass submits not-yet-stamped roots to the calendar (the otsclient Stamper) and
+// asks whether each stamped root is Bitcoin-confirmed (the otsclient Upgrader),
+// recording the confirmation or backing the row off. The loop runs in its own
+// goroutine off the follower's poll path, so OTS is best-effort and NEVER blocks the
+// follower (ADR-0004): a failed pass is logged and the loop continues, never freezing
+// a hub. The ticker's t is the injected now, so OTSTick stays wall-clock-free. The
+// per-row back-off persisted in the store, not the interval, bounds how often the
+// calendar is asked about one root, so frequent passes and restarts never flood it.
+func runOTSLoop(ctx context.Context, st *store.Store, stamper follower.Stamper, upgrader follower.Upgrader, interval time.Duration, logger *slog.Logger) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	otsPass(ctx, st, stamper, upgrader, time.Now(), interval, logger)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case t := <-ticker.C:
-			if err := follower.OTSTick(ctx, st, stamper, upgrader, t, logger); err != nil {
-				logger.ErrorContext(ctx, "ots upgrade tick failed", "err", err)
-			}
+			otsPass(ctx, st, stamper, upgrader, t, interval, logger)
 		}
 	}
+}
+
+// otsPass runs one follower.OTSTick at now and logs one INFO line with what the pass
+// did and when the next one runs, so operators can see the anchoring progress. A
+// failed pass is logged as an error too; it never stops the loop.
+func otsPass(ctx context.Context, st *store.Store, stamper follower.Stamper, upgrader follower.Upgrader, now time.Time, interval time.Duration, logger *slog.Logger) {
+	pass, err := follower.OTSTick(ctx, st, stamper, upgrader, now, logger)
+	if err != nil {
+		logger.ErrorContext(ctx, "ots pass had failures", "err", err)
+	}
+	logger.InfoContext(ctx, "ots pass",
+		"stamped", pass.Stamped, "confirmed", pass.Confirmed, "pending", pass.Pending, "failed", pass.Failed,
+		"next", now.Add(interval).UTC().Format(time.RFC3339))
 }
 
 // stampFunc builds the production follower.Stamper: a closure over otsclient.Stamp
@@ -400,9 +398,8 @@ func logoMatches(data []byte, contentType string) bool {
 }
 
 // realmRefreshInterval is how often runRealmRefresh re-fetches the realm Hub-List
-// to pick up membership/slot changes without a redeploy (the hourly poll). It
-// mirrors otsUpgradeInterval's const-not-config shape: an operational cadence, not
-// a tuned knob.
+// to pick up membership/slot changes without a redeploy (the hourly poll). It is a
+// const, not config: an operational cadence, not a tuned knob.
 const realmRefreshInterval = time.Hour
 
 // realmFetchTimeout bounds a single Hub-List fetch so a hung remote never stalls

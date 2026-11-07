@@ -96,7 +96,7 @@ func TestOTSTickConfirms(t *testing.T) {
 
 	proof := []byte("bitcoin-confirmed-ots-proof-blob")
 	const height = int64(870_123)
-	if err := OTSTick(ctx, s, noStamper(t), confirmingUpgrader(proof, height), otsNow(), nil); err != nil {
+	if _, err := OTSTick(ctx, s, noStamper(t), confirmingUpgrader(proof, height), otsNow(), nil); err != nil {
 		t.Fatalf("OTSTick: %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestOTSTickDeclinesBacksOff(t *testing.T) {
 	root := seedPendingOTS(t, s, hubID, 100, "ots-decline-target-root-pad-32by")
 
 	now := otsNow()
-	if err := OTSTick(ctx, s, noStamper(t), decliningUpgrader(), now, nil); err != nil {
+	if _, err := OTSTick(ctx, s, noStamper(t), decliningUpgrader(), now, nil); err != nil {
 		t.Fatalf("OTSTick (decline): %v", err)
 	}
 
@@ -162,7 +162,7 @@ func TestOTSTickDeclinesBacksOff(t *testing.T) {
 
 	// At the same now the backed-off row is excluded, so a second OTSTick is a no-op
 	// (Attempts stays 1).
-	if err := OTSTick(ctx, s, noStamper(t), decliningUpgrader(), now, nil); err != nil {
+	if _, err := OTSTick(ctx, s, noStamper(t), decliningUpgrader(), now, nil); err != nil {
 		t.Fatalf("OTSTick (same now): %v", err)
 	}
 	got, _, err = s.OTSForRoot(ctx, hubID, 100, root)
@@ -175,7 +175,7 @@ func TestOTSTickDeclinesBacksOff(t *testing.T) {
 
 	// At now+backoff the row re-surfaces and a third OTSTick bumps Attempts to 2.
 	later := wantRetry
-	if err := OTSTick(ctx, s, noStamper(t), decliningUpgrader(), later, nil); err != nil {
+	if _, err := OTSTick(ctx, s, noStamper(t), decliningUpgrader(), later, nil); err != nil {
 		t.Fatalf("OTSTick (after backoff): %v", err)
 	}
 	got, _, err = s.OTSForRoot(ctx, hubID, 100, root)
@@ -229,7 +229,7 @@ func TestOTSTickErrorBacksOffAndContinues(t *testing.T) {
 		return UpgradeResult{Confirmed: true, OTSBytes: proof, BTCHeight: 42}, nil
 	}
 
-	err = OTSTick(ctx, s, noStamper(t), up, otsNow(), nil)
+	_, err = OTSTick(ctx, s, noStamper(t), up, otsNow(), nil)
 	if err == nil {
 		t.Fatalf("OTSTick returned nil, want the wrapped transport fault")
 	}
@@ -282,7 +282,7 @@ func TestOTSStampThenUpgrade(t *testing.T) {
 	const calendars = "https://alice.btc.calendar.opentimestamps.org"
 	// confirmingUpgrader would confirm, but the stamp branch continues before reaching
 	// it on this pass — so a stamp-then-skip-upgrade leaves the row pending, not confirmed.
-	if err := OTSTick(ctx, s, fakeStamper(stampedProof, calendars), confirmingUpgrader([]byte("ignored"), 1), otsNow(), nil); err != nil {
+	if _, err := OTSTick(ctx, s, fakeStamper(stampedProof, calendars), confirmingUpgrader([]byte("ignored"), 1), otsNow(), nil); err != nil {
 		t.Fatalf("OTSTick (stamp): %v", err)
 	}
 	got, found, err := s.OTSForRoot(ctx, hubID, 100, root)
@@ -302,7 +302,7 @@ func TestOTSStampThenUpgrade(t *testing.T) {
 	// Second pass: the now-stamped row reaches the Upgrader and confirms.
 	confirmedProof := []byte("bitcoin-confirmed-upgraded-proof!")
 	const height = int64(880_456)
-	if err := OTSTick(ctx, s, fakeStamper(stampedProof, calendars), confirmingUpgrader(confirmedProof, height), otsNow(), nil); err != nil {
+	if _, err := OTSTick(ctx, s, fakeStamper(stampedProof, calendars), confirmingUpgrader(confirmedProof, height), otsNow(), nil); err != nil {
 		t.Fatalf("OTSTick (upgrade): %v", err)
 	}
 	got, found, err = s.OTSForRoot(ctx, hubID, 100, root)
@@ -345,7 +345,7 @@ func TestOTSStampBacksOff(t *testing.T) {
 	}
 
 	now := otsNow()
-	err = OTSTick(ctx, s, stamper, up, now, nil)
+	_, err = OTSTick(ctx, s, stamper, up, now, nil)
 	if err == nil {
 		t.Fatalf("OTSTick returned nil, want the wrapped stamp fault")
 	}
@@ -388,7 +388,7 @@ func TestOTSTickNoPending(t *testing.T) {
 		return UpgradeResult{}, nil
 	}
 	// nil Stamper here also exercises the nil-tolerant skip (no panic over an empty index).
-	if err := OTSTick(ctx, s, nil, up, otsNow(), nil); err != nil {
+	if _, err := OTSTick(ctx, s, nil, up, otsNow(), nil); err != nil {
 		t.Fatalf("OTSTick over empty index: %v", err)
 	}
 	if called {
@@ -422,5 +422,48 @@ func TestOTSBackoff(t *testing.T) {
 			t.Errorf("backoff(%d) = %v < previous %v (not monotonic)", c.attempts, got, prev)
 		}
 		prev = got
+	}
+}
+
+// TestOTSTickCountsOutcomes drives one pass over five due rows, one per outcome, and
+// asserts the returned OTSPass counts each: a successful stamp, a confirmation, a
+// still-pending check, and a failed stamp plus a failed upgrade check. (Mutation:
+// dropping any counter increment, or counting a fault as pending, changes the tally.)
+func TestOTSTickCountsOutcomes(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	seedNotStampedOTS(t, s, hubID, 100, "ots-count-stamp-ok-root-padding!")
+	failRoot := seedNotStampedOTS(t, s, hubID, 200, "ots-count-stamp-fail-root-paddng")
+	seedPendingOTS(t, s, hubID, 300, "ots-count-confirm-root-padding-!")
+	seedPendingOTS(t, s, hubID, 400, "ots-count-pending-root-padding-!")
+	seedPendingOTS(t, s, hubID, 500, "ots-count-upgrade-fail-root-pad!")
+
+	stamper := func(_ context.Context, root [32]byte) ([]byte, string, error) {
+		if string(root[:]) == string(failRoot) {
+			return nil, "", errors.New("calendar unreachable")
+		}
+		return []byte("calendar-pending-ots-proof-blob!"), "https://calendar.example", nil
+	}
+	up := func(_ context.Context, r store.OTSRecord) (UpgradeResult, error) {
+		switch r.TreeSize {
+		case 300:
+			return UpgradeResult{Confirmed: true, OTSBytes: []byte("confirmed-proof"), BTCHeight: 1}, nil
+		case 500:
+			return UpgradeResult{}, errors.New("calendar unreachable")
+		}
+		return UpgradeResult{}, nil
+	}
+
+	pass, err := OTSTick(ctx, s, stamper, up, otsNow(), nil)
+	if err == nil {
+		t.Errorf("OTSTick returned nil, want the first fault")
+	}
+	want := OTSPass{Stamped: 1, Confirmed: 1, Pending: 1, Failed: 2}
+	if pass != want {
+		t.Errorf("OTSTick pass = %+v, want %+v", pass, want)
 	}
 }
