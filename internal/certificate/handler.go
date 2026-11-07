@@ -36,13 +36,17 @@
 // accepted-tree seqs the hub indexed under the subject id (the declaration and any
 // later deletion), each labelled by its verbatim note.$schema kind — a store read
 // with no crypto path, so it renders unconditionally for a certifiable id. §5 BITCOIN
-// ANCHOR surfaces the OpenTimestamps anchor state of the §2 accepted root from the
-// mirrored OTS row (store.OTSForRoot classified via ots.ConfirmedFor, which BINDS the
-// proof's committed digest to §2's root): a Bitcoin-confirmed root shows the confirming
-// block height, a still-pending (calendar-asserted) root shows the honest "pending"
-// state, and an un-anchored root (no OTS row, the empty-bytes sentinel, an unparseable
-// proof, or a proof whose digest does not commit to §2's root) omits §5 — never an
-// error (ADR-0001 / ADR-0004: OTS never faults a surface). The COMPARISON ANCHOR panel reframes §2's accepted
+// ANCHOR first looks for the earliest confirmed anchor whose log state includes the
+// subject leaf (coveringAnchor): it shows that anchor's block, the size it covers and
+// a link to its .ots, but only after checking a checkpoint was accepted at that size,
+// the proof commits to its root (ots.ConfirmedFor), and the leaf's inclusion proof
+// against that older root verifies. Without such an anchor
+// §5 falls back to the OpenTimestamps state of the §2 accepted root (store.OTSForRoot,
+// bound the same way): a Bitcoin-confirmed root shows the confirming block height, a
+// still-pending (calendar-asserted) root shows the honest "pending" state, and an
+// un-anchored root (no OTS row, the empty-bytes sentinel, an unparseable proof, or a
+// proof whose digest does not commit to §2's root) omits §5 — never an error (ADR-0001
+// / ADR-0004: OTS never faults a surface). The COMPARISON ANCHOR panel reframes §2's accepted
 // (size, root) as the monitor's own independently-observed record of what this hub
 // showed THIS monitor — the artifact a client checks its own (size, root) against to
 // detect a split view (CLAUDE.md "Comparison anchor") — bounded by the coverage window
@@ -53,15 +57,17 @@
 //
 // The downloadable proof bundle is served at GET /inclusion/{iscc_id}.bundle: a
 // self-contained JSON artifact {checkpoint (verbatim signed-note text), inclusion
-// proof (IsccLogInclusionProof-shaped), record bytes, hub key} a client verifies on
-// its own (the Proof-bundle / Verifiable-cache contract — removing the monitor from
-// the trust path). It is offered ONLY when the §3 re-verification succeeded (the same
-// fail-closed gate as the §3 ✓): the certificate's "Download proof bundle" action is
-// an enabled link to .bundle when HasBundle, the disabled placeholder otherwise, and a
-// .bundle request for a non-certifiable id is an honest 200 {error:…}, never a
-// fabricated bundle. The OTS member (§5) is omitted until the OTS store seam exists.
-// The bundle reuses buildData's §3 crypto path verbatim (the verified proof + record
-// bytes it already computed), so it never re-derives Merkle.
+// proof (IsccLogInclusionProof-shaped), record bytes, hub key, anchor} a client
+// verifies on its own (the Proof-bundle / Verifiable-cache contract — removing the
+// monitor from the trust path). It is offered ONLY when the §3 re-verification
+// succeeded (the same fail-closed gate as the §3 ✓): the certificate's "Download proof
+// bundle" action is an enabled link to .bundle when HasBundle, the disabled
+// placeholder otherwise, and a .bundle request for a non-certifiable id is an honest
+// 200 {error:…}, never a fabricated bundle. The anchor member carries §5's covering
+// anchor (the checkpoint at the anchored size, the leaf's inclusion proof against it,
+// its signing key and the .ots) and is present only when §5 renders one. The bundle
+// reuses buildData's §3 and §5 crypto paths verbatim (the verified proofs + record
+// bytes they already computed), so it never re-derives Merkle.
 //
 // Fail-closed / coverage-honesty discipline (ADR-0001): every "cannot certify"
 // branch — a malformed id, an id resolving to no listed slot, a resolved domain
@@ -81,14 +87,17 @@ package certificate
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -340,6 +349,19 @@ type certData struct {
 	// template renders it conditionally, mirroring SigningKeyRevoked's zero-time guard).
 	// Meaningful only when HasClause5 && BTCConfirmed.
 	BTCConfirmedAt string
+	// AnchorSize is the size of the log state §5's confirmed anchor timestamps: the
+	// earliest confirmed state that includes the subject leaf (coveringAnchor). It is
+	// usually smaller than CheckpointSize, because a growing hub's accepted root is
+	// younger than a confirmation takes. Meaningful only when AnchorOTSHref is set.
+	AnchorSize uint64
+	// AnchorRootHex is that state's root in hex, the digest `ots verify -d` checks the
+	// downloaded proof against. Meaningful only when AnchorOTSHref is set.
+	AnchorRootHex string
+	// AnchorOTSHref links the OpenTimestamps proof of that state
+	// (/<domain>/log/checkpoint.ots?size=<AnchorSize>). It is set only when §5 renders
+	// a covering anchor whose checks passed; empty when §5 shows the accepted root's
+	// own state (pending, or confirmed without the covering checks).
+	AnchorOTSHref string
 
 	// CoverageSize is the monitor's coverage-start tree size for this hub
 	// (HubSummary.Coverage.Size, monitored_since_size), the lower bound of the window
@@ -373,7 +395,9 @@ type certData struct {
 	// (proof.VerifyInclusion succeeds, so the rendered ✓ is true by construction);
 	// HasClause4 when the key that signed the accepted checkpoint is found in the
 	// hub_keys cache (an honest cache-miss decline leaves it false, never a fabricated
-	// key); HasClause5 when the accepted root has a mirrored OpenTimestamps proof with
+	// key); HasClause5 when a confirmed anchor whose log state includes the subject leaf
+	// passed coveringAnchor's checks, or else when the accepted root has a mirrored
+	// OpenTimestamps proof with
 	// non-empty bytes that ots.ConfirmedFor could classify AND whose committed digest
 	// equals that root (confirmed → BTCHeight, pending → the honest "pending" state); an
 	// un-anchored root (no OTS row, the empty-bytes sentinel, a proof ots.ConfirmedFor
@@ -458,6 +482,38 @@ type bundleArtifacts struct {
 	// omits the key member rather than emit an empty one.
 	key    store.HubKey
 	hasKey bool
+	// anchor is the evidence behind §5's covering anchor, nil when §5 renders none.
+	// serveBundle emits it as the bundle's anchor member.
+	anchor *anchorArtifacts
+}
+
+// anchorArtifacts is the evidence behind §5's covering anchor: the checkpoint the
+// monitor accepted at the anchored size (raw signed note and root), the subject
+// leaf's inclusion proof against that root, the Bitcoin-attested OpenTimestamps proof
+// of that root with its block height and the time this monitor saw it confirm, and
+// the cached key that signed the checkpoint (nil when not cached).
+type anchorArtifacts struct {
+	size   uint64
+	root   []byte
+	raw    []byte
+	proof  [][]byte
+	ots    []byte
+	height int64
+	seenAt time.Time
+	key    *bundleKey
+}
+
+// bundleAnchor is the proof bundle's Bitcoin-anchor member. It has the shape of the
+// bundle's top level (checkpoint, inclusion, key) for the anchored log state, plus
+// that state's OpenTimestamps proof, so a client runs the same signature and
+// inclusion checks against it and then `ots verify` against the checkpoint's root.
+// The record is the bundle's top-level record: a leaf's bytes never change as the
+// log grows.
+type bundleAnchor struct {
+	Checkpoint string                      `json:"checkpoint"`
+	Inclusion  logclient.InclusionEvidence `json:"inclusion"`
+	Key        *bundleKey                  `json:"key,omitempty"`
+	OTS        string                      `json:"ots"`
 }
 
 // bundleKey is the proof bundle's signing-key member: the BE-uint32 key id (hex), the
@@ -489,9 +545,9 @@ type bundleHub struct {
 //
 // The Inclusion member is shaped exactly like logclient.InclusionEvidence (the hub's
 // IsccLogInclusionProof VC evidence member), so it feeds straight into
-// logclient.VerifyInclusionEvidence — the external-oracle cross-check. The OTS /
-// Bitcoin-anchor member (§5) is omitted until the OTS store seam exists; it is never
-// fabricated.
+// logclient.VerifyInclusionEvidence — the external-oracle cross-check. The Anchor
+// member carries §5's covering Bitcoin anchor and is present only when §5 renders one
+// whose checks passed; it is never fabricated.
 type proofBundle struct {
 	IsccID     string                      `json:"iscc_id"`
 	Hub        bundleHub                   `json:"hub"`
@@ -499,6 +555,7 @@ type proofBundle struct {
 	Inclusion  logclient.InclusionEvidence `json:"inclusion"`
 	Record     string                      `json:"record"`
 	Key        *bundleKey                  `json:"key,omitempty"`
+	Anchor     *bundleAnchor               `json:"anchor,omitempty"`
 }
 
 // bundleSuffix marks a bundle request: GET /inclusion/<id>.bundle returns the
@@ -627,10 +684,6 @@ func serveBundle(w http.ResponseWriter, data certData, arts bundleArtifacts) {
 		return
 	}
 
-	encoded := make([]string, len(arts.builtProof))
-	for i, h := range arts.builtProof {
-		encoded[i] = base64.StdEncoding.EncodeToString(h)
-	}
 	bundle := proofBundle{
 		IsccID: data.IsccID,
 		Hub: bundleHub{
@@ -638,24 +691,19 @@ func serveBundle(w http.ResponseWriter, data certData, arts bundleArtifacts) {
 			DID:    didWeb(data.Domain),
 		},
 		Checkpoint: string(arts.raw),
-		Inclusion: logclient.InclusionEvidence{
-			Type:           "IsccLogInclusionProof",
-			Checkpoint:     string(arts.raw),
-			TreeSize:       data.CheckpointSize,
-			LeafIndex:      data.Position,
-			InclusionProof: encoded,
-		},
-		Record: base64.StdEncoding.EncodeToString(arts.record),
+		Inclusion:  inclusionEvidence(arts.raw, data.CheckpointSize, data.Position, arts.builtProof),
+		Record:     base64.StdEncoding.EncodeToString(arts.record),
 	}
 	if arts.hasKey {
-		key := &bundleKey{
-			ID:        fmt.Sprintf("%08x", arts.keyID),
-			Multibase: arts.key.PubkeyZ,
+		bundle.Key = newBundleKey(arts.keyID, arts.key)
+	}
+	if a := arts.anchor; a != nil {
+		bundle.Anchor = &bundleAnchor{
+			Checkpoint: string(a.raw),
+			Inclusion:  inclusionEvidence(a.raw, a.size, data.Position, a.proof),
+			Key:        a.key,
+			OTS:        base64.StdEncoding.EncodeToString(a.ots),
 		}
-		if !arts.key.Revoked.IsZero() {
-			key.Revoked = arts.key.Revoked.UTC().Format(time.RFC3339)
-		}
-		bundle.Key = key
 	}
 	// The filename drops the "ISCC:" prefix because Windows filenames cannot hold a colon.
 	w.Header().Set("Content-Disposition", `attachment; filename="`+strings.TrimPrefix(data.IsccID, "ISCC:")+`.bundle.json"`)
@@ -664,6 +712,98 @@ func serveBundle(w http.ResponseWriter, data certData, arts bundleArtifacts) {
 	// shape cannot fail to marshal for content reasons, and a mid-write fault cannot
 	// un-send the 200.
 	_ = json.NewEncoder(w).Encode(bundle)
+}
+
+// inclusionEvidence builds an IsccLogInclusionProof-shaped member for the leaf at
+// index against the signed checkpoint raw at size.
+func inclusionEvidence(raw []byte, size, index uint64, proof [][]byte) logclient.InclusionEvidence {
+	return logclient.InclusionEvidence{
+		Type:           "IsccLogInclusionProof",
+		Checkpoint:     string(raw),
+		TreeSize:       size,
+		LeafIndex:      index,
+		InclusionProof: encodeHashes(proof),
+	}
+}
+
+// encodeHashes base64-Std encodes proof hashes, the encoding every proof surface
+// shares (verify-for-me, the certificate page and the bundle).
+func encodeHashes(hashes [][]byte) []string {
+	out := make([]string, len(hashes))
+	for i, h := range hashes {
+		out[i] = base64.StdEncoding.EncodeToString(h)
+	}
+	return out
+}
+
+// newBundleKey renders a cached did:web key as the bundle's key member, with the
+// revocation instant only when the key carries one.
+func newBundleKey(keyID uint32, key store.HubKey) *bundleKey {
+	k := &bundleKey{ID: fmt.Sprintf("%08x", keyID), Multibase: key.PubkeyZ}
+	if !key.Revoked.IsZero() {
+		k.Revoked = key.Revoked.UTC().Format(time.RFC3339)
+	}
+	return k
+}
+
+// signingKey returns the cached did:web key that signed the checkpoint raw. found is
+// false when raw carries no well-framed signature line or the key is not cached: an
+// honest decline, never a fabricated key (ADR-0009). err is a store fault.
+func signingKey(ctx context.Context, st *store.Store, hubID int64, raw []byte) (keyID uint32, key store.HubKey, found bool, err error) {
+	_, keyID, kerr := logclient.KeyIDFromCheckpoint(raw)
+	if kerr != nil {
+		return 0, store.HubKey{}, false, nil
+	}
+	key, found, err = st.LookupHubKey(ctx, hubID, keyID)
+	return keyID, key, found, err
+}
+
+// coveringAnchor returns the evidence for the earliest confirmed Bitcoin anchor whose
+// log state includes the leaf at seq (store.EarliestConfirmedOTS), once three checks
+// pass: the monitor accepted a checkpoint at the anchored size, the OpenTimestamps
+// proof commits to that checkpoint's root and is Bitcoin-attested (ots.ConfirmedFor),
+// and the leaf's inclusion proof against that root, rebuilt from the mirror, verifies
+// over record. Every check uses the accepted checkpoint's root, never the OTS row's
+// key, so a mis-keyed row can only fail a check. A failed check or a mirror gap
+// returns nil, so §5 falls back to the accepted root's own anchor state; only a store
+// fault or a non-gap proof-build error is returned as an error (§3's split).
+//
+// The covering state is usually older than the accepted one: a hub that grows daily
+// gets a new root before the previous one can confirm, so the accepted root alone
+// would leave every certificate on that hub "pending". An anchor of an older state
+// proves the leaf existed by its block, because the leaf is in that state.
+func coveringAnchor(ctx context.Context, st *store.Store, f store.SQLiteFetcher, hubID int64, seq uint64, record []byte) (*anchorArtifacts, error) {
+	rec, found, err := st.EarliestConfirmedOTS(ctx, hubID, seq)
+	if err != nil || !found {
+		return nil, err
+	}
+	root, raw, found, err := st.CheckpointAt(ctx, hubID, rec.TreeSize)
+	if err != nil || !found {
+		return nil, err
+	}
+	confirmed, height, err := ots.ConfirmedFor(rec.OTSBytes, root)
+	if err != nil || !confirmed {
+		return nil, nil
+	}
+	proof, err := logclient.InclusionProofFromTiles(ctx, f.ReadTile, seq, rec.TreeSize)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if ok, _ := verify.VerifyInclusion(record, seq, rec.TreeSize, proof, root); !ok {
+		return nil, nil
+	}
+	anchor := &anchorArtifacts{size: rec.TreeSize, root: root, raw: raw, proof: proof, ots: rec.OTSBytes, height: height, seenAt: rec.UpgradedAt}
+	keyID, key, found, err := signingKey(ctx, st, hubID, raw)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		anchor.key = newBundleKey(keyID, key)
+	}
+	return anchor, nil
 }
 
 // buildData runs the decode→resolve→store-lookup chain for rawID and returns the
@@ -709,7 +849,11 @@ func serveBundle(w http.ResponseWriter, data certData, arts bundleArtifacts) {
 //     (malformed sig line) or a cache miss leaves §4 unrendered (an honest "key not
 //     yet resolved" decline, never a fabricated key — ADR-0009 did:web is the only key
 //     source); only a real LookupHubKey DB fault is a 500 (buffered before any 200).
-//  9. For a certifiable id, surface the §5 BITCOIN ANCHOR of the §2 accepted root:
+//  9. For a certifiable id whose §3 rendered, look for the earliest confirmed anchor
+//     whose log state includes the subject leaf (coveringAnchor) and, when its three
+//     checks pass, render it in §5 with the covered size and the .ots link and carry it
+//     into the bundle; a store fault there is a 500. Otherwise surface the §5 BITCOIN
+//     ANCHOR of the §2 accepted root:
 //     read the mirrored OTS row (OTSForRoot keyed on the §2 root bytes) and classify a
 //     non-empty proof via ots.ConfirmedFor, which BINDS the proof's committed digest to
 //     the §2 root so §5 vouches the anchor only for a proof that provably commits to
@@ -907,11 +1051,7 @@ func buildData(r *http.Request, hubList registry.HubResolver, st *store.Store, r
 				// a SILENT decline of §3 (the proof did not rebuild the accepted root),
 				// never a 500 — the certificate can decline a clause.
 				if ok, _ := verify.VerifyInclusion(record, data.Position, hub.LastSize, builtProof, root); ok {
-					hashes := make([]string, len(builtProof))
-					for i, h := range builtProof {
-						hashes[i] = base64.StdEncoding.EncodeToString(h)
-					}
-					data.ProofHashes = hashes
+					data.ProofHashes = encodeHashes(builtProof)
 					data.HasClause3 = true
 					// Carry the base64-Std record for the tier-2 in-browser verifier: the
 					// certificate's <script> feeds it (with CheckpointRoot, ProofHashes,
@@ -949,34 +1089,57 @@ func buildData(r *http.Request, hubList registry.HubResolver, st *store.Store, r
 	// decline, NOT a 500 and NOT a fabricated key (the same discipline as §3's honest
 	// tile-gap). Only a real LookupHubKey DB fault is a 500 (buffered before any 200).
 	if data.HasClause2 {
-		if _, keyID, err := logclient.KeyIDFromCheckpoint(raw); err == nil {
-			key, found4, err := st.LookupHubKey(r.Context(), hub.HubID, keyID)
-			if err != nil {
-				return certData{}, arts, http.StatusInternalServerError
+		keyID, key, found4, err := signingKey(r.Context(), st, hub.HubID, raw)
+		if err != nil {
+			return certData{}, arts, http.StatusInternalServerError
+		}
+		if found4 {
+			data.SigningKeyDID = didWeb(data.Domain)
+			data.SigningKeyID = fmt.Sprintf("%08x", keyID)
+			data.SigningKeyMultibase = key.PubkeyZ
+			if !key.Revoked.IsZero() {
+				data.SigningKeyRevoked = key.Revoked.UTC().Format(time.RFC3339)
 			}
-			if found4 {
-				data.SigningKeyDID = didWeb(data.Domain)
-				data.SigningKeyID = fmt.Sprintf("%08x", keyID)
-				data.SigningKeyMultibase = key.PubkeyZ
-				if !key.Revoked.IsZero() {
-					data.SigningKeyRevoked = key.Revoked.UTC().Format(time.RFC3339)
-				}
-				data.HasClause4 = true
-				// Carry the cached key for the proof bundle's key member (the same
-				// cache hit §4 renders). When no key is cached the bundle omits the
-				// member rather than fabricate one (ADR-0009: did:web is the only key
-				// source), so the bundle's key clause mirrors the §4 honest decline.
-				arts.keyID = keyID
-				arts.key = key
-				arts.hasKey = true
-			}
+			data.HasClause4 = true
+			// Carry the cached key for the proof bundle's key member (the same
+			// cache hit §4 renders). When no key is cached the bundle omits the
+			// member rather than fabricate one (ADR-0009: did:web is the only key
+			// source), so the bundle's key clause mirrors the §4 honest decline.
+			arts.keyID = keyID
+			arts.key = key
+			arts.hasKey = true
 		}
 	}
 
-	// §5 BITCOIN ANCHOR: surface the OpenTimestamps anchor state of the §2 accepted
-	// root from the mirrored OTS row (store.OTSForRoot, keyed on the same
+	// §5 BITCOIN ANCHOR, first choice: the earliest confirmed anchor whose log state
+	// includes the subject leaf (coveringAnchor), shown with the size it covers and a
+	// link to its proof, and carried into the bundle. It needs the record §3 verified,
+	// so it is tried only when §3 rendered. Every check failing falls through to the
+	// accepted root's own state below.
+	if data.HasClause3 {
+		anchor, err := coveringAnchor(r.Context(), st, f, hub.HubID, data.Position, arts.record)
+		if err != nil {
+			return certData{}, arts, http.StatusInternalServerError
+		}
+		if anchor != nil {
+			data.HasClause5 = true
+			data.BTCConfirmed = true
+			data.BTCHeight = anchor.height
+			if !anchor.seenAt.IsZero() {
+				data.BTCConfirmedAt = anchor.seenAt.UTC().Format(time.RFC3339)
+			}
+			data.AnchorSize = anchor.size
+			data.AnchorRootHex = hex.EncodeToString(anchor.root)
+			data.AnchorOTSHref = "/" + data.Domain + "/log/checkpoint.ots?size=" + strconv.FormatUint(anchor.size, 10)
+			arts.anchor = anchor
+		}
+	}
+
+	// §5 BITCOIN ANCHOR, fallback: surface the OpenTimestamps anchor state of the §2
+	// accepted root from the mirrored OTS row (store.OTSForRoot, keyed on the same
 	// (hub_id, tree_size, root) the .ots route and the stamp loop use — root is §2's
-	// raw CheckpointAt bytes, NOT the base64 CheckpointRoot string). The clause is
+	// raw CheckpointAt bytes, NOT the base64 CheckpointRoot string). This is what a
+	// leaf no confirmed anchor covers yet shows, typically "pending". The clause is
 	// meaningful only alongside §2 (it anchors §2's root), so it renders inside the
 	// HasClause2 guard. Three honest, fail-closed states (ADR-0001 / ADR-0004: OTS
 	// never crashes a surface):
@@ -998,7 +1161,7 @@ func buildData(r *http.Request, hubList registry.HubResolver, st *store.Store, r
 	//     awaiting Bitcoin confirmation), never an error (target.md: a not-yet-anchored
 	//     root renders the normal "pending" state). Only a genuine OTSForRoot DB fault is
 	//     a 500 (buffered before any 200, like every other clause).
-	if data.HasClause2 {
+	if data.HasClause2 && !data.HasClause5 {
 		rec, found, err := st.OTSForRoot(r.Context(), hub.HubID, hub.LastSize, root)
 		if err != nil {
 			return certData{}, arts, http.StatusInternalServerError
@@ -1015,7 +1178,9 @@ func buildData(r *http.Request, hubList registry.HubResolver, st *store.Store, r
 				}
 			}
 		}
+	}
 
+	if data.HasClause2 {
 		// COMPARISON ANCHOR: the monitor's independently-observed record of the
 		// (size, root) this hub showed THIS monitor — the artifact a client checks its
 		// own (size, root) against to detect a split view (CLAUDE.md "Comparison

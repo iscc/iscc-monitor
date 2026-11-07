@@ -183,9 +183,10 @@ func resolveIdentity(id dashboard.Identity) (instance, operator string) {
 // single accepted leaf from the hub's mirrored entry bundles and serving them
 // verbatim as application/octet-stream.
 //
-// It also handles GET /checkpoint.ots — serving the mirrored OpenTimestamps proof
-// for the hub's accepted (size, root) verbatim as application/octet-stream, so a
-// client can fetch it and run the standard ots toolchain against it.
+// It also handles GET /checkpoint.ots[?size=N] — serving the mirrored OpenTimestamps
+// proof for the hub's accepted (size, root), or for an earlier accepted size,
+// verbatim as application/octet-stream, so a client can fetch it and run the
+// standard ots toolchain against it.
 //
 // It handles GET /verify?iscc_id=<id> — the weaker verify-for-me path that
 // returns a single self-contained JSON verdict (the caller trusts the verdict
@@ -502,16 +503,24 @@ func serveEntries(w http.ResponseWriter, r *http.Request, st *store.Store, f sto
 // this route never parses or classifies them, so proofserve stays off the
 // non-WASM-pure internal/ots / internal/otsclient closure (learnings/otsclient.md).
 //
+// An optional ?size=N selects an earlier accepted (size, root) instead, so a
+// certificate can link the proof of the anchor that covers an older entry: on a hub
+// that grows daily the accepted root is younger than a confirmation takes, so its
+// own proof is almost always still pending. Only sizes up to the accepted size are
+// served, and the proof is keyed on the root the monitor recorded at that size, so a
+// rejected checkpoint (which is never stamped) can never surface here.
+//
 // Status mapping: a FollowState DB error → 500; no accepted checkpoint yet
 // (LastSize == 0) → 404 "no accepted checkpoint" (there is no root to anchor —
-// coverage honesty, ADR-0001); a CheckpointAt read error → 500, and a
-// CheckpointAt found==false at the accepted size is the same real store
-// inconsistency serveVerify maps to 500; an OTSForRoot read error → 500. An
-// un-anchored root — OTSForRoot miss OR a row carrying the empty-OTSBytes sentinel
-// (stamped but not yet calendar-submitted, so no servable proof exists) — is a 404
-// "root not yet anchored" (the honest pending state, NOT a 5xx). Serving zero bytes
-// would hand the client an unparseable .ots, so the empty-sentinel row is treated
-// exactly as an absent row.
+// coverage honesty, ADR-0001); a non-numeric size → 400; a size above the accepted
+// size → 404; a CheckpointAt read error → 500. A CheckpointAt found==false at the
+// accepted size is the same real store inconsistency serveVerify maps to 500, while
+// at a requested earlier size it is a 404 (the monitor never accepted that size). An
+// OTSForRoot read error → 500. An un-anchored root — OTSForRoot miss OR a row
+// carrying the empty-OTSBytes sentinel (stamped but not yet calendar-submitted, so no
+// servable proof exists) — is a 404 "root not yet anchored" (the honest pending
+// state, NOT a 5xx). Serving zero bytes would hand the client an unparseable .ots, so
+// the empty-sentinel row is treated exactly as an absent row.
 func serveOTS(w http.ResponseWriter, r *http.Request, st *store.Store, hubID int64) {
 	ctx := r.Context()
 
@@ -527,14 +536,30 @@ func serveOTS(w http.ResponseWriter, r *http.Request, st *store.Store, hubID int
 		http.Error(w, "no accepted checkpoint", http.StatusNotFound)
 		return
 	}
+	requested := r.URL.Query().Has("size")
+	if requested {
+		n, err := parseUint(r.URL.Query().Get("size"))
+		if err != nil {
+			http.Error(w, "non-numeric size", http.StatusBadRequest)
+			return
+		}
+		if n > size {
+			http.Error(w, "size exceeds accepted tree size", http.StatusNotFound)
+			return
+		}
+		size = n
+	}
 
-	// The accepted root is the RFC-6962 tree head the monitor vouches for at the
-	// accepted size; it is the digest the OpenTimestamps proof is keyed on. A missing
-	// checkpoint row at the accepted size is a real store inconsistency (the same fault
-	// serveVerify maps to 500), never a 404.
+	// The root is the RFC-6962 tree head the monitor recorded at that size; it is the
+	// digest the OpenTimestamps proof is keyed on. A missing row at the accepted size
+	// is a real store inconsistency (the same fault serveVerify maps to 500).
 	root, _, found, err := st.CheckpointAt(ctx, hubID, size)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !found && requested {
+		http.Error(w, "no checkpoint at size", http.StatusNotFound)
 		return
 	}
 	if !found {

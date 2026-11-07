@@ -169,10 +169,13 @@ After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSO
   leaf's seq, kind label (declaration / deletion / unknown schema, the only interpretation), verbatim
   ISCC-ID and `note.$schema`, and raw record bytes.
 - `GET /<domain>/log/checkpoint` — mirrored signed checkpoint (e.g. `/sb0.iscc.id/log/checkpoint`).
-- `GET /<domain>/log/checkpoint.ots` — mirrored OpenTimestamps proof for the accepted `(size, root)`,
-  served verbatim as `application/octet-stream` so a client can run the standard `ots` toolchain against
-  it (404 "root not yet anchored" while the root is unstamped or not yet calendar-submitted). A different
-  artifact from the raw `/checkpoint` signed note: the `.ots` is the Bitcoin-anchor timestamp proof.
+- `GET /<domain>/log/checkpoint.ots[?size=N]` — mirrored OpenTimestamps proof for the accepted
+  `(size, root)`, or for the root accepted at an earlier size `N`, served verbatim as
+  `application/octet-stream` so a client can run the standard `ots` toolchain against it (404 "root not yet
+  anchored" while the root is unstamped or not yet calendar-submitted). A different artifact from the raw
+  `/checkpoint` signed note: the `.ots` is the Bitcoin-anchor timestamp proof. Certificate §5 links the
+  `?size=N` proof of the earliest confirmed anchor that covers its record, and the proof bundle carries
+  that anchor as its `anchor` member.
 - `GET /<domain>/log/tile/...` — raw mirrored tlog-tiles BLOBs.
 - `GET /<domain>/log/entries?index=<seq>` — single-leaf record bytes from the local mirror.
 - `GET /<domain>/log/inclusion?iscc_id=<id>[&index=<n>]` — computed inclusion proof.

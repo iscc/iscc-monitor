@@ -470,7 +470,9 @@
             <span class="clause-dot{{if .BTCConfirmed}} clause-dot-confirmed{{end}}"></span>
             <span class="clause-mono">{{if .BTCConfirmed}}block {{.BTCHeight}}{{if .BTCConfirmedAt}} · seen confirmed {{.BTCConfirmedAt}}{{end}}{{else}}pending — calendar-asserted, awaiting Bitcoin confirmation{{end}}</span>
           </div>
-          <div class="clause-note">Timestamped with OpenTimestamps.</div>
+          {{if .AnchorOTSHref}}<div class="clause-mono">log state · size {{.AnchorSize}}</div>
+          <div class="clause-note">Timestamped with OpenTimestamps. This record is part of the log state at size {{.AnchorSize}}, so it existed by this block. To check it yourself, download <a href="{{.AnchorOTSHref}}" download>checkpoint.ots</a> and run:</div>
+          <div class="clause-mono">ots verify -d {{.AnchorRootHex}} checkpoint.ots</div>{{else}}<div class="clause-note">Timestamped with OpenTimestamps.</div>{{end}}
         </div>
       </div>
       {{end}}

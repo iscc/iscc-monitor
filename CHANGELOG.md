@@ -29,7 +29,10 @@ from `monitor-test.iscc.io` and `monitor.iscc.io`.
 - **In-browser verification:** a reproducible, hash-pinned WebAssembly verifier, used on certificate pages
   and by the standalone verifier site at `monitor.iscc.codes`.
 - **Bitcoin anchoring:** OpenTimestamps proofs for checkpoint roots. The realm register and hub pages show
-  each hub's last confirmed anchor and the entries it covers.
+  each hub's last confirmed anchor and the entries it covers. A certificate shows the earliest confirmed
+  anchor that covers its record, with a download of that anchor's proof and the `ots verify` command to
+  check it, and the proof bundle carries the evidence that ties the record to that anchor.
+  `checkpoint.ots?size=N` serves the proof of an earlier root.
 - **API and operations:** OpenAPI 3.1 contract with hosted reference docs, Prometheus metrics, health and
   build-version endpoints, a non-root container image, and an operator guide
   ([`deploy/OPERATING.md`](deploy/OPERATING.md)).
@@ -57,11 +60,8 @@ from `monitor-test.iscc.io` and `monitor.iscc.io`.
   day as ADR-0004 specifies. Confirmation works but usually takes one to two and a half days and has taken
   up to five, because the check runs daily and not at startup
   ([#6](https://github.com/iscc/iscc-monitor/issues/6)).
-- **Bitcoin evidence on certificates:** a certificate, its proof bundle and the `checkpoint.ots` download
-  cover only the hub's newest root. On a hub that receives entries daily they rarely show a confirmed block,
-  even when an older confirmed anchor covers the entry.
 - **Verifier site scope:** the standalone site checks Merkle proofs but not the hub's signature on the
-  checkpoint.
+  checkpoint, and it ignores the bundle's Bitcoin anchor, which `ots verify` checks.
 - **Split views:** detected only when a client compares its view against a monitor. Monitor gossip and
   witness cosigning are not included.
 - **Baked testnet realm:** the image's fallback realm document names hosts that no longer serve, so set

@@ -114,7 +114,7 @@
     },
     "/inclusion/{iscc_id}.bundle": {
       "get": {
-        "description": "Returns a self-contained proof bundle — the hub-signed checkpoint, the inclusion proof, the record bytes, the hub key, and an OTS proof when anchored — that a client verifies on its own, removing the monitor from the trust path (the authoritative tier-2 path). The id is the self-describing ISCC-IDv1; the issuing hub is resolved realm-wide. The bundle is offered only when the monitor re-verified the inclusion proof against the accepted root; a non-certifiable id is an honest 200 \"no proof bundle available\", never a fabricated bundle and never a 5xx.",
+        "description": "Returns a self-contained proof bundle — the hub-signed checkpoint, the inclusion proof, the record bytes and the hub key — that a client verifies on its own, removing the monitor from the trust path (the authoritative tier-2 path). When a confirmed Bitcoin anchor covers the record, an `anchor` member adds the earliest such anchor: the hub-signed checkpoint at the anchored size, the record's inclusion proof against it, that checkpoint's key, and the base64 OpenTimestamps proof of its root (`ots`). The id is the self-describing ISCC-IDv1; the issuing hub is resolved realm-wide. The bundle is offered only when the monitor re-verified the inclusion proof against the accepted root; a non-certifiable id is an honest 200 \"no proof bundle available\", never a fabricated bundle and never a 5xx.",
         "operationId": "getProofBundle",
         "parameters": [
           {
@@ -274,11 +274,21 @@
     },
     "/{domain}/log/checkpoint.ots": {
       "get": {
-        "description": "Returns the OpenTimestamps proof for the accepted `(size, root)`, served verbatim as an opaque byte stream so a client can run the standard `ots` toolchain against it. A different artifact from the signed `/checkpoint` note: this is the Bitcoin-anchor timestamp proof.",
+        "description": "Returns the OpenTimestamps proof for the accepted `(size, root)`, or with `size` for the root the monitor accepted at that earlier size, served verbatim as an opaque byte stream so a client can run the standard `ots` toolchain against it (`ots verify -d <root hex> checkpoint.ots`). A different artifact from the signed `/checkpoint` note: this is the Bitcoin-anchor timestamp proof.",
         "operationId": "getCheckpointOTS",
         "parameters": [
           {
             "$ref": "#/components/parameters/Domain"
+          },
+          {
+            "description": "An earlier accepted tree size whose root's proof to return. A hub that grows daily usually has a pending proof for its newest root and confirmed proofs for earlier ones.",
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -293,8 +303,11 @@
             },
             "description": "The OpenTimestamps proof bytes."
           },
+          "400": {
+            "description": "A non-numeric `size`."
+          },
           "404": {
-            "description": "No accepted checkpoint yet, or the root is not yet anchored."
+            "description": "No accepted checkpoint yet, `size` exceeds the accepted size or was never accepted, or the root is not yet anchored."
           }
         },
         "summary": "Mirrored OpenTimestamps proof for the accepted root.",

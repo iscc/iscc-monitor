@@ -133,6 +133,24 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   Bitcoin confirmation"). `internal/ots` is NOT WASM-pure but certificate is server-side only.
   - settled: digest-binding CLOSED + five states pinned (`TestCertificateBitcoinAnchor*`, oracle height
     358391 — git history).
+  - **settled (2026-11-07): §5 tries the COVERING anchor first, the accepted root's state is the fallback.**
+    On a hub that grows daily the accepted root is always younger than a confirmation takes (mainnet
+    `amlet.id`: 2,247/2,249 roots confirmed, newest root confirmed 0 of 336 hours), so reading only it left
+    every certificate "pending". `coveringAnchor` takes `store.EarliestConfirmedOTS(hub, seq)` (smallest
+    confirmed `tree_size > seq`, index order) and renders it only after THREE checks: a checkpoint was
+    accepted at that size, `ots.ConfirmedFor` binds the proof to THAT checkpoint's root (never the row's
+    key, so no separate row-root comparison is needed), and the leaf's inclusion proof AT THE ANCHORED SIZE
+    (rebuilt from the mirror, reusing §3's record) verifies against it.
+    Inclusion-at-size, not a consistency proof: it ties the leaf to the anchored root directly, and the
+    mirror keeps every polled size's partial hash tiles (PK includes `width`), so it is always buildable —
+    probe on the 2026-11-06 backup: 7,149/7,149 proofs over all 2,383 confirmed anchors. Any failed check →
+    nil → fallback (pending); store faults / non-gap build errors → 500 (§3's split). Tried only when §3
+    rendered (it needs `arts.record`). The page shows `log state · size N`, a `download` link to
+    `/<domain>/log/checkpoint.ots?size=N` and `ots verify -d <root hex> checkpoint.ots` (flag confirmed in
+    `otsclient/args.py`); the bundle gains `anchor {checkpoint, inclusion, key?, ots}` (top-level shape, so
+    a client reuses its checks). Fixture trap: `anchoredFixture` re-mirrors the accepted size LAST (the
+    follower's order) so a mirror write that drops narrower partial rows fails `TestCertificateCoveringAnchor`
+    — see the partial-rows entry in `issues.md` for the safe cleanup.
 
 - **COMPARISON ANCHOR is §2's `(size, root)` reframed as the monitor's own observation — a SEPARATE,
   distinctly-labelled element from §5, NOT Bitcoin.** Set `data.HasComparisonAnchor = true` inside the

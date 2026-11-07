@@ -22,8 +22,9 @@ this surface shares live in `learnings/dashboard.md` (read both).
   §4 reads the hub's newest CONFIRMED anchor, not its newest root (GitHub #2, see `dashboard.md`), and
   `AnchorHeight` renders ONLY when `> 0` (`HasAnchorHeight`) so a NULL/zero never reads as "block 0".
   `anchorLabel` switches on `store.OTSStatus*` consts, never literals; label is grayscale-safe, dot decorative
-  (ADR-0010 inv.4). §4 and certificate §5 do not mention `ots verify` until a proof can be downloaded from
-  the page (`.claude/context/issues.md`). The §5 "anchored · block N" line still needs the newest root confirmed.
+  (ADR-0010 inv.4). §4 does not mention `ots verify`: the dossier offers no proof to run it on. Certificate
+  §5 does, next to the covering anchor's `.ots` link (`learnings/certificate.md`). The §5 "anchored · block N"
+  line still needs the newest root confirmed.
 - **settled (advance `244d450`): the §3 observed-time subselect is `AND c.tree_size = f.last_size ORDER BY
   c.id ASC LIMIT 1` — §3 always reads the ACCEPTED checkpoint's time on a frozen hub, both the
   equivocation/higher-size case and the same-size FORK.** Violation kinds are size-partitioned

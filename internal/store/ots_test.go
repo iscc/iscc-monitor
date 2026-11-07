@@ -1,5 +1,6 @@
-// Tests for the typed OTS-table CRUD helpers (RecordOTS, OTSForRoot, PendingOTS,
-// MarkOTSStamped, MarkOTSUpgraded, MarkOTSAttempted). Each drives the public method
+// Tests for the typed OTS-table CRUD helpers (RecordOTS, OTSForRoot,
+// EarliestConfirmedOTS, PendingOTS, MarkOTSStamped, MarkOTSUpgraded,
+// MarkOTSAttempted). Each drives the public method
 // against a t.TempDir() database (via openTemp from checkpoints_test.go) and asserts
 // on observable rows / return values — never on Store internals. The assertions are
 // mutation-targeted: the dedupe id check breaks if DO NOTHING becomes a plain
@@ -11,6 +12,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -643,5 +645,75 @@ func TestMarkOTSAttemptedZeroNextRetryNull(t *testing.T) {
 		t.Fatalf("PendingOTS: %v", err)
 	} else if len(pending) != 1 {
 		t.Errorf("PendingOTS with NULL next_retry returned %d rows, want 1", len(pending))
+	}
+}
+
+// TestEarliestConfirmedOTS asserts the anchor lookup a certificate uses for one leaf:
+// the smallest confirmed log state that includes the leaf (tree_size > seq). A state
+// that ends at the leaf does not include it, a pending row never counts, another hub's
+// rows never leak in, and a leaf no confirmed anchor covers is a plain miss.
+func TestEarliestConfirmedOTS(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	hubID, err := s.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	other, err := s.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub other: %v", err)
+	}
+	seenAt := time.Unix(1_700_100_000, 0)
+	// Inserted out of size order so the result cannot fall out of insertion order.
+	rows := []OTSRecord{
+		{HubID: hubID, TreeSize: 7, Status: OTSStatusConfirmed, BTCHeight: 700},
+		{HubID: hubID, TreeSize: 5, Status: OTSStatusConfirmed, BTCHeight: 500, UpgradedAt: seenAt},
+		{HubID: hubID, TreeSize: 3, Status: OTSStatusPending},
+		{HubID: hubID, TreeSize: 2, Status: OTSStatusConfirmed, BTCHeight: 200},
+		{HubID: other, TreeSize: 4, Status: OTSStatusConfirmed, BTCHeight: 400},
+	}
+	for _, r := range rows {
+		r.Root = []byte(fmt.Sprintf("root-%d-%d", r.HubID, r.TreeSize))
+		r.OTSBytes = []byte(fmt.Sprintf("proof-%d", r.TreeSize))
+		if _, _, err := s.RecordOTS(ctx, r); err != nil {
+			t.Fatalf("RecordOTS size %d: %v", r.TreeSize, err)
+		}
+	}
+
+	cases := []struct {
+		seq      uint64
+		wantSize uint64 // 0 means no confirmed anchor covers the leaf
+	}{
+		{seq: 0, wantSize: 2},
+		{seq: 1, wantSize: 2},
+		{seq: 2, wantSize: 5}, // size 2 ends before leaf 2, size 3 is pending
+		{seq: 4, wantSize: 5},
+		{seq: 5, wantSize: 7},
+		{seq: 7, wantSize: 0},
+	}
+	for _, tc := range cases {
+		got, found, err := s.EarliestConfirmedOTS(ctx, hubID, tc.seq)
+		if err != nil {
+			t.Fatalf("EarliestConfirmedOTS(seq %d): %v", tc.seq, err)
+		}
+		if tc.wantSize == 0 {
+			if found {
+				t.Errorf("seq %d: found anchor at size %d, want none", tc.seq, got.TreeSize)
+			}
+			continue
+		}
+		if !found || got.TreeSize != tc.wantSize {
+			t.Errorf("seq %d: found=%t size %d, want size %d", tc.seq, found, got.TreeSize, tc.wantSize)
+		}
+	}
+
+	// The whole row comes back, so the caller can bind the proof to its root.
+	got, _, err := s.EarliestConfirmedOTS(ctx, hubID, 4)
+	if err != nil {
+		t.Fatalf("EarliestConfirmedOTS: %v", err)
+	}
+	if got.HubID != hubID || string(got.Root) != fmt.Sprintf("root-%d-5", hubID) || string(got.OTSBytes) != "proof-5" ||
+		got.BTCHeight != 500 || got.Status != OTSStatusConfirmed || !got.UpgradedAt.Equal(seenAt) {
+		t.Errorf("row = %+v, want the size-5 row in full", got)
 	}
 }

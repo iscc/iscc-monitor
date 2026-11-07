@@ -764,6 +764,39 @@ func fixtureStoreTiled(t *testing.T, indexDomain, indexedID string, seq uint64, 
 		}
 	}
 
+	ingestMirror(t, st, target, tree, size)
+
+	if err := st.RecordProjections(ctx, []store.ProjectionRecord{
+		{HubID: target, Seq: seq, IsccID: "ISCC:" + indexedID, NoteSchema: "iscc-note-0.8.0.json"},
+	}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+	// Accept the checkpoint at acceptedRoot (tree.Hash() for the clean fixture, a
+	// divergent root for the frozen-after-fork case), so the accepted-tree cap
+	// certifies the leaf and §2 renders that root. AdvanceAccepted sets LastSize.
+	if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+		HubID:    target,
+		TreeSize: size,
+		Root:     acceptedRoot,
+		Raw:      checkpointRaw,
+	}); err != nil {
+		t.Fatalf("AdvanceAccepted: %v", err)
+	}
+	if freeze {
+		if err := st.Freeze(ctx, target); err != nil {
+			t.Fatalf("Freeze: %v", err)
+		}
+	}
+	return st, tree
+}
+
+// ingestMirror records the hash tiles and entry bundles a poll at size mirrors for
+// tree, byte-accurate against it. Called once per observed size, as the follower
+// does, it leaves each size's partial tiles in place next to the others, so a proof
+// against an earlier size can still be rebuilt.
+func ingestMirror(t *testing.T, st *store.Store, target int64, tree *testonly.Tree, size uint64) {
+	t.Helper()
+	ctx := context.Background()
 	// Ingest every hash tile the mirror needs, byte-accurate against the tree. Each
 	// tile's bottom row spans tree nodes at tree-level (tileLevel*TileHeight); a node
 	// off the right edge (its leaves all >= size) is omitted, so a partial tile holds
@@ -811,29 +844,6 @@ func fixtureStoreTiled(t *testing.T, indexDomain, indexedID string, seq uint64, 
 			t.Fatalf("RecordEntryBundle (index %d): %v", c.Index, err)
 		}
 	}
-
-	if err := st.RecordProjections(ctx, []store.ProjectionRecord{
-		{HubID: target, Seq: seq, IsccID: "ISCC:" + indexedID, NoteSchema: "iscc-note-0.8.0.json"},
-	}); err != nil {
-		t.Fatalf("RecordProjections: %v", err)
-	}
-	// Accept the checkpoint at acceptedRoot (tree.Hash() for the clean fixture, a
-	// divergent root for the frozen-after-fork case), so the accepted-tree cap
-	// certifies the leaf and §2 renders that root. AdvanceAccepted sets LastSize.
-	if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
-		HubID:    target,
-		TreeSize: size,
-		Root:     acceptedRoot,
-		Raw:      checkpointRaw,
-	}); err != nil {
-		t.Fatalf("AdvanceAccepted: %v", err)
-	}
-	if freeze {
-		if err := st.Freeze(ctx, target); err != nil {
-			t.Fatalf("Freeze: %v", err)
-		}
-	}
-	return st, tree
 }
 
 // TestCertificateInclusionProof is the §3 oracle-gated test: with a real mirrored

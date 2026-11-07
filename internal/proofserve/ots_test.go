@@ -8,7 +8,7 @@
 // .ots with the standard opentimestamps client (the offline form of "verifies with
 // the standard ots client"). It also pins the honest 404 cases: no accepted
 // checkpoint, an accepted root with no ots row, and a row carrying the
-// empty-OTSBytes sentinel.
+// empty-OTSBytes sentinel, plus the ?size= selection of an earlier accepted root.
 //
 // The opentimestamps import is test-only — production proofserve serves OTSBytes as
 // opaque bytes and never parses them, so it stays off the non-WASM internal/ots /
@@ -52,30 +52,126 @@ func otsFixture(t *testing.T) []byte {
 // keying the production stamp loop uses (hub_id, tree_size, root).
 func recordOTSForAccepted(t *testing.T, m mirrorTree, otsBytes []byte) {
 	t.Helper()
-	ctx := context.Background()
-	root, _, found, err := m.store.CheckpointAt(ctx, m.hubID, m.size)
+	root, _, found, err := m.store.CheckpointAt(context.Background(), m.hubID, m.size)
 	if err != nil || !found {
 		t.Fatalf("CheckpointAt(%d): found=%v err=%v", m.size, found, err)
 	}
-	if _, _, err := m.store.RecordOTS(ctx, store.OTSRecord{
+	recordOTSAt(t, m, m.size, root, otsBytes)
+}
+
+// recordOTSAt stores an ots row for an arbitrary (size, root) of the mirror's hub.
+func recordOTSAt(t *testing.T, m mirrorTree, size uint64, root, otsBytes []byte) {
+	t.Helper()
+	if _, _, err := m.store.RecordOTS(context.Background(), store.OTSRecord{
 		HubID:     m.hubID,
-		TreeSize:  m.size,
+		TreeSize:  size,
 		Root:      root,
 		Status:    store.OTSStatusPending,
 		OTSBytes:  otsBytes,
 		StampedAt: time.Unix(1700000000, 0),
 	}); err != nil {
-		t.Fatalf("RecordOTS: %v", err)
+		t.Fatalf("RecordOTS size %d: %v", size, err)
 	}
+}
+
+// recordEarlierCheckpoint records the checkpoint an earlier poll accepted at size,
+// carrying the mirror tree's real root at that size, and returns that root.
+func recordEarlierCheckpoint(t *testing.T, m mirrorTree, size uint64) []byte {
+	t.Helper()
+	root := m.tree.HashAt(size)
+	if _, _, err := m.store.RecordCheckpoint(context.Background(), store.CheckpointRecord{
+		HubID: m.hubID, TreeSize: size, Root: root, Raw: []byte("earlier checkpoint"), ObservedAt: time.Unix(1700000000, 0),
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint size %d: %v", size, err)
+	}
+	return root
 }
 
 // getOTS drives the /checkpoint.ots route and returns the recorder so callers can
 // assert status, headers, and body bytes.
 func getOTS(t *testing.T, h http.Handler) *httptest.ResponseRecorder {
 	t.Helper()
+	return getOTSAt(t, h, "/checkpoint.ots")
+}
+
+// getOTSAt drives the route at target, which may carry a ?size= query.
+func getOTSAt(t *testing.T, h http.Handler, target string) *httptest.ResponseRecorder {
+	t.Helper()
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/checkpoint.ots", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
 	return rec
+}
+
+// TestOTSServesEarlierSize asserts ?size=N serves the proof stored for the root the
+// monitor accepted at that earlier size, byte for byte, while the bare route keeps
+// serving the accepted root's own proof. ?size= equal to the accepted size is the
+// accepted proof.
+func TestOTSServesEarlierSize(t *testing.T) {
+	m := buildMirror(t, mirrorLeaves)
+	const earlier = 200
+	want := otsFixture(t)
+	recordOTSAt(t, m, earlier, recordEarlierCheckpoint(t, m, earlier), want)
+	accepted := []byte("accepted-root-proof")
+	recordOTSForAccepted(t, m, accepted)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+
+	rec := getOTSAt(t, h, "/checkpoint.ots?size=200")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("?size=200: status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != octetStreamType {
+		t.Errorf("?size=200: Content-Type = %q, want %q", ct, octetStreamType)
+	}
+	if got := rec.Body.Bytes(); string(got) != string(want) {
+		t.Errorf("?size=200 served %d bytes, want the earlier root's %d-byte proof", len(got), len(want))
+	}
+	for _, target := range []string{"/checkpoint.ots", "/checkpoint.ots?size=300"} {
+		if got := getOTSAt(t, h, target).Body.String(); got != string(accepted) {
+			t.Errorf("%s served %q, want the accepted root's proof", target, got)
+		}
+	}
+}
+
+// TestOTSEarlierSizeDeclines pins the honest 4xx answers for ?size=: a malformed
+// size is a 400; a size above the accepted one, a size the monitor never accepted, a
+// size with no proof, a size whose row is the empty sentinel, and a proof stored
+// under a different root than the checkpoint recorded at that size are all 404.
+func TestOTSEarlierSizeDeclines(t *testing.T) {
+	m := buildMirror(t, mirrorLeaves)
+	recordEarlierCheckpoint(t, m, 100) // accepted, never stamped
+	recordOTSAt(t, m, 120, recordEarlierCheckpoint(t, m, 120), nil)
+	recordEarlierCheckpoint(t, m, 140)
+	recordOTSAt(t, m, 140, []byte("some-other-root-padding-32-bytes"), otsFixture(t))
+	// A checkpoint and proof above the accepted size, the shape a rejected checkpoint
+	// would take if it were ever stamped: the size guard alone must refuse it.
+	beyond := []byte("checkpoint-beyond-accepted-32by!")
+	if _, _, err := m.store.RecordCheckpoint(context.Background(), store.CheckpointRecord{
+		HubID: m.hubID, TreeSize: 350, Root: beyond, Raw: []byte("rejected checkpoint"),
+	}); err != nil {
+		t.Fatalf("RecordCheckpoint 350: %v", err)
+	}
+	recordOTSAt(t, m, 350, beyond, otsFixture(t))
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+
+	cases := []struct {
+		query string
+		want  int
+	}{
+		{"size=abc", http.StatusBadRequest},
+		{"size=", http.StatusBadRequest},
+		{"size=-1", http.StatusBadRequest},
+		{"size=301", http.StatusNotFound},
+		{"size=350", http.StatusNotFound},
+		{"size=150", http.StatusNotFound},
+		{"size=100", http.StatusNotFound},
+		{"size=120", http.StatusNotFound},
+		{"size=140", http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		if rec := getOTSAt(t, h, "/checkpoint.ots?"+tc.query); rec.Code != tc.want {
+			t.Errorf("?%s: status = %d, want %d (body %q)", tc.query, rec.Code, tc.want, rec.Body.String())
+		}
+	}
 }
 
 // TestOTSServesStoredProofVerbatim proves the route serves the stored OpenTimestamps

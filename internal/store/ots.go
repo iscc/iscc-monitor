@@ -1,8 +1,9 @@
 // This file adds the typed OTS-table CRUD the (later) OpenTimestamps stamp loop,
 // background upgrade loop, and certificate §5 / `.ots` route read and write
 // through: record a stamped root once per distinct (hub, tree_size, root)
-// (RecordOTS), read one root's anchor state back (OTSForRoot), list the pending
-// roots the upgrade loop must poll (PendingOTS), and flip a pending row to
+// (RecordOTS), read one root's anchor state back (OTSForRoot), find the earliest
+// confirmed anchor whose log state includes a leaf (EarliestConfirmedOTS), list the
+// pending roots the upgrade loop must poll (PendingOTS), and flip a pending row to
 // Bitcoin-confirmed (MarkOTSUpgraded). It is the foundational, fully
 // store-testable seam every later OTS sub-step reads/writes through.
 //
@@ -99,18 +100,23 @@ func (s *Store) RecordOTS(ctx context.Context, r OTSRecord) (int64, bool, error)
 	return id, false, nil
 }
 
-// OTSForRoot reads the anchor state for one (hub, tree_size, root) back. An
-// un-anchored root is a plain miss — sql.ErrNoRows returns (OTSRecord{}, false,
-// nil), not an error — so certificate §5 / the `.ots` route can render the honest
-// "pending / not-yet-anchored" state rather than a 5xx (the CheckpointAt
-// absent-is-not-an-error convention). The nullable columns are read through
-// sql.NullInt64 / sql.NullString (the inverse of the write), so a NULL degrades to
-// the zero value; HubID / TreeSize / Root come from the in-args (the lookup key),
-// so the returned struct is fully populated.
-func (s *Store) OTSForRoot(ctx context.Context, hubID int64, treeSize uint64, root []byte) (OTSRecord, bool, error) {
+// otsColumns is the full ots column list in the order scanOTS reads it.
+const otsColumns = "hub_id, tree_size, root, status, ots_bytes, calendar_urls, " +
+	"stamped_at, upgraded_at, btc_height, attempts, next_retry"
+
+// rowScanner is the Scan method *sql.Row and *sql.Rows share.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanOTS reads one row selected with otsColumns. The nullable columns are read
+// through sql.NullInt64 / sql.NullString (the inverse of the write), so a NULL
+// degrades to the zero value. A *sql.Row miss returns sql.ErrNoRows unwrapped.
+func scanOTS(row rowScanner) (OTSRecord, error) {
 	var (
+		r          OTSRecord
+		treeSize   int64
 		status     sql.NullString
-		otsBytes   []byte
 		calendars  sql.NullString
 		stampedAt  sql.NullInt64
 		upgradedAt sql.NullInt64
@@ -118,27 +124,17 @@ func (s *Store) OTSForRoot(ctx context.Context, hubID int64, treeSize uint64, ro
 		attempts   sql.NullInt64
 		nextRetry  sql.NullInt64
 	)
-	err := s.db.QueryRowContext(ctx,
-		"SELECT status, ots_bytes, calendar_urls, stamped_at, upgraded_at, btc_height, attempts, next_retry "+
-			"FROM ots WHERE hub_id = ? AND tree_size = ? AND root = ?",
-		hubID, int64(treeSize), root,
-	).Scan(&status, &otsBytes, &calendars, &stampedAt, &upgradedAt, &btcHeight, &attempts, &nextRetry)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return OTSRecord{}, false, nil
-	case err != nil:
-		return OTSRecord{}, false, fmt.Errorf("store.OTSForRoot: hub %d size %d: %w", hubID, treeSize, err)
+	if err := row.Scan(
+		&r.HubID, &treeSize, &r.Root, &status, &r.OTSBytes, &calendars,
+		&stampedAt, &upgradedAt, &btcHeight, &attempts, &nextRetry,
+	); err != nil {
+		return OTSRecord{}, err
 	}
-	r := OTSRecord{
-		HubID:        hubID,
-		TreeSize:     treeSize,
-		Root:         root,
-		Status:       status.String,
-		OTSBytes:     otsBytes,
-		CalendarURLs: calendars.String,
-		BTCHeight:    btcHeight.Int64,
-		Attempts:     attempts.Int64,
-	}
+	r.TreeSize = uint64(treeSize)
+	r.Status = status.String
+	r.CalendarURLs = calendars.String
+	r.BTCHeight = btcHeight.Int64
+	r.Attempts = attempts.Int64
 	if stampedAt.Valid {
 		r.StampedAt = time.Unix(stampedAt.Int64, 0)
 	}
@@ -147,6 +143,47 @@ func (s *Store) OTSForRoot(ctx context.Context, hubID int64, treeSize uint64, ro
 	}
 	if nextRetry.Valid {
 		r.NextRetry = time.Unix(nextRetry.Int64, 0)
+	}
+	return r, nil
+}
+
+// OTSForRoot reads the anchor state for one (hub, tree_size, root) back. An
+// un-anchored root is a plain miss — sql.ErrNoRows returns (OTSRecord{}, false,
+// nil), not an error — so certificate §5 / the `.ots` route can render the honest
+// "pending / not-yet-anchored" state rather than a 5xx (the CheckpointAt
+// absent-is-not-an-error convention).
+func (s *Store) OTSForRoot(ctx context.Context, hubID int64, treeSize uint64, root []byte) (OTSRecord, bool, error) {
+	r, err := scanOTS(s.db.QueryRowContext(ctx,
+		"SELECT "+otsColumns+" FROM ots WHERE hub_id = ? AND tree_size = ? AND root = ?",
+		hubID, int64(treeSize), root,
+	))
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return OTSRecord{}, false, nil
+	case err != nil:
+		return OTSRecord{}, false, fmt.Errorf("store.OTSForRoot: hub %d size %d: %w", hubID, treeSize, err)
+	}
+	return r, true, nil
+}
+
+// EarliestConfirmedOTS reads the confirmed anchor of the smallest log state that
+// includes leaf seq (tree_size > seq). Roots are stamped in size order and submitted
+// in daily batches, so this is in practice the leaf's earliest Bitcoin anchor: the
+// strongest "existed by block N" claim the monitor holds for it. A leaf no confirmed
+// anchor covers yet is a plain miss (found false, nil error), like OTSForRoot. The
+// (hub_id, tree_size) prefix of the UNIQUE index serves the scan in size order, so
+// the read stops at the first confirmed row instead of visiting every anchor.
+func (s *Store) EarliestConfirmedOTS(ctx context.Context, hubID int64, seq uint64) (OTSRecord, bool, error) {
+	r, err := scanOTS(s.db.QueryRowContext(ctx,
+		"SELECT "+otsColumns+" FROM ots WHERE hub_id = ? AND tree_size > ? AND status = ? "+
+			"ORDER BY tree_size ASC, id ASC LIMIT 1",
+		hubID, int64(seq), OTSStatusConfirmed,
+	))
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return OTSRecord{}, false, nil
+	case err != nil:
+		return OTSRecord{}, false, fmt.Errorf("store.EarliestConfirmedOTS: hub %d seq %d: %w", hubID, seq, err)
 	}
 	return r, true, nil
 }
@@ -158,15 +195,11 @@ func (s *Store) OTSForRoot(ctx context.Context, hubID int64, treeSize uint64, ro
 // filter `next_retry IS NULL OR next_retry <= now`: a freshly-stamped row has a
 // NULL next_retry so it is immediately due, while a row a MarkOTSAttempted back-off
 // pushed into the future is excluded until now reaches its next_retry. A network
-// with no due rows returns an empty slice and a nil error. The nullable columns are
-// read through sql.NullInt64 / sql.NullString exactly as OTSForRoot, so a NULL
-// degrades to the zero value. now is bound directly via now.Unix() (NOT unixOrNil —
-// now is never the zero time on the upgrade path).
+// with no due rows returns an empty slice and a nil error. now is bound directly via
+// now.Unix() (NOT unixOrNil — now is never the zero time on the upgrade path).
 func (s *Store) PendingOTS(ctx context.Context, now time.Time) ([]OTSRecord, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT hub_id, tree_size, root, status, ots_bytes, calendar_urls, "+
-			"stamped_at, upgraded_at, btc_height, attempts, next_retry "+
-			"FROM ots WHERE status = ? AND (next_retry IS NULL OR next_retry <= ?) "+
+		"SELECT "+otsColumns+" FROM ots WHERE status = ? AND (next_retry IS NULL OR next_retry <= ?) "+
 			"ORDER BY stamped_at ASC, id ASC",
 		OTSStatusPending, now.Unix(),
 	)
@@ -177,36 +210,9 @@ func (s *Store) PendingOTS(ctx context.Context, now time.Time) ([]OTSRecord, err
 
 	var pending []OTSRecord
 	for rows.Next() {
-		var (
-			r          OTSRecord
-			treeSize   int64
-			status     sql.NullString
-			calendars  sql.NullString
-			stampedAt  sql.NullInt64
-			upgradedAt sql.NullInt64
-			btcHeight  sql.NullInt64
-			attempts   sql.NullInt64
-			nextRetry  sql.NullInt64
-		)
-		if err := rows.Scan(
-			&r.HubID, &treeSize, &r.Root, &status, &r.OTSBytes, &calendars,
-			&stampedAt, &upgradedAt, &btcHeight, &attempts, &nextRetry,
-		); err != nil {
+		r, err := scanOTS(rows)
+		if err != nil {
 			return nil, fmt.Errorf("store.PendingOTS: scan: %w", err)
-		}
-		r.TreeSize = uint64(treeSize)
-		r.Status = status.String
-		r.CalendarURLs = calendars.String
-		r.BTCHeight = btcHeight.Int64
-		r.Attempts = attempts.Int64
-		if stampedAt.Valid {
-			r.StampedAt = time.Unix(stampedAt.Int64, 0)
-		}
-		if upgradedAt.Valid {
-			r.UpgradedAt = time.Unix(upgradedAt.Int64, 0)
-		}
-		if nextRetry.Valid {
-			r.NextRetry = time.Unix(nextRetry.Int64, 0)
 		}
 		pending = append(pending, r)
 	}

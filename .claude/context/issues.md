@@ -149,14 +149,20 @@ filed it and does **not** affect priority.
   256 whole records, so on a busy hub polled every 5 minutes this, not the completed data, is the
   dominant mirror-growth term. The ADR-0005 / `store/tiles.go` wording "partials are re-fetched and
   overwritten in place every poll via the composite-PK upsert" is only true at *constant* width and
-  should be corrected alongside any fix. Superseded partials are pure garbage: nothing reads them
-  (`SQLiteFetcher.readTileAt` asks for one exact width and falls back to the full row), they are not
-  evidence (rebuildable, ADR-0005), and the completed full-width row supersedes all of them.
-  **Candidate fix:** when writing a coord, delete that coord's rows at a *smaller* width in the same
-  statement/transaction (`DELETE … WHERE hub_id=? AND … AND width < ?`), so at most one partial row
-  per coord exists and it vanishes when the coord completes. Verify fixed: record a coord at widths
-  10, 20, then full, and assert exactly one row remains (the full one); a `SELECT COUNT(*)` probe
-  before the fix shows 3. Low — a storage/vacuum concern, not a correctness one, and it interacts with
+  should be corrected alongside any fix. **Superseded partial *hash tiles* are read:** certificate §5
+  (`coveringAnchor`) rebuilds a leaf's inclusion proof at an older, Bitcoin-anchored tree size, and
+  `SQLiteFetcher.readTileAt` serves that size's right-edge tiles from the partial rows at exactly that
+  size's widths (falling back to the full row once the coord completes). A probe of the 2026-11-06 mainnet
+  backup verified 7,149/7,149 such proofs across all 2,383 confirmed anchors, so these rows are what make
+  certificates on growing hubs show a confirmed block. Superseded partial *entry bundles* are not read
+  (the certificate reuses the record §3 read at the accepted size). **Unsafe fix:** deleting a coord's
+  smaller-width rows whenever a wider partial is written; level-1+ coords stay partial for tens of
+  thousands of entries, so most covering anchors would lose their proof and certificates would fall back to
+  "pending". **Safe candidate fix:** when a coord's full-width row is written, delete that coord's partial
+  rows (the full row serves every older width through the fallback), and delete superseded partial entry
+  bundles at any time. Verify fixed: record a hash-tile coord at widths 10, 20, then full and assert one row
+  remains; record it at 10 and 20 only and assert both remain; `TestCertificateCoveringAnchor` stays green.
+  Low — a storage/vacuum concern, not a correctness one, and it interacts with
   the disk-growth-rate measurement issue below (fix them together when live sizing data exists).
 - **Spec:** ADR-0005 partial-tile discipline (the "overwritten in place" claim this contradicts);
   ADR-0007 per-network DB sizing; `learnings/store.md` p↔width seam.
@@ -765,24 +771,3 @@ filed it and does **not** affect priority.
   `healthz` operation declares both `200` and `503`. Low — skipped by the loop until the doc is next edited.
 - **Spec:** ADR-0014 §1 (document the machine surface's real responses); `internal/healthz/handler.go`
   (the 503 unavailable path); CLAUDE.md `GET /healthz` ("liveness + store readiness").
-
-## Certificates and proof downloads do not reach a hub's older Bitcoin anchors
-- **Priority:** low
-- **Source:** [human] (deliberately deferred on 2026-11-07, while fixing GitHub issue #2)
-- **What / where / how to verify:** The realm register and hub dossier read the hub's newest *confirmed*
-  anchor (`store.HubSummary.AnchorState`), but three surfaces still read only the *newest* root: certificate
-  §5 (`OTSForRoot` at the accepted root in `internal/certificate/handler.go`), the proof bundle (no OTS
-  member) and `GET /<domain>/log/checkpoint.ots` (`serveOTS` in `internal/proofserve/handler.go`). On a hub
-  that receives entries daily, the newest root is almost always unconfirmed, because a new root arrives
-  before the previous one can confirm. Mainnet `amlet.id` in the 2026-11-06 backup: 2,247 of 2,249 anchors
-  confirmed, yet a panel reading the newest root would have said "confirmed" for 0 of the last 336 hours. So
-  a certificate for an `amlet.id` entry from June shows no Bitcoin block (§5 is omitted while the newest root
-  is unstamped, then reads "pending"), and `checkpoint.ots` answers 404 "root not yet anchored". The evidence
-  exists, but readers cannot reach it. The fix: select the earliest confirmed anchor with `tree_size > seq`,
-  so the certificate can say the entry existed before block H, and offer that anchor's root and `.ots` for
-  download. It also needs a decision on how a reader connects the entry to that older root: an inclusion proof
-  at the anchored size, or a consistency proof from the anchored size to the accepted size (ADR-0004's
-  soundness argument). Once a proof can be downloaded from the page, restore the "run `ots verify`" guidance
-  that was removed from dossier §4 and certificate §5, linked to that proof. Verify fixed: a certificate for
-  an old entry on a growing hub shows a confirmed block, and the proof it links to passes `ots verify`.
-- **Spec:** ADR-0004 amendment 2026-06-28 ("Why this is sound"); `.claude/design/0001-ux-brief-v1.md:155,236`.
