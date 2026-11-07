@@ -468,9 +468,9 @@
         <div class="clause-value">
           <div class="clause-status">
             <span class="clause-dot{{if .BTCConfirmed}} clause-dot-confirmed{{end}}"></span>
-            <span class="clause-mono">{{if .BTCConfirmed}}block {{.BTCHeight}}{{if .BTCConfirmedAt}} · {{.BTCConfirmedAt}}{{end}}{{else}}pending — calendar-asserted, awaiting Bitcoin confirmation{{end}}</span>
+            <span class="clause-mono">{{if .BTCConfirmed}}block {{.BTCHeight}}{{if .BTCConfirmedAt}} · seen confirmed {{.BTCConfirmedAt}}{{end}}{{else}}pending — calendar-asserted, awaiting Bitcoin confirmation{{end}}</span>
           </div>
-          <div class="clause-note">OpenTimestamps. Run <span class="subject-mono">ots verify</span> for the authoritative check.</div>
+          <div class="clause-note">Timestamped with OpenTimestamps.</div>
         </div>
       </div>
       {{end}}

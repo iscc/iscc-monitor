@@ -672,8 +672,8 @@ func renderDossier(t *testing.T, st *store.Store, hubID int64) string {
 }
 
 // TestDossierConfirmedAnchorRendersHeight asserts the §4 Bitcoin-anchor section of a
-// hub with a confirmed OTS row carrying a btc_height renders "confirmed", the
-// confirmed dot keyword, and the block height — and NEVER a 5xx or error styling.
+// hub with a confirmed OTS row carrying a btc_height renders the confirmed dot keyword
+// and the block height — and NEVER a 5xx or error styling.
 // It is the honesty counterpart of the pending case: the height shows ONLY when the
 // anchor is confirmed AND the height is non-zero.
 func TestDossierConfirmedAnchorRendersHeight(t *testing.T) {
@@ -699,7 +699,6 @@ func TestDossierConfirmedAnchorRendersHeight(t *testing.T) {
 	for _, want := range []string{
 		"§4 · BITCOIN ANCHOR",
 		`data-dot="confirmed"`,
-		"confirmed",
 		"block 869440",
 	} {
 		if !strings.Contains(body, want) {
@@ -744,6 +743,113 @@ func TestDossierPendingAnchorHonest(t *testing.T) {
 	// No fabricated height: a pending anchor must render no "block N" string.
 	if strings.Contains(body, "block ") {
 		t.Errorf("pending anchor renders a fabricated block height\n%s", body)
+	}
+}
+
+// anchorStamped and anchorSeenAt are the observed and seen-confirmed instants of the
+// confirmed rows TestDossierLastAnchored seeds.
+var (
+	anchorStamped = time.Date(2026, 11, 5, 1, 33, 0, 0, time.UTC)
+	anchorSeenAt  = time.Date(2026, 11, 6, 16, 28, 53, 0, time.UTC)
+)
+
+// confirmedAt returns a confirmed OTS row at the given tree size.
+func confirmedAt(size uint64) store.OTSRecord {
+	return store.OTSRecord{TreeSize: size, Root: []byte("confirmed-root-padding-32-bytes!"), Status: store.OTSStatusConfirmed, BTCHeight: 974697, StampedAt: anchorStamped, UpgradedAt: anchorSeenAt}
+}
+
+// TestDossierLastAnchored asserts §4 for each anchor state. The growing hub is the case
+// §4 exists for: its newest root is always younger than the time confirmation takes, so
+// a panel that read only the newest root would say "pending" on a hub with confirmed
+// anchors. "ots verify" stays out of every state, because the page offers no proof to
+// run it on.
+func TestDossierLastAnchored(t *testing.T) {
+	// A non-UTC local zone: the time is mislabelled unless §4 renders it in UTC. The
+	// store's time.Unix round-trip yields local time.
+	saved := time.Local
+	time.Local = time.FixedZone("CET", 3600)
+	t.Cleanup(func() { time.Local = saved })
+
+	pending := store.OTSRecord{TreeSize: 42, Root: []byte("pending-root-padding-32-bytes!!!"), Status: store.OTSStatusPending, StampedAt: anchorStamped.Add(48 * time.Hour)}
+	const newer = "Newer entries are waiting for the next anchor."
+
+	cases := []struct {
+		name   string
+		rows   []store.OTSRecord
+		freeze bool
+		want   []string
+		absent []string
+	}{
+		{
+			name:   "growing hub shows its newest confirmed anchor",
+			rows:   []store.OTSRecord{confirmedAt(30), pending},
+			want:   []string{`data-dot="confirmed"`, "last anchored · block 974697", "Entries up to size 30 · seen confirmed 2026-11-06T16:28:53Z", newer},
+			absent: []string{`data-dot="pending"`},
+		},
+		{
+			name:   "confirmed empty tree is a confirmed anchor",
+			rows:   []store.OTSRecord{confirmedAt(0), pending},
+			want:   []string{`data-dot="confirmed"`, "last anchored · block 974697", "Entries up to size 0 · seen confirmed 2026-11-06T16:28:53Z", newer},
+			absent: []string{`data-dot="pending"`, "No confirmed anchor yet."},
+		},
+		{
+			name:   "newest root confirmed has nothing waiting",
+			rows:   []store.OTSRecord{confirmedAt(42)},
+			want:   []string{`data-dot="confirmed"`, "last anchored · block 974697", "Entries up to size 42"},
+			absent: []string{newer},
+		},
+		{
+			name:   "frozen hub does not promise a next anchor",
+			rows:   []store.OTSRecord{confirmedAt(30)},
+			freeze: true,
+			want:   []string{`data-dot="confirmed"`, "last anchored · block 974697", "Entries up to size 30"},
+			absent: []string{newer},
+		},
+		{
+			name:   "only pending roots",
+			rows:   []store.OTSRecord{pending},
+			want:   []string{`data-dot="pending"`, "No confirmed anchor yet."},
+			absent: []string{"last anchored", "block ", newer},
+		},
+		{
+			name:   "never anchored",
+			want:   []string{`data-dot="none"`, "not anchored", "No root has been anchored in Bitcoin."},
+			absent: []string{"last anchored", "block ", newer},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st, id := coveredHub(t) // accepted size 42
+			for _, row := range tc.rows {
+				row.HubID = id
+				if _, _, err := st.RecordOTS(ctx, row); err != nil {
+					t.Fatalf("RecordOTS size %d: %v", row.TreeSize, err)
+				}
+			}
+			if tc.freeze {
+				if err := st.Freeze(ctx, id); err != nil {
+					t.Fatalf("Freeze: %v", err)
+				}
+			}
+
+			rec := httptest.NewRecorder()
+			Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			body := rec.Body.String()
+			for _, want := range tc.want {
+				if !strings.Contains(body, want) {
+					t.Errorf("body missing %q\n%s", want, body)
+				}
+			}
+			for _, absent := range append(tc.absent, "ots verify") {
+				if strings.Contains(body, absent) {
+					t.Errorf("body contains %q\n%s", absent, body)
+				}
+			}
+		})
 	}
 }
 

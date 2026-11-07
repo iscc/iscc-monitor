@@ -36,11 +36,16 @@ import (
 // NOTHING, so the only way two rows share tree_size = last_size is a same-size FORK
 // (different root); the accepted row was recorded first → it has the lowest id, so
 // ORDER BY c.id ASC LIMIT 1 selects it (the same "earliest row is the accepted one"
-// selection store.CheckpointAt makes with ORDER BY rowid). AnchorHeight
-// is the Bitcoin block height of the hub's confirmed anchor (the §4 height), zero
-// when no anchor is confirmed or the confirmed row has no recorded height — the
-// dossier renders the height only when it is non-zero, so a zero never reads as
-// block 0.
+// selection store.CheckpointAt makes with ORDER BY rowid).
+//
+// Anchor is the status of the hub's newest stamped root. AnchorConfirmed reports whether
+// any root is confirmed; AnchorHeight, AnchorSize and AnchorSeenAt describe the newest
+// CONFIRMED root, which on a hub that keeps growing is older than the newest stamped
+// root. AnchorSize alone never signals presence: an empty tree is stamped too, so a
+// confirmed anchor can cover size 0. AnchorHeight is zero when no anchor is confirmed
+// or the confirmed row has no recorded height, so a zero never reads as block 0.
+// AnchorSeenAt is when this monitor noticed the confirmation, not when the block was
+// mined; an OTS proof records only the height.
 type HubSummary struct {
 	HubID              int64
 	Domain             string
@@ -51,7 +56,22 @@ type HubSummary struct {
 	Coverage           CoverageInfo
 	Anchor             string
 	CheckpointObserved time.Time
+	AnchorConfirmed    bool
 	AnchorHeight       uint64
+	AnchorSize         uint64
+	AnchorSeenAt       time.Time
+}
+
+// AnchorState returns the hub's overall Bitcoin-anchor state: OTSStatusConfirmed once
+// any root is confirmed, OTSStatusPending while roots wait and none has confirmed, and
+// "" when no root was ever stamped. It does not follow the newest root alone: a hub
+// that receives entries daily gets a new root before the previous one can confirm, so
+// the newest root is almost always pending however many anchors have confirmed.
+func (h HubSummary) AnchorState() string {
+	if h.AnchorConfirmed {
+		return OTSStatusConfirmed
+	}
+	return h.Anchor
 }
 
 // ListHubs reads one HubSummary per followed hub, ordered by hub_id, in a single
@@ -64,18 +84,20 @@ type HubSummary struct {
 // the hub's most-recently-stamped root (newest stamped_at first); a never-stamped
 // hub yields SQL NULL → empty Anchor (the honest "not anchored yet" state).
 //
-// Two further NULL-safe correlated subselects mirror that Anchor pattern for the
-// hub dossier: the observed_at of the EARLIEST checkpoint row (ORDER BY c.id ASC
-// LIMIT 1) whose tree_size equals the accepted f.last_size (the §3 "latest
-// checkpoint" time, tied to the accepted size §3 renders so the two never come from
-// different rows on a frozen hub) and the btc_height of the hub's confirmed anchor
-// (the §4 height, scoped to status = OTSStatusConfirmed). The id ASC tiebreak is
-// load-bearing on a frozen hub: a same-size fork records a contradictory checkpoint
-// at tree_size = last_size with a LATER id, so picking the earliest row keeps §3 on
-// the accepted checkpoint's time rather than the rejected fork's (id DESC would pick
-// the fork). A hub with no accepted size, no checkpoint matching it, or no confirmed
-// anchor yields SQL NULL → the zero value, so the renderer shows the honest "unknown"
-// / "not confirmed" state rather than a fabricated instant or block 0.
+// A further NULL-safe correlated subselect mirrors that Anchor pattern for the hub
+// dossier: the observed_at of the EARLIEST checkpoint row (ORDER BY c.id ASC LIMIT 1)
+// whose tree_size equals the accepted f.last_size (the §3 "latest checkpoint" time,
+// tied to the accepted size §3 renders so the two never come from different rows on a
+// frozen hub). The id ASC tiebreak is load-bearing on a frozen hub: a same-size fork
+// records a contradictory checkpoint at tree_size = last_size with a LATER id, so
+// picking the earliest row keeps §3 on the accepted checkpoint's time rather than the
+// rejected fork's (id DESC would pick the fork).
+//
+// The newest confirmed anchor is LEFT JOINed as one row, so its height, size and seen
+// time always describe the same root. A hub with no accepted size, no checkpoint
+// matching it, or no confirmed anchor yields SQL NULL → the zero value, so the renderer
+// shows the honest "unknown" / "not confirmed" state rather than a fabricated instant
+// or block 0.
 func (s *Store) ListHubs(ctx context.Context) ([]HubSummary, error) {
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT h.hub_id, h.domain, h.origin, h.active, "+
@@ -84,9 +106,10 @@ func (s *Store) ListHubs(ctx context.Context) ([]HubSummary, error) {
 			"ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1), "+
 			"(SELECT c.observed_at FROM checkpoints c WHERE c.hub_id = h.hub_id "+
 			"AND c.tree_size = f.last_size ORDER BY c.id ASC LIMIT 1), "+
-			"(SELECT o.btc_height FROM ots o WHERE o.hub_id = h.hub_id "+
-			"AND o.status = ? ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1) "+
+			"a.btc_height, a.tree_size, a.upgraded_at "+
 			"FROM hubs h LEFT JOIN follow_state f ON f.hub_id = h.hub_id "+
+			"LEFT JOIN ots a ON a.id = (SELECT o.id FROM ots o WHERE o.hub_id = h.hub_id "+
+			"AND o.status = ? ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1) "+
 			"ORDER BY h.hub_id",
 		OTSStatusConfirmed,
 	)
@@ -106,10 +129,13 @@ func (s *Store) ListHubs(ctx context.Context) ([]HubSummary, error) {
 			anchor       sql.NullString
 			observedAt   sql.NullInt64
 			anchorHeight sql.NullInt64
+			anchorSize   sql.NullInt64
+			anchorSeenAt sql.NullInt64
 		)
 		if err := rows.Scan(
 			&h.HubID, &h.Domain, &h.Origin, &h.Active,
-			&lastSize, &frozen, &sinceSize, &sinceTime, &anchor, &observedAt, &anchorHeight,
+			&lastSize, &frozen, &sinceSize, &sinceTime, &anchor, &observedAt,
+			&anchorHeight, &anchorSize, &anchorSeenAt,
 		); err != nil {
 			return nil, fmt.Errorf("store.ListHubs: scan: %w", err)
 		}
@@ -130,6 +156,12 @@ func (s *Store) ListHubs(ctx context.Context) ([]HubSummary, error) {
 		}
 		if anchorHeight.Valid {
 			h.AnchorHeight = uint64(anchorHeight.Int64)
+		}
+		// ots.tree_size is NOT NULL, so a valid size means the confirmed-row join matched.
+		h.AnchorConfirmed = anchorSize.Valid
+		h.AnchorSize = uint64(anchorSize.Int64)
+		if anchorSeenAt.Valid {
+			h.AnchorSeenAt = time.Unix(anchorSeenAt.Int64, 0)
 		}
 		hubs = append(hubs, h)
 	}

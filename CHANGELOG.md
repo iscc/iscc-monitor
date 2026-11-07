@@ -28,7 +28,8 @@ from `monitor-test.iscc.io` and `monitor.iscc.io`.
   from a CDN.
 - **In-browser verification:** a reproducible, hash-pinned WebAssembly verifier, used on certificate pages
   and by the standalone verifier site at `monitor.iscc.codes`.
-- **Bitcoin anchoring:** OpenTimestamps proofs for checkpoint roots.
+- **Bitcoin anchoring:** OpenTimestamps proofs for checkpoint roots. The realm register and hub pages show
+  each hub's last confirmed anchor and the entries it covers.
 - **API and operations:** OpenAPI 3.1 contract with hosted reference docs, Prometheus metrics, health and
   build-version endpoints, a non-root container image, and an operator guide
   ([`deploy/OPERATING.md`](deploy/OPERATING.md)).
@@ -53,8 +54,12 @@ from `monitor-test.iscc.io` and `monitor.iscc.io`.
 - **New hubs need a restart:** Hub-List changes apply hourly, but following a newly added hub still requires
   a restart ([#5](https://github.com/iscc/iscc-monitor/issues/5)).
 - **Bitcoin anchoring cadence:** every newly accepted root is stamped, rather than the newest root once a
-  day as ADR-0004 specifies. Confirmation works but takes 24–48 hours, because the check runs daily and not
-  at startup ([#6](https://github.com/iscc/iscc-monitor/issues/6)).
+  day as ADR-0004 specifies. Confirmation works but usually takes one to two and a half days and has taken
+  up to five, because the check runs daily and not at startup
+  ([#6](https://github.com/iscc/iscc-monitor/issues/6)).
+- **Bitcoin evidence on certificates:** a certificate, its proof bundle and the `checkpoint.ots` download
+  cover only the hub's newest root. On a hub that receives entries daily they rarely show a confirmed block,
+  even when an older confirmed anchor covers the entry.
 - **Verifier site scope:** the standalone site checks Merkle proofs but not the hub's signature on the
   checkpoint.
 - **Split views:** detected only when a client compares its view against a monitor. Monitor gossip and

@@ -110,20 +110,19 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   the instance-identity bullet below.) The `#` row number is `RowNo = fmt.Sprintf("%02d", i+1)` on the
   view-model — presentation only, no store value; the new `34px` grid column is fixed-width mono and does
   not ellipsize (the `min-width:0` trap applies only to `.hub-cell`).
-- **The Checkpoint + Anchor columns LANDED (six-column grid `34px 1.8fr 1.2fr 1fr 1.1fr 150px`).**
+- **The Checkpoint + Anchor columns LANDED (six-column grid `34px 1.8fr 1.2fr 1fr minmax(120px, 1.1fr) 150px`).**
   Checkpoint = `s.LastSize` (a relabel, NOT a new read). Anchor is a NEW `store.HubSummary.Anchor`
   correlated subselect (`SELECT o.status … ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1`, NULL→""),
   mapped by `anchorLabel` via `store.OTSStatus*` consts to label+decorative-dot (the LABEL is the
   grayscale-safe load-bearing signal, ADR-0010 inv.4; unknown/empty → honest "not anchored"). Both halves
   mutation-proven; visual pass: column order + naming match the mockup.
-- **The realm-index Anchor column is a per-HUB anchoring-activity indicator, NOT a per-checkpoint
-  attestation** (by design + mockup: `anchorState` is a free-standing hub property). It is DECOUPLED from
-  the displayed Checkpoint (`f.last_size`) — the newest-stamped OTS row may describe an OLDER root, and
-  since OTS is async/best-effort (ADR-0004) that is the NORMAL steady state. "confirmed" means "this hub
-  anchors its roots", never "size N is Bitcoin-confirmed"; the AUTHORITATIVE per-checkpoint claim lives in
-  **certificate §5** (`OTSForRoot` bound to the §2 accepted root). Do NOT "fix" the subselect to
-  `o.tree_size = f.last_size` without a design pass (it would render "not anchored" for every actively-polling
-  hub). Open `normal` records the design question.
+- **settled (GitHub #2): the Anchor column shows the hub's newest CONFIRMED anchor (block, covered size, date
+  seen), and "pending" only when no root has ever confirmed (`store.HubSummary.AnchorState`).** Reading the
+  newest stamped root made an active hub read "pending" permanently: a new root arrives before the previous
+  one can confirm. Mainnet `amlet.id` read "confirmed" for 0 of 336 hours with 2,247 of 2,249 anchors confirmed.
+  The cell is decoupled from the displayed Checkpoint on purpose; the gap between the two sizes is the part not
+  yet anchored. Do NOT key the cell on `o.tree_size = f.last_size`. Certificate §5 is still bound to the §2
+  accepted root; `.claude/context/issues.md` tracks connecting it to older anchors.
 - **All THREE SSR mastheads (dashboard/dossier/cert) are now byte-identical VERBATIM ports — edit all
   together (a masthead change is a three-site HTML edit + three const copies).** `dashboard.html`,
   `dossier.html`, AND `cert.html` share the same `.chrome-identity`/`.chrome-instance`/`.chrome-operator`

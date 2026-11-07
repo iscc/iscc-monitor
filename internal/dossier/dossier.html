@@ -553,7 +553,10 @@
           <div class="section-value">
             <span class="anchor-row"><span class="anchor-dot" data-dot="{{.AnchorDot}}"></span>{{.AnchorLabel}}{{if .HasAnchorHeight}} · block {{.AnchorHeight}}{{end}}</span>
           </div>
-          <div class="section-sub">OpenTimestamps. Authoritative check: run <span class="mono">ots verify</span>.</div>
+          <div class="section-sub">{{.AnchorDetail}}</div>
+          {{- if .AnchorNote}}
+          <div class="section-sub">{{.AnchorNote}}</div>
+          {{- end}}
         </div>
       </div>
 

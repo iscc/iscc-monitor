@@ -225,10 +225,11 @@
     }
 
     /* Each row (and the column-header row) is a grid with the same columns:
-       # | Hub · domain | Coverage since | Checkpoint | Anchor | Status. */
+       # | Hub · domain | Coverage since | Checkpoint | Anchor | Status. The Anchor
+       minimum keeps "block N" and "at YYYY-MM-DD" on one line each in a narrow window. */
     .ledger-row {
       display: grid;
-      grid-template-columns: 34px 1.8fr 1.2fr 1fr 1.1fr 150px;
+      grid-template-columns: 34px 1.8fr 1.2fr 1fr minmax(120px, 1.1fr) 150px;
       gap: var(--space-4);
       align-items: center;
       padding: var(--space-3) var(--space-5);
@@ -298,12 +299,13 @@
     }
 
     /* The anchor cell: a short label (the load-bearing, grayscale-safe signal)
-       beside a decorative status dot. The dot is an inline <span> colored by a DS
-       token with a literal hue fallback (no served image, no CDN); the label alone
+       beside a decorative status dot, with optional lines beneath it. The dot is an
+       inline <span> colored by a DS token with a literal hue fallback (no served image,
+       no CDN) and lines up with the label, not the middle of the cell; the label alone
        still tells confirmed / pending / not-anchored apart (ADR-0010 invariant 4). */
     .anchor-cell {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: var(--space-2);
       font-family: var(--font-mono);
       font-size: var(--text-xs);
@@ -312,6 +314,7 @@
     .anchor-dot {
       width: 7px;
       height: 7px;
+      margin-top: 0.5em;
       border-radius: 50%;
       flex: none;
       background: var(--text-faint);
@@ -448,7 +451,12 @@
         <div class="cell-mono">{{.Checkpoint}}</div>
         <div class="anchor-cell">
           <span class="anchor-dot" data-anchor="{{.AnchorDot}}"></span>
-          <span>{{.Anchor}}</span>
+          <div>
+            <div>{{.Anchor}}</div>
+            {{- range .AnchorNotes}}
+            <div class="cell-note">{{.}}</div>
+            {{- end}}
+          </div>
         </div>
         <div>{{template "hubStatusBadge" .}}</div>
       </a>

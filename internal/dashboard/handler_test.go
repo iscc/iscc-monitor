@@ -166,6 +166,97 @@ func TestDashboardRendersEveryHub(t *testing.T) {
 	}
 }
 
+// TestDashboardAnchorCell asserts the register's Anchor cell for each anchor state. The
+// growing hub is the case the cell exists for: its newest root is always younger than
+// the time confirmation takes, so a cell that read only the newest root would say
+// "pending" on a hub with confirmed anchors.
+func TestDashboardAnchorCell(t *testing.T) {
+	// A non-UTC local zone and a time near midnight: the date is wrong unless the cell
+	// renders it in UTC. The store's time.Unix round-trip yields local time.
+	saved := time.Local
+	time.Local = time.FixedZone("CET", 3600)
+	t.Cleanup(func() { time.Local = saved })
+
+	seenAt := time.Date(2026, 11, 6, 23, 28, 53, 0, time.UTC)
+	stamped := time.Date(2026, 11, 5, 1, 33, 0, 0, time.UTC)
+	confirmed := store.OTSRecord{TreeSize: 304553, Root: []byte("confirmed-root-padding-32-bytes!"), Status: store.OTSStatusConfirmed, BTCHeight: 974697, StampedAt: stamped, UpgradedAt: seenAt}
+	pending := store.OTSRecord{TreeSize: 304685, Root: []byte("pending-root-padding-32-bytes!!!"), Status: store.OTSStatusPending, StampedAt: stamped.Add(48 * time.Hour)}
+	noHeight := store.OTSRecord{TreeSize: 42, Root: []byte("no-height-root-padding-32-bytes!"), Status: store.OTSStatusConfirmed, StampedAt: stamped}
+
+	cases := []struct {
+		name   string
+		rows   []store.OTSRecord
+		want   []string
+		absent []string
+	}{
+		{
+			name:   "growing hub shows its newest confirmed anchor",
+			rows:   []store.OTSRecord{confirmed, pending},
+			want:   []string{`data-anchor="confirmed"`, ">block 974697<", ">size 304553<", ">at 2026-11-06<"},
+			absent: []string{">pending<", "no confirmed anchor yet"},
+		},
+		{
+			name:   "newest root confirmed",
+			rows:   []store.OTSRecord{confirmed},
+			want:   []string{`data-anchor="confirmed"`, ">block 974697<", ">size 304553<", ">at 2026-11-06<"},
+			absent: []string{">pending<"},
+		},
+		{
+			name: "only pending roots",
+			rows: []store.OTSRecord{pending},
+			want: []string{`data-anchor="pending"`, ">pending<", ">no confirmed anchor yet<"},
+		},
+		{
+			name:   "never anchored",
+			want:   []string{`data-anchor="none"`, ">not anchored<"},
+			absent: []string{"no confirmed anchor yet", ">size "},
+		},
+		{
+			name:   "confirmed row without a recorded height or time",
+			rows:   []store.OTSRecord{noHeight},
+			want:   []string{`data-anchor="confirmed"`, ">confirmed<", ">size 42<"},
+			absent: []string{"block 0", ">at "},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st, err := store.Open(filepath.Join(t.TempDir(), "anchor.db"))
+			if err != nil {
+				t.Fatalf("store.Open: %v", err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+			id, err := st.UpsertHub(ctx, "amlet.id", "amlet.id/log", "https://amlet.id")
+			if err != nil {
+				t.Fatalf("UpsertHub: %v", err)
+			}
+			for _, row := range tc.rows {
+				row.HubID = id
+				if _, _, err := st.RecordOTS(ctx, row); err != nil {
+					t.Fatalf("RecordOTS size %d: %v", row.TreeSize, err)
+				}
+			}
+
+			rec := httptest.NewRecorder()
+			Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			body := rec.Body.String()
+			for _, want := range tc.want {
+				if !strings.Contains(body, want) {
+					t.Errorf("body missing %q\n%s", want, body)
+				}
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(body, absent) {
+					t.Errorf("body contains %q\n%s", absent, body)
+				}
+			}
+		})
+	}
+}
+
 // TestDashboardRendersInMemoryStatus proves the in-memory status overlay at the
 // HTTP seam: a store-verified hub whose live verdict (from the StatusSource) is
 // unresolvable / unverified renders that richer status — badge label + per-status

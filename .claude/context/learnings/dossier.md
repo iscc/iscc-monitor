@@ -19,9 +19,11 @@ this surface shares live in `learnings/dashboard.md` (read both).
 - **Every §1–§4 value is honesty-gated against real store data (the recurring SSR-honesty trap).** §2's
   `CoverageDays` ("N days observed", live `time.Since(c.Since)`, clamps to 0 on future skew) is "" unless
   coverage is set; §3's `ObservedTime` is "" → "observed time unknown" when the checkpoint time is NULL;
-  §4's `AnchorHeight` renders ONLY when `Anchor == OTSStatusConfirmed AND AnchorHeight > 0` (`HasAnchorHeight`)
-  so a NULL/zero never reads as "block 0". `anchorLabel` is a verbatim port of dashboard's (switches on
-  `store.OTSStatus*` consts, never literals; label is grayscale-safe, dot decorative — ADR-0010 inv.4).
+  §4 reads the hub's newest CONFIRMED anchor, not its newest root (GitHub #2, see `dashboard.md`), and
+  `AnchorHeight` renders ONLY when `> 0` (`HasAnchorHeight`) so a NULL/zero never reads as "block 0".
+  `anchorLabel` switches on `store.OTSStatus*` consts, never literals; label is grayscale-safe, dot decorative
+  (ADR-0010 inv.4). §4 and certificate §5 do not mention `ots verify` until a proof can be downloaded from
+  the page (`.claude/context/issues.md`). The §5 "anchored · block N" line still needs the newest root confirmed.
 - **settled (advance `244d450`): the §3 observed-time subselect is `AND c.tree_size = f.last_size ORDER BY
   c.id ASC LIMIT 1` — §3 always reads the ACCEPTED checkpoint's time on a frozen hub, both the
   equivocation/higher-size case and the same-size FORK.** Violation kinds are size-partitioned

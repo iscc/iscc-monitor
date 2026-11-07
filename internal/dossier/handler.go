@@ -79,10 +79,11 @@ var tmpl = func() *template.Template {
 // The numbered trust-document fields are honesty-gated (no fabricated value): §2's
 // CoverageDays is "" unless coverage is set; §3's ObservedTime is "" when the latest
 // checkpoint carries no recorded time; §4's AnchorLabel / AnchorDot come from the
-// store OTS status (the label is the grayscale-safe load-bearing signal, the dot
-// decorative, ADR-0010 inv.4) and AnchorHeight renders only when the anchor is
-// confirmed AND the height is non-zero (HasAnchorHeight), never block 0. StatusNote
-// is the soft-caution copy for a non-frozen unresolvable / unverified hub, with the
+// hub's overall anchor state (the label is the grayscale-safe load-bearing signal, the
+// dot decorative, ADR-0010 inv.4), AnchorHeight renders only when non-zero
+// (HasAnchorHeight), never block 0, and AnchorDetail / AnchorNote are the lines beneath
+// it from anchorLines. StatusNote is the soft-caution copy for a non-frozen
+// unresolvable / unverified hub, with the
 // store's "fork" violation kind mapped to the canonical "split view" vocabulary
 // (CLAUDE.md Language) wherever a kind surfaces outside the Exhibit.
 //
@@ -108,6 +109,8 @@ type dossierData struct {
 	AnchorDot       string
 	HasAnchorHeight bool
 	AnchorHeight    uint64
+	AnchorDetail    string
+	AnchorNote      string
 	KeyUnresolved   bool
 	ShowCaution     bool
 	StatusNote      string
@@ -297,8 +300,8 @@ func buildData(s store.HubSummary, status string, violations []store.Violation, 
 	if !ok {
 		label = status
 	}
-	anchorLbl, anchorDot := anchorLabel(s.Anchor)
-	hasHeight := s.Anchor == store.OTSStatusConfirmed && s.AnchorHeight > 0
+	anchorLbl, anchorDot := anchorLabel(s.AnchorState())
+	anchorDetail, anchorNote := anchorLines(s)
 	return dossierData{
 		Domain:          s.Domain,
 		Origin:          s.Origin,
@@ -312,8 +315,10 @@ func buildData(s store.HubSummary, status string, violations []store.Violation, 
 		ObservedTime:    observedTime(s.CheckpointObserved),
 		AnchorLabel:     anchorLbl,
 		AnchorDot:       anchorDot,
-		HasAnchorHeight: hasHeight,
+		HasAnchorHeight: s.AnchorHeight > 0,
 		AnchorHeight:    s.AnchorHeight,
+		AnchorDetail:    anchorDetail,
+		AnchorNote:      anchorNote,
 		KeyUnresolved:   status == "unresolvable",
 		ShowCaution:     status == "unresolvable" || status == "unverified",
 		StatusNote:      statusNote(status),
@@ -325,23 +330,43 @@ func buildData(s store.HubSummary, status string, violations []store.Violation, 
 	}
 }
 
-// anchorLabel maps a hub's stored OTS status to its §4 display label and the
-// presentation-only dot keyword, ported verbatim from internal/dashboard so the two
-// surfaces render the same anchor copy: a confirmed root renders "confirmed"; a
-// pending root "pending"; any other value (including the empty never-stamped state)
-// the honest "not anchored" — never implying a Bitcoin anchor exists. It compares
-// against store.OTSStatusConfirmed / store.OTSStatusPending (not hand-typed
-// literals) so the status strings never drift from the store's single source of
-// truth. The dot is decorative; the label carries the meaning grayscale-safe
-// (ADR-0010 inv.4).
-func anchorLabel(status string) (label, dot string) {
-	switch status {
+// anchorLabel maps a hub's anchor state (store.HubSummary.AnchorState) to its §4 display
+// label and the presentation-only dot keyword: "last anchored" once any root is
+// confirmed; "pending" while roots wait and none has confirmed; any other value
+// (including the empty never-stamped state) the honest "not anchored" — never implying
+// a Bitcoin anchor exists. The dot is decorative; the label carries the meaning
+// grayscale-safe (ADR-0010 inv.4).
+func anchorLabel(state string) (label, dot string) {
+	switch state {
 	case store.OTSStatusConfirmed:
-		return "confirmed", "confirmed"
+		return "last anchored", "confirmed"
 	case store.OTSStatusPending:
 		return "pending", "pending"
 	default:
 		return "not anchored", "none"
+	}
+}
+
+// anchorLines returns the §4 lines beneath the label. A confirmed anchor states which
+// entries it covers and when this monitor noticed the confirmation, which is not when
+// the block was mined. The note about newer entries shows only while the hub is still
+// anchoring, so a frozen hub (no anchor, ADR-0004) never promises a next one. This
+// section offers no proof download, so it does not tell the reader to run a verifier.
+func anchorLines(s store.HubSummary) (detail, note string) {
+	switch s.AnchorState() {
+	case store.OTSStatusConfirmed:
+		detail = fmt.Sprintf("Entries up to size %d", s.AnchorSize)
+		if !s.AnchorSeenAt.IsZero() {
+			detail += " · seen confirmed " + s.AnchorSeenAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		if !s.Frozen && s.AnchorSize < s.LastSize {
+			note = "Newer entries are waiting for the next anchor."
+		}
+		return detail, note
+	case store.OTSStatusPending:
+		return "No confirmed anchor yet. The newest entries are waiting for Bitcoin confirmation.", ""
+	default:
+		return "No root has been anchored in Bitcoin.", ""
 	}
 }
 

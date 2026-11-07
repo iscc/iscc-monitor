@@ -155,6 +155,102 @@ func TestListHubsCheckpointAndAnchorHeight(t *testing.T) {
 	}
 }
 
+// TestListHubsNewestConfirmedAnchor pins the last-anchored read on a growing hub: its
+// newest root is still pending while older roots are confirmed, so the anchor fields
+// come from the newest CONFIRMED row while Anchor still reports the newest row. All
+// three fields must come from that one row, not from the older confirmed one.
+func TestListHubsNewestConfirmedAnchor(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	seenAt := time.Unix(1_700_100_000, 0)
+
+	growing, err := s.UpsertHub(ctx, "amlet.id", "amlet.id/log", "https://amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub growing: %v", err)
+	}
+	rows := []OTSRecord{
+		{TreeSize: 10, Status: OTSStatusConfirmed, BTCHeight: 100, UpgradedAt: seenAt.Add(-time.Hour), StampedAt: time.Unix(1_700_000_000, 0), Root: []byte("older-confirmed-root-padding-32!")},
+		{TreeSize: 20, Status: OTSStatusConfirmed, BTCHeight: 200, UpgradedAt: seenAt, StampedAt: time.Unix(1_700_001_000, 0), Root: []byte("newer-confirmed-root-padding-32!")},
+		{TreeSize: 30, Status: OTSStatusPending, StampedAt: time.Unix(1_700_002_000, 0), Root: []byte("newest-pending-root-padding-32!!")},
+	}
+	for _, row := range rows {
+		row.HubID = growing
+		if _, _, err := s.RecordOTS(ctx, row); err != nil {
+			t.Fatalf("RecordOTS size %d: %v", row.TreeSize, err)
+		}
+	}
+
+	pendingOnly, err := s.UpsertHub(ctx, "new.id", "new.id/log", "https://new.id")
+	if err != nil {
+		t.Fatalf("UpsertHub pending-only: %v", err)
+	}
+	if _, _, err := s.RecordOTS(ctx, OTSRecord{
+		HubID: pendingOnly, TreeSize: 5, Status: OTSStatusPending, StampedAt: time.Unix(1_700_000_000, 0), Root: []byte("only-pending-root-padding-32!!!!"),
+	}); err != nil {
+		t.Fatalf("RecordOTS pending-only: %v", err)
+	}
+
+	if _, err := s.UpsertHub(ctx, "bare.id", "bare.id/log", "https://bare.id"); err != nil {
+		t.Fatalf("UpsertHub bare: %v", err)
+	}
+
+	// An empty log passes fsck and is stamped, so its first confirmed anchor covers size 0.
+	empty, err := s.UpsertHub(ctx, "empty.id", "empty.id/log", "https://empty.id")
+	if err != nil {
+		t.Fatalf("UpsertHub empty: %v", err)
+	}
+	emptyRows := []OTSRecord{
+		{TreeSize: 0, Status: OTSStatusConfirmed, BTCHeight: 900000, UpgradedAt: seenAt, StampedAt: time.Unix(1_700_000_000, 0), Root: []byte("empty-tree-root-padding-to-32!!!")},
+		{TreeSize: 3, Status: OTSStatusPending, StampedAt: time.Unix(1_700_001_000, 0), Root: []byte("first-entries-root-padding-32!!!")},
+	}
+	for _, row := range emptyRows {
+		row.HubID = empty
+		if _, _, err := s.RecordOTS(ctx, row); err != nil {
+			t.Fatalf("RecordOTS empty size %d: %v", row.TreeSize, err)
+		}
+	}
+
+	hubs, err := s.ListHubs(ctx)
+	if err != nil {
+		t.Fatalf("ListHubs: %v", err)
+	}
+	byDomain := map[string]HubSummary{}
+	for _, h := range hubs {
+		byDomain[h.Domain] = h
+	}
+
+	got := byDomain["amlet.id"]
+	if got.Anchor != OTSStatusPending {
+		t.Errorf("Anchor = %q, want the newest row's %q", got.Anchor, OTSStatusPending)
+	}
+	if got.AnchorHeight != 200 || got.AnchorSize != 20 || !got.AnchorSeenAt.Equal(seenAt) {
+		t.Errorf("anchor = block %d size %d seen %v, want block 200 size 20 seen %v", got.AnchorHeight, got.AnchorSize, got.AnchorSeenAt, seenAt)
+	}
+	if state := got.AnchorState(); state != OTSStatusConfirmed {
+		t.Errorf("AnchorState = %q, want %q", state, OTSStatusConfirmed)
+	}
+
+	only := byDomain["new.id"]
+	if only.AnchorConfirmed || only.AnchorHeight != 0 || only.AnchorSize != 0 || !only.AnchorSeenAt.IsZero() {
+		t.Errorf("pending-only anchor = confirmed %t block %d size %d seen %v, want zero values", only.AnchorConfirmed, only.AnchorHeight, only.AnchorSize, only.AnchorSeenAt)
+	}
+	if state := only.AnchorState(); state != OTSStatusPending {
+		t.Errorf("pending-only AnchorState = %q, want %q", state, OTSStatusPending)
+	}
+
+	if state := byDomain["bare.id"].AnchorState(); state != "" {
+		t.Errorf("bare AnchorState = %q, want empty", state)
+	}
+
+	emptyHub := byDomain["empty.id"]
+	if !emptyHub.AnchorConfirmed || emptyHub.AnchorHeight != 900000 || emptyHub.AnchorSize != 0 || !emptyHub.AnchorSeenAt.Equal(seenAt) {
+		t.Errorf("empty-tree anchor = confirmed %t block %d size %d seen %v, want confirmed block 900000 size 0 seen %v", emptyHub.AnchorConfirmed, emptyHub.AnchorHeight, emptyHub.AnchorSize, emptyHub.AnchorSeenAt, seenAt)
+	}
+	if state := emptyHub.AnchorState(); state != OTSStatusConfirmed {
+		t.Errorf("empty-tree AnchorState = %q, want %q", state, OTSStatusConfirmed)
+	}
+}
+
 // TestListHubsFrozenObservedTracksAcceptedSize pins the §3 size/time honesty fix on a
 // frozen hub for the higher-tree-size (equivocation) case: after the hub accepts a
 // checkpoint at the accepted size and the freeze path records a LATER, higher-tree-size

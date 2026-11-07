@@ -1845,8 +1845,13 @@ func TestCertificateBitcoinAnchorConfirmed(t *testing.T) {
 			t.Errorf("body missing §5 confirmed marker %q\n%s", want, body)
 		}
 	}
-	// The confirmation time chip is rendered from the row's upgraded_at (RFC-3339).
-	if want := upgradedAt.Format(time.RFC3339); !strings.Contains(body, want) {
+	// The confirmation time chip is rendered from the row's upgraded_at (RFC-3339). The
+	// label says who saw it, because that is when this monitor noticed the confirmation,
+	// not when the block was mined. "ots verify" stays out: the page offers no proof.
+	if strings.Contains(body, "ots verify") {
+		t.Errorf("body still tells the reader to run ots verify\n%s", body)
+	}
+	if want := "seen confirmed " + upgradedAt.Format(time.RFC3339); !strings.Contains(body, want) {
 		t.Errorf("body missing §5 confirmation time %q\n%s", want, body)
 	}
 	// The honest "pending" copy must NOT appear for a confirmed anchor.

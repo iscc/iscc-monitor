@@ -31,6 +31,7 @@ import (
 	"html/template"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/iscc/iscc-monitor/internal/badge"
 	"github.com/iscc/iscc-monitor/internal/store"
@@ -61,11 +62,10 @@ var tmpl = func() *template.Template {
 //
 // Checkpoint is the accepted checkpoint size the mockup's "Checkpoint" column
 // shows (== LastSize, a relabel of the former "Observed size" cell, not a new
-// store read). Anchor is the hub's latest-stamped-root OTS status humanized for
-// display ("confirmed" / "pending" / "not anchored"), and AnchorDot is the
-// presentation-only dot keyword ("confirmed" / "pending" / "none") the template
-// keys the decorative dot color on — never the sole status signal (the Anchor
-// label carries it grayscale-safe, ADR-0010 invariant 4).
+// store read). Anchor, AnchorNotes and AnchorDot are the Anchor cell from anchorCell:
+// the label, the lines beneath it, and the presentation-only dot keyword ("confirmed" /
+// "pending" / "none") the template keys the decorative dot color on — never the sole
+// status signal (the label carries it grayscale-safe, ADR-0010 invariant 4).
 type row struct {
 	RowNo       string
 	Domain      string
@@ -78,6 +78,7 @@ type row struct {
 	SinceTime   string
 	Checkpoint  uint64
 	Anchor      string
+	AnchorNotes []string
 	AnchorDot   string
 }
 
@@ -227,7 +228,7 @@ func buildRows(summaries []store.HubSummary, statuses StatusSource) []row {
 		if !ok {
 			label = status
 		}
-		anchor, anchorDot := anchorLabel(s.Anchor)
+		anchor, anchorNotes, anchorDot := anchorCell(s)
 		rows = append(rows, row{
 			RowNo:       fmt.Sprintf("%02d", i+1),
 			Domain:      s.Domain,
@@ -240,6 +241,7 @@ func buildRows(summaries []store.HubSummary, statuses StatusSource) []row {
 			SinceTime:   coverageTime(s.Coverage),
 			Checkpoint:  s.LastSize,
 			Anchor:      anchor,
+			AnchorNotes: anchorNotes,
 			AnchorDot:   anchorDot,
 		})
 	}
@@ -296,21 +298,31 @@ func buildRecent(ctx context.Context, st *store.Store) ([]recentDecl, error) {
 	return out, nil
 }
 
-// anchorLabel maps a hub's stored OTS status to its display label and the
-// presentation-only dot keyword. A confirmed root renders "confirmed" / green; a
-// pending root renders "pending" / yellow; any other value (including the empty
-// never-stamped state) renders the honest "not anchored" / no-dot — never implying
-// a Bitcoin anchor exists. It compares against store.OTSStatusConfirmed /
-// store.OTSStatusPending (not hand-typed literals) so the status strings never
-// drift from the store's single source of truth.
-func anchorLabel(status string) (label, dot string) {
-	switch status {
+// anchorCell returns the register's Anchor cell for a hub: its label, the lines beneath
+// it and the presentation-only dot keyword. A hub with a confirmed anchor shows the
+// block and the size that anchor covers, so comparing the size with the Checkpoint
+// column shows how many entries are not yet anchored. "pending" is reserved for a hub
+// with no confirmed anchor at all. A confirmed row with no recorded height falls back
+// to the word "confirmed" and never reads as block 0. The date is when this monitor
+// noticed the confirmation, which is why the cell shows no time of day. Size and date
+// are separate lines, like the Coverage since cell, because the column is too narrow to
+// hold both without breaking the date.
+func anchorCell(s store.HubSummary) (label string, notes []string, dot string) {
+	switch s.AnchorState() {
 	case store.OTSStatusConfirmed:
-		return "confirmed", "confirmed"
+		label = "confirmed"
+		if s.AnchorHeight > 0 {
+			label = fmt.Sprintf("block %d", s.AnchorHeight)
+		}
+		notes = []string{fmt.Sprintf("size %d", s.AnchorSize)}
+		if !s.AnchorSeenAt.IsZero() {
+			notes = append(notes, "at "+s.AnchorSeenAt.UTC().Format(time.DateOnly))
+		}
+		return label, notes, "confirmed"
 	case store.OTSStatusPending:
-		return "pending", "pending"
+		return "pending", []string{"no confirmed anchor yet"}, "pending"
 	default:
-		return "not anchored", "none"
+		return "not anchored", nil, "none"
 	}
 }
 

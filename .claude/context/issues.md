@@ -530,35 +530,6 @@ filed it and does **not** affect priority.
   ("errors rather than writing a partial site"); learnings.md always-loaded fail-closed discipline;
   `learnings/verifier-site.md` non-atomic-output note.
 
-## Realm-index `/` Anchor column is per-hub (latest-stamped root), not tied to the displayed Checkpoint — a design-honesty question for the M-UI exit
-- **Priority:** normal
-- **Source:** [review] (Codex P2, reviewer-triaged — implementation is spec-faithful; the design question is real)
-- **What / where / how to verify:** The `/` ledger Anchor cell (`internal/store/hubs.go:50-51` +
-  `internal/dashboard/handler.go anchorLabel`) projects the hub's LATEST-STAMPED-root OTS status
-  (`SELECT o.status … ORDER BY o.stamped_at DESC, o.id DESC LIMIT 1`), while the same row's Checkpoint
-  cell shows `f.last_size` (the accepted tree size). The two are DECOUPLED: nothing ties the chosen OTS
-  row's `tree_size`/`root` to the displayed checkpoint. Codex's framing (it could render "confirmed" for
-  an older root while the newer checkpoint is shown, "overstating current anchoring") is technically
-  accurate but is the EXPECTED steady state, not a defect: OTS is async/best-effort (ADR-0004, never
-  blocks the poll), so the displayed checkpoint is almost always AHEAD of the latest Bitcoin-confirmed
-  anchor. The column is — by design AND by the mockup (`anchorState` is a free-standing per-hub property,
-  `.dc.html:88-103`) — a per-HUB "this hub anchors its roots" indicator, NOT a per-checkpoint
-  attestation. The AUTHORITATIVE per-checkpoint claim already exists in **certificate §5**, which binds
-  `OTSForRoot(hubID, treeSize, root)` to the §2 accepted root via `ots.ConfirmedFor`. This increment is
-  spec-faithful (matches `next.md`'s "latest-stamped-root" projection + the mockup), all gates green,
-  mutation-proven — so it does NOT block progress. The open question for the M-UI exit / a design pass:
-  should the realm-index Anchor cell (a) stay a per-hub activity indicator (current, mockup-faithful),
-  (b) gain a distinct label that makes the "latest confirmed anchor, not this checkpoint" semantics
-  explicit, or (c) tie to `o.tree_size = f.last_size` — but (c) is REJECTED without a design pass because
-  it would render "not anchored" for virtually every actively-polling hub (the newest checkpoint is rarely
-  confirmed yet) and defeat the column. Verify resolved: the design pass records the chosen semantics and,
-  if (b), the realm-index Anchor label distinguishes hub-anchoring-activity from a per-checkpoint claim;
-  the certificate §5 per-root surface stays the authoritative per-checkpoint attestation.
-- **Spec:** CLAUDE.md "Bitcoin anchoring" (Bitcoin-only meaning) + "Coverage" (never imply a guarantee
-  the data does not support); ADR-0004 OTS async/best-effort; ADR-0010 Evidence-Ledger honesty;
-  `.claude/design/ISCC Monitor - Realm Index.dc.html` per-hub anchorState model; `learnings/dashboard.md`
-  per-hub-vs-per-checkpoint Anchor note; `internal/certificate/handler.go` §5 authoritative per-root surface.
-
 ## Masthead identity fallback consts are now duplicated across dashboard + dossier + certificate (3x) instead of one shared resolve leaf
 - **Priority:** low
 - **Source:** [review] (filed alongside the dossier masthead-identity slice `413efe8`; updated when the cert copy landed `3c64097`)
@@ -794,3 +765,24 @@ filed it and does **not** affect priority.
   `healthz` operation declares both `200` and `503`. Low — skipped by the loop until the doc is next edited.
 - **Spec:** ADR-0014 §1 (document the machine surface's real responses); `internal/healthz/handler.go`
   (the 503 unavailable path); CLAUDE.md `GET /healthz` ("liveness + store readiness").
+
+## Certificates and proof downloads do not reach a hub's older Bitcoin anchors
+- **Priority:** low
+- **Source:** [human] (deliberately deferred on 2026-11-07, while fixing GitHub issue #2)
+- **What / where / how to verify:** The realm register and hub dossier read the hub's newest *confirmed*
+  anchor (`store.HubSummary.AnchorState`), but three surfaces still read only the *newest* root: certificate
+  §5 (`OTSForRoot` at the accepted root in `internal/certificate/handler.go`), the proof bundle (no OTS
+  member) and `GET /<domain>/log/checkpoint.ots` (`serveOTS` in `internal/proofserve/handler.go`). On a hub
+  that receives entries daily, the newest root is almost always unconfirmed, because a new root arrives
+  before the previous one can confirm. Mainnet `amlet.id` in the 2026-11-06 backup: 2,247 of 2,249 anchors
+  confirmed, yet a panel reading the newest root would have said "confirmed" for 0 of the last 336 hours. So
+  a certificate for an `amlet.id` entry from June shows no Bitcoin block (§5 is omitted while the newest root
+  is unstamped, then reads "pending"), and `checkpoint.ots` answers 404 "root not yet anchored". The evidence
+  exists, but readers cannot reach it. The fix: select the earliest confirmed anchor with `tree_size > seq`,
+  so the certificate can say the entry existed before block H, and offer that anchor's root and `.ots` for
+  download. It also needs a decision on how a reader connects the entry to that older root: an inclusion proof
+  at the anchored size, or a consistency proof from the anchored size to the accepted size (ADR-0004's
+  soundness argument). Once a proof can be downloaded from the page, restore the "run `ots verify`" guidance
+  that was removed from dossier §4 and certificate §5, linked to that proof. Verify fixed: a certificate for
+  an old entry on a growing hub shows a confirmed block, and the proof it links to passes `ots verify`.
+- **Spec:** ADR-0004 amendment 2026-06-28 ("Why this is sound"); `.claude/design/0001-ux-brief-v1.md:155,236`.
