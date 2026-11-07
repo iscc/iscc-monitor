@@ -19,6 +19,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/iscc/iscc-monitor/internal/index"
 	"github.com/iscc/iscc-monitor/internal/proof/verify"
 )
 
@@ -106,9 +107,12 @@ type idEnvelope struct {
 //
 // recordB64 is the base64-Std-encoded canonical record bytes (the same record
 // VerifyJSON hashes into the leaf); wantID is the requested ISCC-ID from the
-// verifier's ?id= target. Both the committed iscc_id and wantID are canonicalized
-// to the "ISCC:"-prefixed form before an exact-bytes compare, so a bare and a
-// prefixed request bind identically (the certificate §1 lookup-key idiom).
+// verifier's ?id= target. wantID goes through index.Canonical, the same normalization
+// the server's lookup uses, so every spelling that fetched this bundle also binds to
+// it: without that, a lowercase ?id= would get a valid bundle and then raise the
+// split-view alert. The committed iscc_id gets only the "ISCC:" prefix handling, so a
+// record must commit the ID in its canonical spelling. The two are then compared as
+// exact bytes.
 //
 // The three-way verdict contract is preserved so the eventual split-view alert can
 // tell a mismatch apart from broken input:
@@ -127,12 +131,11 @@ func RecordCommitsID(recordB64, wantID string) (ok bool, errMsg string) {
 	if err := json.Unmarshal(recordBytes, &env); err != nil {
 		return false, fmt.Sprintf("decode record envelope: %v", err)
 	}
-	return canonicalID(env.IsccID) == canonicalID(wantID), ""
+	return canonicalID(env.IsccID) == canonicalID(index.Canonical(wantID)), ""
 }
 
-// canonicalID normalizes an ISCC-ID to its single "ISCC:"-prefixed form so a bare
-// and a prefixed string compare equal. It is the certificate §1 lookup-key idiom:
-// trim any leading "ISCC:" then re-prefix exactly once.
+// canonicalID gives a string its single "ISCC:" prefix so a bare and a prefixed
+// string compare equal: trim any leading "ISCC:" then re-prefix exactly once.
 func canonicalID(id string) string {
 	return "ISCC:" + strings.TrimPrefix(id, "ISCC:")
 }

@@ -19,6 +19,10 @@ from `monitor-test.iscc.io` and `monitor.iscc.io`.
   canonical tlog-tiles paths, so a log stays verifiable if its hub goes offline.
 - **Proofs and verdicts:** computed inclusion and consistency proofs, a downloadable proof bundle, and a
   verify-for-me endpoint that is flagged as the weaker path compared with verifying a bundle yourself.
+- **ISCC-ID input:** certificates, proofs and verdicts accept an ISCC-ID in any letter case, with an optional
+  `ISCC:` or `did:iscc:` prefix. Previously the proof and verify-for-me endpoints reported an ID without the
+  prefix as not found, even when it was in the log. Proof bundles now always name the ID in its canonical
+  `ISCC:` form ([#1](https://github.com/iscc/iscc-monitor/issues/1)).
 - **Web interface:** server-rendered dashboard, hub dossiers, log and record browsers, and a Certificate of
   Inclusion for any ISCC-ID in the realm. These pages work without JavaScript, and no page loads anything
   from a CDN.

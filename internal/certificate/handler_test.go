@@ -24,6 +24,7 @@ import (
 	"html"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -298,6 +299,64 @@ func TestCertificatePrefixedLookup(t *testing.T) {
 		if !strings.Contains(body, "24815") {
 			t.Errorf("id %q missing the subject position\n%s", id, body)
 		}
+	}
+}
+
+// TestCertificateAcceptsISCCIDRepresentations asserts every accepted spelling of the
+// ID certifies the same leaf and renders the canonical ID, through both the path and
+// the no-JS hero form's query string. The page never echoes a non-canonical spelling
+// on a certifiable result.
+func TestCertificateAcceptsISCCIDRepresentations(t *testing.T) {
+	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
+
+	lower := strings.ToLower(goldenID)
+	forms := []string{
+		goldenID,
+		"ISCC:" + goldenID,
+		lower,
+		"iscc:" + lower,
+		"did:iscc:" + lower,
+		" ISCC:" + goldenID + "\n",
+	}
+	for _, form := range forms {
+		targets := map[string]string{
+			"path":  PathPrefix + url.PathEscape(form),
+			"query": PathPrefix + "?" + url.Values{"iscc_id": {form}}.Encode(),
+		}
+		for via, target := range targets {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s %q: status = %d, want 200", via, form, rec.Code)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, "is included in the transparency log") {
+				t.Errorf("%s %q did not certify the leaf\n%s", via, form, body)
+			}
+			if !strings.Contains(body, `<div class="subject-id">ISCC:`+goldenID+`</div>`) {
+				t.Errorf("%s %q did not render the canonical id\n%s", via, form, body)
+			}
+		}
+	}
+}
+
+// TestCertificateRejectsLookalikeID asserts a string that only matches the ID after
+// Unicode case folding is not certified: "ı" folds to "I" under strings.ToUpper.
+func TestCertificateRejectsLookalikeID(t *testing.T) {
+	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815)
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
+
+	rec := get(t, h, url.PathEscape("maıghfecjmopmiab"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "is included in the transparency log") {
+		t.Errorf("a look-alike id was certified\n%s", body)
+	}
+	if !strings.Contains(body, "not a valid ISCC-ID") {
+		t.Errorf("body missing the not-a-valid-ID state\n%s", body)
 	}
 }
 

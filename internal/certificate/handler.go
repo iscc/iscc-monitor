@@ -245,8 +245,8 @@ type HistoryRow struct {
 // HasClause5 flag stays false so the template's gated Bitcoin-anchor placeholder
 // renders nothing yet (the OTS store seam does not exist).
 type certData struct {
-	// IsccID is the subject id as supplied by the caller (echoed verbatim, never
-	// interpreted beyond the decode). It is shown even on a not-found.
+	// IsccID is the subject id: canonical once it decodes, otherwise the caller's
+	// string as supplied. It is shown even on a not-found.
 	IsccID string
 	// BundleHref is the path-rooted, ISCC:-prefix-free href the "Download proof
 	// bundle" action links to (/inclusion/<bare-id>.bundle). It is built canonically
@@ -657,7 +657,8 @@ func serveBundle(w http.ResponseWriter, data certData, arts bundleArtifacts) {
 		}
 		bundle.Key = key
 	}
-	w.Header().Set("Content-Disposition", `attachment; filename="`+data.IsccID+`.bundle.json"`)
+	// The filename drops the "ISCC:" prefix because Windows filenames cannot hold a colon.
+	w.Header().Set("Content-Disposition", `attachment; filename="`+strings.TrimPrefix(data.IsccID, "ISCC:")+`.bundle.json"`)
 	w.WriteHeader(http.StatusOK)
 	// Drop-the-write-error-after-200 (matching proofserve.writeEvidence): the fixed
 	// shape cannot fail to marshal for content reasons, and a mid-write fault cannot
@@ -677,7 +678,7 @@ func serveBundle(w http.ResponseWriter, data certData, arts bundleArtifacts) {
 // bundle reuses the §3 crypto path verbatim instead of re-deriving Merkle.
 //
 // The chain, each step's miss being an honest 200 verdict:
-//  1. Decode the id — a decode error → "not a valid ISCC-ID".
+//  1. Canonicalize and decode the id — a decode error → "not a valid ISCC-ID".
 //  2. Resolve the hub_id slot via the Hub-List — an unknown slot → "not in this realm".
 //  3. Find the resolved domain's followed-hub row — none → "hub not followed by this monitor".
 //  4. Look up the id's indexed seqs under the canonical ISCC:-prefixed key — none →
@@ -735,11 +736,13 @@ func buildData(r *http.Request, hubList registry.HubResolver, st *store.Store, r
 	}
 	data := certData{IsccID: rawID}
 
-	id, err := index.Decode(rawID)
+	canonicalID := index.Canonical(rawID)
+	id, err := index.Decode(canonicalID)
 	if err != nil {
 		data.Reason = "not a valid ISCC-ID"
 		return data, arts, http.StatusOK
 	}
+	data.IsccID = canonicalID
 
 	if hubList == nil {
 		data.Reason = "not found in this realm"
@@ -762,14 +765,9 @@ func buildData(r *http.Request, hubList registry.HubResolver, st *store.Store, r
 	}
 	data.Domain = domain
 
-	// Canonicalize the lookup id to the stored form: logclient writes iscc_id
-	// VERBATIM and ISCC:-prefixed (projection.go:31-32), so a PATH route must query
-	// the prefixed form. TrimPrefix accepts either /inclusion/MAIG… or
-	// /inclusion/ISCC:MAIG… and never double-prefixes; index.iscPrefix is unexported,
-	// so the literal "ISCC:" is used here (matching how cert.html carries literal
-	// /_ds/ paths). rawID is still echoed as data.IsccID for display.
-	lookupID := "ISCC:" + strings.TrimPrefix(rawID, "ISCC:")
-	seqs, err := st.SeqsForISCCID(r.Context(), hub.HubID, lookupID)
+	// The canonical id is the stored form: logclient writes iscc_id VERBATIM and hubs
+	// commit it ISCC:-prefixed and uppercase (projection.go:31-32).
+	seqs, err := st.SeqsForISCCID(r.Context(), hub.HubID, canonicalID)
 	if err != nil {
 		return certData{}, arts, http.StatusInternalServerError
 	}
@@ -804,14 +802,13 @@ func buildData(r *http.Request, hubList registry.HubResolver, st *store.Store, r
 	data.Certifiable = true
 	data.Position = seqs[0]
 	// Build the proof-bundle download href canonically: path-rooted at the mount
-	// (PathPrefix) and ISCC:-prefix-free. cert.html cannot use the raw .IsccID here —
-	// for the ISCC:-prefixed request form html/template's URL escaper reads the
-	// leading ISCC: as an unknown scheme and emits the #ZgotmplZ sentinel, breaking
-	// the headline download link. A leading "/" plus the stripped prefix make this an
-	// unambiguous path the escaper passes through verbatim, and the .bundle handler
-	// decodes the bare form identically (decode is prefix-agnostic), so it resolves to
-	// the same bundle.
-	data.BundleHref = PathPrefix + strings.TrimPrefix(rawID, "ISCC:") + bundleSuffix
+	// (PathPrefix) and ISCC:-prefix-free. cert.html cannot use .IsccID here —
+	// html/template's URL escaper reads the leading ISCC: as an unknown scheme and
+	// emits the #ZgotmplZ sentinel, breaking the headline download link. A leading "/"
+	// plus the stripped prefix make this an unambiguous path the escaper passes through
+	// verbatim, and the .bundle handler accepts the bare form, so it resolves to the
+	// same bundle.
+	data.BundleHref = PathPrefix + strings.TrimPrefix(canonicalID, "ISCC:") + bundleSuffix
 
 	// §2 CHECKPOINT: render the accepted (size, root) the cap above keys on. The
 	// size is hub.LastSize (already proven > 0 by the cap), so only the root needs a

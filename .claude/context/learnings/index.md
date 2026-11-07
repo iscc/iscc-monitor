@@ -4,6 +4,11 @@ Pure leaf `Decode(isccID string) (ISCCID, error)` — the trust root of the real
 path: a wrong decode resolves the wrong hub and proves the wrong leaf. WASM-shareable (no
 `net`/`net/http`/`database/sql`/`os` in the closure; only `os` transitively via `fmt`).
 
+- **`Decode` stays strict; `Canonical` is the only place that normalizes input.** It maps any letter case,
+  surrounding whitespace and an optional `ISCC:` or `did:iscc:` prefix to `ISCC:<UPPERCASE>`, and returns
+  anything that is not a valid ISCC-IDv1 unchanged, so opaque ids in `iscc_index` still match verbatim. It
+  upper-cases ASCII only: `strings.ToUpper` folds `ı` to `I` and `ſ` to `S`, which would let a different string
+  pass as a valid ID. It is linked into the WASM verifier (see `cmd-wasm.md`).
 - **ISCC-IDv1 = 80-bit code = 16-bit header + 64-bit body, 16 base32 chars (RFC 4648 uppercase, NO
   `=` padding), optional `ISCC:` prefix.** Header = 4 nibbles: MainType, SubType, Version, **Length**.
   For a v1 ID: MainType nibble (`raw[0]>>4`) = 6, SubType nibble (`raw[0]&0xF`) = **realm** (0

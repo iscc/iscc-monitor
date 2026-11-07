@@ -136,7 +136,7 @@ paths:
         - name: iscc_id
           in: query
           required: true
-          description: The ISCC-ID to prove inclusion for (with or without the `ISCC:` prefix).
+          description: The ISCC-ID to prove inclusion for. Accepts any letter case, with an optional `ISCC:` or `did:iscc:` prefix.
           schema:
             type: string
         - name: index
@@ -238,7 +238,7 @@ paths:
         - name: iscc_id
           in: query
           required: true
-          description: The ISCC-ID to verify (with or without the `ISCC:` prefix).
+          description: The ISCC-ID to verify. Accepts any letter case, with an optional `ISCC:` or `did:iscc:` prefix.
           schema:
             type: string
       responses:
@@ -338,7 +338,7 @@ paths:
         - name: iscc_id
           in: path
           required: true
-          description: The self-describing ISCC-IDv1 (the `.bundle` suffix selects the machine artifact).
+          description: The self-describing ISCC-IDv1 (the `.bundle` suffix selects the machine artifact). Accepts any letter case, with an optional `ISCC:` or `did:iscc:` prefix; the bundle's `iscc_id` is always the canonical `ISCC:` form.
           schema:
             type: string
       responses:
@@ -385,6 +385,7 @@ components:
       properties:
         iscc_id:
           type: string
+          description: The canonical `ISCC:` form when the request named a valid ISCC-IDv1, otherwise the string as supplied.
         hub_status:
           type: string
           description: The store-provable hub status (frozen, else verified).

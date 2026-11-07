@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -77,15 +78,16 @@ func TestCertificateProofBundle(t *testing.T) {
 	if got, want := rec.Header().Get("Content-Type"), "application/json"; got != want {
 		t.Errorf("Content-Type = %q, want %q", got, want)
 	}
-	if got := rec.Header().Get("Content-Disposition"); !strings.Contains(got, "attachment") || !strings.Contains(got, goldenID+".bundle.json") {
-		t.Errorf("Content-Disposition = %q, want an attachment named %q", got, goldenID+".bundle.json")
+	if got, want := rec.Header().Get("Content-Disposition"), `attachment; filename="`+goldenID+`.bundle.json"`; got != want {
+		t.Errorf("Content-Disposition = %q, want %q", got, want)
 	}
 
 	bundle := decodeBundle(t, rec.Body.Bytes())
 
-	// Subject id + resolved hub + DID.
-	if bundle.IsccID != goldenID {
-		t.Errorf("bundle iscc_id = %q, want %q", bundle.IsccID, goldenID)
+	// Subject id + resolved hub + DID. A bundle names its subject canonically, however
+	// the request spelled it.
+	if want := "ISCC:" + goldenID; bundle.IsccID != want {
+		t.Errorf("bundle iscc_id = %q, want %q", bundle.IsccID, want)
 	}
 	if bundle.Hub.Domain != "sb1.amlet.id" {
 		t.Errorf("bundle hub.domain = %q, want sb1.amlet.id", bundle.Hub.Domain)
@@ -262,12 +264,38 @@ func TestCertificateProofBundleTileGap(t *testing.T) {
 	if resp["error"] == "" {
 		t.Errorf("a tile-gap .bundle response carried no error message: %v", resp)
 	}
-	if resp["iscc_id"] != goldenID {
-		t.Errorf("not-available response iscc_id = %q, want %q", resp["iscc_id"], goldenID)
+	if want := "ISCC:" + goldenID; resp["iscc_id"] != want {
+		t.Errorf("not-available response iscc_id = %q, want %q", resp["iscc_id"], want)
 	}
 	// It must NOT be a fabricated bundle (no inclusion / checkpoint members).
 	if strings.Contains(rec.Body.String(), "IsccLogInclusionProof") {
 		t.Errorf("a tile-gap .bundle response fabricated an inclusion proof\n%s", rec.Body.String())
+	}
+}
+
+// TestCertificateProofBundleAcceptsISCCIDRepresentations asserts every accepted
+// spelling serves the same bundle: canonical iscc_id, and a download filename free of
+// the colon Windows filenames cannot hold. The verifier page fetches this route with
+// the id it was given, so a spelling rejected here reaches the user as "no proof
+// bundle".
+func TestCertificateProofBundleAcceptsISCCIDRepresentations(t *testing.T) {
+	const seq = 0
+	const leaves = 5
+	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, liveCheckpointRaw(t, "sb0.iscc.id_checkpoint"))
+	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
+
+	lower := strings.ToLower(goldenID)
+	for _, form := range []string{"ISCC:" + goldenID, lower, "iscc:" + lower, "did:iscc:" + lower, " " + goldenID + " "} {
+		rec := get(t, h, url.PathEscape(form)+bundleSuffix)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("id %q: status = %d, want 200", form, rec.Code)
+		}
+		if got, want := rec.Header().Get("Content-Disposition"), `attachment; filename="`+goldenID+`.bundle.json"`; got != want {
+			t.Errorf("id %q: Content-Disposition = %q, want %q", form, got, want)
+		}
+		if got, want := decodeBundle(t, rec.Body.Bytes()).IsccID, "ISCC:"+goldenID; got != want {
+			t.Errorf("id %q: bundle iscc_id = %q, want %q", form, got, want)
+		}
 	}
 }
 

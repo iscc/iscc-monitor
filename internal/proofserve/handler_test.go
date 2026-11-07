@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
@@ -46,11 +47,51 @@ import (
 // tile qualifiers.
 const mirrorLeaves = 300
 
+// realIDLeaf is the leaf that carries a valid ISCC-IDv1 (realISCCID), so the
+// representation tests exercise a real ID while every other leaf stays opaque.
+const (
+	realIDLeaf = 7
+	realISCCID = "ISCC:MAIGHFECJMOPMIAB"
+)
+
 // leafISCCID returns the distinct iscc_id the leaf at index i carries — a synthetic
 // ISCC:-prefixed string unique per leaf so the projection read-back is a clean
-// one-seq-per-id lookup (SeqsForISCCID returns exactly [seq]).
+// one-seq-per-id lookup (SeqsForISCCID returns exactly [seq]). Leaf realIDLeaf carries
+// realISCCID instead.
 func leafISCCID(i int) string {
+	if i == realIDLeaf {
+		return realISCCID
+	}
 	return fmt.Sprintf("ISCC:LEAF%08d", i)
+}
+
+// isccIDRepresentations lists the spellings of realISCCID a caller may supply.
+var isccIDRepresentations = []string{
+	realISCCID,
+	"MAIGHFECJMOPMIAB",
+	"maighfecjmopmiab",
+	"iscc:maighfecjmopmiab",
+	"did:iscc:maighfecjmopmiab",
+	" ISCC:MAIGHFECJMOPMIAB\n",
+}
+
+// TestInclusionAcceptsISCCIDRepresentations asserts every spelling of a real ISCC-ID
+// resolves to its leaf. The lookup is an exact match on the stored canonical form, so
+// a request passed through unchanged would answer 404 for an ID that is in the log.
+func TestInclusionAcceptsISCCIDRepresentations(t *testing.T) {
+	m := buildMirror(t, mirrorLeaves)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+
+	for _, form := range isccIDRepresentations {
+		code, ev := getEvidence(t, h, url.Values{"iscc_id": {form}}.Encode())
+		if code != http.StatusOK {
+			t.Errorf("iscc_id %q: status = %d, want 200", form, code)
+			continue
+		}
+		if ev.LeafIndex != realIDLeaf {
+			t.Errorf("iscc_id %q: leaf_index = %d, want %d", form, ev.LeafIndex, realIDLeaf)
+		}
+	}
 }
 
 // nodeHash recomputes the tree-node hash at (treeLevel, treeIndex) by folding the

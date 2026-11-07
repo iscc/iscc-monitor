@@ -109,6 +109,92 @@ func TestDecodeRejectsMalformed(t *testing.T) {
 	}
 }
 
+// TestCanonicalAcceptedRepresentations asserts every accepted spelling of an
+// ISCC-IDv1 maps to the single canonical form, and that the result is stable when
+// canonicalized again. The forms come from IEP-0001 (canonical, lowercase URI) and
+// the draft IEP-0015 (did:iscc).
+func TestCanonicalAcceptedRepresentations(t *testing.T) {
+	const want = "ISCC:MAIGHFECJMOPMIAB"
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"canonical", "ISCC:MAIGHFECJMOPMIAB"},
+		{"bare", "MAIGHFECJMOPMIAB"},
+		{"bare-lowercase", "maighfecjmopmiab"},
+		{"bare-mixed-case", "MaIgHfEcJmOpMiAb"},
+		{"uri-lowercase", "iscc:maighfecjmopmiab"},
+		{"lowercase-prefix-uppercase-body", "iscc:MAIGHFECJMOPMIAB"},
+		{"uppercase-prefix-lowercase-body", "ISCC:maighfecjmopmiab"},
+		{"did", "did:iscc:maighfecjmopmiab"},
+		{"did-uppercase", "DID:ISCC:MAIGHFECJMOPMIAB"},
+		{"surrounding-spaces", "  ISCC:MAIGHFECJMOPMIAB  "},
+		{"surrounding-newline", "ISCC:MAIGHFECJMOPMIAB\r\n"},
+		{"surrounding-non-breaking-space", string(rune(0xA0)) + "MAIGHFECJMOPMIAB" + string(rune(0xA0))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Canonical(tc.in)
+			if got != want {
+				t.Fatalf("Canonical(%q) = %q, want %q", tc.in, got, want)
+			}
+			if again := Canonical(got); again != want {
+				t.Fatalf("Canonical(%q) = %q, want it stable at %q", got, again, want)
+			}
+		})
+	}
+}
+
+// TestCanonicalLeavesOtherStringsUnchanged asserts a string that is not a valid
+// ISCC-IDv1 comes back byte-for-byte, so an opaque id keeps matching verbatim and
+// Decode still rejects it. The look-alike cases hold letters that Unicode case
+// mapping folds onto base32 letters ("ı" to "I", "ſ" to "S"): accepting them would
+// let a different string pass as this ID.
+func TestCanonicalLeavesOtherStringsUnchanged(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"empty", ""},
+		{"whitespace-only", "  "},
+		{"padded-junk", "  not-an-iscc-id  "},
+		{"opaque-prefixed", "ISCC:LEAF00000003"},
+		{"too-short", "maighfec"},
+		{"non-base32", "maighfecjmopmia1"},
+		{"not-an-iscc-id-type", "iscc:eaawyal5vr274rqt"},
+		{"double-prefix", "ISCC:ISCC:MAIGHFECJMOPMIAB"},
+		{"did-with-iscc-prefix", "did:iscc:iscc:maighfecjmopmiab"},
+		{"double-did", "did:iscc:did:iscc:maighfecjmopmiab"},
+		{"other-did-method", "did:web:maighfecjmopmiab"},
+		{"inner-space", "ISCC: MAIGHFECJMOPMIAB"},
+		{"hyphenated", "MAIGHFEC-JMOPMIAB"},
+		{"lookalike-dotless-i-in-body", "maıghfecjmopmiab"},
+		{"lookalike-dotless-i-in-prefix", "ıscc:maighfecjmopmiab"},
+		{"lookalike-long-s-in-prefix", "iſcc:maighfecjmopmiab"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Canonical(tc.in); got != tc.in {
+				t.Fatalf("Canonical(%q) = %q, want the input unchanged", tc.in, got)
+			}
+		})
+	}
+}
+
+// TestCanonicalKeepsDecodedFields asserts canonicalizing never changes which ID a
+// string names: the realm, hub_id and timestamp match the strict decode of the
+// canonical spelling.
+func TestCanonicalKeepsDecodedFields(t *testing.T) {
+	want := ISCCID{Realm: 1, HubID: 2, Timestamp: 1751831876325218}
+	got, err := Decode(Canonical("did:iscc:meighfecjmopmiac"))
+	if err != nil {
+		t.Fatalf("Decode(Canonical(...)) error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("decoded %+v, want %+v", got, want)
+	}
+}
+
 func TestDecodeWrongMainType(t *testing.T) {
 	// A well-formed 16-char base32 string whose header MainType nibble is not 6
 	// must be rejected even though it decodes cleanly to 10 bytes. Build one whose

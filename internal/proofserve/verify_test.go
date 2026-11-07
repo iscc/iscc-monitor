@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
@@ -220,6 +221,37 @@ func TestVerifyKnownISCCID(t *testing.T) {
 		if v.Root != wantRoot {
 			t.Errorf("leaf %d: root = %q, want %q", leaf, v.Root, wantRoot)
 		}
+	}
+}
+
+// TestVerifyAcceptsISCCIDRepresentations asserts every spelling of a real ISCC-ID gets
+// the same positive verdict and is echoed canonically. It guards the false negative a
+// verbatim lookup produces: a bare ID that is in the log reported as "iscc_id not
+// found". An opaque unknown id still echoes as supplied.
+func TestVerifyAcceptsISCCIDRepresentations(t *testing.T) {
+	m := buildVerifyMirror(t, mirrorLeaves, false)
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+
+	for _, form := range isccIDRepresentations {
+		code, v := getVerdict(t, h, url.Values{"iscc_id": {form}}.Encode())
+		if code != http.StatusOK {
+			t.Fatalf("iscc_id %q: status = %d, want 200", form, code)
+		}
+		if !v.Verified || !v.Included {
+			t.Errorf("iscc_id %q: verified = %v, included = %v (reason %q), want both true", form, v.Verified, v.Included, v.Reason)
+		}
+		if v.LeafIndex != realIDLeaf {
+			t.Errorf("iscc_id %q: leaf_index = %d, want %d", form, v.LeafIndex, realIDLeaf)
+		}
+		if v.IsccID != realISCCID {
+			t.Errorf("iscc_id %q: echoed %q, want %q", form, v.IsccID, realISCCID)
+		}
+	}
+
+	const opaque = "not-an-iscc-id"
+	_, v := getVerdict(t, h, "iscc_id="+opaque)
+	if v.Verified || v.IsccID != opaque {
+		t.Errorf("opaque id: verified = %v, echoed %q, want false and %q", v.Verified, v.IsccID, opaque)
 	}
 }
 

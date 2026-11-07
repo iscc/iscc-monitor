@@ -47,6 +47,7 @@
             "type": "boolean"
           },
           "iscc_id": {
+            "description": "The canonical `ISCC:` form when the request named a valid ISCC-IDv1, otherwise the string as supplied.",
             "type": "string"
           },
           "leaf_index": {
@@ -117,7 +118,7 @@
         "operationId": "getProofBundle",
         "parameters": [
           {
-            "description": "The self-describing ISCC-IDv1 (the `.bundle` suffix selects the machine artifact).",
+            "description": "The self-describing ISCC-IDv1 (the `.bundle` suffix selects the machine artifact). Accepts any letter case, with an optional `ISCC:` or `did:iscc:` prefix; the bundle's `iscc_id` is always the canonical `ISCC:` form.",
             "in": "path",
             "name": "iscc_id",
             "required": true,
@@ -398,7 +399,7 @@
             "$ref": "#/components/parameters/Domain"
           },
           {
-            "description": "The ISCC-ID to prove inclusion for (with or without the `ISCC:` prefix).",
+            "description": "The ISCC-ID to prove inclusion for. Accepts any letter case, with an optional `ISCC:` or `did:iscc:` prefix.",
             "in": "query",
             "name": "iscc_id",
             "required": true,
@@ -490,7 +491,7 @@
             "$ref": "#/components/parameters/Domain"
           },
           {
-            "description": "The ISCC-ID to verify (with or without the `ISCC:` prefix).",
+            "description": "The ISCC-ID to verify. Accepts any letter case, with an optional `ISCC:` or `did:iscc:` prefix.",
             "in": "query",
             "name": "iscc_id",
             "required": true,

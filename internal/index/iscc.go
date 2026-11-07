@@ -15,6 +15,10 @@
 // operational). The body is a big-endian uint64 split into timestamp = body >> 12
 // (52 bits, µs since epoch) and hub_id = body & 0xFFF (low 12 bits, slot 0-4095).
 //
+// Decode reads only that exact spelling. Canonical is the one place that turns what
+// a caller typed (lowercase, did:iscc:, surrounding whitespace) into it, so the
+// certificate, the proof endpoints and the WASM id-binding agree on what names an ID.
+//
 // This is a pure leaf: it performs no I/O and imports no net/sql/os, so it stays
 // shareable with the WASM verifier. It fails closed — malformed input always
 // returns a descriptive error and never panics.
@@ -46,6 +50,10 @@ const timestampShift = 12
 
 // iscPrefix is the optional human-readable scheme prefix on an ISCC string.
 const iscPrefix = "ISCC:"
+
+// didPrefix is the uppercased did:iscc method prefix (draft IEP-0015), as Canonical
+// compares it.
+const didPrefix = "DID:ISCC:"
 
 // bodyChars is the number of base32 characters in an ISCC-IDv1: an 80-bit code
 // (16-bit header + 64-bit body) encodes to exactly 16 characters with no padding.
@@ -107,6 +115,37 @@ func Decode(isccID string) (ISCCID, error) {
 		HubID:     uint16(value & hubIDMask),
 		Timestamp: value >> timestampShift,
 	}, nil
+}
+
+// Canonical returns the canonical "ISCC:<UPPERCASE BASE32>" spelling of an ISCC-IDv1
+// supplied in any accepted representation: any letter case, surrounding whitespace,
+// and an optional "ISCC:" or "did:iscc:" prefix (IEP-0001, draft IEP-0015). Multibase
+// encodings and hyphenated forms are not accepted.
+//
+// A string that is not a valid ISCC-IDv1 comes back unchanged, so the opaque ids a
+// log may carry keep matching verbatim and Decode still rejects it. Canonical never
+// changes which ID a string names, because the result must pass the strict Decode.
+func Canonical(s string) string {
+	upper := strings.Map(upperASCII, strings.TrimSpace(s))
+	body, isDID := strings.CutPrefix(upper, didPrefix)
+	if !isDID {
+		body = strings.TrimPrefix(upper, iscPrefix)
+	}
+	canonical := iscPrefix + body
+	if _, err := Decode(canonical); err != nil {
+		return s
+	}
+	return canonical
+}
+
+// upperASCII maps a-z to A-Z and leaves every other rune alone. strings.ToUpper would
+// also fold look-alikes such as "ı" and "ſ" onto base32 letters, letting a different
+// string pass as a valid ID.
+func upperASCII(r rune) rune {
+	if 'a' <= r && r <= 'z' {
+		return r - ('a' - 'A')
+	}
+	return r
 }
 
 // encode builds the canonical ISCC-IDv1 string (no "ISCC:" prefix) for a realm,

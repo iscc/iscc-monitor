@@ -114,7 +114,10 @@ After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSO
   badge (same overlay as `GET /`) and honest coverage window (`monitored_since` size + RFC-3339 time, or
   "no coverage yet"), plus a link into its mirrored log browser. Same no-JS, no-CDN DS shell.
 - `GET /inclusion/<iscc_id>` — realm-wide HTML Certificate of Inclusion keyed on the self-describing
-  ISCC-IDv1 (decode realm + 12-bit `hub_id`, resolve the issuing hub via the Hub-List): renders the §1
+  ISCC-IDv1 (decode realm + 12-bit `hub_id`, resolve the issuing hub via the Hub-List). Every `iscc_id` input
+  (this route, its bundle, the per-hub `inclusion` and `verify` routes, and the WASM id-binding) goes through
+  `index.Canonical`: any letter case, surrounding whitespace, and an optional `ISCC:` or `did:iscc:` prefix.
+  Renders the §1
   Subject clause + subject banner (subject id, resolved hub domain, position) for a known id, or the
   honest "cannot certify" state (200, never 5xx) for a malformed / unresolvable / not-followed / not-in-log
   id. Clauses §1-§6 (Subject, Checkpoint, Inclusion Proof, Signing Key, Bitcoin Anchor, Record History)

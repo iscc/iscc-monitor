@@ -120,9 +120,13 @@ marshaling adapter). Durable cross-cutting rules live in the index
   reproducible-from-command with `mise run build:wasm && git status` showing `verify.wasm` clean (NOT just
   `mise run check` green — that only checks committed-bytes-vs-const, never reproducibility from the
   documented command).
+- **The id-binding and the server's lookup must accept the same spellings.** `RecordCommitsID` runs the
+  requested id through `index.Canonical`, the normalizer the certificate and proof routes use. If the server
+  accepts a spelling the WASM does not, the verifier page gets a valid bundle and then shows a false split-view
+  alert. So a change to `Canonical` also needs `mise run build:wasm` and a re-pin.
 - **settled: `mise.toml` pins the EXACT patch `go = "1.26.10"` (not the floating minor
-  `1.26`), and `WasmVerifyHash = ab3488c5…` is that toolchain's deterministic output.** Reproducible: two
-  consecutive `mise run build:wasm` both emit `ab3488c5…`; the
+  `1.26`), and `WasmVerifyHash = 6d060ca5…` is that toolchain's deterministic output.** Reproducible: two
+  consecutive `mise run build:wasm` both emit `6d060ca5…`; the
   artifact embeds `go1.26.10`; `TestWasmVerifyHashPinned` green. Keep the patch pinned to an EXACT version
   when bumping — a floating minor reintroduces the divergence (whatever patch mise happens to have
   installed wins, drifting the pin off the documented build). On a Go bump: change `mise.toml` to the new

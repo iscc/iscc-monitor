@@ -236,3 +236,41 @@ func TestRecordCommitsID(t *testing.T) {
 		})
 	}
 }
+
+// TestRecordCommitsIDAcceptedRepresentations asserts the id-binding matches the
+// server's lookup: every spelling the server resolves to a bundle also binds here.
+// A gap between the two would turn a valid bundle into a mismatch verdict, and the
+// verifier page would raise its split-view alert over a harmless lowercase ID. Only
+// the requested id is normalized, so a different ID or a look-alike spelling stays a
+// negative verdict, and a record must commit the ID in its canonical spelling.
+func TestRecordCommitsIDAcceptedRepresentations(t *testing.T) {
+	const id = "MEIGL6S6LBDBBMAC"
+	canonical := envelopeB64("ISCC:" + id)
+
+	cases := []struct {
+		name      string
+		recordB64 string
+		wantID    string
+		wantOK    bool
+	}{
+		{"bare lowercase", canonical, "meigl6s6lbdbbmac", true},
+		{"lowercase uri", canonical, "iscc:meigl6s6lbdbbmac", true},
+		{"did", canonical, "did:iscc:meigl6s6lbdbbmac", true},
+		{"surrounding whitespace", canonical, " ISCC:" + id + "\n", true},
+		{"different id in lowercase", canonical, "meigl6s6lbdbbmad", false},
+		{"look-alike long s", canonical, "meigl6ſ6lbdbbmac", false},
+		{"record commits a lowercase spelling", envelopeB64("iscc:meigl6s6lbdbbmac"), "ISCC:" + id, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, errMsg := RecordCommitsID(tc.recordB64, tc.wantID)
+			if errMsg != "" {
+				t.Fatalf("errMsg = %q, want a verdict and no error", errMsg)
+			}
+			if ok != tc.wantOK {
+				t.Errorf("ok = %v, want %v", ok, tc.wantOK)
+			}
+		})
+	}
+}

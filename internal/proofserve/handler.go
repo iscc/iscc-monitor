@@ -40,6 +40,7 @@ import (
 
 	"github.com/iscc/iscc-monitor/internal/badge"
 	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/index"
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/proof/verify"
 	"github.com/iscc/iscc-monitor/internal/store"
@@ -268,7 +269,7 @@ func Handler(st *store.Store, hubID int64, domain string, statuses StatusSource,
 func serveInclusion(w http.ResponseWriter, r *http.Request, st *store.Store, f store.SQLiteFetcher, hubID int64) {
 	ctx := r.Context()
 
-	isccID := r.URL.Query().Get("iscc_id")
+	isccID := index.Canonical(r.URL.Query().Get("iscc_id"))
 	if isccID == "" {
 		http.Error(w, "missing iscc_id", http.StatusBadRequest)
 		return
@@ -622,7 +623,7 @@ type VerifyVerdict struct {
 func serveVerify(w http.ResponseWriter, r *http.Request, st *store.Store, f store.SQLiteFetcher, hubID int64) {
 	ctx := r.Context()
 
-	isccID := r.URL.Query().Get("iscc_id")
+	isccID := index.Canonical(r.URL.Query().Get("iscc_id"))
 	if isccID == "" {
 		writeVerdict(w, VerifyVerdict{Verified: false, Reason: "missing iscc_id"})
 		return

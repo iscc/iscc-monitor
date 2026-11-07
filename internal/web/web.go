@@ -103,7 +103,7 @@ const ElementsCSSPath = "/_ds/elements.min.css"
 // metadata into the wasm data section and the hash is unreproducible. Re-running that
 // task without re-pinning this const fails TestWasmVerifyHashPinned. The bytes are
 // toolchain-dependent, so this value tracks `mise run build:wasm`, not a bare go build.
-const WasmVerifyHash = "ab3488c549a638474550d4943b10b1bdd6025b49c4d3c9cdfd01ee50a9c159cc"
+const WasmVerifyHash = "6d060ca5e0b430e52e0fdd894a200bf72dbba960318f9a0611c70c96956d9ad6"
 
 // ElementsJSHash is the published lowercase-hex SHA-256 of the committed
 // elements.min.js bytes — the build-pinned hash a reviewer compares against to
