@@ -3,11 +3,14 @@
 // round-trips every field (including the three optional masthead-identity
 // strings), a partially-set identity proves per-field independence, and the
 // validations fail closed — a missing required path, an unparseable interval, a
-// non-positive interval, and a Frozen < Normal cross-check each return a non-nil
-// wrapped error naming the offending key and the zero Config.
+// non-positive interval, a Frozen < Normal cross-check, and each malformed co-branding
+// value each return a non-nil wrapped error naming the offending key and the zero
+// Config. The co-branding keys round-trip, and footer links parse leniently around
+// whitespace and empty pairs.
 package config
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +37,11 @@ func TestLoadGolden(t *testing.T) {
 		keyInstance:  "monitor.iscc.id",
 		keyOperator:  "ISCC Foundation",
 		keyRealmName: "ISCC mainnet",
+
+		keyOperatorName: "Example GmbH",
+		keyOperatorURL:  "https://example.com/",
+		keyOperatorLogo: "/etc/iscc-monitor/operator.svg",
+		keyFooterLinks:  "Imprint=https://example.com/imprint|Privacy=https://example.com/privacy",
 	})
 	got, err := Load(get)
 	if err != nil {
@@ -48,8 +56,16 @@ func TestLoadGolden(t *testing.T) {
 		Instance:  "monitor.iscc.id",
 		Operator:  "ISCC Foundation",
 		RealmName: "ISCC mainnet",
+
+		OperatorName: "Example GmbH",
+		OperatorURL:  "https://example.com/",
+		OperatorLogo: "/etc/iscc-monitor/operator.svg",
+		FooterLinks: []Link{
+			{Label: "Imprint", URL: "https://example.com/imprint"},
+			{Label: "Privacy", URL: "https://example.com/privacy"},
+		},
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Load(full) = %#v, want %#v", got, want)
 	}
 }
@@ -72,7 +88,7 @@ func TestLoadDefaults(t *testing.T) {
 		Frozen:    defaultFrozen,
 		Addr:      defaultAddr,
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Load(minimal) = %#v, want %#v", got, want)
 	}
 	if got.Addr != ":9464" {
@@ -128,6 +144,21 @@ func TestLoad(t *testing.T) {
 			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyRealmName: "ISCC mainnet"},
 			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, Addr: defaultAddr, RealmName: "ISCC mainnet"},
 		},
+		{
+			name: "operator name alone needs no url or logo",
+			in:   map[string]string{keyDB: "/db", keyRealm: "/realm", keyOperatorName: "Example GmbH"},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, Addr: defaultAddr, OperatorName: "Example GmbH"},
+		},
+		{
+			name: "footer links trim whitespace, skip empty pairs, accept mailto, keep = in a query",
+			in: map[string]string{keyDB: "/db", keyRealm: "/realm",
+				keyFooterLinks: " Contact = mailto:info@example.com | | Terms=https://example.com/t?lang=en |"},
+			want: Config{DBPath: "/db", RealmPath: "/realm", Normal: defaultNormal, Frozen: defaultFrozen, Addr: defaultAddr,
+				FooterLinks: []Link{
+					{Label: "Contact", URL: "mailto:info@example.com"},
+					{Label: "Terms", URL: "https://example.com/t?lang=en"},
+				}},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -135,7 +166,7 @@ func TestLoad(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load(%v) error: %v", tc.in, err)
 			}
-			if got != tc.want {
+			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("Load(%v) = %#v, want %#v", tc.in, got, tc.want)
 			}
 		})
@@ -193,6 +224,51 @@ func TestLoadErrors(t *testing.T) {
 			in:      map[string]string{keyDB: "/db", keyRealm: "/realm", keyNormal: "10m", keyFrozen: "1m"},
 			wantKey: keyFrozen,
 		},
+		{
+			name:    "operator url is not absolute",
+			in:      map[string]string{keyDB: "/db", keyRealm: "/realm", keyOperatorName: "X", keyOperatorURL: "example.com"},
+			wantKey: keyOperatorURL,
+		},
+		{
+			name:    "operator url uses a script scheme",
+			in:      map[string]string{keyDB: "/db", keyRealm: "/realm", keyOperatorName: "X", keyOperatorURL: "javascript:alert(1)"},
+			wantKey: keyOperatorURL,
+		},
+		{
+			name:    "operator url rejects mailto",
+			in:      map[string]string{keyDB: "/db", keyRealm: "/realm", keyOperatorName: "X", keyOperatorURL: "mailto:a@example.com"},
+			wantKey: keyOperatorURL,
+		},
+		{
+			name:    "operator url without a name",
+			in:      map[string]string{keyDB: "/db", keyRealm: "/realm", keyOperatorURL: "https://example.com"},
+			wantKey: keyOperatorName,
+		},
+		{
+			name:    "operator logo without a name",
+			in:      map[string]string{keyDB: "/db", keyRealm: "/realm", keyOperatorLogo: "/logo.svg"},
+			wantKey: keyOperatorName,
+		},
+		{
+			name:    "footer link without =",
+			in:      map[string]string{keyDB: "/db", keyRealm: "/realm", keyFooterLinks: "https://example.com/imprint"},
+			wantKey: keyFooterLinks,
+		},
+		{
+			name:    "footer link without a label",
+			in:      map[string]string{keyDB: "/db", keyRealm: "/realm", keyFooterLinks: "=https://example.com/imprint"},
+			wantKey: keyFooterLinks,
+		},
+		{
+			name:    "footer link with a script scheme",
+			in:      map[string]string{keyDB: "/db", keyRealm: "/realm", keyFooterLinks: "Imprint=https://example.com|Evil=javascript:alert(1)"},
+			wantKey: keyFooterLinks,
+		},
+		{
+			name:    "footer link with an empty mailto",
+			in:      map[string]string{keyDB: "/db", keyRealm: "/realm", keyFooterLinks: "Contact=mailto:"},
+			wantKey: keyFooterLinks,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -200,7 +276,7 @@ func TestLoadErrors(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Load(%v) = %#v, want error", tc.in, got)
 			}
-			if got != (Config{}) {
+			if !reflect.DeepEqual(got, Config{}) {
 				t.Errorf("Load(%v) returned %#v alongside error, want zero Config", tc.in, got)
 			}
 			if !strings.Contains(err.Error(), tc.wantKey) {

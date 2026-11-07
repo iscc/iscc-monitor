@@ -25,7 +25,11 @@ from `monitor-test.iscc.io` and `monitor.iscc.io`.
   `ISCC:` form ([#1](https://github.com/iscc/iscc-monitor/issues/1)).
 - **Web interface:** server-rendered dashboard, hub dossiers, log and record browsers, and a Certificate of
   Inclusion for any ISCC-ID in the realm. These pages work without JavaScript, and no page loads anything
-  from a CDN.
+  from a CDN. The design follows the ISCC brand guidelines (edition 01).
+- **Footer and operator co-branding:** every page shows the running version, linked to its release or
+  commit, and the open-source credit. An operator can add its name, website, a logo shown beside the ISCC
+  mark, and footer links such as an imprint or privacy policy, all through environment variables
+  ([`deploy/OPERATING.md`](deploy/OPERATING.md#branding)).
 - **In-browser verification:** a reproducible, hash-pinned WebAssembly verifier, used on certificate pages
   and by the standalone verifier site at `monitor.iscc.codes`.
 - **Bitcoin anchoring:** OpenTimestamps proofs for checkpoint roots. The realm register and hub pages show

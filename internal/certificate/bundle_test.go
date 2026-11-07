@@ -26,7 +26,7 @@ import (
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/merkle/testonly"
 
-	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
@@ -70,7 +70,7 @@ func TestCertificateProofBundle(t *testing.T) {
 		t.Fatalf("RecordHubKey: %v", err)
 	}
 
-	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
+	h := Handler(testnetHubList(), st, nil, chrome.Site{})
 	rec := get(t, h, goldenID+bundleSuffix)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -173,7 +173,7 @@ func TestCertificateProofBundleDIDPortEncoded(t *testing.T) {
 	raw := liveCheckpointRaw(t, "sb0.iscc.id_checkpoint")
 	st, _ := fixtureStoreTiled(t, "localhost:8443", goldenID, seq, leaves, nil, false, raw)
 
-	h := Handler(hostPortHubList(), st, nil, dashboard.Identity{})
+	h := Handler(hostPortHubList(), st, nil, chrome.Site{})
 	rec := get(t, h, goldenID+bundleSuffix)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -203,7 +203,7 @@ func TestCertificateProofBundleLinkRendered(t *testing.T) {
 	const seq = 0
 	const leaves = 5
 	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, []byte("raw"))
-	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
+	h := Handler(testnetHubList(), st, nil, chrome.Site{})
 
 	// The canonical href both id forms must resolve to: path-rooted at the mount,
 	// ISCC:-prefix-free. The .bundle handler decodes the bare form identically.
@@ -245,7 +245,7 @@ func TestCertificateProofBundleLinkRendered(t *testing.T) {
 // is an honest 200 "no proof bundle available" — never a fabricated bundle, never a 5xx.
 func TestCertificateProofBundleTileGap(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", goldenID, 24815) // no tiles mirrored
-	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
+	h := Handler(testnetHubList(), st, nil, chrome.Site{})
 
 	rec := get(t, h, goldenID+bundleSuffix)
 	if rec.Code != http.StatusOK {
@@ -282,7 +282,7 @@ func TestCertificateProofBundleAcceptsISCCIDRepresentations(t *testing.T) {
 	const seq = 0
 	const leaves = 5
 	st, _ := fixtureStoreTiled(t, "sb1.amlet.id", goldenID, seq, leaves, nil, false, liveCheckpointRaw(t, "sb0.iscc.id_checkpoint"))
-	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
+	h := Handler(testnetHubList(), st, nil, chrome.Site{})
 
 	lower := strings.ToLower(goldenID)
 	for _, form := range []string{"ISCC:" + goldenID, lower, "iscc:" + lower, "did:iscc:" + lower, " " + goldenID + " "} {
@@ -322,7 +322,7 @@ func TestCertificateProofBundleContradictory(t *testing.T) {
 	if string(treeA.Hash()) == string(treeB.Hash()) {
 		t.Fatalf("treeA and treeB share a root; the fixture is not contradictory")
 	}
-	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
+	h := Handler(testnetHubList(), st, nil, chrome.Site{})
 
 	rec := get(t, h, goldenID+bundleSuffix)
 	if rec.Code != http.StatusOK {

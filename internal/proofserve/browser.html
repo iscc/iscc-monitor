@@ -12,6 +12,10 @@
        /_ds/fonts/, no runtime CDN). The path is a literal; keep it in sync with
        web.FontsCSSPath. -->
   <link rel="stylesheet" href="/_ds/fonts.css">
+  <!-- Shared site chrome: masthead, footer, buttons, focus outline. The path is a
+       literal; keep it in sync with web.SiteCSSPath. -->
+  <link rel="stylesheet" href="/_ds/site.css">
+  <link rel="icon" href="/_ds/favicon.svg" type="image/svg+xml">
   <!-- Page-scoped layout for the Evidence-Ledger log browser. Every rule is
        expressed through the embedded DS tokens (var(--*)) so the type resolves to
        the self-hosted Readex Pro / JetBrains Mono and the surfaces use the DS
@@ -22,45 +26,6 @@
       font-family: var(--font-sans);
       color: var(--text-body);
       background: var(--surface-page);
-    }
-
-    /* Document chrome: the masthead identifying this monitor instance. */
-    .chrome {
-      display: flex;
-      align-items: center;
-      gap: var(--space-4);
-      flex-wrap: wrap;
-      padding: var(--space-4) var(--space-8);
-      background: var(--surface-card);
-      border-bottom: var(--border-width) solid var(--border-default);
-    }
-    .chrome-brand {
-      display: flex;
-      align-items: center;
-      gap: var(--space-3);
-    }
-    .chrome-logo {
-      height: 38px;
-      width: auto;
-      display: block;
-    }
-    .chrome-divider {
-      width: 1px;
-      height: 24px;
-      background: var(--border-default);
-    }
-    .chrome-mark {
-      font-family: var(--font-mono);
-      font-size: var(--text-xs);
-      letter-spacing: var(--tracking-widest);
-      text-transform: uppercase;
-      color: var(--text-heading);
-      font-weight: var(--weight-semibold);
-    }
-    .chrome-sub {
-      font-size: var(--text-xs);
-      color: var(--text-muted);
-      font-weight: var(--weight-light);
     }
 
     .page {
@@ -90,7 +55,7 @@
     .ledger-count {
       font-size: var(--text-sm);
       color: var(--text-muted);
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
     }
 
     /* The ledger card: a bordered, shadowed surface holding the checkpoint rows. */
@@ -191,7 +156,7 @@
 
     .footnote {
       font-size: var(--text-xs);
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
       color: var(--text-faint);
       line-height: var(--leading-normal);
       margin: var(--space-4) var(--space-1) 0;
@@ -232,16 +197,7 @@
   </style>
 </head>
 <body>
-  <header class="chrome">
-    <div class="chrome-brand">
-      <img class="chrome-logo" src="/_ds/iscc-logo-black.png" alt="ISCC">
-      <span class="chrome-divider"></span>
-      <div>
-        <div class="chrome-mark">Trust &amp; Transparency Monitor</div>
-        <div class="chrome-sub">Evidence of record · ISCC-Hub network</div>
-      </div>
-    </div>
-  </header>
+  {{template "siteHeader" .Chrome}}
 
   <main class="page">
     <div class="ledger-head">
@@ -285,5 +241,6 @@
 
     <p class="footnote">Every hub is mirrored and served regardless of status. Only verified checkpoints advance the monitor's accepted state, and guarantees hold only from coverage start — entries committed before the monitor began watching are mirrored but not vouched for.</p>
   </main>
+  {{template "siteFooter" .Chrome}}
 </body>
 </html>

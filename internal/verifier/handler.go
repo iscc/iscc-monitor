@@ -7,7 +7,8 @@
 // split view … do not discard either").
 //
 // The page is a single STATIC artifact: it carries no per-request data and is
-// rendered identically for every request (tmpl.Execute(&buf, nil)). The
+// rendered identically for every request (its only data is the fixed
+// chrome.Verifier masthead and footer). The
 // ?monitor=<instance-url>&id=<iscc_id> target is read CLIENT-side from
 // location.search by the always-emitted end-of-body loader (/_ds/wasm_exec.js +
 // /_ds/verify.wasm) — it is NEVER parsed by the handler nor reflected into the body.
@@ -20,10 +21,10 @@
 // target (or no JS) the page renders the honest baseline: it names the steps the
 // verifier WILL run and asserts NO un-run verdict.
 //
-// The leaf stays pure (stdlib only) — it imports no internal/store, internal/web,
-// internal/metrics, network, or net/url, so it is golden-testable in isolation. The
-// /_ds/... paths are template LITERALS kept in sync with web.TokensPath/
-// FontsCSSPath/WasmVerifyPath/WasmExecPath/LogoPath by comment (the dashboard/dossier
+// The leaf imports no internal/store, internal/metrics, network, or net/url (only the
+// internal/chrome partials), so it is golden-testable in isolation. The /_ds/... paths
+// are template LITERALS kept in sync with web.TokensPath/FontsCSSPath/SiteCSSPath/
+// WasmVerifyPath/WasmExecPath by comment (the dashboard/dossier
 // convention). The oracle/conformance gate is N/A: the live verdict runs in the
 // BROWSER (verified by the review step's headless visual pass, ADR-0012), not in go
 // test; this handler renders only HTML.
@@ -38,6 +39,8 @@ import (
 	_ "embed"
 	"html/template"
 	"net/http"
+
+	"github.com/iscc/iscc-monitor/internal/chrome"
 )
 
 // pageTemplate is the embedded verifier template, parsed once at package init so a
@@ -46,9 +49,16 @@ import (
 //go:embed verifier.html
 var pageTemplate string
 
-// tmpl is the parsed verifier template. template.Must panics at init if the source
-// fails to parse, surfacing a template bug at startup rather than per request.
-var tmpl = template.Must(template.New("verifier").Parse(pageTemplate))
+// tmpl is the parsed verifier template with the shared chrome partials associated.
+// template.Must panics at init if a source fails to parse, surfacing a template bug at
+// startup rather than per request.
+var tmpl = func() *template.Template {
+	t := template.Must(template.New("verifier").Parse(pageTemplate))
+	return template.Must(t.Parse(chrome.Source))
+}()
+
+// page is the verifier template context: the verifier app's fixed masthead and footer.
+var page = struct{ Chrome chrome.View }{Chrome: chrome.Verifier()}
 
 // Handler returns an http.Handler that renders the standalone Independent
 // Verification page. The page is a single static artifact with no per-request data:
@@ -65,7 +75,7 @@ func Handler() http.Handler {
 			return
 		}
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, nil); err != nil {
+		if err := tmpl.Execute(&buf, page); err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}

@@ -1,9 +1,9 @@
 // Command verifier-site renders the standalone Independent Verification site
 // (Surface C, the monitor-agnostic verifier app published at monitor.iscc.codes)
 // into an output directory as a complete, self-contained static tree: the single
-// index.html page plus every /_ds/ asset it loads (the Design System token and
-// @font-face stylesheets, the woff2 binaries, the Go WASM runtime loader, the
-// SRI-pinned verify.wasm artifact, and the masthead logo). The GitHub-Pages deploy
+// index.html page plus every /_ds/ asset it loads (the Design System token, site-chrome,
+// and @font-face stylesheets, the woff2 binaries, the Go WASM runtime loader, the
+// SRI-pinned verify.wasm artifact, the masthead logo, and the favicon). The GitHub-Pages deploy
 // invokes this one command to assemble the deployable artifact, so the published
 // site is byte-identical to what the golden tests already gate.
 //
@@ -75,10 +75,12 @@ func generate(outDir string) error {
 
 	paths := []string{
 		web.TokensPath,
+		web.SiteCSSPath,
 		web.FontsCSSPath,
 		web.WasmExecPath,
 		web.WasmVerifyPath,
 		web.LogoPath,
+		web.FaviconPath,
 	}
 	paths = append(paths, fontPaths(string(fontsCSS))...)
 

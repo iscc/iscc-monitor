@@ -18,7 +18,7 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 - **Pure leaf: stdlib only** (`bytes`/`embed`/`html/template`/`net/http`). It does NOT import
   `internal/web` — the `/_ds/...` paths (`tokens.css`, `fonts.css`, `verify.wasm`, `wasm_exec.js`,
-  `iscc-logo-black.png`) are template LITERALS kept in sync with `web.TokensPath`/`FontsCSSPath`/
+  `iscc-logo.svg`, now in the shared `internal/chrome` partial) are template LITERALS kept in sync with `web.TokensPath`/`FontsCSSPath`/
   `WasmVerifyPath`/`WasmExecPath`/`LogoPath` via comments (same convention as dashboard/dossier). The
   golden test asserts each literal, so a drift from a `web.*` const is caught only if the test literal
   is also updated — reviewer cross-checked all five against `web.go` (all match). Oracle gate is N/A

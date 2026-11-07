@@ -1,0 +1,45 @@
+{{define "siteHeader" -}}
+<header class="chrome">
+  <div class="chrome-brand">
+    <a class="chrome-home" href="/"><img class="chrome-logo" src="/_ds/iscc-logo.svg" alt="ISCC Monitor home" width="137" height="38"></a>
+    <span class="chrome-divider"></span>
+    <div>
+      <div class="chrome-mark">Trust &amp; Transparency Monitor</div>
+      <div class="chrome-sub">{{.Sub}}</div>
+    </div>
+  </div>
+  <div class="chrome-actions">
+    {{- if .OperatorLogo}}
+    <div class="chrome-cobrand">
+      <span class="chrome-cobrand-label">Operated by</span>
+      {{if .OperatorURL}}<a class="chrome-cobrand-link" href="{{.OperatorURL}}">{{end}}<img class="chrome-cobrand-logo" src="{{.OperatorLogo}}" alt="{{.OperatorName}}">{{if .OperatorURL}}</a>{{end}}
+    </div>
+    {{- end}}
+    <div class="chrome-identity">
+      <div class="chrome-instance">{{.Instance}}</div>
+      <div class="chrome-operator">{{.Operator}}</div>
+    </div>
+    <a class="chrome-verify" href="{{.VerifyHref}}">verify ↗ monitor.iscc.codes</a>
+  </div>
+</header>
+{{- end}}
+
+{{define "siteFooter" -}}
+<footer class="site-footer">
+  <div class="site-footer-inner">
+    <div class="site-footer-about">
+      <div class="site-footer-product">ISCC Trust &amp; Transparency Monitor · <span class="site-footer-version">{{if .VersionURL}}<a href="{{.VersionURL}}">{{.Version}}</a>{{else}}{{.Version}}{{end}}</span></div>
+      <div>Open source software by the ISCC Foundation · Apache-2.0 · <a href="https://github.com/iscc/iscc-monitor">Source</a></div>
+    </div>
+    {{- if .InstanceLinks}}
+    <nav class="site-footer-nav" aria-label="Monitor"><a href="/docs">API docs</a> · <a href="https://monitor.iscc.codes/">Verify independently ↗</a></nav>
+    {{- end}}
+    {{- if or .OperatorName .Links}}
+    <div class="site-footer-operator">
+      {{- if .OperatorName}}Operated by {{if .OperatorURL}}<a href="{{.OperatorURL}}">{{.OperatorName}}</a>{{else}}{{.OperatorName}}{{end}}{{end}}
+      {{- range $i, $link := .Links}}{{if or $i $.OperatorName}} · {{end}}<a href="{{$link.URL}}">{{$link.Label}}</a>{{end -}}
+    </div>
+    {{- end}}
+  </div>
+</footer>
+{{- end}}

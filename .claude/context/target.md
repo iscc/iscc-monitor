@@ -1,7 +1,8 @@
 # Target — iscc-monitor v1
 
 > Authoritative specs: `.claude/prd/0001-iscc-monitor-v1.md`, `.claude/plans/cosmic-baking-octopus.md`,
-> `.claude/adr/0001`–`0014` (deployment/packaging = ADR-0013, OpenAPI + hosted API docs = ADR-0014),
+> `.claude/adr/0001`–`0015` (deployment/packaging = ADR-0013, OpenAPI + hosted API docs = ADR-0014,
+> brand edition 01 + shared site chrome + operator co-branding = ADR-0015),
 > glossary in `CLAUDE.md`. Where this file
 > and an ADR/PRD disagree, the ADR/PRD wins. This file is the *fixed target* the CID loop advances toward
 > — the desired end-state plus the bar every increment is verified against.

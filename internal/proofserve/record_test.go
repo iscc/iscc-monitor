@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/store"
 	"github.com/iscc/iscc-monitor/internal/tiles"
 )
@@ -139,7 +139,7 @@ func getRecord(t *testing.T, h http.Handler, query string) (int, string) {
 // ISCC-ID, the verbatim note.$schema, and the raw record bytes.
 func TestRecordServesInTreeLeaf(t *testing.T) {
 	m := buildRecordPageMirror(t, 300)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	for _, seq := range []int{0, 5, 255, 256, 299} {
 		code, body := getRecord(t, h, fmt.Sprintf("index=%d", seq))
@@ -168,7 +168,7 @@ func TestRecordServesInTreeLeaf(t *testing.T) {
 // TestRecordContentType asserts the single-record page is served as HTML.
 func TestRecordContentType(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/record?index=0", nil))
 	if rec.Code != http.StatusOK {
@@ -186,7 +186,7 @@ func TestRecordContentType(t *testing.T) {
 // clause). The verbatim schema string still appears alongside the label.
 func TestRecordKindLabels(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	cases := []struct {
 		seq       int
@@ -248,7 +248,7 @@ func TestRecordRendersWithoutProjection(t *testing.T) {
 		t.Fatalf("AdvanceFollowState: %v", err)
 	}
 
-	h := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(st, hubID, "sb0.iscc.id", nil, chrome.Site{})
 	code, body := getRecord(t, h, "index=2")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (missing projection must NOT 404)\n%s", code, body)
@@ -266,7 +266,7 @@ func TestRecordRendersWithoutProjection(t *testing.T) {
 // TestRecordMissingIndex asserts a request without index is a 400.
 func TestRecordMissingIndex(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 	code, _ := getRecord(t, h, "")
 	if code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", code)
@@ -276,7 +276,7 @@ func TestRecordMissingIndex(t *testing.T) {
 // TestRecordNonNumericIndex asserts a non-numeric index is a 400.
 func TestRecordNonNumericIndex(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 	code, _ := getRecord(t, h, "index=abc")
 	if code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", code)
@@ -287,7 +287,7 @@ func TestRecordNonNumericIndex(t *testing.T) {
 // not in the monitor's accepted tree (coverage honesty, ADR-0001).
 func TestRecordBeyondAcceptedTree(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 	for _, seq := range []int{8, 9, 100} {
 		code, _ := getRecord(t, h, fmt.Sprintf("index=%d", seq))
 		if code != http.StatusNotFound {
@@ -310,7 +310,7 @@ func TestRecordNoAcceptedCheckpoint(t *testing.T) {
 		t.Fatalf("UpsertHub: %v", err)
 	}
 
-	h := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(st, hubID, "sb0.iscc.id", nil, chrome.Site{})
 	code, _ := getRecord(t, h, "index=0")
 	if code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", code)
@@ -344,7 +344,7 @@ func TestRecordBundleNotMirrored(t *testing.T) {
 		t.Fatalf("AdvanceFollowState: %v", err)
 	}
 
-	h := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(st, hubID, "sb0.iscc.id", nil, chrome.Site{})
 	code, body := getRecord(t, h, "index=3")
 	if code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404 (body %q)", code, body)
@@ -355,7 +355,7 @@ func TestRecordBundleNotMirrored(t *testing.T) {
 // at the top of Handler covers it).
 func TestRecordNonGET(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/record?index=0", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -377,7 +377,7 @@ func TestRecordNonGET(t *testing.T) {
 // the whole body.
 func TestRecordLinksTokensNoCDN(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	code, body := getRecord(t, h, "index=0")
 	if code != http.StatusOK {
@@ -420,7 +420,7 @@ func TestRecordLinksTokensNoCDN(t *testing.T) {
 func TestRecordRendersInMemoryStatus(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
 	statuses := fakeStatusSource{m.hubID: "unresolvable"}
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", statuses, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", statuses, chrome.Site{})
 
 	code, body := getRecord(t, h, "index=0")
 	if code != http.StatusOK {
@@ -450,7 +450,7 @@ func TestRecordRendersInMemoryStatus(t *testing.T) {
 // the exact operator strings would no longer appear.
 func TestRecordBreadcrumbAndChromeIdentity(t *testing.T) {
 	m := buildRecordPageMirror(t, 8)
-	idv := dashboard.Identity{
+	idv := chrome.Site{
 		Instance: "monitor.example.test",
 		Operator: "operated by Example Org · example net",
 		Realm:    "example net",
@@ -481,7 +481,7 @@ func TestRecordBreadcrumbAndChromeIdentity(t *testing.T) {
 	}
 	// A zero-value Identity falls back to the static placeholder copy, proving
 	// resolveIdentity is wired into the single-record path, not bypassed.
-	h0 := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h0 := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 	_, body0 := getRecord(t, h0, "index=4")
 	if !strings.Contains(body0, "monitor instance") {
 		t.Errorf("zero-value Identity did not fall back to the static placeholder copy\n%s", body0)
@@ -497,7 +497,7 @@ func TestRecordBreadcrumbAndChromeIdentity(t *testing.T) {
 // label is also pinned.
 func TestRecordStepperEnds(t *testing.T) {
 	m := buildRecordPageMirror(t, 8) // accepted tree size 8, seqs 0..7
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	// At seq 0: older is disabled, newer steps to seq 1.
 	_, body0 := getRecord(t, h, "index=0")
@@ -557,7 +557,7 @@ func recordBody(body string) string {
 	return body
 }
 
-// TestRecordProveInclusionHonestyGate asserts the "Prove this record's inclusion →"
+// TestRecordProveInclusionHonestyGate asserts the "Prove this record's inclusion"
 // action is honesty-gated on a projected, non-empty ISCC-ID: a leaf WITH a projected id
 // renders the /inclusion/<iscc_id> certificate link, while a leaf with NO projection
 // renders NO /inclusion/ link at all (it cannot produce a certificate it has no id for).
@@ -567,7 +567,7 @@ func recordBody(body string) string {
 func TestRecordProveInclusionHonestyGate(t *testing.T) {
 	// A leaf WITH a projection renders the certificate link keyed on its verbatim id.
 	m := buildRecordPageMirror(t, 8)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 	code, body := getRecord(t, h, "index=4")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
@@ -576,7 +576,7 @@ func TestRecordProveInclusionHonestyGate(t *testing.T) {
 	if !strings.Contains(body, wantHref) {
 		t.Errorf("projected leaf missing the certificate link %q\n%s", wantHref, body)
 	}
-	if !strings.Contains(body, "Prove this record's inclusion →") {
+	if !strings.Contains(body, "Prove this record's inclusion") {
 		t.Errorf("projected leaf missing the prove-inclusion action copy\n%s", body)
 	}
 	if !strings.Contains(body, `href="records"`) {
@@ -609,7 +609,7 @@ func TestRecordProveInclusionHonestyGate(t *testing.T) {
 		t.Fatalf("AdvanceFollowState: %v", err)
 	}
 
-	hNo := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	hNo := Handler(st, hubID, "sb0.iscc.id", nil, chrome.Site{})
 	codeNo, bodyNo := getRecord(t, hNo, "index=2")
 	if codeNo != http.StatusOK {
 		t.Fatalf("no-projection leaf: status = %d, want 200", codeNo)

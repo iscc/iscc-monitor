@@ -42,5 +42,5 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   would duplicate the handlers' placeholder). `RealmName` is deliberately the human realm NAME, distinct
   from the required `RealmPath` (`ISCC_MONITOR_REALM`, the realm-document filesystem path) — overloading
   the path var would leak a filename into the ledger subtitle. `main.go`'s `identity(cfg)` (not config)
-  builds `dashboard.Identity` from these fields; config stays a `{fmt time}`-only leaf with no
+  builds `dashboard.Identity` from these fields; config stays a `{fmt time}`-only leaf with no *(Superseded 2026-11-07: identity is `chrome.Site`, resolved once by `internal/chrome`; ADR-0015.)*
   `dashboard` import (would invert the dep / risk a cycle).

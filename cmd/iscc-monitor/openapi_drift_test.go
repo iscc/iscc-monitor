@@ -34,7 +34,7 @@ import (
 	"github.com/transparency-dev/merkle/testonly"
 	"github.com/transparency-dev/tessera/api"
 
-	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/metrics"
 	"github.com/iscc/iscc-monitor/internal/openapi"
 	"github.com/iscc/iscc-monitor/internal/registry"
@@ -161,7 +161,7 @@ func buildDriftMux(t *testing.T) http.Handler {
 	slot := uint16(0)
 	hubList := &registry.HubList{Version: 1, Hubs: []registry.Hub{{HubID: &slot, URL: "https://" + driftDomain, Active: true}}}
 	routes := []hubRoute{{HubID: hub, Domain: driftDomain, Origin: driftDomain + "/log"}}
-	return buildMux(st, routes, hubList, metrics.New(), dashboard.Identity{})
+	return buildMux(st, routes, hubList, metrics.New(), chrome.Site{})
 }
 
 // probeMounted reports the GET status of path against the mux. A non-404 (or a 304)

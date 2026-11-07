@@ -14,6 +14,10 @@
        /_ds/fonts/, no runtime CDN). The path is a literal; keep it in sync with
        web.FontsCSSPath. -->
   <link rel="stylesheet" href="/_ds/fonts.css">
+  <!-- Shared site chrome: masthead, footer, buttons, focus outline. The path is a
+       literal; keep it in sync with web.SiteCSSPath. -->
+  <link rel="stylesheet" href="/_ds/site.css">
+  <link rel="icon" href="/_ds/favicon.svg" type="image/svg+xml">
   <!-- Page-scoped layout for the Independent Verification surface. Every rule is
        expressed through the embedded DS tokens (var(--*)) so the type resolves to
        the self-hosted Readex Pro / JetBrains Mono and the surface uses the DS
@@ -26,76 +30,6 @@
       font-family: var(--font-sans);
       color: var(--text-body);
       background: var(--surface-page);
-    }
-
-    /* Document chrome: the masthead identifying this monitor instance, with the
-       instance-identity block and the tier-2 "verify in your browser" link to the
-       monitor-agnostic verifier app (matching the dashboard/certificate chrome). */
-    .chrome {
-      display: flex;
-      align-items: center;
-      gap: var(--space-4);
-      flex-wrap: wrap;
-      padding: var(--space-4) var(--space-8);
-      background: var(--surface-card);
-      border-bottom: var(--border-width) solid var(--border-default);
-    }
-    .chrome-brand {
-      display: flex;
-      align-items: center;
-      gap: var(--space-3);
-    }
-    .chrome-logo {
-      height: 38px;
-      width: auto;
-      display: block;
-    }
-    .chrome-divider {
-      width: 1px;
-      height: 24px;
-      background: var(--border-default);
-    }
-    .chrome-mark {
-      font-family: var(--font-mono);
-      font-size: var(--text-xs);
-      letter-spacing: var(--tracking-widest);
-      text-transform: uppercase;
-      color: var(--text-heading);
-      font-weight: var(--weight-semibold);
-    }
-    .chrome-sub {
-      font-size: var(--text-xs);
-      color: var(--text-muted);
-      font-weight: var(--weight-light);
-    }
-    .chrome-actions {
-      margin-left: auto;
-      display: flex;
-      align-items: center;
-      gap: var(--space-5);
-      flex-wrap: wrap;
-    }
-    .chrome-identity {
-      text-align: right;
-      line-height: var(--leading-snug);
-    }
-    .chrome-instance {
-      font-family: var(--font-mono);
-      font-size: var(--text-xs);
-      color: var(--text-body);
-    }
-    .chrome-operator {
-      font-size: var(--text-xs);
-      color: var(--text-muted);
-      font-weight: var(--weight-light);
-    }
-    .chrome-verify {
-      font-family: var(--font-mono);
-      font-size: var(--text-xs);
-      color: var(--text-link);
-      border: var(--border-width) solid var(--border-default);
-      border-radius: var(--radius-xs);
-      padding: var(--space-2) var(--space-3);
     }
 
     .page {
@@ -137,7 +71,7 @@
     }
     .head {
       font-size: 1.7rem;
-      font-weight: var(--weight-bold);
+      font-weight: var(--weight-regular);
       letter-spacing: -.01em;
       color: var(--text-heading);
       margin: 0 0 var(--space-2);
@@ -147,7 +81,7 @@
        .codes ↔ .id distinction must stay visible (Handoff invariant 5). */
     .independence {
       font-size: .92rem;
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
       line-height: var(--leading-relaxed);
       color: var(--text-body);
       margin: 0 0 var(--space-6);
@@ -283,7 +217,7 @@
     }
     .splitview-lede {
       font-size: .83rem;
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
       color: var(--text-muted);
       margin: 0 0 var(--space-4);
       max-width: 70ch;
@@ -311,22 +245,17 @@
       color: var(--text-muted);
       margin-bottom: var(--space-1);
     }
+    /* The fields match the 46px brand button beside them: near-black text in a white
+       field with a near-black outline. */
     .splitview-field input {
+      height: 46px;
       font-family: var(--font-mono);
       font-size: var(--text-sm);
-      padding: var(--space-2) var(--space-3);
-      border: var(--border-width) solid var(--border-default);
+      color: var(--text-heading);
+      padding: 0 var(--space-3);
+      border: 1.5px solid var(--text-heading);
       border-radius: var(--radius-sm);
-      background: var(--surface-page);
-    }
-    .splitview-compare {
-      background: var(--text-heading);
-      color: var(--surface-card);
-      border: none;
-      border-radius: var(--radius-sm);
-      padding: var(--space-3) var(--space-5);
-      font-size: var(--text-sm);
-      font-weight: var(--weight-semibold);
+      background: var(--surface-card);
     }
 
     /* The guided split-view mismatch alert — the load-bearing Verify fragment. The
@@ -365,14 +294,14 @@
     }
     .mismatch-lede {
       font-size: var(--text-xs);
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
       font-style: italic;
       color: var(--text-muted);
       margin: var(--space-2) 0 0;
     }
     .mismatch-body {
       font-size: .84rem;
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
       color: var(--text-body);
       margin: var(--space-2) 0 0;
       line-height: var(--leading-normal);
@@ -380,7 +309,7 @@
 
     .footnote {
       font-size: var(--text-xs);
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
       color: var(--text-faint);
       line-height: var(--leading-normal);
       margin: var(--space-4) var(--space-1) 0;
@@ -388,23 +317,7 @@
   </style>
 </head>
 <body>
-  <header class="chrome">
-    <div class="chrome-brand">
-      <img class="chrome-logo" src="/_ds/iscc-logo-black.png" alt="ISCC">
-      <span class="chrome-divider"></span>
-      <div>
-        <div class="chrome-mark">Trust &amp; Transparency Monitor</div>
-        <div class="chrome-sub">Evidence of record · ISCC-Hub network</div>
-      </div>
-    </div>
-    <div class="chrome-actions">
-      <div class="chrome-identity">
-        <div class="chrome-instance">monitor.iscc.codes</div>
-        <div class="chrome-operator">independent verifier app · audits any monitor instance</div>
-      </div>
-      <a class="chrome-verify" href="/">verify ↗ monitor.iscc.codes</a>
-    </div>
-  </header>
+  {{template "siteHeader" .Chrome}}
 
   <main class="page">
     <nav class="breadcrumb">
@@ -478,7 +391,7 @@
             <label for="sv-root">Root hash</label>
             <input id="sv-root" type="text" name="root" placeholder="base64-encoded root">
           </div>
-          <button class="splitview-compare" type="submit">Compare</button>
+          <button class="btn-primary" type="submit">Compare</button>
         </form>
       </div>
 
@@ -648,5 +561,6 @@
       }
     })();
   </script>
+  {{template "siteFooter" .Chrome}}
 </body>
 </html>

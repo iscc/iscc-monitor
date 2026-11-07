@@ -12,6 +12,10 @@
        /_ds/fonts/, no runtime CDN). The path is a literal; keep it in sync with
        web.FontsCSSPath. -->
   <link rel="stylesheet" href="/_ds/fonts.css">
+  <!-- Shared site chrome: masthead, footer, buttons, focus outline. The path is a
+       literal; keep it in sync with web.SiteCSSPath. -->
+  <link rel="stylesheet" href="/_ds/site.css">
+  <link rel="icon" href="/_ds/favicon.svg" type="image/svg+xml">
   <!-- Page-scoped layout for the Evidence-Ledger hub dossier. Every rule is
        expressed through the embedded DS tokens (var(--*)) so the type resolves to
        the self-hosted Readex Pro / JetBrains Mono and the surfaces use the DS
@@ -22,81 +26,6 @@
       font-family: var(--font-sans);
       color: var(--text-body);
       background: var(--surface-page);
-    }
-
-    /* Document chrome: the masthead identifying this monitor instance, with the
-       tier-2 "verify in your browser" link to the monitor-agnostic verifier app. */
-    .chrome {
-      display: flex;
-      align-items: center;
-      gap: var(--space-4);
-      flex-wrap: wrap;
-      padding: var(--space-4) var(--space-8);
-      background: var(--surface-card);
-      border-bottom: var(--border-width) solid var(--border-default);
-    }
-    .chrome-brand {
-      display: flex;
-      align-items: center;
-      gap: var(--space-3);
-    }
-    .chrome-logo {
-      height: 38px;
-      width: auto;
-      display: block;
-    }
-    .chrome-divider {
-      width: 1px;
-      height: 24px;
-      background: var(--border-default);
-    }
-    .chrome-mark {
-      font-family: var(--font-mono);
-      font-size: var(--text-xs);
-      letter-spacing: var(--tracking-widest);
-      text-transform: uppercase;
-      color: var(--text-heading);
-      font-weight: var(--weight-semibold);
-    }
-    .chrome-sub {
-      font-size: var(--text-xs);
-      color: var(--text-muted);
-      font-weight: var(--weight-light);
-    }
-    .chrome-actions {
-      margin-left: auto;
-      display: flex;
-      align-items: center;
-      gap: var(--space-5);
-      flex-wrap: wrap;
-    }
-    /* The instance-identity block: this deployment's domain + operator/realm,
-       config-driven from the masthead Identity (byte-identical to the dashboard). */
-    .chrome-identity {
-      text-align: right;
-      line-height: var(--leading-snug);
-    }
-    .chrome-instance {
-      font-family: var(--font-mono);
-      font-size: var(--text-xs);
-      color: var(--text-body);
-    }
-    .chrome-operator {
-      font-size: var(--text-xs);
-      color: var(--text-muted);
-      font-weight: var(--weight-light);
-    }
-    /* The tier-2 link to the monitor-agnostic verifier app (monitor.iscc.codes).
-       The dossier has no single ISCC-ID subject to re-verify in-browser, so its
-       tier-2 affordance is this cross-surface link, not a baked-in WASM proof
-       island (unlike the certificate). */
-    .chrome-verify {
-      font-family: var(--font-mono);
-      font-size: var(--text-xs);
-      color: var(--text-link);
-      border: var(--border-width) solid var(--border-default);
-      border-radius: var(--radius-xs);
-      padding: var(--space-2) var(--space-3);
     }
 
     .page {
@@ -147,7 +76,7 @@
     }
     .doc-hub-name {
       font-size: var(--text-3xl);
-      font-weight: var(--weight-bold);
+      font-weight: var(--weight-regular);
       letter-spacing: -0.01em;
       color: var(--text-heading);
       margin: 0 0 var(--space-1);
@@ -187,7 +116,7 @@
     }
     .caution-note {
       font-size: var(--text-sm);
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
       line-height: var(--leading-normal);
       color: var(--text-body);
       margin: 0;
@@ -222,7 +151,7 @@
     .section-sub {
       font-size: var(--text-xs);
       color: var(--text-muted);
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
       margin-top: var(--space-1);
     }
     /* §4 anchor row: a decorative dot keyed on anchor state, with the label as the
@@ -281,25 +210,10 @@
       margin-top: var(--space-6);
       flex-wrap: wrap;
     }
-    .action {
-      font-size: var(--text-sm);
-      font-weight: var(--weight-semibold);
-      border-radius: var(--radius-xs);
-      padding: var(--space-3) var(--space-4);
-    }
-    .action-primary {
-      background: var(--text-heading);
-      color: var(--surface-card);
-    }
-    .action-secondary {
-      background: var(--surface-card);
-      color: var(--text-heading);
-      border: var(--border-width) solid var(--border-default);
-    }
 
     .footnote {
       font-size: var(--text-xs);
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
       color: var(--text-faint);
       line-height: var(--leading-normal);
       margin: var(--space-4) var(--space-1) 0;
@@ -450,23 +364,7 @@
   </style>
 </head>
 <body>
-  <header class="chrome">
-    <div class="chrome-brand">
-      <img class="chrome-logo" src="/_ds/iscc-logo-black.png" alt="ISCC">
-      <span class="chrome-divider"></span>
-      <div>
-        <div class="chrome-mark">Trust &amp; Transparency Monitor</div>
-        <div class="chrome-sub">Evidence of record · ISCC-Hub network</div>
-      </div>
-    </div>
-    <div class="chrome-actions">
-      <div class="chrome-identity">
-        <div class="chrome-instance">{{.Instance}}</div>
-        <div class="chrome-operator">{{.Operator}}</div>
-      </div>
-      <a class="chrome-verify" href="https://monitor.iscc.codes/">verify ↗ monitor.iscc.codes</a>
-    </div>
-  </header>
+  {{template "siteHeader" .Chrome}}
 
   <main class="page">
     <div class="backlink-row">
@@ -482,7 +380,7 @@
         </div>
         {{template "hubStatusBadge" .}}
       </div>
-      <div class="doc-compiled">Compiled by {{.Instance}} · {{if .ObservedTime}}{{.ObservedTime}}{{else}}observed time unknown{{end}}</div>
+      <div class="doc-compiled">Compiled by {{.Chrome.Instance}} · {{if .ObservedTime}}{{.ObservedTime}}{{else}}observed time unknown{{end}}</div>
 
       {{if .Frozen}}
       <section class="exhibit">
@@ -572,12 +470,13 @@
       </div>
 
       <div class="actions">
-        <a class="action action-primary" href="/">Prove an ISCC-ID in this hub →</a>
-        <a class="action action-secondary" href="/{{.Origin}}/records">Browse the log →</a>
+        <a class="btn-primary" href="/">Prove an ISCC-ID in this hub</a>
+        <a class="btn-secondary" href="/{{.Origin}}/records">Browse the log</a>
       </div>
     </div>
 
     <p class="footnote">Every hub is mirrored and served regardless of status. Only verified checkpoints advance the monitor's accepted state, and guarantees hold only from coverage start — entries committed before the monitor began watching are mirrored but not vouched for.</p>
   </main>
+  {{template "siteFooter" .Chrome}}
 </body>
 </html>

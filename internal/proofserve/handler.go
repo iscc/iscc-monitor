@@ -39,7 +39,7 @@ import (
 	"os"
 
 	"github.com/iscc/iscc-monitor/internal/badge"
-	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/index"
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/proof/verify"
@@ -64,7 +64,8 @@ var browserSource string
 // auto-escape.
 var browserTmpl = func() *template.Template {
 	t := template.Must(template.New("browser").Parse(browserSource))
-	return template.Must(t.Parse(badge.Source))
+	t = template.Must(t.Parse(badge.Source))
+	return template.Must(t.Parse(chrome.Source))
 }()
 
 // recordsSource is the embedded HTML record-list template, parsed once at package
@@ -82,7 +83,8 @@ var recordsSource string
 // is html/template (NOT text/template) so the id / schema strings auto-escape.
 var recordsTmpl = func() *template.Template {
 	t := template.Must(template.New("records").Parse(recordsSource))
-	return template.Must(t.Parse(badge.Source))
+	t = template.Must(t.Parse(badge.Source))
+	return template.Must(t.Parse(chrome.Source))
 }()
 
 // recordSource is the embedded HTML single-record template, parsed once at package
@@ -99,7 +101,8 @@ var recordSource string
 // bytes auto-escape.
 var recordTmpl = func() *template.Template {
 	t := template.Must(template.New("record").Parse(recordSource))
-	return template.Must(t.Parse(badge.Source))
+	t = template.Must(t.Parse(badge.Source))
+	return template.Must(t.Parse(chrome.Source))
 }()
 
 // Record-kind labels mapping the verbatim note.$schema to a human-readable kind.
@@ -139,35 +142,6 @@ const octetStreamType = "application/octet-stream"
 // (mirroring dashboard.StatusSource).
 type StatusSource interface {
 	Status(hubID int64) (string, bool)
-}
-
-// Default masthead identity copy used when an identity field is left empty, so an
-// unconfigured deployment renders today's static placeholder rather than a false
-// claim. These MUST stay byte-identical to internal/dashboard's instanceFallback /
-// operatorFallback consts (and internal/dossier's copies): the dashboard, dossier, and
-// log-browser surfaces are all required to render the same chrome, and no package can
-// import another's unexported consts, so the defaults are duplicated here as literals.
-// The now-4× duplication is a tracked consolidation low, not this slice's concern.
-const (
-	instanceFallback = "monitor instance"
-	operatorFallback = "independent Trust & Transparency service · ISCC-Hub network"
-)
-
-// resolveIdentity applies the masthead identity fail-safe, mirroring
-// dashboard.Identity.resolve / dossier.resolveIdentity semantics so the log-browser
-// chrome stays byte-identical to the dashboard and dossier: a blank Instance or Operator
-// falls back to the static placeholder copy. It is resolved ONCE at Handler construction
-// (outside the request closure), like dossier. Realm has no slot on this masthead, so it
-// is ignored.
-func resolveIdentity(id dashboard.Identity) (instance, operator string) {
-	instance, operator = id.Instance, id.Operator
-	if instance == "" {
-		instance = instanceFallback
-	}
-	if operator == "" {
-		operator = operatorFallback
-	}
-	return instance, operator
 }
 
 // Handler returns an http.Handler that serves one hub's computed inclusion and
@@ -222,17 +196,16 @@ func resolveIdentity(id dashboard.Identity) (instance, operator string) {
 // prove; only serveBrowser consults it. A nil statuses is tolerated and simply
 // leaves every store-verified hub showing "verified" (the proof routes ignore it).
 //
-// domain is the hub's bare domain (e.g. sb0.iscc.id) and id is the operator-supplied
-// instance identity rendered on the record-list chrome; both feed only the HTML
-// surfaces (the record list's masthead, breadcrumb, and head) — the proof / bytes /
-// verdict routes ignore them. The identity is resolved ONCE here (outside the request
-// closure): any empty field falls back to the static placeholder copy
-// (resolveIdentity), so a zero-value Identity renders exactly today's masthead, and it
-// is the SAME dashboard.Identity value the "/" masthead and the dossier receive, so all
-// three mastheads stay byte-identical.
-func Handler(st *store.Store, hubID int64, domain string, statuses StatusSource, id dashboard.Identity) http.Handler {
+// domain is the hub's bare domain (e.g. sb0.iscc.id) and site is the
+// operator-configured identity and co-branding the shared masthead and footer render;
+// both feed only the HTML surfaces (the log browser, record list, and single record) —
+// the proof / bytes / verdict routes ignore them. The site is resolved ONCE here
+// (outside the request closure) into the chrome.View every HTML page renders; a
+// zero-value Site renders the static fallbacks. It is the SAME chrome.Site the "/"
+// page and the dossier receive, so all the mastheads stay byte-identical.
+func Handler(st *store.Store, hubID int64, domain string, statuses StatusSource, site chrome.Site) http.Handler {
 	f := store.SQLiteFetcher{Store: st, HubID: hubID}
-	instance, operator := resolveIdentity(id)
+	view := site.View()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -242,11 +215,11 @@ func Handler(st *store.Store, hubID int64, domain string, statuses StatusSource,
 		// of the hub's /log origin; the proof routes are /inclusion and /consistency.
 		switch r.URL.Path {
 		case "/":
-			serveBrowser(w, r, st, hubID, statuses)
+			serveBrowser(w, r, st, hubID, view, statuses)
 		case "/records":
-			serveRecords(w, r, st, hubID, domain, instance, operator, statuses)
+			serveRecords(w, r, st, hubID, domain, view, statuses)
 		case "/record":
-			serveRecord(w, r, st, f, hubID, domain, instance, operator, statuses)
+			serveRecord(w, r, st, f, hubID, domain, view, statuses)
 		case "/inclusion":
 			serveInclusion(w, r, st, f, hubID)
 		case "/consistency":
@@ -775,6 +748,7 @@ type browserData struct {
 	HasCheckpoint bool
 	Size          uint64
 	Root          string
+	Chrome        chrome.View
 }
 
 // serveBrowser renders the HTML log browser for the hub-log root (GET /): the
@@ -792,7 +766,7 @@ type browserData struct {
 // 200 "no accepted checkpoint yet" page (not a 404 — the browser page exists for a
 // followed-but-unpolled hub, mirroring the dashboard's coverage honesty). The page
 // is rendered into a buffer first so a template/store error is a 500 BEFORE any 200.
-func serveBrowser(w http.ResponseWriter, r *http.Request, st *store.Store, hubID int64, statuses StatusSource) {
+func serveBrowser(w http.ResponseWriter, r *http.Request, st *store.Store, hubID int64, view chrome.View, statuses StatusSource) {
 	ctx := r.Context()
 
 	fs, err := st.FollowState(ctx, hubID)
@@ -809,7 +783,7 @@ func serveBrowser(w http.ResponseWriter, r *http.Request, st *store.Store, hubID
 	if !ok {
 		label = status
 	}
-	data := browserData{Status: status, Label: label}
+	data := browserData{Status: status, Label: label, Chrome: view}
 
 	size := fs.LastSize
 	if size > 0 {
@@ -869,14 +843,13 @@ type recordRowVM struct {
 // Domain is the hub's bare domain, rendered as the head name and the page's
 // "<domain> · N records mirrored" sub-line, and targeted by the "← <domain> dossier"
 // breadcrumb (an ABSOLUTE site-root path /<domain>, the dossier mount outside this
-// /log/ subtree). Instance / Operator are the resolved masthead identity (the chrome's
-// instance-identity block + verify link), byte-identical to the dashboard and dossier.
+// /log/ subtree). Chrome is the shared masthead and footer, byte-identical to the
+// dashboard and dossier.
 type recordsData struct {
 	Status   string
 	Label    string
 	Domain   string
-	Instance string
-	Operator string
+	Chrome   chrome.View
 	Records  []recordRowVM
 	Total    int
 	PageSize int
@@ -945,7 +918,7 @@ func recordKindKey(noteSchema string) string {
 // identity (resolved once at Handler construction), threaded into the page chrome
 // (instance-identity block + verify link), the "← <domain> dossier" breadcrumb, and the
 // "Log browser" / <domain> / "<domain> · N records mirrored" head.
-func serveRecords(w http.ResponseWriter, r *http.Request, st *store.Store, hubID int64, domain, instance, operator string, statuses StatusSource) {
+func serveRecords(w http.ResponseWriter, r *http.Request, st *store.Store, hubID int64, domain string, view chrome.View, statuses StatusSource) {
 	ctx := r.Context()
 
 	fs, err := st.FollowState(ctx, hubID)
@@ -1002,8 +975,7 @@ func serveRecords(w http.ResponseWriter, r *http.Request, st *store.Store, hubID
 		Status:   status,
 		Label:    label,
 		Domain:   domain,
-		Instance: instance,
-		Operator: operator,
+		Chrome:   view,
 		Records:  rows,
 		Total:    total,
 		PageSize: pageSize,
@@ -1061,10 +1033,10 @@ func serveRecords(w http.ResponseWriter, r *http.Request, st *store.Store, hubID
 // opaque JCS-canonical log-entry envelope cast to a string for html/template auto-
 // escape (NOT template.HTML), shown verbatim for human inspection.
 //
-// Domain / Instance / Operator drive the navigation chrome (resolved once at Handler
-// construction, byte-identical to the dashboard / dossier / record-list mastheads):
-// Domain is the hub's bare domain, rendered as the breadcrumb's trailing crumb, and
-// Instance / Operator are the masthead instance-identity block. The breadcrumb's
+// Domain and Chrome drive the navigation chrome (resolved once at Handler construction,
+// byte-identical to the dashboard / dossier / record-list mastheads): Domain is the
+// hub's bare domain, rendered as the breadcrumb's trailing crumb, and Chrome is the
+// shared masthead and footer. The breadcrumb's
 // "← Log browser" back-link is the record list (a relative records target, the same
 // /log/ subtree the record rows share).
 //
@@ -1091,8 +1063,7 @@ type recordData struct {
 	NoteSchema       string
 	RecordBytes      string
 	Domain           string
-	Instance         string
-	Operator         string
+	Chrome           chrome.View
 	Total            uint64
 	HasOlder         bool
 	OlderIndex       uint64
@@ -1141,7 +1112,7 @@ func recordKind(noteSchema string) (kind string, isDeletion bool) {
 // "/ <domain>" crumb. The older/newer stepper and the honesty-gated "Prove this record's
 // inclusion →" action are pure view-model derived from data already in scope (seq, size,
 // the projection's id), so no new store read is added.
-func serveRecord(w http.ResponseWriter, r *http.Request, st *store.Store, f store.SQLiteFetcher, hubID int64, domain, instance, operator string, statuses StatusSource) {
+func serveRecord(w http.ResponseWriter, r *http.Request, st *store.Store, f store.SQLiteFetcher, hubID int64, domain string, view chrome.View, statuses StatusSource) {
 	ctx := r.Context()
 
 	seq, err := parseUint(r.URL.Query().Get("index"))
@@ -1223,8 +1194,7 @@ func serveRecord(w http.ResponseWriter, r *http.Request, st *store.Store, f stor
 		// html/template auto-escape, never parsed and never template.HTML.
 		RecordBytes: string(record),
 		Domain:      domain,
-		Instance:    instance,
-		Operator:    operator,
+		Chrome:      view,
 		Total:       size,
 	}
 	// No-JS older/newer stepper: plain links disabled at the ends. older steps to the

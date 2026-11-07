@@ -73,23 +73,14 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   is preceded by `"` (not whitespace) so it survives and trips the ban (`TestNoExternalCDNProtocolRelative`
   pins it, mutation-proven against the old `:`-only guard). The ban list is third-party-origin only
   (`jsdelivr`/`http://`/`https://`/`cdn.`); same-origin `/_ds/` paths pass.
-- **`iscc-logo-black.png` is served at `LogoPath` (`/_ds/iscc-logo-black.png`, `image/png`) via the same
-  `case`+`writeAsset` no-cache/strong-ETag/304 leaf, embedded with `//go:embed iscc-logo-black.png`.** Two
-  forward rules: (1) the masthead `<img src>` literal lives in each template (`dashboard.html`,
-  `dossier.html`, …) and templates CANNOT read the Go const — the string must stay byte-equal to `LogoPath`,
-  asserted by `TestDashboard…`/`TestDossier…` (`src="/_ds/iscc-logo-black.png"`, mutation-proven). (2)
-  `contentTypePNG = "image/png"` is a string literal ONLY — never import an `image/*` package, or the leaf
-  stops being the pure-stdlib WASM-green closure (`GOOS=js GOARCH=wasm go build ./internal/web` must stay OK).
-  The PNG is a committed, pre-downscaled artifact (199×76 gray+alpha, ~3 KB) — the downscale ran ONCE at
-  commit time, never in a build/`mise` step (no image toolchain on the build path; ADR-0003 pure-Go). The
-  same-origin `/_ds/` src passes `noExternalCDN` + the dashboard body ban (no `http(s)://`/`cdn.`/`jsdelivr`).
-  settled: the logo now renders on ALL SIX SSR mastheads — `dashboard.html`, `dossier.html`, plus
-  `certificate/cert.html` + `proofserve/{browser,record,records}.html` (the same `.chrome-brand`/`.chrome-logo`/
-  `.chrome-divider` block + the one-line `<img>`, copied verbatim). Each surface's handler test asserts
-  `src="/_ds/iscc-logo-black.png"` (mutation-proven on cert + browser). Forward rule when adding a NEW SSR
-  surface: copy the same masthead block and add the same src assertion to its handler test — OR, if the
-  six-way copy-paste is finally consolidated, a single `html/template` chrome partial (deferred KISS move).
-  Never let an SSR masthead ship without the logo (target.md:148 "every surface").
+- **Settled (2026-11-07, ADR-0015): the logo is the brand master `iscc-logo.svg` at `LogoPath`
+  (`/_ds/iscc-logo.svg`, `image/svg+xml`), with `favicon.svg` at `FaviconPath` and the shared chrome styles
+  at `SiteCSSPath`.** Both SVGs are byte-verbatim copies of the `iscc-brand` masters — never hand-edit or
+  re-export them. The masthead `<img>` lives ONCE, in the `internal/chrome` partial; every page includes
+  it, and each page test asserts `src="/_ds/iscc-logo.svg"`, `href="/_ds/site.css"` and the footer. A new
+  SSR surface associates `chrome.Source` and renders `{{template "siteHeader" .Chrome}}` /
+  `{{template "siteFooter" .Chrome}}`. `ImageHandler` serves the optional operator logo at
+  `OperatorLogoPath` (mounted by the binary only when configured) with a restrictive CSP + nosniff.
 - **Masthead logo height is `38px` (`.chrome-logo { height: 38px; width: auto }`), set per-template in each
   surface's page-scoped `<style>` (the same seven-way copy as the `<img>`: the six SSR mastheads above +
   `verifier/verifier.html`).** Doubled from the original `19px` on 2026-06-23 by a deliberate human design

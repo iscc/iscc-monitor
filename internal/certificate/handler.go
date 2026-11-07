@@ -101,7 +101,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/index"
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/ots"
@@ -134,10 +134,14 @@ func didWeb(domain string) string {
 //go:embed cert.html
 var pageTemplate string
 
-// tmpl is the parsed certificate template. It is html/template (NOT text/template)
-// so the id, domain, and position auto-escape. template.Must panics at init if the
-// source fails to parse, surfacing a template bug at startup.
-var tmpl = template.Must(template.New("certificate").Parse(pageTemplate))
+// tmpl is the parsed certificate template with the shared chrome partials associated.
+// It is html/template (NOT text/template) so the id, domain, and position auto-escape.
+// template.Must panics at init if a source fails to parse, surfacing a template bug at
+// startup.
+var tmpl = func() *template.Template {
+	t := template.Must(template.New("certificate").Parse(pageTemplate))
+	return template.Must(t.Parse(chrome.Source))
+}()
 
 // Record-kind labels for the §6 RECORD HISTORY clause, mapping the verbatim
 // note.$schema to a human-readable kind. The schema constants are the FULL wire URIs
@@ -170,37 +174,6 @@ func recordKind(noteSchema string) (label string, isDeletion bool) {
 	default:
 		return kindUnknown, false
 	}
-}
-
-// Default masthead identity copy used when an identity field is left empty, so an
-// unconfigured deployment renders today's static placeholder rather than a false
-// claim. These MUST stay byte-identical to internal/dashboard's instanceFallback /
-// operatorFallback consts (and the dossier's copy): the certificate, dossier, and
-// dashboard mastheads are required to render the same chrome, and neither package
-// can import the other's unexported consts, so the defaults are duplicated here as
-// literals.
-const (
-	instanceFallback = "monitor instance"
-	operatorFallback = "independent Trust & Transparency service · ISCC-Hub network"
-)
-
-// resolveIdentity applies the certificate-side fail-safe for the masthead identity,
-// mirroring dashboard.Identity.resolve semantics so the certificate, dossier, and
-// dashboard chrome stay in lockstep: a blank Instance or Operator falls back to the
-// static placeholder copy. It lives here (not in internal/dashboard) so the fallback
-// is seam-testable at the certificate HTTP boundary without making internal/dashboard
-// a fourth edited file (its resolve is unexported). Realm has no slot on the
-// certificate masthead (like the dossier's, it carries no realm subtitle), so it is
-// ignored.
-func resolveIdentity(id dashboard.Identity) (instance, operator string) {
-	instance, operator = id.Instance, id.Operator
-	if instance == "" {
-		instance = instanceFallback
-	}
-	if operator == "" {
-		operator = operatorFallback
-	}
-	return instance, operator
 }
 
 // StatusSource reports a hub's current in-memory glossary status by hub_id. It is
@@ -439,20 +412,11 @@ type certData struct {
 	// otherwise, so the page never offers a bundle the monitor cannot assemble.
 	HasBundle bool
 
-	// Instance is this deployment's configured instance domain rendered in the
-	// masthead identity block (the chrome-instance line), so the certificate chrome
-	// is honest per-deployment instead of a static placeholder. It is the resolved
-	// dashboard.Identity.Instance (falling back to instanceFallback when unset), set
-	// in Handler on the value buildData returns — on EVERY branch (the masthead
-	// renders on the certifiable AND the cannot-certify path), so every honest 200
-	// carries it.
-	Instance string
-	// Operator is this deployment's configured operator/realm line rendered in the
-	// masthead identity block (the chrome-operator line), the resolved
-	// dashboard.Identity.Operator (falling back to operatorFallback when unset). Like
-	// Instance it is set in Handler on every branch so the masthead is honest on
-	// every honest 200.
-	Operator string
+	// Chrome is the shared masthead and footer, resolved from this deployment's
+	// chrome.Site. Handler sets it on the value buildData returns, on EVERY branch (the
+	// masthead renders on the certifiable AND the cannot-certify path), so every honest
+	// 200 carries the configured chrome.
+	Chrome chrome.View
 }
 
 // bundleArtifacts carries the raw, in-hand artifacts buildData computes on the §3
@@ -592,15 +556,13 @@ const bundleSuffix = ".bundle"
 // nil statuses is tolerated: a nil hubList makes every id resolve to "not in this
 // realm".
 //
-// id is this deployment's configured masthead identity (the SAME dashboard.Identity
-// value the / and dossier mastheads render), resolved once via resolveIdentity and
-// set on the certData buildData returns so the certificate chrome is honest
-// per-deployment; an unconfigured binary (a zero-value Identity) falls back to
-// today's static placeholder copy. The masthead renders on EVERY path (certifiable
-// AND cannot-certify), so the fields are set on both the HTML and the .bundle branch
-// (serveBundle ignores them — the assignment is harmless and kept uniform).
-func Handler(hubList registry.HubResolver, st *store.Store, statuses StatusSource, id dashboard.Identity) http.Handler {
-	instance, operator := resolveIdentity(id)
+// site is this deployment's configured identity and co-branding (the SAME chrome.Site
+// the / and dossier pages render), resolved once into the chrome.View set on the
+// certData buildData returns; a zero-value Site renders the static fallbacks. The
+// masthead renders on EVERY path (certifiable AND cannot-certify); serveBundle ignores
+// the chrome.
+func Handler(hubList registry.HubResolver, st *store.Store, statuses StatusSource, site chrome.Site) http.Handler {
+	view := site.View()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -627,10 +589,6 @@ func Handler(hubList registry.HubResolver, st *store.Store, statuses StatusSourc
 				http.Error(w, "internal server error", status)
 				return
 			}
-			// Set the masthead identity on the value buildData returns so it is uniform
-			// across every branch (buildData has certData{} literal early returns that
-			// would bypass any field set inside it); serveBundle ignores these fields.
-			data.Instance, data.Operator = instance, operator
 			serveBundle(w, data, arts)
 			return
 		}
@@ -639,10 +597,10 @@ func Handler(hubList registry.HubResolver, st *store.Store, statuses StatusSourc
 			http.Error(w, "internal server error", status)
 			return
 		}
-		// Set the masthead identity on the value buildData returns (NOT inside buildData,
-		// whose certData{} literal early-return branches would bypass it) so every honest
-		// 200 carries the configured chrome, on the certifiable AND cannot-certify path.
-		data.Instance, data.Operator = instance, operator
+		// Set the chrome on the value buildData returns (NOT inside buildData, whose
+		// certData{} literal early-return branches would bypass it) so every honest 200
+		// carries the configured chrome, on the certifiable AND cannot-certify path.
+		data.Chrome = view
 		var buf bytes.Buffer
 		if err := tmpl.Execute(&buf, data); err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)

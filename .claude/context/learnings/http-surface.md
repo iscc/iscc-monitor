@@ -80,7 +80,7 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   accepted-tree ceiling to the COUNT and the windowed SELECT alike (an uncapped total lies in the range
   label's `of {Total}`). `parseUint` rejects overflow.
 - **Chrome/breadcrumb/head + pager parity (part-2a + part-2b, landed):** `Handler`/`serveRecords` take
-  `domain string` + `dashboard.Identity` (resolved ONCE at construction via a local `resolveIdentity` +
+  `domain string` + `dashboard.Identity` (resolved ONCE at construction via a local `resolveIdentity` + *(Superseded 2026-11-07: identity is `chrome.Site`, resolved once by `internal/chrome`; ADR-0015.)*
   byte-identical `instanceFallback`/`operatorFallback` consts — the now-4× duplication is the tracked `low`).
   Only the `/records` HTML surface reads them. Durable traps: (1) the `← <domain> dossier` breadcrumb MUST
   be the ABSOLUTE site-root `href="/{{.Domain}}"` (the dossier mounts OUTSIDE the `/log/` subtree, so a

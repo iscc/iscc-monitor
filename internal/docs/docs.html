@@ -12,10 +12,16 @@
        /_ds/fonts/, no runtime CDN). The path is a literal; keep it in sync with
        web.FontsCSSPath. -->
   <link rel="stylesheet" href="/_ds/fonts.css">
+  <link rel="icon" href="/_ds/favicon.svg" type="image/svg+xml">
   <!-- Stoplight Elements stylesheet, self-hosted byte-verbatim under /_ds/ (no
        external CDN). The path is a literal; keep it in sync with
        web.ElementsCSSPath. -->
   <link rel="stylesheet" href="/_ds/elements.min.css">
+  <!-- Shared site chrome: masthead, footer, buttons, focus outline. The path is a
+       literal; keep it in sync with web.SiteCSSPath. It loads after the Elements
+       stylesheet, whose reset contains :focus{outline:none}: at equal specificity
+       the later :focus-visible rule wins, so keyboard focus stays visible. -->
+  <link rel="stylesheet" href="/_ds/site.css">
   <!-- Page-scoped chrome layout, expressed through the embedded DS tokens
        (var(--*)) so the masthead matches the dashboard / dossier / certificate
        chrome. No external/CDN URL appears in this page body — the Stoplight
@@ -28,46 +34,6 @@
       margin: 0;
     }
 
-    /* Document chrome: the masthead identifying the Trust & Transparency Monitor,
-       matching the no-JS DS shell every server-rendered surface carries. */
-    .chrome {
-      display: flex;
-      align-items: center;
-      gap: var(--space-4);
-      flex-wrap: wrap;
-      padding: var(--space-4) var(--space-8);
-      background: var(--surface-card);
-      border-bottom: var(--border-width) solid var(--border-default);
-    }
-    .chrome-brand {
-      display: flex;
-      align-items: center;
-      gap: var(--space-3);
-    }
-    .chrome-logo {
-      height: 38px;
-      width: auto;
-      display: block;
-    }
-    .chrome-divider {
-      width: 1px;
-      height: 24px;
-      background: var(--border-default);
-    }
-    .chrome-mark {
-      font-family: var(--font-mono);
-      font-size: var(--text-xs);
-      letter-spacing: var(--tracking-widest);
-      text-transform: uppercase;
-      color: var(--text-heading);
-      font-weight: var(--weight-semibold);
-    }
-    .chrome-sub {
-      font-size: var(--text-xs);
-      color: var(--text-muted);
-      font-weight: var(--weight-light);
-    }
-
     /* The Elements explorer fills the viewport below the masthead. Elements is
        styled largely by its own shipped CSS (ADR-0014); this only sizes the host
        element so the API reference occupies the remaining height. */
@@ -78,16 +44,7 @@
   </style>
 </head>
 <body>
-  <header class="chrome">
-    <div class="chrome-brand">
-      <img class="chrome-logo" src="/_ds/iscc-logo-black.png" alt="ISCC">
-      <span class="chrome-divider"></span>
-      <div>
-        <div class="chrome-mark">Trust &amp; Transparency Monitor</div>
-        <div class="chrome-sub">API reference · ISCC-Hub network</div>
-      </div>
-    </div>
-  </header>
+  {{template "siteHeader" .Chrome}}
 
   <!-- Stoplight Elements API explorer. apiDescriptionUrl points at this instance's
        own /openapi.json (same-origin), and tryItCorsProxy is deliberately UNSET so
@@ -98,5 +55,6 @@
   <elements-api apiDescriptionUrl="/openapi.json" router="hash" layout="sidebar"></elements-api>
 
   <script src="/_ds/elements.min.js"></script>
+  {{template "siteFooter" .Chrome}}
 </body>
 </html>

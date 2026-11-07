@@ -12,6 +12,10 @@
        /_ds/fonts/, no runtime CDN). The path is a literal; keep it in sync with
        web.FontsCSSPath. -->
   <link rel="stylesheet" href="/_ds/fonts.css">
+  <!-- Shared site chrome: masthead, footer, buttons, focus outline. The path is a
+       literal; keep it in sync with web.SiteCSSPath. -->
+  <link rel="stylesheet" href="/_ds/site.css">
+  <link rel="icon" href="/_ds/favicon.svg" type="image/svg+xml">
   <!-- Page-scoped layout for the Evidence-Ledger certificate. Every rule resolves
        through the embedded DS tokens (var(--*)) so the type uses the self-hosted
        Readex Pro / JetBrains Mono and the surfaces use the DS palette. Kept local
@@ -22,80 +26,6 @@
       font-family: var(--font-sans);
       color: var(--text-body);
       background: var(--surface-page);
-    }
-
-    /* Document chrome: the masthead identifying this monitor instance, with the
-       tier-2 "verify in your browser" link to the monitor-agnostic verifier app. */
-    .chrome {
-      display: flex;
-      align-items: center;
-      gap: var(--space-4);
-      flex-wrap: wrap;
-      padding: var(--space-4) var(--space-8);
-      background: var(--surface-card);
-      border-bottom: var(--border-width) solid var(--border-default);
-    }
-    .chrome-brand {
-      display: flex;
-      align-items: center;
-      gap: var(--space-3);
-    }
-    .chrome-logo {
-      height: 38px;
-      width: auto;
-      display: block;
-    }
-    .chrome-divider {
-      width: 1px;
-      height: 24px;
-      background: var(--border-default);
-    }
-    .chrome-mark {
-      font-family: var(--font-mono);
-      font-size: var(--text-xs);
-      letter-spacing: var(--tracking-widest);
-      text-transform: uppercase;
-      color: var(--text-heading);
-      font-weight: var(--weight-semibold);
-    }
-    .chrome-sub {
-      font-size: var(--text-xs);
-      color: var(--text-muted);
-      font-weight: var(--weight-light);
-    }
-    .chrome-actions {
-      margin-left: auto;
-      display: flex;
-      align-items: center;
-      gap: var(--space-5);
-      flex-wrap: wrap;
-    }
-    /* The instance-identity block: this deployment's domain + operator/realm,
-       config-driven from the masthead Identity (byte-identical to the dashboard). */
-    .chrome-identity {
-      text-align: right;
-      line-height: var(--leading-snug);
-    }
-    .chrome-instance {
-      font-family: var(--font-mono);
-      font-size: var(--text-xs);
-      color: var(--text-body);
-    }
-    .chrome-operator {
-      font-size: var(--text-xs);
-      color: var(--text-muted);
-      font-weight: var(--weight-light);
-    }
-    /* The tier-2 link to the monitor-agnostic verifier app (monitor.iscc.codes).
-       It is a static link in the skeleton; the in-browser verify RESULT lands in
-       the WASM milestone. */
-    .chrome-verify {
-      font-family: var(--font-mono);
-      font-size: var(--text-xs);
-      color: var(--text-link);
-      border: var(--border-width) solid var(--border-default);
-      border-radius: var(--radius-xs);
-      padding: var(--space-2) var(--space-3);
     }
 
     .page {
@@ -140,7 +70,7 @@
     }
     .cert-title {
       font-size: var(--text-3xl);
-      font-weight: var(--weight-bold);
+      font-weight: var(--weight-regular);
       color: var(--text-heading);
       margin: 0 0 var(--space-2);
     }
@@ -154,8 +84,8 @@
     .subject-id {
       font-family: var(--font-mono);
       font-size: var(--text-lg);
-      font-weight: var(--weight-light);
-      color: var(--iscc-white);
+      font-weight: var(--weight-regular);
+      color: var(--text-heading);
       background: var(--iscc-coral-red);
       border-radius: var(--radius-sm);
       padding: var(--space-3) var(--space-4);
@@ -166,7 +96,7 @@
     .subject-line {
       text-align: center;
       font-size: var(--text-sm);
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
       color: var(--text-body);
       margin: 0 0 var(--space-6);
     }
@@ -206,7 +136,7 @@
     }
     .notfound-reason {
       font-size: var(--text-sm);
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
       color: var(--text-muted);
       margin: 0;
     }
@@ -237,7 +167,7 @@
     }
     .clause-note {
       font-size: var(--text-xs);
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
       color: var(--text-muted);
       margin-top: var(--space-1);
     }
@@ -278,7 +208,7 @@
     }
     .honesty-text {
       font-size: var(--text-sm);
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
       line-height: var(--leading-normal);
       color: var(--text-body);
     }
@@ -300,9 +230,8 @@
     /* The Download-proof-bundle action has two states. The DISABLED placeholder
        (grayscale-muted, inert) renders only when no verified bundle exists (the §3
        re-verification declined), so the page can never offer a bundle the monitor does
-       not assemble. The ENABLED variant (.action-download-enabled) renders only when
-       HasBundle — a real link to <id>.bundle — and reads as an active call to action
-       (the link accent, not the muted gray). */
+       not assemble. The ENABLED variant renders only when HasBundle — a real link to
+       <id>.bundle — as the shared brand primary button (.btn-primary in site.css). */
     .action-download {
       display: inline-flex;
       align-items: center;
@@ -318,24 +247,6 @@
       font-size: var(--text-sm);
       font-weight: var(--weight-semibold);
       cursor: not-allowed;
-    }
-    .action-download-enabled {
-      background: var(--text-link);
-      color: var(--surface-card);
-      border-color: var(--text-link);
-      cursor: pointer;
-    }
-    .action-verify {
-      flex: 1;
-      min-width: 200px;
-      text-align: center;
-      background: var(--surface-card);
-      color: var(--text-link);
-      border: var(--border-width) solid var(--text-link);
-      border-radius: var(--radius-sm);
-      padding: var(--space-3) var(--space-5);
-      font-size: var(--text-sm);
-      font-weight: var(--weight-semibold);
     }
 
     /* "Cite as / verifiable cache" footer. */
@@ -364,7 +275,7 @@
       padding: var(--space-4) var(--space-4);
       margin: var(--space-4) 0 0;
       font-size: var(--text-sm);
-      font-weight: var(--weight-light);
+      font-weight: var(--weight-regular);
       color: var(--text-body);
     }
     .tier2[data-state="verified"] {
@@ -389,23 +300,7 @@
   </style>
 </head>
 <body>
-  <header class="chrome">
-    <div class="chrome-brand">
-      <img class="chrome-logo" src="/_ds/iscc-logo-black.png" alt="ISCC">
-      <span class="chrome-divider"></span>
-      <div>
-        <div class="chrome-mark">Trust &amp; Transparency Monitor</div>
-        <div class="chrome-sub">Evidence of record · ISCC-Hub network</div>
-      </div>
-    </div>
-    <div class="chrome-actions">
-      <div class="chrome-identity">
-        <div class="chrome-instance">{{.Instance}}</div>
-        <div class="chrome-operator">{{.Operator}}</div>
-      </div>
-      <a class="chrome-verify" href="https://monitor.iscc.codes/">verify ↗ monitor.iscc.codes</a>
-    </div>
-  </header>
+  {{template "siteHeader" .Chrome}}
 
   <main class="page">
     <div class="backlink-row">
@@ -501,8 +396,8 @@
       </div>
 
       <div class="actions">
-        {{if .HasBundle}}<a class="action-download action-download-enabled" href="{{.BundleHref}}" download>Download proof bundle</a>{{else}}<button type="button" class="action-download" disabled aria-disabled="true">Download proof bundle (coming soon)</button>{{end}}
-        <a class="action-verify" href="https://monitor.iscc.codes/">Verify independently in your browser →</a>
+        {{if .HasBundle}}<a class="btn-primary" href="{{.BundleHref}}" download>Download proof bundle</a>{{else}}<button type="button" class="action-download" disabled aria-disabled="true">Download proof bundle (coming soon)</button>{{end}}
+        <a class="btn-secondary" href="https://monitor.iscc.codes/">Verify independently in your browser</a>
       </div>
 
       {{if .HasBundle}}
@@ -597,5 +492,6 @@
     })();
   </script>
   {{end}}
+  {{template "siteFooter" .Chrome}}
 </body>
 </html>

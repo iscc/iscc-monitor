@@ -24,7 +24,7 @@ import (
 	"github.com/transparency-dev/merkle/testonly"
 	"github.com/transparency-dev/tessera/api"
 
-	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/metrics"
 	"github.com/iscc/iscc-monitor/internal/registry"
@@ -164,7 +164,7 @@ func TestBuildMuxReservedDomainNoPanic(t *testing.T) {
 		}
 	}()
 	routes := []hubRoute{{HubID: 1, Domain: "metrics", Origin: "metrics/log"}}
-	if mux := buildMux(st, routes, nil, metrics.New(), dashboard.Identity{}); mux == nil {
+	if mux := buildMux(st, routes, nil, metrics.New(), chrome.Site{}); mux == nil {
 		t.Fatal("buildMux returned nil")
 	}
 }
@@ -195,7 +195,7 @@ func TestMirrorRouter(t *testing.T) {
 	}
 
 	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
-	mux := buildMux(st, routes, nil, metrics.New(), dashboard.Identity{})
+	mux := buildMux(st, routes, nil, metrics.New(), chrome.Site{})
 
 	// GET /sb0.iscc.id/log/checkpoint -> 200 byte-equal to the seeded BLOB.
 	t.Run("checkpoint at origin prefix is 200 byte-equal", func(t *testing.T) {
@@ -348,7 +348,7 @@ func TestMirrorInclusionRoute(t *testing.T) {
 	}
 
 	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
-	mux := buildMux(st, routes, nil, metrics.New(), dashboard.Identity{})
+	mux := buildMux(st, routes, nil, metrics.New(), chrome.Site{})
 
 	// GET /sb0.iscc.id/log/inclusion?iscc_id=<seeded> -> 200 JSON whose proof verifies.
 	t.Run("inclusion proof at origin prefix is 200 verifiable JSON", func(t *testing.T) {
@@ -430,7 +430,7 @@ func TestMirrorEntriesRoute(t *testing.T) {
 	}
 
 	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
-	mux := buildMux(st, routes, nil, metrics.New(), dashboard.Identity{})
+	mux := buildMux(st, routes, nil, metrics.New(), chrome.Site{})
 
 	// GET /sb0.iscc.id/log/entries?index=2 -> 200 byte-equal to the seeded record.
 	t.Run("entries at origin prefix returns the record bytes", func(t *testing.T) {
@@ -501,7 +501,7 @@ func TestMirrorOTSRoute(t *testing.T) {
 	}
 
 	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
-	mux := buildMux(st, routes, nil, metrics.New(), dashboard.Identity{})
+	mux := buildMux(st, routes, nil, metrics.New(), chrome.Site{})
 
 	// GET /sb0.iscc.id/log/checkpoint.ots -> 200 byte-equal to the stored proof,
 	// proving the exact mount beats the "/" subtree dispatch.
@@ -567,7 +567,7 @@ func TestMirrorRecordsRoute(t *testing.T) {
 	}
 
 	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
-	mux := buildMux(st, routes, nil, metrics.New(), dashboard.Identity{})
+	mux := buildMux(st, routes, nil, metrics.New(), chrome.Site{})
 
 	// GET /sb0.iscc.id/log/records -> 200 HTML listing the indexed records.
 	t.Run("records at origin prefix returns the HTML list", func(t *testing.T) {
@@ -639,7 +639,7 @@ func TestMirrorRecordRoute(t *testing.T) {
 	}
 
 	routes := []hubRoute{{HubID: hub, Domain: "sb0.iscc.id", Origin: "sb0.iscc.id/log"}}
-	mux := buildMux(st, routes, nil, metrics.New(), dashboard.Identity{})
+	mux := buildMux(st, routes, nil, metrics.New(), chrome.Site{})
 
 	// GET /sb0.iscc.id/log/record?index=2 -> 200 HTML page for the leaf.
 	t.Run("record at origin prefix returns the HTML page", func(t *testing.T) {
@@ -715,7 +715,7 @@ func TestCertificateRouteMounted(t *testing.T) {
 		t.Fatalf("AdvanceAccepted: %v", err)
 	}
 
-	mux := buildMux(st, routes, hubListFromEntries(entries), metrics.New(), dashboard.Identity{})
+	mux := buildMux(st, routes, hubListFromEntries(entries), metrics.New(), chrome.Site{})
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/inclusion/MAIGHFECJMOPMIAB", nil))

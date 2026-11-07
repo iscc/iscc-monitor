@@ -19,6 +19,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/iscc/iscc-monitor/internal/web/webtest"
 )
 
 // scriptBlock matches an end-of-body <script>…</script> block (incl. its contents),
@@ -70,7 +72,9 @@ func TestVerifierRendersNamedRegions(t *testing.T) {
 	for _, want := range []string{
 		`href="/_ds/tokens.css"`,
 		`href="/_ds/fonts.css"`,
-		`src="/_ds/iscc-logo-black.png"`,
+		`src="/_ds/iscc-logo.svg"`,     // the shared-chrome ISCC logo (web.LogoPath)
+		`href="/_ds/site.css"`,         // the shared site-chrome stylesheet (web.SiteCSSPath)
+		`<footer class="site-footer">`, // the shared footer partial
 		"/_ds/verify.wasm",
 		"/_ds/wasm_exec.js",
 		"var(--font-sans)",
@@ -323,8 +327,9 @@ func TestVerifierLoaderHasThreeDistinctStates(t *testing.T) {
 	}
 }
 
-// TestVerifierNoExternalCDN bans any external CDN origin in the body — same-origin /
-// relative hrefs only — matching the sibling no-CDN SSR seam tests. The mockup's
+// TestVerifierNoExternalCDN bans any external CDN origin in the body — every resource
+// it loads is same-origin (hyperlinks such as the footer's source link may point
+// elsewhere) — matching the sibling no-CDN SSR seam tests. The mockup's
 // hashed jsDelivr-style token path + _ds_bundle.js are dropped (ADR-0010: the
 // self-hosted/no-CDN constraint wins over the mockup). The test runs the no-target
 // baseline, so the user-supplied ?monitor= URL (runtime data reflected only inside
@@ -334,11 +339,12 @@ func TestVerifierNoExternalCDN(t *testing.T) {
 	rec := serve(t)
 	body := rec.Body.String()
 
-	for _, banned := range []string{"jsdelivr", "http://", "https://", "cdn."} {
+	for _, banned := range []string{"jsdelivr", "cdn."} {
 		if strings.Contains(body, banned) {
 			t.Errorf("body contains external CDN reference %q\n%s", banned, body)
 		}
 	}
+	webtest.AssertNoExternalLoads(t, "body", body)
 }
 
 // TestVerifierReadTargetReturnsNormalizedURL asserts readTarget returns the WHATWG-

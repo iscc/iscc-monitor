@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/iscc/iscc-monitor/internal/web"
+	"github.com/iscc/iscc-monitor/internal/web/webtest"
 )
 
 // TestGenerate renders the full static site into a temp dir and asserts the deployable
@@ -38,15 +39,17 @@ func TestGenerate(t *testing.T) {
 
 	// The generated page inherits the no-CDN body guarantee; re-assert it on disk so a
 	// future template drift that leaks a CDN URL is caught in the deployable artifact.
-	for _, banned := range []string{"jsdelivr", "http://", "https://", "cdn."} {
+	for _, banned := range []string{"jsdelivr", "cdn."} {
 		if strings.Contains(string(index), banned) {
 			t.Errorf("index.html references external origin %q", banned)
 		}
 	}
+	webtest.AssertNoExternalLoads(t, "index.html", string(index))
 
 	// Every named /_ds/ asset is materialized at its URL path and is non-empty.
 	for _, p := range []string{
-		web.TokensPath, web.FontsCSSPath, web.WasmExecPath, web.WasmVerifyPath, web.LogoPath,
+		web.TokensPath, web.SiteCSSPath, web.FontsCSSPath, web.WasmExecPath, web.WasmVerifyPath,
+		web.LogoPath, web.FaviconPath,
 	} {
 		readNonEmpty(t, assetPath(out, p))
 	}

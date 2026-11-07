@@ -4,6 +4,9 @@ status: accepted
 
 # Evidence-Ledger frontend direction and ISCC Design System adoption
 
+> Token values, the masthead and footer, and the brand buttons are amended by ADR-0015 (ISCC
+> brand guidelines edition 01). The page layouts and invariants below are unchanged.
+
 The v1 web surfaces (dashboard, log browser, verifier app) were specified
 functionally (PRD §8, ADR-0003) but with **no chosen visual direction**. The UX
 brief (`.claude/design/0001-ux-brief-v1.md`) asked for three alternative

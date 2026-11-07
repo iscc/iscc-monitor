@@ -28,7 +28,7 @@ import (
 
 	opentimestamps "github.com/nbd-wtf/opentimestamps"
 
-	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -113,7 +113,7 @@ func TestOTSServesEarlierSize(t *testing.T) {
 	recordOTSAt(t, m, earlier, recordEarlierCheckpoint(t, m, earlier), want)
 	accepted := []byte("accepted-root-proof")
 	recordOTSForAccepted(t, m, accepted)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	rec := getOTSAt(t, h, "/checkpoint.ots?size=200")
 	if rec.Code != http.StatusOK {
@@ -151,7 +151,7 @@ func TestOTSEarlierSizeDeclines(t *testing.T) {
 		t.Fatalf("RecordCheckpoint 350: %v", err)
 	}
 	recordOTSAt(t, m, 350, beyond, otsFixture(t))
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	cases := []struct {
 		query string
@@ -183,7 +183,7 @@ func TestOTSServesStoredProofVerbatim(t *testing.T) {
 	want := otsFixture(t)
 	recordOTSForAccepted(t, m, want)
 
-	rec := getOTS(t, Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{}))
+	rec := getOTS(t, Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{}))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
 	}
@@ -212,7 +212,7 @@ func TestOTSServesStoredProofVerbatim(t *testing.T) {
 func TestOTSConditionalGET(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
 	recordOTSForAccepted(t, m, otsFixture(t))
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	first := getOTS(t, h)
 	if first.Code != http.StatusOK {
@@ -251,7 +251,7 @@ func TestOTSNoAcceptedCheckpoint(t *testing.T) {
 		t.Fatalf("UpsertHub: %v", err)
 	}
 
-	rec := getOTS(t, Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{}))
+	rec := getOTS(t, Handler(st, hubID, "sb0.iscc.id", nil, chrome.Site{}))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
@@ -261,7 +261,7 @@ func TestOTSNoAcceptedCheckpoint(t *testing.T) {
 // yet anchored" (the honest pending state, OTSForRoot's plain miss) — never a 5xx.
 func TestOTSRootNotAnchored(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	rec := getOTS(t, Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{}))
+	rec := getOTS(t, Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{}))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404 for an un-anchored root", rec.Code)
 	}
@@ -275,7 +275,7 @@ func TestOTSEmptySentinelNotAnchored(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
 	recordOTSForAccepted(t, m, nil) // empty-OTSBytes sentinel row
 
-	rec := getOTS(t, Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{}))
+	rec := getOTS(t, Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{}))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404 for the empty-OTSBytes sentinel row", rec.Code)
 	}
@@ -285,7 +285,7 @@ func TestOTSEmptySentinelNotAnchored(t *testing.T) {
 func TestOTSNonGET(t *testing.T) {
 	m := buildMirror(t, 8)
 	rec := httptest.NewRecorder()
-	Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/checkpoint.ots", nil))
+	Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/checkpoint.ots", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
 	}

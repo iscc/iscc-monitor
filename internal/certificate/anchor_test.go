@@ -31,7 +31,7 @@ import (
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/merkle/testonly"
 
-	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -177,7 +177,7 @@ func TestCertificateCoveringAnchor(t *testing.T) {
 		t.Fatalf("RecordHubKey: %v", err)
 	}
 	root5 := tree.HashAt(5)
-	h := Handler(testnetHubList(), st, nil, dashboard.Identity{})
+	h := Handler(testnetHubList(), st, nil, chrome.Site{})
 
 	body := renderCertBody(t, st, goldenID)
 	for _, want := range []string{
@@ -258,7 +258,7 @@ func TestCertificateCoveringAnchorWithoutCachedKey(t *testing.T) {
 	if body := renderCertBody(t, st, goldenID); !strings.Contains(body, "log state · size 5") {
 		t.Errorf("§5 did not render the covering anchor\n%s", body)
 	}
-	bundle := decodeBundle(t, get(t, Handler(testnetHubList(), st, nil, dashboard.Identity{}), goldenID+bundleSuffix).Body.Bytes())
+	bundle := decodeBundle(t, get(t, Handler(testnetHubList(), st, nil, chrome.Site{}), goldenID+bundleSuffix).Body.Bytes())
 	if bundle.Anchor == nil {
 		t.Fatal("bundle has no anchor member")
 	}
@@ -299,7 +299,7 @@ func TestCertificateCoveringAnchorDeclines(t *testing.T) {
 					t.Errorf("body contains %q\n%s", absent, body)
 				}
 			}
-			rec := get(t, Handler(testnetHubList(), st, nil, dashboard.Identity{}), goldenID+bundleSuffix)
+			rec := get(t, Handler(testnetHubList(), st, nil, chrome.Site{}), goldenID+bundleSuffix)
 			if bundle := decodeBundle(t, rec.Body.Bytes()); bundle.Anchor != nil {
 				t.Errorf("bundle carries an anchor member it could not check: %+v", bundle.Anchor)
 			}
@@ -312,7 +312,7 @@ func TestCertificateCoveringAnchorDeclines(t *testing.T) {
 // rendered page stays parseable after unescaping.
 func TestCertificateCoveringAnchorHTMLSafe(t *testing.T) {
 	st, _, _ := anchoredFixture(t, anchorSeed{size: 5, height: 900005})
-	rec := get(t, Handler(testnetHubList(), st, nil, dashboard.Identity{}), goldenID)
+	rec := get(t, Handler(testnetHubList(), st, nil, chrome.Site{}), goldenID)
 	raw := rec.Body.String()
 	if strings.Contains(raw, "ZgotmplZ") {
 		t.Errorf("anchor link rendered the template's unsafe-URL sentinel\n%s", raw)

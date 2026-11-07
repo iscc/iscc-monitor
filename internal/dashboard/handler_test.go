@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -91,7 +92,7 @@ func TestDashboardRendersEveryHub(t *testing.T) {
 	rec := httptest.NewRecorder()
 	// nil StatusSource: every store-verified hub renders as "verified" (no overlay),
 	// so this test pins the store-provable subset exactly as before the overlay.
-	Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -238,7 +239,7 @@ func TestDashboardAnchorCell(t *testing.T) {
 			}
 
 			rec := httptest.NewRecorder()
-			Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+			Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200", rec.Code)
 			}
@@ -289,7 +290,7 @@ func TestDashboardRendersInMemoryStatus(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	Handler(st, statuses, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	Handler(st, statuses, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -319,7 +320,7 @@ func TestDashboardRendersInMemoryStatus(t *testing.T) {
 func TestDashboardLinksTokensNoCDN(t *testing.T) {
 	st := fixtureStore(t)
 	rec := httptest.NewRecorder()
-	Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -350,7 +351,7 @@ func TestDashboardLinksTokensNoCDN(t *testing.T) {
 func TestDashboardRendersHeroAndNavigation(t *testing.T) {
 	st := fixtureStore(t)
 	rec := httptest.NewRecorder()
-	Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -390,7 +391,9 @@ func TestDashboardRendersHeroAndNavigation(t *testing.T) {
 		"monitor instance",
 		"monitor.iscc.codes",
 		"hubs followed",
-		`src="/_ds/iscc-logo-black.png"`,
+		`src="/_ds/iscc-logo.svg"`,     // the shared-chrome ISCC logo (web.LogoPath)
+		`href="/_ds/site.css"`,         // the shared site-chrome stylesheet (web.SiteCSSPath)
+		`<footer class="site-footer">`, // the shared footer partial
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("masthead/heading missing %q\n%s", want, body)
@@ -399,9 +402,9 @@ func TestDashboardRendersHeroAndNavigation(t *testing.T) {
 }
 
 // TestDashboardRendersInstanceIdentity proves the masthead renders the
-// operator-supplied instance identity at the HTTP seam: a populated Identity
+// operator-supplied instance identity at the HTTP seam: a populated chrome.Site
 // surfaces its exact Instance / Operator strings on the chrome and its Realm in the
-// ledger subtitle ("Realm register · <realm>"), and a zero-value Identity falls
+// ledger subtitle ("Realm register · <realm>"), and a zero-value chrome.Site falls
 // back to the static placeholder copy (the neutral "monitor instance" line and the
 // bare "Realm register" subtitle with no trailing separator). It is non-vacuous:
 // dropping the {{.Instance}} binding (or the .chrome-instance text node) from the
@@ -414,7 +417,7 @@ func TestDashboardRendersInstanceIdentity(t *testing.T) {
 	// Populated identity: the masthead must render these exact operator-supplied
 	// strings (not the static defaults), driven through the live render so reverting
 	// the template binding fails the test.
-	id := Identity{
+	id := chrome.Site{
 		Instance: "monitor.example.test",
 		Operator: "operated by Example Org · example net",
 		Realm:    "example net",
@@ -445,7 +448,7 @@ func TestDashboardRendersInstanceIdentity(t *testing.T) {
 	// the bare "Realm register" subtitle (no trailing "· " separator), so an
 	// unconfigured deployment is honest rather than asserting a false instance.
 	recDefault := httptest.NewRecorder()
-	Handler(st, nil, Identity{}).ServeHTTP(recDefault, httptest.NewRequest(http.MethodGet, "/", nil))
+	Handler(st, nil, chrome.Site{}).ServeHTTP(recDefault, httptest.NewRequest(http.MethodGet, "/", nil))
 	if recDefault.Code != http.StatusOK {
 		t.Fatalf("default status = %d, want 200", recDefault.Code)
 	}
@@ -468,7 +471,7 @@ func TestDashboardRendersInstanceIdentity(t *testing.T) {
 func TestDashboardMethodNotAllowed(t *testing.T) {
 	st := fixtureStore(t)
 	rec := httptest.NewRecorder()
-	Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+	Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST / status = %d, want 405", rec.Code)
 	}
@@ -477,7 +480,7 @@ func TestDashboardMethodNotAllowed(t *testing.T) {
 func TestDashboardUnknownPath(t *testing.T) {
 	st := fixtureStore(t)
 	rec := httptest.NewRecorder()
-	Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/unknown", nil))
+	Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/unknown", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("GET /unknown status = %d, want 404", rec.Code)
 	}
@@ -580,7 +583,7 @@ func TestDashboardRecentlyDeclared(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -615,7 +618,7 @@ func TestDashboardRecentlyDeclared(t *testing.T) {
 func TestDashboardNoRecentRowWhenIndexEmpty(t *testing.T) {
 	st := fixtureStore(t)
 	rec := httptest.NewRecorder()
-	Handler(st, nil, Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if body := rec.Body.String(); strings.Contains(body, "Recently declared:") {
 		t.Errorf("empty index should omit the Recently declared row\n%s", body)
 	}

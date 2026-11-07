@@ -536,42 +536,6 @@ filed it and does **not** affect priority.
   ("errors rather than writing a partial site"); learnings.md always-loaded fail-closed discipline;
   `learnings/verifier-site.md` non-atomic-output note.
 
-## Masthead identity fallback consts are now duplicated across dashboard + dossier + certificate (3x) instead of one shared resolve leaf
-- **Priority:** low
-- **Source:** [review] (filed alongside the dossier masthead-identity slice `413efe8`; updated when the cert copy landed `3c64097`)
-- **What / where / how to verify:** The masthead-identity arc has now copied `instanceFallback` /
-  `operatorFallback` + a private `resolveIdentity` into THREE packages: `internal/dashboard/handler.go:114-115`
-  (the original `Identity.resolve` owner), `internal/dossier/handler.go:107-108`, and now
-  `internal/certificate/handler.go:174-175` (advance `3c64097`). All are LITERALS byte-identical with a "MUST
-  stay byte-identical" comment, because neither package can import the other's unexported consts and exporting
-  `dashboard.resolve` would push each slice to a 4th prod file (over the ≤3 budget). This is a documented,
-  commented, mutation-proven duplication, not a defect — but a future change to the static masthead copy is now
-  a THREE-site edit (FOUR once the proofserve mastheads land) that can silently diverge. Fix when the
-  masthead-identity arc finishes across all surfaces: lift `Identity` + the fallback consts + a single exported
-  `Resolve` into ONE owner (the `internal/dashboard` package already owns the type, or a tiny new shared leaf)
-  that dossier/cert/proofserve all import, so the fallback exists once. Verify fixed: the
-  `instanceFallback`/`operatorFallback` literals appear in exactly one package and every masthead resolves
-  through it; a test asserting dashboard+dossier+cert render the SAME fallback line passes. Low — the consts are
-  currently byte-identical and the duplication is commented; this only removes the divergence risk once the arc
-  is complete (best folded WITH the proofserve masthead slice, the natural 4th-copy trigger).
-- **Spec:** CLAUDE.md DRY ("Reduce code duplication even if refactoring requires extra effort"); next.md
-  Implementation Note (per-package helper chosen to stay ≤3 prod files, consolidation deferred).
-
-## Stale `.chrome-identity` CSS comment in dashboard.html still says "static copy in this skeleton"
-- **Priority:** low
-- **Source:** [review] (observed during the dossier masthead-identity review)
-- **What / where / how to verify:** `internal/dashboard/dashboard.html:75-76` carries the comment "The
-  instance-identity block: this deployment's domain + operator/realm. It is static copy in this skeleton (a
-  config-driven identity is a separate concern)." — inaccurate since the dashboard masthead became
-  config-driven in `b30b84e` (the block now renders `{{.Instance}}`/`{{.Operator}}` from
-  `dashboard.Identity`). The dossier slice wrote an ACCURATE comment on its ported copy
-  (`internal/dossier/dossier.html`) but correctly left the dashboard untouched (it was out of scope and a
-  4th prod file). Violates CLAUDE.md "write evergreen comments that describe the current state". Fix when
-  `dashboard.html` is next touched: update the comment to match the dossier's accurate wording. Verify
-  fixed: the comment no longer says "static copy in this skeleton". Low — cosmetic; the rendered output is
-  already correct.
-- **Spec:** CLAUDE.md "Write evergreen comments that describe the current state, not historical changes".
-
 ## `.dockerignore` secret/sidecar globs are slashless — they only exclude CONTEXT-ROOT files, not nested ones
 - **Priority:** low
 - **Source:** [review] (Codex P2, reviewer-confirmed against Docker's `filepath.Match` vs git basename matching)
@@ -771,3 +735,13 @@ filed it and does **not** affect priority.
   `healthz` operation declares both `200` and `503`. Low — skipped by the loop until the doc is next edited.
 - **Spec:** ADR-0014 §1 (document the machine surface's real responses); `internal/healthz/handler.go`
   (the 503 unavailable path); CLAUDE.md `GET /healthz` ("liveness + store readiness").
+
+## Realm register drops the hub column on narrow screens
+- **Priority:** low
+- **Source:** [human] (spotted in the brand-alignment screenshots, 2026-11-07; present before that change)
+- **What / where / how to verify:** At a 420px viewport the dashboard ledger
+  (`internal/dashboard/dashboard.html`, `.ledger-row` grid `34px 1.8fr 1.2fr 1fr minmax(120px, 1.1fr) 150px`)
+  squeezes the hub · domain column to zero width and pushes the status column off the card, so a phone
+  shows rows without the hub name or status. Fix with a narrow-viewport layout (e.g. a media query that
+  stacks each row) and verify with an agent-browser screenshot at 420px showing every hub name and badge.
+- **Spec:** ADR-0010 (Evidence Ledger, screenshot-ready); ADR-0012 (visual verification).

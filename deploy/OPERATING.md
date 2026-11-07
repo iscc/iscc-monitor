@@ -14,8 +14,9 @@ testnet test instance at **`monitor-test.iscc.io`** on an existing DigitalOcean 
 The monitor is configured entirely through environment variables. CLAUDE.md's
 [Running a local dev instance](../CLAUDE.md#running-a-local-dev-instance) section
 is the **authoritative env-var table** (`ISCC_MONITOR_DB`, `ISCC_MONITOR_REALM`,
-the `NORMAL`/`FROZEN`/`ADDR` cadence + bind, and the optional masthead identity
-keys). This doc references those keys but does not duplicate the table, so the two
+the `NORMAL`/`FROZEN`/`ADDR` cadence + bind, the optional masthead identity
+keys, and the operator co-branding keys described under [Branding](#branding)). This
+doc references those keys but does not duplicate the table, so the two
 cannot drift.
 
 ## Image & tags
@@ -251,3 +252,31 @@ docker run --rm \
 
 After the first poll (a few seconds) the HTTP surface is live. Confirm with
 `GET /healthz` (200) and `GET /version` (the live build's version or git SHA).
+
+## Branding
+
+Every page carries the ISCC masthead and a footer with the running version and the
+ISCC Foundation's open-source credit. An operator adds its own identity beside them,
+without a rebuild, through the optional co-branding keys in CLAUDE.md's env-var table:
+an operator name and website, a logo shown on the masthead with an "Operated by"
+label, and footer links such as an imprint or privacy policy (required for a public
+site in many jurisdictions). Mount the logo read-only and point the key at it:
+
+```yaml
+    environment:
+      ISCC_MONITOR_INSTANCE: monitor.example.com
+      ISCC_MONITOR_OPERATOR_NAME: Example GmbH
+      ISCC_MONITOR_OPERATOR_URL: https://example.com/
+      ISCC_MONITOR_OPERATOR_LOGO: /etc/iscc-monitor/operator-logo.svg
+      ISCC_MONITOR_FOOTER_LINKS: "Imprint=https://example.com/imprint|Privacy=https://example.com/privacy"
+    volumes:
+      - ./operator-logo.svg:/etc/iscc-monitor/operator-logo.svg:ro
+```
+
+The binary validates these keys at startup and refuses to start on a malformed URL, a
+logo or URL without a name, or a logo that is missing, over 256 KiB, or not the image
+type its extension names. The logo is read once and served from the instance itself at
+`/_ds/operator-logo`, so pages still load nothing from another origin. Give it a
+transparent background and a height-to-width ratio that reads at 32 px tall. The
+ISCC mark and the colours stay fixed: co-branding names the operator, it does not
+re-theme the monitor.

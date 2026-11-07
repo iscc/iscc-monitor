@@ -47,7 +47,7 @@ this surface shares live in `learnings/dashboard.md` (read both).
 
 ## Seams shared with dashboard (do not re-derive)
 
-- **Masthead + overlay are byte-identical ports of dashboard's** (the dossier imports `dashboard.Identity`
+- **Masthead + overlay are byte-identical ports of dashboard's** (the dossier imports `dashboard.Identity` *(Superseded 2026-11-07: identity is `chrome.Site`, resolved once by `internal/chrome`; ADR-0015.)*
   and reuses its `instanceFallback`/`operatorFallback`/`resolveIdentity`/`overlayStatus`/`hubStatus` shape
   as local copies — 3× now, a tracked `low` consolidation). The "Browse the log →" link is `/{{.Origin}}/`
   → `/<domain>/log/` because `Origin` = `<domain>/log`; "Prove an ISCC-ID in this hub →" links to `/` (the

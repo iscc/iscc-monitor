@@ -17,7 +17,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -39,7 +39,7 @@ func getRecords(t *testing.T, h http.Handler, query string) (int, string) {
 // row to its single-record page (record?index=<seq>), and shows the honest total.
 func TestRecordsListsNewestFirst(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/records", nil))
@@ -78,7 +78,7 @@ func TestRecordsListsNewestFirst(t *testing.T) {
 // page's records.
 func TestRecordsPagination(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	// First page, n=2: the two newest (299, 298) and an older link with from=297&n=2.
 	code, body := getRecords(t, h, "n=2")
@@ -123,7 +123,7 @@ func TestRecordsPagination(t *testing.T) {
 // page's invariant).
 func TestRecordsLinksTokensNoCDN(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	code, body := getRecords(t, h, "")
 	if code != http.StatusOK {
@@ -165,7 +165,7 @@ func TestRecordsLinksTokensNoCDN(t *testing.T) {
 func TestRecordsRendersInMemoryStatus(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
 	statuses := fakeStatusSource{m.hubID: "unresolvable"}
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", statuses, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", statuses, chrome.Site{})
 
 	code, body := getRecords(t, h, "")
 	if code != http.StatusOK {
@@ -224,7 +224,7 @@ func TestRecordsRendersLoggedColumn(t *testing.T) {
 		t.Fatalf("AdvanceFollowState: %v", err)
 	}
 
-	h := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(st, hubID, "sb0.iscc.id", nil, chrome.Site{})
 	code, body := getRecords(t, h, "")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
@@ -285,7 +285,7 @@ func TestRecordsRendersTypeColumn(t *testing.T) {
 		t.Fatalf("AdvanceFollowState: %v", err)
 	}
 
-	h := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(st, hubID, "sb0.iscc.id", nil, chrome.Site{})
 	code, body := getRecords(t, h, "")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
@@ -321,7 +321,7 @@ func countRecordLinks(body string) int {
 // pager — makes this FAIL. The full-page case shows the whole window (seq 4 – 0 of 5).
 func TestRecordsPagerRangeAndTopBottom(t *testing.T) {
 	m := buildMirror(t, 5)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	// Full page (default n=50 > 5): the whole window, top seq 4 down to bottom seq 0.
 	code, body := getRecords(t, h, "")
@@ -374,7 +374,7 @@ func TestRecordsPagerRangeAndTopBottom(t *testing.T) {
 // Re-enabling a disabled end (rendering the <a> instead of the <span>) makes this FAIL.
 func TestRecordsPagerEndsDisabled(t *testing.T) {
 	m := buildMirror(t, 5)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	// First page (no cursor, n=2 so records remain below): Newer is at the newest end →
 	// disabled span, while the Older affordance is live (a link) since seqs 1..0 remain.
@@ -401,7 +401,7 @@ func TestRecordsPagerEndsDisabled(t *testing.T) {
 // pre-int() uint64 clamp the whole 300-leaf index would render.
 func TestRecordsClampsHostilePageSize(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	code, body := getRecords(t, h, "n=9223372036854775808")
 	if code != http.StatusOK {
@@ -446,7 +446,7 @@ func olderHref(body string) string {
 func TestRecordsOlderLinkReachesSeq0(t *testing.T) {
 	// A small mirror (seqs 0..3, n=1) so the chain emits a literal from=0 older link.
 	m := buildMirror(t, 4)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	query := "n=1"
 	reached0 := false
@@ -505,7 +505,7 @@ func TestRecordsCeilingHidesUnacceptedLeaves(t *testing.T) {
 		t.Fatalf("AdvanceFollowState: %v", err)
 	}
 
-	h := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(st, hubID, "sb0.iscc.id", nil, chrome.Site{})
 	code, body := getRecords(t, h, "")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
@@ -564,7 +564,7 @@ func TestParseUintOverflow(t *testing.T) {
 // method-gate at the top of Handler covers it).
 func TestRecordsNonGET(t *testing.T) {
 	m := buildMirror(t, 8)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/records", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -586,7 +586,7 @@ func TestRecordsEmpty(t *testing.T) {
 		t.Fatalf("UpsertHub: %v", err)
 	}
 
-	h := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(st, hubID, "sb0.iscc.id", nil, chrome.Site{})
 	code, body := getRecords(t, h, "")
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
@@ -605,7 +605,7 @@ func TestRecordsEmpty(t *testing.T) {
 // "sb0.iscc.id" (matching the buildMirror fixture's hub).
 func TestRecordsHeadAndBreadcrumb(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	code, body := getRecords(t, h, "")
 	if code != http.StatusOK {
@@ -635,7 +635,7 @@ func TestRecordsHeadAndBreadcrumb(t *testing.T) {
 
 // TestRecordsChromeInstanceIdentity asserts the record list carries the shared chrome's
 // instance-identity masthead + the static "verify ↗ monitor.iscc.codes" tier-2 link, the
-// SAME dashboard.Identity value the dashboard and dossier mastheads receive: a populated
+// SAME chrome.Site value the dashboard and dossier mastheads receive: a populated
 // Identity surfaces its exact Instance / Operator strings, while the verify link is the
 // fixed monitor.iscc.codes target. It is non-vacuous — threading a constant default
 // instead of the supplied value, or dropping the {{.Instance}} / {{.Operator}} bindings,
@@ -644,7 +644,7 @@ func TestRecordsHeadAndBreadcrumb(t *testing.T) {
 // external https origin, asserted CDN-free by TestRecordsLinksTokensNoCDN).
 func TestRecordsChromeInstanceIdentity(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	idv := dashboard.Identity{
+	idv := chrome.Site{
 		Instance: "monitor.example.test",
 		Operator: "operated by Example Org · example net",
 		Realm:    "example net",
@@ -668,7 +668,7 @@ func TestRecordsChromeInstanceIdentity(t *testing.T) {
 	}
 	// A zero-value Identity falls back to the static placeholder copy (the neutral
 	// "monitor instance" line), proving resolveIdentity is wired, not bypassed.
-	h0 := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h0 := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 	_, body0 := getRecords(t, h0, "")
 	if !strings.Contains(body0, "monitor instance") {
 		t.Errorf("zero-value Identity did not fall back to the static placeholder copy\n%s", body0)

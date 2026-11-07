@@ -1,8 +1,9 @@
 // Package web serves the monitor's shared static front-end assets — the ISCC
-// Design System v2 token stylesheet, the self-hosted webfont @font-face shell, the
-// woff2 binaries themselves, the Go WASM runtime loader (wasm_exec.js), the
-// verifier WebAssembly artifact (verify.wasm), the grayscale ISCC masthead logo
-// (iscc-logo-black.png), and the self-hosted Stoplight Elements assets
+// Design System v2 token stylesheet, the shared site-chrome stylesheet (site.css), the
+// self-hosted webfont @font-face shell, the woff2 binaries themselves, the Go WASM
+// runtime loader (wasm_exec.js), the verifier WebAssembly artifact (verify.wasm), the
+// ISCC masthead logo and favicon (byte-verbatim copies of the ISCC brand SVG masters),
+// and the self-hosted Stoplight Elements assets
 // (elements.min.js + elements.min.css) the /docs API reference mounts — over
 // net/http as a tiny stdlib-only leaf. The stylesheets and fonts are the one no-JS,
 // no-CDN style shell every server-rendered M-UI surface (the realm index at "/", the
@@ -77,11 +78,29 @@ const WasmExecPath = "/_ds/wasm_exec.js"
 // verifier; like TokensPath a page's fetch URL literal must stay in sync with it.
 const WasmVerifyPath = "/_ds/verify.wasm"
 
-// LogoPath is the stable exact path the self-hosted grayscale ISCC logo is served at.
-// Every SSR masthead renders it as an <img src> beside the "Trust & Transparency
-// Monitor" text mark (the shared document chrome); like TokensPath a page's <img src>
-// literal must stay in sync with this value, since templates cannot read the Go const.
-const LogoPath = "/_ds/iscc-logo-black.png"
+// SiteCSSPath is the stable exact path the shared site-chrome stylesheet is served at:
+// the masthead and footer partials (internal/chrome), the brand buttons, and the focus
+// outline. Every page links it after TokensPath; like TokensPath the href literal must
+// stay in sync with this value.
+const SiteCSSPath = "/_ds/site.css"
+
+// LogoPath is the stable exact path the self-hosted ISCC logo is served at: the
+// near-black signature with the coral circle, a byte-verbatim copy of the ISCC brand
+// master iscc-logo-black-coral.svg. The masthead partial (internal/chrome) renders it
+// as an <img src> beside the "Trust & Transparency Monitor" text mark; that literal
+// must stay in sync with this value, since templates cannot read the Go const.
+const LogoPath = "/_ds/iscc-logo.svg"
+
+// FaviconPath is the stable exact path the favicon is served at: the near-black ISCC
+// symbol with its coral circle, a byte-verbatim copy of the brand master
+// iscc-icon-black-coral.svg (the brand's favicon.svg). Every page links it as
+// <link rel="icon">; that literal must stay in sync with this value.
+const FaviconPath = "/_ds/favicon.svg"
+
+// OperatorLogoPath is the exact path an instance serves its operator's logo at, when
+// ISCC_MONITOR_OPERATOR_LOGO configures one. The binary mounts ImageHandler there; the
+// /_ds/ subtree Handler itself never serves it, so the static verifier site has none.
+const OperatorLogoPath = "/_ds/operator-logo"
 
 // ElementsJSPath is the stable exact path the self-hosted Stoplight Elements
 // web-component JS bundle is served at. The /docs page (internal/docs) loads it as a
@@ -148,11 +167,15 @@ const contentTypeJS = "text/javascript; charset=utf-8"
 // instantiation.
 const contentTypeWASM = "application/wasm"
 
-// contentTypePNG is the media type served for the embedded logo PNG. It is set
-// explicitly so the browser renders the masthead <img> without depending on content
-// sniffing. The string literal stays decoupled from the image/png package, so the
-// leaf imports no image/* package and remains WASM-shareable.
-const contentTypePNG = "image/png"
+// contentTypeSVG is the media type served for the embedded logo and favicon SVGs. It is
+// set explicitly so the browser renders them as images without depending on content
+// sniffing.
+const contentTypeSVG = "image/svg+xml"
+
+// imageCSP is the Content-Security-Policy of the operator logo response. The logo is an
+// operator-supplied file that may be an SVG; this policy stops any script or external
+// load in it from running if the URL is opened directly, rather than as an <img>.
+const imageCSP = "default-src 'none'; style-src 'unsafe-inline'"
 
 // TokensCSS is the embedded ISCC Design System v2 token stylesheet — a single
 // concatenated, CDN-free file (colors, typography, spacing, base tokens), embedded
@@ -160,6 +183,12 @@ const contentTypePNG = "image/png"
 //
 //go:embed tokens.css
 var TokensCSS []byte
+
+// siteCSS is the embedded shared site-chrome stylesheet (masthead, footer, buttons,
+// focus outline).
+//
+//go:embed site.css
+var siteCSS []byte
 
 // fontsCSS is the embedded self-hosted @font-face stylesheet. Its src URLs are
 // same-origin /_ds/fonts/ paths, so the served bytes reference no external CDN.
@@ -192,13 +221,18 @@ var wasmExecJS []byte
 //go:embed verify.wasm
 var wasmVerify []byte
 
-// logoPNG is the embedded grayscale ISCC logo — a committed, pre-downscaled PNG (a few
-// KB, ~76px tall with a preserved alpha channel so it sits on the light chrome). It is
-// a build-pinned asset like the woff2 binaries; the downscale happens once at commit
-// time, never at build time, so no image toolchain is needed on a CI/dev machine.
+// logoSVG is the embedded ISCC logo, a byte-verbatim copy of the ISCC brand master
+// iscc-logo-black-coral.svg (never hand-edited; the brand forbids rebuilding the logo).
+// Its viewBox includes the brand's clear space.
 //
-//go:embed iscc-logo-black.png
-var logoPNG []byte
+//go:embed iscc-logo.svg
+var logoSVG []byte
+
+// faviconSVG is the embedded favicon, a byte-verbatim copy of the ISCC brand master
+// iscc-icon-black-coral.svg.
+//
+//go:embed favicon.svg
+var faviconSVG []byte
 
 // elementsJS is the embedded Stoplight Elements web-component JS bundle — vendored
 // byte-verbatim from a PINNED upstream version (@stoplight/elements@9.0.23
@@ -226,11 +260,12 @@ var elementsJS []byte
 var elementsCSS []byte
 
 // Handler returns an http.Handler for the /_ds/ static-asset subtree. It serves the
-// token stylesheet, the @font-face stylesheet, the woff2 binaries, the wasm_exec.js
-// runtime loader, the verifier verify.wasm artifact, the masthead logo PNG, and the
-// Stoplight Elements JS bundle + stylesheet; the content type is chosen per path
-// (text/css for the .css, text/javascript for wasm_exec.js and elements.min.js,
-// application/wasm for verify.wasm, image/png for the logo, font/woff2 for .woff2).
+// token and site-chrome stylesheets, the @font-face stylesheet, the woff2 binaries, the
+// wasm_exec.js runtime loader, the verifier verify.wasm artifact, the logo and favicon
+// SVGs, and the Stoplight Elements JS bundle + stylesheet; the content type is chosen
+// per path (text/css for the .css, text/javascript for wasm_exec.js and
+// elements.min.js, application/wasm for verify.wasm, image/svg+xml for the logo and
+// favicon, font/woff2 for .woff2).
 // Only GET is served
 // (any other method is 405); an unknown /_ds/ path is 404. Every 200 carries
 // Cache-Control: no-cache and a strong content ETag, with an If-None-Match match
@@ -249,6 +284,8 @@ func Handler() http.Handler {
 		switch r.URL.Path {
 		case TokensPath:
 			writeAsset(w, r, TokensCSS, contentTypeCSS)
+		case SiteCSSPath:
+			writeAsset(w, r, siteCSS, contentTypeCSS)
 		case FontsCSSPath:
 			writeAsset(w, r, fontsCSS, contentTypeCSS)
 		case WasmExecPath:
@@ -256,7 +293,9 @@ func Handler() http.Handler {
 		case WasmVerifyPath:
 			writeAsset(w, r, wasmVerify, contentTypeWASM)
 		case LogoPath:
-			writeAsset(w, r, logoPNG, contentTypePNG)
+			writeAsset(w, r, logoSVG, contentTypeSVG)
+		case FaviconPath:
+			writeAsset(w, r, faviconSVG, contentTypeSVG)
 		case ElementsJSPath:
 			writeAsset(w, r, elementsJS, contentTypeJS)
 		case ElementsCSSPath:
@@ -264,6 +303,22 @@ func Handler() http.Handler {
 		default:
 			serveFont(w, r)
 		}
+	})
+}
+
+// ImageHandler returns an http.Handler that serves one image, such as the operator logo
+// at OperatorLogoPath, with the same GET-only, revalidating cache policy as Handler. It
+// adds a restrictive Content-Security-Policy and X-Content-Type-Options: nosniff, so an
+// operator-supplied SVG opened directly cannot run script on the instance's origin.
+func ImageHandler(data []byte, contentType string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Security-Policy", imageCSP)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		writeAsset(w, r, data, contentType)
 	})
 }
 

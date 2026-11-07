@@ -1,0 +1,216 @@
+/* ISCC Monitor shared site chrome: the masthead and footer partials
+   (internal/chrome), the brand buttons, and the keyboard-focus outline. Every
+   server-rendered page and the verifier app link this stylesheet after tokens.css,
+   so the chrome is styled once. Values follow the ISCC brand guidelines, edition 01
+   (ADR-0015). It references no external URL. */
+
+/* ---------- Keyboard focus: 2px ISCC Blue outline, 4px offset ---------- */
+:focus-visible {
+  outline: var(--border-width-focus) solid var(--iscc-blue);
+  outline-offset: 4px;
+}
+
+/* ---------- Masthead ---------- */
+.chrome {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding: var(--space-4) var(--space-8);
+  background: var(--surface-card);
+  border-bottom: var(--border-width) solid var(--border-default);
+}
+.chrome-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+/* The ISCC signature links to the start page; its alt text names the destination, as
+   the brand asks for a linked logo. */
+.chrome-home {
+  display: block;
+}
+/* The ISCC signature, served verbatim from the brand master. Its viewBox carries the
+   brand's clear space, so the visible mark is shorter than the box. */
+.chrome-logo {
+  height: 38px;
+  width: auto;
+  display: block;
+}
+.chrome-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--border-default);
+}
+.chrome-mark {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-widest);
+  text-transform: uppercase;
+  color: var(--text-heading);
+  font-weight: var(--weight-medium);
+}
+.chrome-sub {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.chrome-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+/* The operator co-brand: a factual "Operated by" label beside the operator's logo,
+   sized to balance the ISCC signature's visible weight. */
+.chrome-cobrand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.chrome-cobrand-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.chrome-cobrand-link {
+  display: block;
+}
+.chrome-cobrand-logo {
+  display: block;
+  height: 32px;
+  width: auto;
+  max-width: 160px;
+  object-fit: contain;
+}
+/* The instance identity: this deployment's domain and its operator line. */
+.chrome-identity {
+  text-align: right;
+  line-height: var(--leading-snug);
+}
+.chrome-instance {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-body);
+}
+.chrome-operator {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+/* The link to the monitor-agnostic verifier app (monitor.iscc.codes). */
+.chrome-verify {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-link);
+  border: var(--border-width) solid var(--border-default);
+  border-radius: var(--radius-xs);
+  padding: var(--space-2) var(--space-3);
+}
+
+/* ---------- Footer ---------- */
+.site-footer {
+  margin-top: var(--space-8);
+  padding: var(--space-6) var(--space-8) var(--space-8);
+  border-top: var(--border-width) solid var(--border-default);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  color: var(--text-muted);
+}
+.site-footer-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3) var(--space-8);
+}
+/* Set explicitly, so a page stylesheet that resets link colours (the /docs Stoplight
+   Elements CSS does) leaves the footer links blue. */
+.site-footer a {
+  color: var(--text-link);
+}
+.site-footer-product {
+  font-family: var(--font-mono);
+  color: var(--text-heading);
+}
+.site-footer-nav {
+  margin-left: auto;
+}
+.site-footer-operator {
+  flex-basis: 100%;
+  padding-top: var(--space-3);
+  border-top: var(--border-width) solid var(--border-subtle);
+}
+
+/* ---------- Buttons ----------
+   Primary: a near-black block with a pointed end, a white JetBrains Mono label in
+   capitals, and a coral chevron that marks the direction. One per view. Secondary: the
+   same label in a 1.5px outline of the text colour, beside a primary. The shape is
+   measured from the button height h: 0.43h label padding, a 0.3h point, a 0.26h
+   chevron set 0.09h away. A label wider than its container wraps and the button
+   grows taller, so a long label stays inside a phone-width page. */
+.btn-primary,
+.btn-secondary {
+  --btn-h: 46px;
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--btn-h);
+  padding: calc(var(--btn-h) * 0.15) calc(var(--btn-h) * 0.43);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: var(--weight-medium);
+  line-height: 1.25;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+}
+.btn-primary {
+  --btn-point: calc(var(--btn-h) * 0.3);
+  --btn-gap: calc(var(--btn-h) * 0.09);
+  --btn-chevron: calc(var(--btn-h) * 0.26);
+  padding-right: calc(var(--btn-h) * 0.43 + var(--btn-point));
+  margin-right: calc(var(--btn-gap) + var(--btn-chevron));
+  color: var(--iscc-white);
+  background: none;
+  border: 0;
+}
+.btn-primary::before,
+.btn-primary::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: -1;
+}
+.btn-primary::before {
+  left: 0;
+  right: 0;
+  background: var(--iscc-near-black);
+  clip-path: polygon(0 0, calc(100% - var(--btn-point)) 0, 100% 50%, calc(100% - var(--btn-point)) 100%, 0 100%);
+}
+.btn-primary::after {
+  left: calc(100% - var(--btn-point) + var(--btn-gap));
+  width: calc(var(--btn-point) + var(--btn-chevron));
+  background: var(--iscc-coral-red);
+  clip-path: polygon(0 0, var(--btn-chevron) 0, 100% 50%, var(--btn-chevron) 100%, 0 100%, var(--btn-point) 50%);
+  transition: transform 160ms ease-out;
+}
+.btn-primary:hover {
+  text-decoration: none;
+}
+.btn-primary:hover::after {
+  transform: translateX(var(--btn-gap));
+}
+.btn-secondary {
+  color: var(--text-heading);
+  background: transparent;
+  border: 1.5px solid var(--text-heading);
+}
+.btn-secondary:hover {
+  text-decoration: none;
+  border-width: 2.5px;
+  padding: calc(var(--btn-h) * 0.15 - 1px) calc(var(--btn-h) * 0.43 - 1px);
+}

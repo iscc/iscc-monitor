@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/proofserve"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
@@ -127,7 +127,7 @@ func frozenHub(t *testing.T) (*store.Store, int64) {
 func TestDossierFrozenExhibit(t *testing.T) {
 	st, id := frozenHub(t)
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -207,7 +207,7 @@ func TestDossierFrozenExhibit(t *testing.T) {
 func TestDossierNoExhibitWhenNotFrozen(t *testing.T) {
 	st, id := coveredHub(t)
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -230,7 +230,7 @@ func TestDossierRendersCoveredHub(t *testing.T) {
 	st, id := coveredHub(t)
 	rec := httptest.NewRecorder()
 	// nil StatusSource: a store-verified hub renders as "verified" (no overlay).
-	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -247,7 +247,9 @@ func TestDossierRendersCoveredHub(t *testing.T) {
 	for _, want := range []string{
 		`href="/_ds/tokens.css"`,
 		`href="/_ds/fonts.css"`,
-		`src="/_ds/iscc-logo-black.png"`,
+		`src="/_ds/iscc-logo.svg"`,     // the shared-chrome ISCC logo (web.LogoPath)
+		`href="/_ds/site.css"`,         // the shared site-chrome stylesheet (web.SiteCSSPath)
+		`<footer class="site-footer">`, // the shared footer partial
 		"var(--font-sans)",
 		"var(--font-mono)",
 	} {
@@ -313,15 +315,15 @@ func TestDossierRendersCoveredHub(t *testing.T) {
 			t.Errorf("body missing numbered-section marker %q\n%s", want, body)
 		}
 	}
-	// The two action links resolve: "Prove an ISCC-ID in this hub →" → the realm
-	// index claim-lookup hero ("/"), "Browse the log →" → /{{.Origin}}/records — the
+	// The two action links resolve: "Prove an ISCC-ID in this hub" → the realm
+	// index claim-lookup hero ("/"), "Browse the log" → /{{.Origin}}/records — the
 	// paginated record-list browser (every row links to its single record), NOT the
 	// /<domain>/log/ checkpoint-summary page (which carries no link to the record
 	// list and is therefore a no-JS dead end). Reverting the href to /{{.Origin}}/
 	// fails this assertion (mutation-proven).
 	for _, want := range []string{
-		`href="/">Prove an ISCC-ID in this hub →`,
-		`href="/sb0.iscc.id/log/records">Browse the log →`,
+		`href="/">Prove an ISCC-ID in this hub</a>`,
+		`href="/sb0.iscc.id/log/records">Browse the log</a>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing action link %q\n%s", want, body)
@@ -348,11 +350,11 @@ func TestDossierRendersCoveredHub(t *testing.T) {
 }
 
 // TestDossierBrowseLogLandsOnLiveRecordList proves the no-JS forward navigation leg
-// dossier → record list is unbroken: the dossier's "Browse the log →" href resolves
+// dossier → record list is unbroken: the dossier's "Browse the log" href resolves
 // to a live 200 text/html record list, not the /<domain>/log/ checkpoint-summary
 // dead end. It exercises the SAME fixture store through BOTH the dossier Handler and
 // proofserve.Handler (both read the same *store.Store), renders the dossier, confirms
-// its "Browse the log →" href is /<origin>/records, then requests the path suffix
+// its "Browse the log" href is /<origin>/records, then requests the path suffix
 // (/records) the inner proofserve path switch is mounted at and asserts the record
 // list renders 200 text/html. Reverting the dossier href to /{{.Origin}}/ would point
 // the human at the checkpoint-summary page (no link onward to the record list) — the
@@ -361,12 +363,12 @@ func TestDossierBrowseLogLandsOnLiveRecordList(t *testing.T) {
 	st, id := coveredHub(t)
 
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("dossier status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	const wantHref = `href="/sb0.iscc.id/log/records">Browse the log →`
+	const wantHref = `href="/sb0.iscc.id/log/records">Browse the log</a>`
 	if !strings.Contains(body, wantHref) {
 		t.Fatalf("dossier missing forward record-list link %q\n%s", wantHref, body)
 	}
@@ -376,7 +378,7 @@ func TestDossierBrowseLogLandsOnLiveRecordList(t *testing.T) {
 	// record list (proofserve renders an honest empty-state 200 even with no records
 	// seeded) proves the repointed href is live, not a 404 dead end.
 	recList := httptest.NewRecorder()
-	proofserve.Handler(st, id, "sb0.iscc.id", nil, dashboard.Identity{}).ServeHTTP(recList, httptest.NewRequest(http.MethodGet, "/records", nil))
+	proofserve.Handler(st, id, "sb0.iscc.id", nil, chrome.Site{}).ServeHTTP(recList, httptest.NewRequest(http.MethodGet, "/records", nil))
 	if recList.Code != http.StatusOK {
 		t.Fatalf("GET /records status = %d, want 200 (the repointed href must be live, not a dead end)", recList.Code)
 	}
@@ -432,7 +434,7 @@ func multiCheckpointHub(t *testing.T) (*store.Store, int64) {
 func TestDossierObservationLog(t *testing.T) {
 	st, id := multiCheckpointHub(t)
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -476,7 +478,7 @@ func TestDossierObservationLogEmpty(t *testing.T) {
 	// coveredHub records exactly one accepted checkpoint and no OTS row.
 	st, id := coveredHub(t)
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -530,7 +532,7 @@ func TestDossierObservationLogAnchorAndFreeze(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -664,7 +666,7 @@ func TestDossierObservationLogFrozenNoPseudoTransition(t *testing.T) {
 func renderDossier(t *testing.T, st *store.Store, hubID int64) string {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	Handler(st, hubID, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, hubID, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -691,7 +693,7 @@ func TestDossierConfirmedAnchorRendersHeight(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -730,7 +732,7 @@ func TestDossierPendingAnchorHonest(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -834,7 +836,7 @@ func TestDossierLastAnchored(t *testing.T) {
 			}
 
 			rec := httptest.NewRecorder()
-			Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+			Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200", rec.Code)
 			}
@@ -862,7 +864,7 @@ func TestDossierCautionForUnverified(t *testing.T) {
 	st, id := coveredHub(t)
 	statuses := fakeStatusSource{id: "unverified"}
 	rec := httptest.NewRecorder()
-	Handler(st, id, statuses, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, statuses, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -892,7 +894,7 @@ func TestDossierCautionForUnverified(t *testing.T) {
 func TestDossierChromeTierTwoAndBackLink(t *testing.T) {
 	st, id := coveredHub(t)
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -920,7 +922,7 @@ func TestDossierChromeTierTwoAndBackLink(t *testing.T) {
 }
 
 // TestDossierRendersInstanceIdentity proves the dossier masthead renders the
-// operator-supplied instance identity at the HTTP seam, the SAME dashboard.Identity
+// operator-supplied instance identity at the HTTP seam, the SAME chrome.Site
 // value the "/" page receives: a populated Identity surfaces its exact Instance /
 // Operator strings on the chrome, and a zero-value Identity falls back to the static
 // placeholder copy (the neutral "monitor instance" line and the generic operator
@@ -936,7 +938,7 @@ func TestDossierRendersInstanceIdentity(t *testing.T) {
 	// Populated identity: the masthead must render these exact operator-supplied
 	// strings (not the static defaults), driven through the live render so reverting
 	// the template binding fails the test. Realm is set but has no dossier slot.
-	idv := dashboard.Identity{
+	idv := chrome.Site{
 		Instance: "monitor.example.test",
 		Operator: "operated by Example Org · example net",
 		Realm:    "example net",
@@ -967,7 +969,7 @@ func TestDossierRendersInstanceIdentity(t *testing.T) {
 	// than asserting a false instance. The fallback strings MUST match the dashboard's
 	// so the two mastheads stay byte-identical.
 	recDefault := httptest.NewRecorder()
-	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(recDefault, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(recDefault, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 	if recDefault.Code != http.StatusOK {
 		t.Fatalf("default status = %d, want 200", recDefault.Code)
 	}
@@ -998,7 +1000,7 @@ func TestDossierCoverageHonestyNoCoverage(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -1024,7 +1026,7 @@ func TestDossierRendersInMemoryStatus(t *testing.T) {
 	st, id := coveredHub(t)
 	statuses := fakeStatusSource{id: "unresolvable"}
 	rec := httptest.NewRecorder()
-	Handler(st, id, statuses, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, statuses, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -1058,7 +1060,7 @@ func TestDossierUnresolvedKeyWordingHonesty(t *testing.T) {
 
 	// Unresolvable overlay: §1 must drop "resolved" and use the neutral source wording.
 	unres := httptest.NewRecorder()
-	Handler(st, id, fakeStatusSource{id: "unresolvable"}, dashboard.Identity{}).ServeHTTP(unres, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, fakeStatusSource{id: "unresolvable"}, chrome.Site{}).ServeHTTP(unres, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 	if unres.Code != http.StatusOK {
 		t.Fatalf("unresolvable status = %d, want 200", unres.Code)
 	}
@@ -1076,7 +1078,7 @@ func TestDossierUnresolvedKeyWordingHonesty(t *testing.T) {
 	// Verified hub (overlay miss): the mockup's "Key resolved from" copy is unchanged,
 	// guarding against over-gating the new wording onto a status whose key did resolve.
 	ver := httptest.NewRecorder()
-	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(ver, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(ver, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 	if ver.Code != http.StatusOK {
 		t.Fatalf("verified status = %d, want 200", ver.Code)
 	}
@@ -1094,7 +1096,7 @@ func TestDossierUnresolvedKeyWordingHonesty(t *testing.T) {
 func TestDossierNonGET(t *testing.T) {
 	st, id := coveredHub(t)
 	rec := httptest.NewRecorder()
-	Handler(st, id, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sb0.iscc.id", nil))
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sb0.iscc.id", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
 	}
@@ -1106,7 +1108,7 @@ func TestDossierNonGET(t *testing.T) {
 func TestDossierHubNotInStore(t *testing.T) {
 	st, id := coveredHub(t)
 	rec := httptest.NewRecorder()
-	Handler(st, id+999, nil, dashboard.Identity{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	Handler(st, id+999, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", rec.Code)
 	}

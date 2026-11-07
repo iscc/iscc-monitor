@@ -17,6 +17,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -25,11 +26,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/iscc/iscc-monitor/internal/certificate"
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/config"
 	"github.com/iscc/iscc-monitor/internal/corsmw"
 	"github.com/iscc/iscc-monitor/internal/dashboard"
@@ -138,6 +141,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	logo, err := loadOperatorLogo(cfg.OperatorLogo)
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := notifyShutdown()
 	defer stop()
@@ -171,7 +178,7 @@ func run() error {
 	resolver := registry.NewAtomicHubList(hubList)
 
 	m := metrics.New()
-	go serveMetrics(ctx, cfg.Addr, st, routes, resolver, m, identity(cfg), logger)
+	go serveMetrics(ctx, cfg.Addr, st, routes, resolver, m, site(cfg, logo), logger)
 	go runOTSLoop(ctx, st, stampFunc(), otsclient.NewUpgrader(), logger)
 	go runRealmRefresh(ctx, cfg.RealmPath, httpGetBytes, resolver, logger)
 
@@ -201,8 +208,8 @@ func run() error {
 // (mirroring how Run treats context.Canceled as clean) and is logged, not
 // surfaced; any other listen error is logged so a misconfigured address is never
 // silent.
-func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hubRoute, hubList registry.HubResolver, m *metrics.Registry, id dashboard.Identity, logger *slog.Logger) {
-	srv := &http.Server{Addr: addr, Handler: buildMux(st, routes, hubList, m, id)}
+func serveMetrics(ctx context.Context, addr string, st *store.Store, routes []hubRoute, hubList registry.HubResolver, m *metrics.Registry, s chrome.Site, logger *slog.Logger) {
+	srv := &http.Server{Addr: addr, Handler: buildMux(st, routes, hubList, m, s)}
 
 	go func() {
 		<-ctx.Done()
@@ -272,8 +279,8 @@ func stampFunc() follower.Stamper {
 // <elements-api apiDescriptionUrl="/openapi.json">), the GET /inclusion/ subtree (the realm-wide Certificate of
 // Inclusion, keyed on the self-describing ISCC-IDv1), the GET /_ds/ subtree (the
 // shared ISCC Design System v2 token stylesheet, the self-hosted @font-face
-// stylesheet, the woff2 font binaries, and the byte-pinned Stoplight Elements
-// JS/CSS every SSR page links), plus every hub's
+// stylesheet, the woff2 font binaries, the logo and favicon, and the byte-pinned
+// Stoplight Elements JS/CSS every SSR page links), plus every hub's
 // mirror subtree AND bare-domain dossier from mirrorHandler. The dashboard mounts
 // at the exact path "/" — http.ServeMux's most-specific match means it never
 // shadows /metrics, /healthz, the /inclusion/ subtree, the /_ds/ subtree, any
@@ -296,35 +303,100 @@ func stampFunc() follower.Stamper {
 // uniformly (Access-Control-Allow-Origin: * on every response; OPTIONS preflights
 // succeed with 204) without per-handler CORS code. It is factored out of
 // serveMetrics so the full routing is unit-testable against an
-// httptest.ResponseRecorder without binding a socket. The operator-supplied
-// instance identity (id) is rendered on the dashboard masthead; an empty field
-// falls back to the static placeholder copy inside dashboard.Handler.
-func buildMux(st *store.Store, routes []hubRoute, hubList registry.HubResolver, m *metrics.Registry, id dashboard.Identity) http.Handler {
-	mux := mirrorHandler(st, routes, m, id)
-	mux.Handle("/", dashboard.Handler(st, m, id))
+// httptest.ResponseRecorder without binding a socket. The operator-configured site
+// identity and co-branding (s) is rendered by every page's shared masthead and footer;
+// a zero-value Site renders the static fallbacks. When s carries an operator logo it
+// is served at the exact path web.OperatorLogoPath, which beats the /_ds/ subtree.
+func buildMux(st *store.Store, routes []hubRoute, hubList registry.HubResolver, m *metrics.Registry, s chrome.Site) http.Handler {
+	mux := mirrorHandler(st, routes, m, s)
+	mux.Handle("/", dashboard.Handler(st, m, s))
 	mux.Handle("/metrics", metricshttp.Handler(m))
 	mux.Handle("/healthz", healthz.Handler(st))
 	mux.Handle("/version", version.Handler())
 	mux.Handle(openapi.JSONPath, openapi.Handler())
 	mux.Handle(openapi.YAMLPath, openapi.Handler())
-	mux.Handle("/docs", docs.Handler())
-	mux.Handle(certificate.PathPrefix, certificate.Handler(hubList, st, m, id))
+	mux.Handle("/docs", docs.Handler(s))
+	mux.Handle(certificate.PathPrefix, certificate.Handler(hubList, st, m, s))
 	mux.Handle(web.Prefix, web.Handler())
+	if len(s.OperatorLogo.Data) > 0 {
+		mux.Handle(web.OperatorLogoPath, web.ImageHandler(s.OperatorLogo.Data, s.OperatorLogo.ContentType))
+	}
 	return corsmw.Handler(mux)
 }
 
-// identity builds the dashboard's instance identity from the validated config's
-// optional masthead-identity strings. Unset keys leave the Config fields empty,
-// which each masthead handler renders as its static fallback, so an unconfigured
-// binary is honest rather than asserting a false instance. RealmName feeds the
-// dashboard's Realm subtitle (the human realm name, distinct from the realm-
-// document path).
-func identity(cfg config.Config) dashboard.Identity {
-	return dashboard.Identity{
-		Instance: cfg.Instance,
-		Operator: cfg.Operator,
-		Realm:    cfg.RealmName,
+// site builds the shared chrome.Site from the validated config and the loaded operator
+// logo. Unset keys leave the fields empty, which the masthead renders as its static
+// fallback, so an unconfigured binary is honest rather than asserting a false
+// instance. RealmName feeds the dashboard's Realm subtitle (the human realm name,
+// distinct from the realm-document path).
+func site(cfg config.Config, logo chrome.Logo) chrome.Site {
+	links := make([]chrome.Link, 0, len(cfg.FooterLinks))
+	for _, l := range cfg.FooterLinks {
+		links = append(links, chrome.Link{Label: l.Label, URL: l.URL})
 	}
+	return chrome.Site{
+		Instance:     cfg.Instance,
+		Operator:     cfg.Operator,
+		Realm:        cfg.RealmName,
+		OperatorName: cfg.OperatorName,
+		OperatorURL:  cfg.OperatorURL,
+		OperatorLogo: logo,
+		Links:        links,
+	}
+}
+
+// operatorLogoMaxBytes caps the operator logo file. A logo is a few kilobytes; the cap
+// rejects a mistaken path to a large file rather than serving it on every page view.
+const operatorLogoMaxBytes = 256 << 10
+
+// logoTypes maps a supported operator-logo file extension to its served media type.
+var logoTypes = map[string]string{
+	".svg":  "image/svg+xml",
+	".png":  "image/png",
+	".webp": "image/webp",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+}
+
+// loadOperatorLogo reads the operator logo file at path for serving at
+// web.OperatorLogoPath. An empty path yields the zero Logo (no logo configured). The
+// extension selects the media type; the file must be non-empty, at most
+// operatorLogoMaxBytes, and its content must match the type, so a misconfigured logo
+// fails startup instead of rendering a broken image.
+func loadOperatorLogo(path string) (chrome.Logo, error) {
+	if path == "" {
+		return chrome.Logo{}, nil
+	}
+	contentType, ok := logoTypes[strings.ToLower(filepath.Ext(path))]
+	if !ok {
+		return chrome.Logo{}, fmt.Errorf("operator logo %q: unsupported file type, want .svg, .png, .webp, .jpg or .jpeg", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return chrome.Logo{}, fmt.Errorf("operator logo: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	// Read one byte past the cap so an oversize file fails instead of being truncated.
+	data, err := io.ReadAll(io.LimitReader(f, operatorLogoMaxBytes+1))
+	if err != nil {
+		return chrome.Logo{}, fmt.Errorf("operator logo %q: %w", path, err)
+	}
+	if len(data) == 0 || len(data) > operatorLogoMaxBytes {
+		return chrome.Logo{}, fmt.Errorf("operator logo %q: want 1 to %d bytes", path, operatorLogoMaxBytes)
+	}
+	if !logoMatches(data, contentType) {
+		return chrome.Logo{}, fmt.Errorf("operator logo %q: content is not %s", path, contentType)
+	}
+	return chrome.Logo{Data: data, ContentType: contentType}, nil
+}
+
+// logoMatches reports whether data looks like contentType: an SVG must contain an
+// <svg element, and for a raster format http.DetectContentType must agree.
+func logoMatches(data []byte, contentType string) bool {
+	if contentType == "image/svg+xml" {
+		return bytes.Contains(data, []byte("<svg"))
+	}
+	return http.DetectContentType(data) == contentType
 }
 
 // realmRefreshInterval is how often runRealmRefresh re-fetches the realm Hub-List
@@ -545,9 +617,8 @@ func hubListFromEntries(entries []registry.Entry) *registry.HubList {
 // "/" + Origin + "/" mirror subtree, so http.ServeMux keeps both and routes only that
 // exact path to the dossier. The same metrics registry m is the dossier's in-memory
 // status overlay, so its five-status badge matches the dashboard and log browser. The
-// same operator-supplied instance identity id is rendered on the dossier masthead so
-// its chrome stays byte-identical to the "/" dashboard masthead; an empty field falls
-// back to the static placeholder copy inside dossier.Handler.
+// same operator-configured site s is rendered by the dossier's shared masthead and
+// footer, so its chrome stays byte-identical to the "/" dashboard's.
 //
 // The dossier mount is skipped for a reservedDomain (empty or a reserved mount
 // name) so building the mux can never panic on a duplicate pattern with a built-in
@@ -556,14 +627,14 @@ func hubListFromEntries(entries []registry.Entry) *registry.HubList {
 // total over any route slice. The mirror subtree mount stays — "/"+Origin+"/" is a
 // subtree (e.g. /metrics/log/), which never collides with the built-in exact
 // /metrics, so only the exact dossier mount is conditional.
-func mirrorHandler(st *store.Store, routes []hubRoute, m *metrics.Registry, id dashboard.Identity) *http.ServeMux {
+func mirrorHandler(st *store.Store, routes []hubRoute, m *metrics.Registry, s chrome.Site) *http.ServeMux {
 	mux := http.NewServeMux()
 	for _, r := range routes {
 		prefix := "/" + r.Origin + "/"
 		strip := "/" + r.Origin // leave the leading slash on the suffix
-		mux.Handle(prefix, http.StripPrefix(strip, hubHandler(st, r.HubID, r.Domain, m, id)))
+		mux.Handle(prefix, http.StripPrefix(strip, hubHandler(st, r.HubID, r.Domain, m, s)))
 		if !reservedDomain(r.Domain) {
-			mux.Handle("/"+r.Domain, dossier.Handler(st, r.HubID, m, id))
+			mux.Handle("/"+r.Domain, dossier.Handler(st, r.HubID, m, s))
 		}
 	}
 	return mux
@@ -599,10 +670,10 @@ func mirrorHandler(st *store.Store, routes []hubRoute, m *metrics.Registry, id d
 // the store cannot prove — the same overlay source the dashboard receives, so the
 // five-status badge taxonomy is consistent across both surfaces.
 //
-// domain (the hub's bare domain) and id (the operator-supplied dashboard.Identity) feed
-// the record list's shared chrome (instance-identity masthead + verify link), its
-// "← <domain> dossier" breadcrumb, and its head — the SAME Identity value the dashboard
-// and dossier mastheads receive, so all three stay byte-identical.
+// domain (the hub's bare domain) and s (the operator-configured chrome.Site) feed the
+// HTML pages' shared masthead and footer, the record list's "← <domain> dossier"
+// breadcrumb, and its head — the SAME Site the dashboard and dossier receive, so all
+// the mastheads stay byte-identical.
 //
 // /records (the no-JS paginated HTML record list) and /record (the no-JS single-
 // record page each list row links to) are exact mounts like the other proof routes so
@@ -614,9 +685,9 @@ func mirrorHandler(st *store.Store, routes []hubRoute, m *metrics.Registry, id d
 // to tilesserve, which 404s the unknown path. It is a DIFFERENT artifact from the raw
 // /checkpoint signed-note BLOB tilesserve serves under "/": the .ots is the timestamp
 // proof, read by proofserve from the ots table, not a tilesserve mirror BLOB.
-func hubHandler(st *store.Store, hubID int64, domain string, m *metrics.Registry, id dashboard.Identity) http.Handler {
+func hubHandler(st *store.Store, hubID int64, domain string, m *metrics.Registry, s chrome.Site) http.Handler {
 	mux := http.NewServeMux()
-	proofs := proofserve.Handler(st, hubID, domain, m, id)
+	proofs := proofserve.Handler(st, hubID, domain, m, s)
 	tiles := tilesserve.Handler(store.SQLiteFetcher{Store: st, HubID: hubID})
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {

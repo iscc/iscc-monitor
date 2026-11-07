@@ -2,8 +2,9 @@
 // HTML list of every followed hub with its status and coverage window (ADR-0001).
 // It is a thin leaf in the shape of internal/healthz and internal/metricshttp — a
 // package-local handler whose only internal dependencies are internal/store (read
-// once per request via ListHubs) and internal/badge (the status partial). The
-// dashboard owns the HTML; cmd/iscc-monitor only wires the handler at "/".
+// once per request via ListHubs), internal/badge (the status partial), and
+// internal/chrome (the shared masthead and footer). The dashboard owns the page body;
+// cmd/iscc-monitor only wires the handler at "/".
 //
 // The status it shows overlays two sources so all five glossary statuses can
 // render honestly. The store proves the durable subset (inactive / frozen /
@@ -16,7 +17,8 @@
 //
 // The dashboard depends on the StatusSource interface, not the concrete metrics
 // package, so it stays golden-testable with a fake and keeps a minimal closure
-// (bytes / embed / html/template / net/http / internal/store / internal/badge).
+// (bytes / embed / html/template / net/http / internal/store / internal/badge /
+// internal/chrome).
 //
 // The oracle/conformance gate is N/A: this is pure HTML rendering of persisted
 // store rows plus an in-memory status overlay, touching no signature, RFC-6962,
@@ -34,6 +36,7 @@ import (
 	"time"
 
 	"github.com/iscc/iscc-monitor/internal/badge"
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
 
@@ -43,13 +46,15 @@ import (
 //go:embed dashboard.html
 var pageTemplate string
 
-// tmpl is the parsed dashboard template with the HubStatusBadge partial
-// associated into the same set, so the page invokes {{template "hubStatusBadge"
-// .}} over each row (which exposes .Status and .Label). template.Must panics at
-// init if either source fails to parse, surfacing a template bug at startup.
+// tmpl is the parsed dashboard template with the HubStatusBadge partial and the
+// shared chrome partials associated into the same set, so the page invokes
+// {{template "hubStatusBadge" .}} over each row (which exposes .Status and .Label)
+// and the siteHeader / siteFooter partials over .Chrome. template.Must panics at init
+// if any source fails to parse, surfacing a template bug at startup.
 var tmpl = func() *template.Template {
 	t := template.Must(template.New("dashboard").Parse(pageTemplate))
-	return template.Must(t.Parse(badge.Source))
+	t = template.Must(t.Parse(badge.Source))
+	return template.Must(t.Parse(chrome.Source))
 }()
 
 // row is one hub's view-model for the template: the precomputed glossary status
@@ -94,56 +99,16 @@ type recentDecl struct {
 }
 
 // pageData is the whole template context: the rendered hub rows, the count of
-// followed hubs (HubCount == len(Hubs)) the masthead/ledger heading reports, the
-// recently-declared ids for the hero shortcut row, and the resolved
-// instance-identity strings the masthead/ledger render (Instance and Operator on
-// the chrome, Realm in the "Realm register · <realm>" subtitle).
+// followed hubs (HubCount == len(Hubs)) the ledger heading reports, the
+// recently-declared ids for the hero shortcut row, the shared masthead and footer
+// (Chrome), and the realm name in the "Realm register · <realm>" subtitle. An empty
+// Realm renders the bare "Realm register" subtitle with no trailing separator.
 type pageData struct {
 	Hubs     []row
 	HubCount int
 	Recent   []recentDecl
-	Instance string
-	Operator string
+	Chrome   chrome.View
 	Realm    string
-}
-
-// Identity is the operator-supplied identity of this monitor deployment, rendered
-// on the masthead so the served "/" page is honest per-deployment instead of
-// generic: Instance is this instance's domain (the chrome's instance line),
-// Operator is the operator/realm line beneath it, and Realm names the followed
-// realm in the ledger subtitle ("Realm register · <realm>"). All three are
-// optional; the handler applies fail-safe defaults for any empty field so an
-// unconfigured binary renders exactly today's static masthead.
-type Identity struct {
-	Instance string
-	Operator string
-	Realm    string
-}
-
-// Default masthead copy used when an identity field is left empty, so an
-// unconfigured deployment renders today's honest placeholder rather than a false
-// claim. instanceFallback keeps the neutral "monitor instance" placeholder (never
-// asserting a specific domain), operatorFallback keeps the generic service line,
-// and an empty Realm renders the bare "Realm register" subtitle (no "· <realm>"
-// suffix) via the template's conditional.
-const (
-	instanceFallback = "monitor instance"
-	operatorFallback = "independent Trust & Transparency service · ISCC-Hub network"
-)
-
-// resolve applies the fail-safe defaults: a blank Instance or Operator falls back
-// to the static masthead copy, while a blank Realm is left empty so the template
-// renders the bare "Realm register" subtitle with no trailing separator. Defaults
-// live here (not in the binary) so the fallback is centralized and golden-testable
-// independent of main.go.
-func (id Identity) resolve() Identity {
-	if id.Instance == "" {
-		id.Instance = instanceFallback
-	}
-	if id.Operator == "" {
-		id.Operator = operatorFallback
-	}
-	return id
 }
 
 // StatusSource reports a hub's current in-memory glossary status by hub_id. It is
@@ -167,11 +132,10 @@ type StatusSource interface {
 // st must be non-nil (the binary always passes the real store); there is no
 // nil-guard branch. statuses is the in-memory status overlay (the metrics
 // registry); a nil statuses is tolerated and simply leaves every store-verified
-// hub showing "verified". id is the operator-supplied instance identity rendered
-// on the masthead; any empty field falls back to the static placeholder copy
-// (Identity.resolve), so a zero-value Identity renders exactly today's masthead.
-func Handler(st *store.Store, statuses StatusSource, id Identity) http.Handler {
-	id = id.resolve()
+// hub showing "verified". site is the operator-configured identity and co-branding the
+// shared masthead and footer render; a zero-value Site renders the static fallbacks.
+func Handler(st *store.Store, statuses StatusSource, site chrome.Site) http.Handler {
+	view := site.View()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -197,9 +161,8 @@ func Handler(st *store.Store, statuses StatusSource, id Identity) http.Handler {
 			Hubs:     rows,
 			HubCount: len(rows),
 			Recent:   recent,
-			Instance: id.Instance,
-			Operator: id.Operator,
-			Realm:    id.Realm,
+			Chrome:   view,
+			Realm:    site.Realm,
 		}
 		if err := tmpl.Execute(&buf, data); err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)

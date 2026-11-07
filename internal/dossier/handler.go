@@ -13,10 +13,9 @@
 //
 // The dossier depends on internal/store + internal/badge + the StatusSource
 // interface (NOT internal/metrics), so it stays golden-testable with a fake and
-// keeps a minimal closure. It also reuses internal/dashboard's Identity type (the
-// masthead identity value the "/" page already receives) rather than redefining it,
-// applying its own resolveIdentity fail-safe so the dossier and dashboard mastheads
-// render byte-identical chrome. The overlayStatus / hubStatus / coverageTime shape
+// keeps a minimal closure. It renders the shared masthead and footer from the same
+// chrome.Site the "/" page receives, so the two mastheads are byte-identical. The
+// overlayStatus / hubStatus / coverageTime shape
 // is deliberately a third local copy of the dashboard/proofserve pattern;
 // consolidating it into internal/badge is its own tracked step, not a prerequisite
 // here.
@@ -37,7 +36,7 @@ import (
 	"time"
 
 	"github.com/iscc/iscc-monitor/internal/badge"
-	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/logclient"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
@@ -48,13 +47,15 @@ import (
 //go:embed dossier.html
 var pageTemplate string
 
-// tmpl is the parsed dossier template with the HubStatusBadge partial associated
-// into the same set, so the page invokes {{template "hubStatusBadge" .}} over the
-// view (which exposes .Status and .Label). template.Must panics at init if either
+// tmpl is the parsed dossier template with the HubStatusBadge partial and the shared
+// chrome partials associated into the same set, so the page invokes {{template
+// "hubStatusBadge" .}} over the view (which exposes .Status and .Label) and the
+// siteHeader / siteFooter partials over .Chrome. template.Must panics at init if any
 // source fails to parse, surfacing a template bug at startup.
 var tmpl = func() *template.Template {
 	t := template.Must(template.New("dossier").Parse(pageTemplate))
-	return template.Must(t.Parse(badge.Source))
+	t = template.Must(t.Parse(badge.Source))
+	return template.Must(t.Parse(chrome.Source))
 }()
 
 // dossierData is the dossier template view-model for one hub: its domain and log
@@ -64,11 +65,8 @@ var tmpl = func() *template.Template {
 // guarantee, ADR-0001). The hubStatusBadge partial reads .Label directly, so the
 // view carries a precomputed Label from the badge package's single source of truth.
 //
-// Instance and Operator are the resolved instance-identity strings the masthead
-// chrome renders (Instance is this deployment's domain, Operator the operator/realm
-// line beneath it), carried verbatim so the dossier and dashboard mastheads stay
-// byte-identical. They are always non-empty — resolveIdentity applies the static
-// fallback copy so an unconfigured binary renders today's masthead.
+// Chrome is the shared masthead and footer; the body's "Compiled by" line reads its
+// resolved Instance, which is never empty (chrome.Site.View applies the fallback).
 //
 // Frozen gates the non-dismissable Exhibit panel (ADR-0006 irreplaceable evidence):
 // when true the template renders the categorically-distinct "do not trust new
@@ -114,8 +112,7 @@ type dossierData struct {
 	KeyUnresolved   bool
 	ShowCaution     bool
 	StatusNote      string
-	Instance        string
-	Operator        string
+	Chrome          chrome.View
 	Frozen          bool
 	Violations      []violationRow
 	Observations    []observationRow
@@ -155,39 +152,10 @@ type observationRow struct {
 	Tone string
 }
 
-// Default masthead identity copy used when an identity field is left empty, so an
-// unconfigured deployment renders today's static placeholder rather than a false
-// claim. These MUST stay byte-identical to internal/dashboard's instanceFallback /
-// operatorFallback consts: both the dossier and the dashboard masthead are required
-// to render the same chrome, and neither package can import the other's unexported
-// consts, so the defaults are duplicated here as literals.
-const (
-	instanceFallback = "monitor instance"
-	operatorFallback = "independent Trust & Transparency service · ISCC-Hub network"
-)
-
 // observationCap bounds the §5 observation log to the newest few recorded checkpoints
 // so the dossier reads a small, fixed window rather than the whole history — the §5
 // region is a recent-activity summary, not an exhaustive ledger.
 const observationCap = 8
-
-// resolveIdentity applies the dossier-side fail-safe for the masthead identity,
-// mirroring dashboard.Identity.resolve semantics so the dossier and dashboard
-// chrome stay in lockstep: a blank Instance or Operator falls back to the static
-// placeholder copy. It lives here (not in internal/dashboard) so the fallback is
-// seam-testable at the dossier HTTP boundary without making internal/dashboard a
-// fourth edited file (its resolve is unexported). Realm has no slot on the dossier
-// masthead (its title is the realm-subtitle-free "Hub dossier"), so it is ignored.
-func resolveIdentity(id dashboard.Identity) (instance, operator string) {
-	instance, operator = id.Instance, id.Operator
-	if instance == "" {
-		instance = instanceFallback
-	}
-	if operator == "" {
-		operator = operatorFallback
-	}
-	return instance, operator
-}
 
 // StatusSource reports a hub's current in-memory glossary status by hub_id. It is
 // the read seam the dossier uses to overlay the live poll verdict (the richer
@@ -215,13 +183,12 @@ type StatusSource interface {
 //
 // st must be non-nil (the binary always passes the real store). statuses is the
 // in-memory status overlay (the metrics registry); a nil statuses is tolerated and
-// simply leaves a store-verified hub showing "verified". id is the operator-supplied
-// instance identity rendered on the masthead chrome; any empty field falls back to
-// the static placeholder copy (resolveIdentity), so a zero-value Identity renders
-// exactly today's masthead. It is the SAME dashboard.Identity value the "/" masthead
-// receives, so the two mastheads stay byte-identical.
-func Handler(st *store.Store, hubID int64, statuses StatusSource, id dashboard.Identity) http.Handler {
-	instance, operator := resolveIdentity(id)
+// simply leaves a store-verified hub showing "verified". site is the
+// operator-configured identity and co-branding the shared masthead and footer render;
+// a zero-value Site renders the static fallbacks. It is the SAME chrome.Site the "/"
+// page receives, so the two mastheads stay byte-identical.
+func Handler(st *store.Store, hubID int64, statuses StatusSource, site chrome.Site) http.Handler {
+	view := site.View()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -260,7 +227,7 @@ func Handler(st *store.Store, hubID int64, statuses StatusSource, id dashboard.I
 			return
 		}
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, buildData(summary, status, violations, checkpoints, instance, operator)); err != nil {
+		if err := tmpl.Execute(&buf, buildData(summary, status, violations, checkpoints, view)); err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -291,11 +258,10 @@ func findHub(summaries []store.HubSummary, hubID int64) (store.HubSummary, bool)
 // view still falls back to the status string if badge.Label ever returns ok==false,
 // so the page never renders an unlabeled badge. The caller passes the violations
 // (empty for a non-frozen hub, which never reads them); buildData folds them into
-// the Exhibit rows and sets Frozen so the template renders the panel. instance and
-// operator are the already-resolved masthead identity strings (resolveIdentity has
-// applied the fail-safe fallback) carried verbatim onto the view-model. checkpoints is
-// the newest-first recorded-checkpoint window the §5 observation log is derived from.
-func buildData(s store.HubSummary, status string, violations []store.Violation, checkpoints []store.CheckpointSummary, instance, operator string) dossierData {
+// the Exhibit rows and sets Frozen so the template renders the panel. view is the
+// resolved shared chrome, carried verbatim onto the view-model. checkpoints is the
+// newest-first recorded-checkpoint window the §5 observation log is derived from.
+func buildData(s store.HubSummary, status string, violations []store.Violation, checkpoints []store.CheckpointSummary, view chrome.View) dossierData {
 	label, ok := badge.Label(status)
 	if !ok {
 		label = status
@@ -322,8 +288,7 @@ func buildData(s store.HubSummary, status string, violations []store.Violation, 
 		KeyUnresolved:   status == "unresolvable",
 		ShowCaution:     status == "unresolvable" || status == "unverified",
 		StatusNote:      statusNote(status),
-		Instance:        instance,
-		Operator:        operator,
+		Chrome:          view,
 		Frozen:          status == "frozen",
 		Violations:      violationRows(violations),
 		Observations:    observationRows(checkpoints, s, violations),

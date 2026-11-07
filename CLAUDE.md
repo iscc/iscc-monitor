@@ -88,6 +88,22 @@ The monitor is a single binary (`cmd/iscc-monitor`) configured entirely through 
   subtitle. Distinct from the required realm-document PATH `ISCC_MONITOR_REALM`: this is the display
   name, not the on-disk file, so overloading the path var would leak a filename into the subtitle.
 
+Operator co-branding (all optional, validated at startup; see `deploy/OPERATING.md` → *Branding*). Every
+page shows the shared masthead and footer (`internal/chrome`); the ISCC mark and the open-source credit
+always stay:
+
+- `ISCC_MONITOR_OPERATOR_NAME` — the organization running the instance: "Operated by <name>" in the footer
+  and the operator logo's text alternative. Required when the URL or logo is set.
+- `ISCC_MONITOR_OPERATOR_URL` — the operator's website (absolute `http(s)` URL), linking the name and logo.
+- `ISCC_MONITOR_OPERATOR_LOGO` — path to the operator's logo file (`.svg`, `.png`, `.webp`, `.jpg`; at most
+  256 KiB), read once at startup and served at `/_ds/operator-logo`. The masthead shows it beside the ISCC
+  mark with an "Operated by" label.
+- `ISCC_MONITOR_FOOTER_LINKS` — footer links such as an imprint or privacy policy: `Label=URL` pairs
+  separated by `|`, e.g. `Imprint=https://example.com/imprint|Privacy=https://example.com/privacy`. A URL
+  is `http(s)` or `mailto:`.
+
+The footer also shows the running version (`/version`), linked to its GitHub release or commit.
+
 Run it against the testnet realm with a short poll cadence:
 
 ```sh
@@ -128,8 +144,11 @@ After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSO
   `isccVerifyInclusion` computes over the embedded proof (the BROWSER re-checks the same inclusion proof
   the server's §3 already re-verified). Disabling JavaScript loses only that extra panel — every clause
   stays server-rendered. Same no-JS, no-CDN DS shell (the `/_ds/` script + wasm refs are same-origin).
-- `GET /_ds/tokens.css` — the shared ISCC Design System v2 token stylesheet (CDN-free, build-pinned);
-  the one no-JS, no-CDN style shell every server-rendered surface links.
+- `GET /_ds/tokens.css` — the shared ISCC Design System v2 token stylesheet (CDN-free, build-pinned),
+  its values aligned to the ISCC brand guidelines edition 01 (ADR-0015); the one no-JS, no-CDN style shell
+  every server-rendered surface links. `GET /_ds/site.css` styles the shared masthead, footer and brand
+  buttons; `GET /_ds/iscc-logo.svg` and `GET /_ds/favicon.svg` are byte-verbatim brand SVG masters.
+  `GET /_ds/operator-logo` exists only when `ISCC_MONITOR_OPERATOR_LOGO` is set.
 - `GET /_ds/verify.wasm` — the verifier WebAssembly artifact (`application/wasm`), the reproducible
   `mise run build:wasm` output served byte-verbatim with the same no-cache + strong-ETag + 304 policy;
   its SHA-256 is published as `web.WasmVerifyHash` (the SRI/verify-artifact pin). The tier-2

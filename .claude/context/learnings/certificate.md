@@ -41,7 +41,7 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   the testnet fixture sb0=0/sb1=1). KISS interim; documented TODO. `registry.go` and
   `internal/config` stay untouched. The `Hub` literal needs `*uint16` HubIDs.
 
-- **Masthead identity is config-driven via `Handler(hubList, st, statuses, id dashboard.Identity)`** —
+- **Masthead identity is config-driven via `Handler(hubList, st, statuses, id dashboard.Identity)`** — *(Superseded 2026-11-07: identity is `chrome.Site`, resolved once by `internal/chrome`; ADR-0015.)*
   the SAME value `/` + dossier render (byte-identical chrome; dashboard.md). Resolve ONCE at the top of
   `Handler` and set `data.Instance/Operator` on the value `buildData` RETURNS — NOT inside `buildData`,
   whose `certData{}` literal early-returns bypass it — on BOTH the HTML AND `.bundle` branch. NO Realm

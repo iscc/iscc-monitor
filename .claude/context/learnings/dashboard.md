@@ -162,8 +162,10 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   is ALREADY the REQUIRED realm-document filesystem PATH in `internal/config` — overloading it would leak a
   filename (`…/realm.txt`) into the ledger subtitle. The masthead needs the human realm NAME, so it uses a
   distinct optional key. `ISCC_MONITOR_INSTANCE`/`ISCC_MONITOR_OPERATOR` are genuinely new. These three keys
-  are read inline in `cmd/iscc-monitor/main.go` `identity()` (deferred from `internal/config` for the ≤3-file
-  budget); the follow-on sub-step that threads identity to the other five SSR mastheads SHOULD move parsing
-  into the config leaf — adopt `ISCC_MONITOR_REALM_NAME` (or finalize the name) there. Reuse the SAME
-  `dashboard.Identity` value across dossier/cert/proofserve mastheads (the dossier+cert mastheads are
-  byte-identical ports — keep them in lockstep).
+  are parsed in `internal/config` and mapped by `cmd/iscc-monitor/main.go` `site()` onto `chrome.Site`.
+- **Settled (2026-11-07, ADR-0015): one shared chrome.** The masthead and footer are the `siteHeader` /
+  `siteFooter` partials in `internal/chrome`, associated into every page template like the badge partial
+  and styled once by `/_ds/site.css`. Never re-add a page-local `.chrome*` rule or header markup; change
+  the partial. `chrome.Site.View()` owns the identity fallbacks (the former four copies are gone). Token
+  values follow brand edition 01, not the DS v2 bundle — do not "restore" bundle values. Page no-CDN tests
+  use `webtest.AssertNoExternalLoads` (resource loads only), because the footer links to GitHub.

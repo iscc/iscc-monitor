@@ -1,39 +1,43 @@
 /* ISCC Design System v2 — concatenated token CSS, CDN-free.
-   Ported verbatim from the design bundle's tokens/{colors,typography,spacing,base}.css,
-   in that order. fonts.css is deliberately excluded — it is the jsDelivr @font-face
-   block; the self-hosted woff2 fonts land in a later sub-step. The base.css
-   .iscc-grain background-image is neutralized (the grain.png asset is not served),
-   so this stylesheet has zero external or dangling URLs. The --font-sans / --font-mono
-   stacks list Arial / Consolas fallbacks, so pages render correctly with no webfont. */
+   Ported from the design bundle's tokens/{colors,typography,spacing,base}.css, in that
+   order, with the values aligned to the ISCC brand guidelines, edition 01 (ADR-0015):
+   paper canvas, near-black text, the brand's muted and rule greys, coral as the brand
+   accent, regular-weight body copy, and square, flat surfaces. Token names are
+   unchanged, so every page picks the values up without edits. fonts.css is
+   deliberately excluded — it is the jsDelivr @font-face block; the self-hosted woff2
+   fonts are served by /_ds/fonts.css. The base.css .iscc-grain background-image is
+   neutralized (the grain.png asset is not served), so this stylesheet has zero external
+   or dangling URLs. The --font-sans / --font-mono stacks list Arial / Consolas
+   fallbacks, so pages render correctly with no webfont. */
 
 /* ISCC Color Tokens
-   Source of truth: iscc-brand-guidelines SKILL.md + iscc-web main.scss / lib/iscc.ts */
+   Source of truth: the ISCC brand guidelines, edition 01 (iscc-brand GUIDELINES.md). */
 
 :root {
   /* ---------- Primary palette ---------- */
-  --iscc-blue: #0054b2;        /* Primary brand — headers, links, CTAs */
+  --iscc-blue: #0054b2;        /* ISCC Blue — links and the keyboard-focus outline */
   --iscc-blue-hover: #004695;  /* Pressed / hover for blue surfaces */
-  --iscc-deep-navy: #123663;   /* Secondary — dark backgrounds, readout strips */
-  --iscc-bright-yellow: #ffc300; /* Accent — highlights, the brand divider */
-  --iscc-coral-red: #f56169;   /* Errors, the live ISCC code bar */
-  --iscc-lime-green: #a6db50;  /* Success, the Instance layer */
+  --iscc-deep-navy: #123663;   /* Deep Navy — dark technical fields */
+  --iscc-bright-yellow: #ffc300; /* Yellow — labelled caution */
+  --iscc-coral-red: #f56169;   /* Coral — the brand accent: logo circle, button chevron */
+  --iscc-lime-green: #a6db50;  /* Lime — labelled positive status, the Instance layer */
 
   /* ---------- Extended blues ---------- */
   --iscc-sky-blue: #4596f5;    /* Light variant — secondary actions, info */
   --iscc-light-cyan: #7ac2f7;  /* Tertiary blue — subtle accents, scan-line */
 
   /* ---------- Neutrals ---------- */
-  --iscc-white: #ffffff;       /* Primary background */
-  --iscc-canvas: #fbf7f2;      /* App canvas — warm off-white (iscc-web body) */
-  --iscc-off-white: #f8f9fa;   /* Secondary surface — insets, fields */
+  --iscc-white: #ffffff;       /* White — cards and clear light fields */
+  --iscc-canvas: #f8f9fa;      /* Paper — the editorial page canvas */
+  --iscc-off-white: #f8f9fa;   /* Paper — insets, fields */
   --iscc-surface-2: #fcfcfd;   /* Card footers / subtle zebra */
-  --iscc-light-gray: #e9ecef;  /* Borders and dividers */
-  --iscc-border: #dee2e6;      /* Stronger control border */
+  --iscc-light-gray: #e9ecef;  /* Subtle row dividers */
+  --iscc-border: #d2d6d9;      /* Rule grey — borders and thin rules */
   --iscc-border-strong: #ced4da; /* Inputs / dashed drop-zones */
-  --iscc-medium-gray: #6c757d; /* Secondary text */
-  --iscc-text-muted: #adb5bd;  /* Tertiary / placeholder text */
-  --iscc-dark-gray: #343a40;   /* Primary body text */
-  --iscc-near-black: #212529;  /* Headers and emphasis */
+  --iscc-medium-gray: #636b71; /* Muted — secondary text */
+  --iscc-text-muted: #adb5bd;  /* Decorative only; never informational text */
+  --iscc-dark-gray: #343a40;   /* Graphite text */
+  --iscc-near-black: #212529;  /* Near-black — text, headings and dark fields */
 
   /* ---------- ISCC-UNIT layer palette ----------
      The five components of an ISCC, ordered abstract → concrete.
@@ -67,10 +71,12 @@
   --surface-dark: var(--iscc-deep-navy);
   --surface-brand: var(--iscc-blue);
 
+  /* Body text stays near-black. The brand has one secondary text grey (muted), so
+     faint text, which carries dates and notes, uses it too and stays readable. */
   --text-heading: var(--iscc-near-black);
-  --text-body: var(--iscc-dark-gray);
+  --text-body: var(--iscc-near-black);
   --text-muted: var(--iscc-medium-gray);
-  --text-faint: var(--iscc-text-muted);
+  --text-faint: var(--iscc-medium-gray);
   --text-on-dark: var(--iscc-white);
   --text-link: var(--iscc-blue);
 
@@ -79,7 +85,7 @@
   --border-control: var(--iscc-border-strong);
 
   --focus-ring: rgba(0, 84, 178, 0.14);
-  --accent: var(--iscc-bright-yellow);
+  --accent: var(--iscc-coral-red);
 }
 
 /* ISCC Typography Tokens
@@ -92,8 +98,8 @@
   --font-mono: "JetBrains Mono", Consolas, "SF Mono", ui-monospace, monospace;
 
   /* ---------- Weights ----------
-     Readex Pro reads light by default in the brand — 300 is the body weight,
-     600/700 carry headings. */
+     The brand sets body copy in Readex Pro Regular (400) and reserves Light (300) for
+     generous display sizes; headings use Regular or Medium. */
   --weight-light: 300;
   --weight-regular: 400;
   --weight-medium: 500;
@@ -149,32 +155,27 @@
   --space-14: 3.5rem;
 
   /* ---------- Radii ----------
-     The brand pairs soft control radii with larger card radii.
-     Pills are fully rounded; the geometric mark stays square. */
-  --radius-xs: 0.4rem;   /* tags, small swatches */
-  --radius-sm: 0.5rem;   /* buttons, inputs, icon buttons */
-  --radius-md: 0.65rem;  /* fields, insets, unit fields */
-  --radius-lg: 0.75rem;  /* cards, readout strips */
-  --radius-xl: 1rem;     /* the intake instrument */
-  --radius-pill: 9999px; /* status pills, chips, compare CTA */
+     The brand's graphic language is square fields, thin rules and circles, so
+     surfaces and controls are square. Pills and dots stay fully rounded. */
+  --radius-xs: 0;        /* tags, small swatches */
+  --radius-sm: 0;        /* buttons, inputs, icon buttons */
+  --radius-md: 0;        /* fields, insets, unit fields */
+  --radius-lg: 0;        /* cards, readout strips */
+  --radius-xl: 0;        /* the intake instrument */
+  --radius-pill: 9999px; /* status pills, chips, dots */
 
   /* ---------- Borders ---------- */
   --border-width: 1px;
   --border-width-focus: 2px;  /* active inputs, selected unit fields */
 
   /* ---------- Shadows ----------
-     Cards float on a warm canvas with soft, navy-tinted shadows. */
-  --shadow-sm:
-    0 4px 8px -4px rgba(18, 54, 99, 0.08);
-  --shadow-card:
-    0 10px 24px -4px rgba(18, 54, 99, 0.14),
-    0 4px 8px -4px rgba(18, 54, 99, 0.08);
-  --shadow-raised:
-    0 20px 40px -8px rgba(18, 54, 99, 0.18);
-  --shadow-instrument:
-    0 20px 50px -10px rgba(0, 0, 0, 0.3);   /* the white intake card on blue hero */
-  --shadow-popover:
-    0 10px 24px -4px rgba(18, 54, 99, 0.2);
+     Surfaces are flat: white cards sit on the paper canvas, separated by thin rules
+     rather than shadows. */
+  --shadow-sm: none;
+  --shadow-card: none;
+  --shadow-raised: none;
+  --shadow-instrument: none;
+  --shadow-popover: none;
   --shadow-focus:
     0 0 0 4px var(--focus-ring);
 
@@ -196,7 +197,7 @@
 body {
   margin: 0;
   font-family: var(--font-sans);
-  font-weight: var(--weight-light);
+  font-weight: var(--weight-regular);
   font-size: var(--text-base);
   line-height: var(--leading-normal);
   color: var(--text-body);
@@ -208,7 +209,7 @@ body {
 h1, h2, h3, h4, h5, h6 {
   font-family: var(--font-display);
   color: var(--text-heading);
-  font-weight: var(--weight-semibold);
+  font-weight: var(--weight-medium);
   line-height: var(--leading-snug);
 }
 

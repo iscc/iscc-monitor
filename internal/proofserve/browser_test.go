@@ -20,15 +20,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/iscc/iscc-monitor/internal/dashboard"
+	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/store"
+	"github.com/iscc/iscc-monitor/internal/web/webtest"
 )
 
 // TestBrowserExposesAcceptedCheckpoint asserts GET / returns 200 text/html and the
 // body contains the accepted size and the base64-Std encoding of the accepted root.
 func TestBrowserExposesAcceptedCheckpoint(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -66,7 +67,7 @@ func TestBrowserExposesAcceptedCheckpoint(t *testing.T) {
 // third-party origin (mirrors dashboard.TestDashboardLinksTokensNoCDN).
 func TestBrowserLinksTokensNoCDN(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -80,7 +81,9 @@ func TestBrowserLinksTokensNoCDN(t *testing.T) {
 	for _, want := range []string{
 		`href="/_ds/tokens.css"`,
 		`href="/_ds/fonts.css"`,
-		`src="/_ds/iscc-logo-black.png"`, // the shared-chrome ISCC logo (byte-equal to web.LogoPath)
+		`src="/_ds/iscc-logo.svg"`,     // the shared-chrome ISCC logo (web.LogoPath)
+		`href="/_ds/site.css"`,         // the shared site-chrome stylesheet (web.SiteCSSPath)
+		`<footer class="site-footer">`, // the shared footer partial
 		"var(--font-sans)",
 		"var(--font-mono)",
 	} {
@@ -92,19 +95,21 @@ func TestBrowserLinksTokensNoCDN(t *testing.T) {
 	if strings.Contains(body, "<table") {
 		t.Errorf("body still contains a <table> element; the ledger redress is incomplete\n%s", body)
 	}
-	// No external CDN URL may appear in the body — same-origin/relative hrefs only.
-	for _, banned := range []string{"jsdelivr", "http://", "https://", "cdn."} {
+	// No external CDN URL may appear in the body, and every resource it loads is
+	// same-origin (hyperlinks such as the footer's source link may point elsewhere).
+	for _, banned := range []string{"jsdelivr", "cdn."} {
 		if strings.Contains(body, banned) {
 			t.Errorf("body contains external CDN reference %q\n%s", banned, body)
 		}
 	}
+	webtest.AssertNoExternalLoads(t, "body", body)
 }
 
 // TestBrowserNonGET asserts a non-GET method to the bare / is a 405 (the shared
 // method-gate at the top of Handler covers it).
 func TestBrowserNonGET(t *testing.T) {
 	m := buildMirror(t, 8)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
@@ -128,7 +133,7 @@ func TestBrowserNoAcceptedCheckpoint(t *testing.T) {
 		t.Fatalf("UpsertHub: %v", err)
 	}
 
-	h := Handler(st, hubID, "sb0.iscc.id", nil, dashboard.Identity{})
+	h := Handler(st, hubID, "sb0.iscc.id", nil, chrome.Site{})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -161,7 +166,7 @@ func (f fakeStatusSource) Status(hubID int64) (string, bool) {
 func TestBrowserRendersInMemoryStatus(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
 	statuses := fakeStatusSource{m.hubID: "unresolvable"}
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", statuses, dashboard.Identity{})
+	h := Handler(m.store, m.hubID, "sb0.iscc.id", statuses, chrome.Site{})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))

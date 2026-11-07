@@ -14,6 +14,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/iscc/iscc-monitor/internal/chrome"
+	"github.com/iscc/iscc-monitor/internal/web/webtest"
 )
 
 // serve renders the docs page over a plain GET and returns the recorder. The page is
@@ -22,7 +25,7 @@ import (
 func serve(t *testing.T) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/docs", nil))
+	Handler(chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/docs", nil))
 	return rec
 }
 
@@ -50,11 +53,25 @@ func TestDocsRendersElementsShell(t *testing.T) {
 		// The shared no-CDN DS shell: token + font stylesheets and the self-hosted logo.
 		`href="/_ds/tokens.css"`,
 		`href="/_ds/fonts.css"`,
-		`src="/_ds/iscc-logo-black.png"`,
+		`src="/_ds/iscc-logo.svg"`,     // the shared-chrome ISCC logo (web.LogoPath)
+		`href="/_ds/site.css"`,         // the shared site-chrome stylesheet (web.SiteCSSPath)
+		`<footer class="site-footer">`, // the shared footer partial
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing marker %q\n%s", want, body)
 		}
+	}
+}
+
+// TestDocsSiteCSSAfterElementsCSS asserts the shared site stylesheet loads after the
+// Elements stylesheet: Elements' reset carries :focus{outline:none}, which at equal
+// specificity would hide the site's :focus-visible outline if it came later.
+func TestDocsSiteCSSAfterElementsCSS(t *testing.T) {
+	body := serve(t).Body.String()
+	elements := strings.Index(body, `href="/_ds/elements.min.css"`)
+	site := strings.Index(body, `href="/_ds/site.css"`)
+	if elements < 0 || site < elements {
+		t.Errorf("site.css at %d, elements.min.css at %d: want site.css linked after elements.min.css", site, elements)
 	}
 }
 
@@ -69,24 +86,26 @@ func TestDocsNoTryItCorsProxy(t *testing.T) {
 }
 
 // TestDocsNoExternalCDN bans any external CDN origin in the /docs HTML page BODY —
-// same-origin / relative hrefs only — matching the sibling no-CDN SSR seam tests. The
+// every resource it loads is same-origin (hyperlinks such as the footer's source link
+// may point elsewhere) — matching the sibling no-CDN SSR seam tests. The
 // ban applies ONLY to the rendered HTML page, NEVER to the 2 MB Elements JS bytes
 // (which carry hundreds of inert baked example URL strings that are data, not runtime
 // fetches — see web.go's elementsJS doc comment).
 func TestDocsNoExternalCDN(t *testing.T) {
 	body := serve(t).Body.String()
-	for _, banned := range []string{"jsdelivr", "http://", "https://", "cdn."} {
+	for _, banned := range []string{"jsdelivr", "cdn."} {
 		if strings.Contains(body, banned) {
 			t.Errorf("body contains external CDN reference %q\n%s", banned, body)
 		}
 	}
+	webtest.AssertNoExternalLoads(t, "body", body)
 }
 
 // TestDocsNonGET asserts a non-GET method is a 405 (the shared method gate at the top
 // of Handler covers it).
 func TestDocsNonGET(t *testing.T) {
 	rec := httptest.NewRecorder()
-	Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/docs", nil))
+	Handler(chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/docs", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
 	}

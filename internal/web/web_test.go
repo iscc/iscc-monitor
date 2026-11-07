@@ -19,6 +19,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/iscc/iscc-monitor/internal/web/webtest"
 )
 
 // get drives Handler with a GET for path and returns the recorder.
@@ -298,50 +300,121 @@ func TestWasmVerifyHashPinned(t *testing.T) {
 	}
 }
 
-// TestLogoServed checks the grayscale ISCC masthead logo is served at LogoPath with
-// the image/png content type, the revalidating no-cache + strong ETag policy, a
-// non-empty body byte-equal to the embedded bytes, and the PNG magic header — the
-// build-pinned masthead asset every SSR chrome references same-origin. It also asserts
-// an If-None-Match echo of the served ETag short-circuits to 304, the sibling /_ds/
-// conditional-GET policy.
-func TestLogoServed(t *testing.T) {
-	rec := get(t, LogoPath)
+// TestSVGAssetsServed checks the ISCC logo and favicon are served at LogoPath and
+// FaviconPath as image/svg+xml with the revalidating no-cache + strong ETag policy, a
+// body byte-equal to the embedded brand master carrying the brand's near-black and
+// coral, no cross-origin load, and an If-None-Match echo short-circuiting to 304.
+func TestSVGAssetsServed(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want []byte
+	}{
+		{LogoPath, logoSVG},
+		{FaviconPath, faviconSVG},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			rec := get(t, tc.path)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
+				t.Errorf("Content-Type = %q, want image/svg+xml", got)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+				t.Errorf("Cache-Control = %q, want no-cache", got)
+			}
+			etag := rec.Header().Get("ETag")
+			if !strings.HasPrefix(etag, "\"") || strings.HasPrefix(etag, "W/") {
+				t.Errorf("ETag = %q, want a strong quoted-hex tag", etag)
+			}
+			body := rec.Body.Bytes()
+			if len(body) == 0 || !bytes.Equal(body, tc.want) {
+				t.Errorf("served body (%d bytes) differs from the embedded SVG (%d bytes)", len(body), len(tc.want))
+			}
+			for _, marker := range []string{"<svg", "#212529", "#F56169"} {
+				if !bytes.Contains(body, []byte(marker)) {
+					t.Errorf("body missing brand marker %q", marker)
+				}
+			}
+			webtest.AssertNoExternalLoads(t, tc.path, string(body))
 
+			cond := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set("If-None-Match", etag)
+			Handler().ServeHTTP(cond, req)
+			if cond.Code != http.StatusNotModified || cond.Body.Len() != 0 {
+				t.Errorf("If-None-Match = %d with %d body bytes, want 304 with none", cond.Code, cond.Body.Len())
+			}
+		})
+	}
+}
+
+// TestSiteCSSServed checks the shared site-chrome stylesheet is served as CSS, carries
+// the masthead, footer, and button rules the chrome partials use, and references no
+// external origin.
+func TestSiteCSSServed(t *testing.T) {
+	rec := get(t, SiteCSSPath)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := rec.Header().Get("Content-Type"); got != "image/png" {
-		t.Errorf("Content-Type = %q, want image/png", got)
-	}
-	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
-		t.Errorf("Cache-Control = %q, want no-cache", got)
-	}
-	etag := rec.Header().Get("ETag")
-	if !strings.HasPrefix(etag, "\"") || strings.HasPrefix(etag, "W/") {
-		t.Errorf("ETag = %q, want a strong quoted-hex tag", etag)
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/css") {
+		t.Errorf("Content-Type = %q, want text/css prefix", got)
 	}
 	body := rec.Body.Bytes()
-	if len(body) == 0 {
-		t.Fatal("body is empty")
+	for _, rule := range []string{".chrome {", ".chrome-cobrand-logo", ".site-footer {", ".btn-primary", ".btn-secondary", ":focus-visible"} {
+		if !bytes.Contains(body, []byte(rule)) {
+			t.Errorf("site.css missing rule %q", rule)
+		}
 	}
-	if !bytes.Equal(body, logoPNG) {
-		t.Errorf("served body (%d bytes) differs from the embedded logoPNG (%d bytes)", len(body), len(logoPNG))
+	noExternalCDN(t, "served site.css", body)
+}
+
+// TestOperatorLogoNotInSubtree pins that the /_ds/ subtree handler never serves the
+// operator logo: only an instance with a configured logo mounts ImageHandler there.
+func TestOperatorLogoNotInSubtree(t *testing.T) {
+	if rec := get(t, OperatorLogoPath); rec.Code != http.StatusNotFound {
+		t.Errorf("GET %s via Handler = %d, want 404", OperatorLogoPath, rec.Code)
 	}
-	// A PNG file begins with the 8-byte signature (89 50 4e 47 0d 0a 1a 0a).
-	if magic := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}; len(body) < 8 || !bytes.Equal(body[:8], magic) {
-		t.Errorf("body is not a PNG (magic = %x, want %x)", body[:min(8, len(body))], magic)
+}
+
+// TestImageHandler checks ImageHandler serves its image with the given content type,
+// the revalidating cache policy, the restrictive Content-Security-Policy and nosniff
+// headers, a 304 on an If-None-Match echo, and a 405 for a non-GET.
+func TestImageHandler(t *testing.T) {
+	data := []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`)
+	h := ImageHandler(data, "image/svg+xml")
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, OperatorLogoPath, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	for header, want := range map[string]string{
+		"Content-Type":            "image/svg+xml",
+		"Cache-Control":           "no-cache",
+		"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+		"X-Content-Type-Options":  "nosniff",
+	} {
+		if got := rec.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+	if !bytes.Equal(rec.Body.Bytes(), data) {
+		t.Errorf("body = %q, want the image bytes", rec.Body.Bytes())
 	}
 
-	// An If-None-Match echo of the served ETag short-circuits to 304 with no body.
 	cond := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, LogoPath, nil)
-	req.Header.Set("If-None-Match", etag)
-	Handler().ServeHTTP(cond, req)
+	req := httptest.NewRequest(http.MethodGet, OperatorLogoPath, nil)
+	req.Header.Set("If-None-Match", rec.Header().Get("ETag"))
+	h.ServeHTTP(cond, req)
 	if cond.Code != http.StatusNotModified {
 		t.Errorf("If-None-Match status = %d, want 304", cond.Code)
 	}
-	if cond.Body.Len() != 0 {
-		t.Errorf("304 body not empty (%d bytes)", cond.Body.Len())
+
+	post := httptest.NewRecorder()
+	h.ServeHTTP(post, httptest.NewRequest(http.MethodPost, OperatorLogoPath, nil))
+	if post.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST status = %d, want 405", post.Code)
 	}
 }
 
