@@ -6,20 +6,21 @@ icon: lucide/badge
 
 # Branding
 
-Every page of an instance shows the Deep Navy ISCC masthead and footer, with the running version and the ISCC
-Foundation's open-source credit in the footer. An operator adds its own identity beside them, without a rebuild.
+Every page has the Deep Navy ISCC masthead and footer. The footer shows the running version and the ISCC
+Foundation's open-source credit. You can add your own identity beside them without a rebuild.
 { .iscc-lead }
 
 ## What you can add
 
-- Your organization's **name**, shown as "Operated by ..." in the footer.
-- A link to your **website**.
-- Your **logo** in the masthead, after an "Operated by" label, on a small white plate.
-- **Footer links**, such as an imprint or a privacy policy, which a public site needs in many jurisdictions.
-- The instance's **domain** and a line beneath it in the masthead.
+| Item              | Where it shows                                                                  |
+| ----------------- | ------------------------------------------------------------------------------- |
+| Organization name | Footer, as "Operated by ..."                                                    |
+| Website           | Link on the name and the logo                                                   |
+| Logo              | Masthead, after an "Operated by" label, on a small white plate                  |
+| Footer links      | Footer. Many jurisdictions require an imprint or a privacy policy on a public site |
+| Instance domain   | Masthead, with an operator line beneath it                                      |
 
-The ISCC mark, the colours and the open-source credit stay as they are: co-branding names the operator, it does not
-re-theme the monitor.
+The ISCC mark, the colors and the open-source credit always stay. Co-branding does not re-theme the monitor.
 
 ## Example
 
@@ -42,15 +43,17 @@ services:
 
 ## Logo guidelines
 
-- Give it a transparent background.
-- Draw it for a light background: the masthead is dark, but the logo sits on a white plate.
-- Choose proportions that still read at 28 pixels tall and 160 pixels wide.
-- Keep it under 256 KiB. SVG stays sharp at every size.
+- Use a transparent background.
+- Draw the logo for a light background. The masthead is dark, but the logo sits on a white plate.
+- The masthead shows the logo at most 28 pixels tall and 160 pixels wide. Pick proportions that read at that size.
+- Keep the file under 256 KiB. SVG stays sharp at every size.
 
-The monitor reads the logo once at startup and serves it from the instance itself, so pages still load nothing from
-another origin.
+The monitor reads the logo once at startup and serves it itself. Pages load nothing from another origin.
 
 ## When the instance refuses to start
 
-The settings are checked at startup. The monitor exits with a message if a URL is malformed, a logo or URL is set
-without a name, or the logo is missing, larger than 256 KiB or not the image type its extension names.
+The monitor checks the settings at startup. It exits with a message if:
+
+- a URL is malformed,
+- a logo or URL is set without a name,
+- the logo is missing, larger than 256 KiB, or not the image type its extension names.

@@ -6,13 +6,13 @@ icon: lucide/code
 
 # Development
 
-The monitor is a Go program with no C dependencies; its source lives at
+The monitor is a Go program with no C dependencies. The source is at
 [github.com/iscc/iscc-monitor](https://github.com/iscc/iscc-monitor).
 { .iscc-lead }
 
 ## Build and run
 
-You need Go 1.26 and, for the task shortcuts, [mise](https://mise.jdx.dev/).
+You need Go 1.26. The task shortcuts also need [mise](https://mise.jdx.dev/).
 
 ```bash
 git clone https://github.com/iscc/iscc-monitor
@@ -35,7 +35,7 @@ mise run check   # go build, go vet and go test for every package
 mise run fmt     # gofmt
 ```
 
-`mise run check` must pass before a change is merged; CI runs it with `govulncheck` on every push and pull request.
+`mise run check` must pass before a change is merged. CI runs it with `govulncheck` on every push and pull request.
 
 ## Project layout
 
@@ -44,15 +44,15 @@ mise run fmt     # gofmt
 | `cmd/iscc-monitor`     | The monitor binary                                                   |
 | `cmd/wasm`             | The in-browser inclusion verifier, built to `internal/web/verify.wasm` |
 | `internal/`            | Follower, store, proof serving, certificate and web pages            |
-| `internal/openapi`     | The OpenAPI 3.1 contract; a test fails when it and the routes drift apart |
+| `internal/openapi`     | The OpenAPI 3.1 contract. A test fails when it and the routes drift apart |
 | `deploy/`              | The fallback realm document built into the image                     |
 | `docs/`                | This documentation site                                              |
 | `.claude/`             | Product requirements, architecture decision records and design specs |
 
 ## Documentation
 
-This site is built with [Zensical](https://zensical.org) and the ISCC theme
-[zensical-iscc](https://github.com/iscc/zensical-iscc). The tooling needs [uv](https://docs.astral.sh/uv/):
+This site uses [Zensical](https://zensical.org) and the ISCC theme
+[zensical-iscc](https://github.com/iscc/zensical-iscc). The tooling needs [uv](https://docs.astral.sh/uv/).
 
 ```bash
 mise run docs:build   # build into site/
@@ -60,14 +60,14 @@ mise run docs:check   # check the built site against the theme's rules
 mise run docs:serve   # preview on http://127.0.0.1:41465
 ```
 
-Pages are Markdown files under `docs/`, listed in `nav` in `zensical.toml`. Every push to `main` that changes the
+Pages are Markdown files under `docs/`, listed in `nav` in `zensical.toml`. Each push to `main` that changes the
 documentation publishes it to monitor.iscc.codes.
 
 ## Releases
 
-Releases follow [Semantic Versioning](https://semver.org) and stay below 1.0.0 until the first major version's
-scope is reached. A release is a tag on `main`; it publishes the `:vX.Y.Z` container image and a GitHub Release,
-and is described in the [changelog](reference/changelog.md).
+Releases follow [Semantic Versioning](https://semver.org). They stay below 1.0.0 until the scope of the first major
+version is reached. A release is a tag on `main`. It publishes the `:vX.Y.Z` container image and a GitHub Release.
+The [changelog](reference/changelog.md) describes each release.
 
 ## License
 
