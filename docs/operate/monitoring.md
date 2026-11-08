@@ -46,8 +46,8 @@ Alerts to set:
 ### Public or private
 
 Metrics carry no secrets, but they are operator telemetry, not evidence. The monitor has one listener for all
-routes, so you decide at the reverse proxy whether `/metrics` is public. The Foundation's instances refuse it
-publicly and scrape it over the internal network, as does the [Caddy example](deploy.md#reverse-proxy).
+routes, so you decide at the reverse proxy whether `/metrics` is public. The
+[Caddy example](deploy.md#reverse-proxy) refuses it.
 
 ## Log
 

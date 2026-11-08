@@ -1,87 +1,48 @@
 # iscc-monitor
 
-An independent **Trust & Transparency** service for the ISCC-Hub network. Documentation:
-**<https://monitor.iscc.codes>**. It follows every hub's
-[tlog-tiles](https://c2sp.org/tlog-tiles) transparency log, verifies Ed25519 signed-note signatures
-and RFC-6962 consistency, mirrors the logs as SQLite BLOBs, and publishes verifiable evidence — so no
-party has to trust the monitor itself.
+An independent Trust & Transparency service for the ISCC-Hub network. It follows the
+[tlog-tiles](https://c2sp.org/tlog-tiles) transparency log of every hub, checks the signatures and the
+RFC 6962 consistency of each log, keeps a mirror of each log and publishes evidence that anyone can check
+without trusting the monitor.
 
-The monitor is a **verifiable cache**, not a trusted oracle: clients re-verify whatever it serves
-against the hub's own did:web signature and the Merkle math, removing the monitor from the trust path.
-It autonomously detects a **self-consistency violation** (a hub rewriting history against this
-monitor — successive checkpoints that fail RFC-6962 consistency), which freezes the hub and raises an
-alert; a **split view** (a hub showing different histories to different audiences) is detectable only
-by *comparison* against the monitor as a reference anchor.
+Documentation: **<https://monitor.iscc.codes>**
 
-## Stack
+## Build and run
 
-- **Go 1.26, `CGO_ENABLED=0`** — a single static binary, `cmd/iscc-monitor`, configured entirely
-  through environment variables.
-- Pure-Go SQLite (`modernc.org/sqlite`); one SQLite file per network holds the whole durable state.
-- Reuses the transparency-dev tlog-tiles stack and the [`iscc-lib`](https://github.com/iscc/iscc-lib)
-  Go codec for ISO 24138 en/decoding. See [`.claude/adr/0011-iscc-lib-codec-dependency.md`](.claude/adr/0011-iscc-lib-codec-dependency.md)
-  and [`.claude/adr/0003-client-verification-and-in-browser-verifier.md`](.claude/adr/0003-client-verification-and-in-browser-verifier.md)
-  for the reuse posture.
-
-## Build & run
-
-Run a local instance against the 2-hub testnet realm with a short poll cadence:
+You need Go 1.26. The task shortcuts also need [mise](https://mise.jdx.dev/).
 
 ```sh
-go build -o /tmp/iscc-monitor ./cmd/iscc-monitor
-ISCC_MONITOR_DB=/tmp/monitor-dev.db \
-ISCC_MONITOR_REALM=internal/registry/testdata/realm.txt \
+go build -o iscc-monitor ./cmd/iscc-monitor
+
+ISCC_MONITOR_DB=./monitor-test.db \
+ISCC_MONITOR_REALM=https://raw.githubusercontent.com/iscc/iscc-hub/refs/heads/main/hubs/testnet.yaml \
 ISCC_MONITOR_NORMAL=30s \
-ISCC_MONITOR_ADDR=0.0.0.0:41464 \
-/tmp/iscc-monitor
+ISCC_MONITOR_ADDR=127.0.0.1:41464 \
+./iscc-monitor
 ```
 
-After the first poll (a few seconds) the HTTP surface is live: `GET /` (server-rendered dashboard),
-`GET /healthz` (liveness), `GET /metrics` (Prometheus), plus the per-hub log, certificate, and
-verify-for-me routes.
-
-Two variables are **required** and have no default — `ISCC_MONITOR_DB` (the SQLite file path; there is
-no safe default, it must point at your own storage) and `ISCC_MONITOR_REALM` (the realm-membership
-document). The poll intervals default (`ISCC_MONITOR_NORMAL=5m`, `ISCC_MONITOR_FROZEN=1h`) and the
-masthead identity keys are optional. For the full variable list, see
-[Configuration](https://monitor.iscc.codes/operate/configuration/) (source:
-[`docs/operate/configuration.md`](docs/operate/configuration.md)); for every endpoint, the
-[HTTP API](https://monitor.iscc.codes/reference/http-api/) reference.
+Then open <http://127.0.0.1:41464>. [Configuration](https://monitor.iscc.codes/operate/configuration/) lists
+all settings.
 
 ## Quality gate
 
-Quality gates run via [mise](https://mise.jdx.dev/):
-
-- `mise run check` — the full gate (`go build ./... && go vet ./... && go test ./...`); it must stay
-  green.
-- `mise run fmt` — format all Go source in place (or check with `gofmt -l .`).
+```sh
+mise run check   # go build, go vet and go test for every package
+mise run fmt     # gofmt
+```
 
 ## Deployment
 
-A container image is published to GHCR (`ghcr.io/iscc/iscc-monitor`). The
-[operator guide](https://monitor.iscc.codes/operate/deploy/) (source: [`docs/operate/`](docs/operate/)) covers
-image tags, the SQLite volume and backups, the non-root uid, the reverse proxy, egress, upgrades, branding and
-the `/metrics` exposure decision.
+The container image is `ghcr.io/iscc/iscc-monitor`. The
+[operator guide](https://monitor.iscc.codes/operate/deploy/) covers the image tags, storage, the reverse proxy,
+backups, upgrades and branding.
 
-## Documentation site
+## Specifications
 
-The site at monitor.iscc.codes is built from `docs/` with [Zensical](https://zensical.org) and the ISCC theme,
-and published from `main` by `.github/workflows/docs.yml`. It needs [uv](https://docs.astral.sh/uv/):
-`mise run docs:build`, `mise run docs:check` and `mise run docs:serve` (preview on port 41465).
-
-## Specs & pointers
-
-The specifications are the source of truth:
-
-- [`.claude/prd/`](.claude/prd/) — the product requirements (v1 scope and guarantees).
-- [`.claude/adr/`](.claude/adr/) — the architecture decision records (ADR-0001 … ADR-0013).
-- [`CLAUDE.md`](CLAUDE.md) — **agent-facing** project instructions, conventions, the authoritative
-  env-var / endpoint reference, and the canonical glossary (hub status, coverage, comparison anchor,
-  Bitcoin anchoring, proof bundle, and the rest).
-
-`CLAUDE.md` is the agent-facing contributor reference and
-[`.claude/context/README.md`](.claude/context/README.md) is the CID-loop-internal context pack; this
-`README.md` is the human-facing front door for the repository.
+- [`.claude/prd/`](.claude/prd/): the product requirements.
+- [`.claude/adr/`](.claude/adr/): the architecture decision records.
+- [`.claude/design/`](.claude/design/): the design of the web pages.
+- [`CLAUDE.md`](CLAUDE.md): instructions for coding agents, with the project glossary.
 
 ## License
 
