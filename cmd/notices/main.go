@@ -40,7 +40,8 @@ const listFormat = `{{with .Module}}{{if not .Main}}{{.Path}}{{"\t"}}{{.Version}
 // variants such as LICENSE-3RD-PARTY.md, SQLITE-LICENSE and COPYING.
 var licenseName = regexp.MustCompile(`(?i)(licen[cs]e|copying|notice)`)
 
-// shippedBuilds lists what the published image and the verifier site are built from.
+// shippedBuilds lists what the published image is built from, including the WASM checker
+// its certificate pages load.
 var shippedBuilds = []target{
 	{goos: "linux", goarch: "amd64", packages: []string{"./..."}},
 	{goos: "js", goarch: "wasm", packages: []string{"./cmd/wasm"}},

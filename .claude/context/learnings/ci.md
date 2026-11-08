@@ -104,6 +104,8 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 
 ## Pages publish workflow (`.github/workflows/pages.yml`)
 
+*(Removed 2026-11-07 with the verifier site, ADR-0016. Kept for the verifier's return on another domain.)*
+
 - **`pages.yml` is the modern Actions Pages build→deploy of the Surface-C verifier-site** (separate
   file from `ci.yml` so triggers stay independent): `push: [develop]` + `workflow_dispatch`, top-level
   `permissions: {contents:read, pages:write, id-token:write}`, `concurrency: {group:pages,

@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -181,15 +182,14 @@ func TestCertificateKnownID(t *testing.T) {
 	body := rec.Body.String()
 
 	for _, want := range []string{
-		goldenID,             // the subject id
-		"sb1.amlet.id",       // the RESOLVED hub domain (the non-vacuous derived value)
-		"24815",              // the subject position seqs[0]
-		"§1 SUBJECT",         // the §1 clause marker
-		"§2 CHECKPOINT",      // the §2 clause marker
-		"size 24816",         // the accepted checkpoint tree size (hub.LastSize = seq+1)
-		"← Realm index",      // the back-link
-		"monitor.iscc.codes", // the tier-2 verify link
-		"Tier 1",             // the two-tier honesty panel
+		goldenID,        // the subject id
+		"sb1.amlet.id",  // the RESOLVED hub domain (the non-vacuous derived value)
+		"24815",         // the subject position seqs[0]
+		"§1 SUBJECT",    // the §1 clause marker
+		"§2 CHECKPOINT", // the §2 clause marker
+		"size 24816",    // the accepted checkpoint tree size (hub.LastSize = seq+1)
+		"← Realm index", // the back-link
+		"Tier 1",        // the two-tier honesty panel
 		"Tier 2",
 		`src="/_ds/iscc-logo.svg"`,     // the shared-chrome ISCC logo (web.LogoPath)
 		`href="/_ds/site.css"`,         // the shared site-chrome stylesheet (web.SiteCSSPath)
@@ -204,14 +204,19 @@ func TestCertificateKnownID(t *testing.T) {
 	if wantRoot := base64.StdEncoding.EncodeToString([]byte("root")); !strings.Contains(body, wantRoot) {
 		t.Errorf("body missing the §2 accepted root %q\n%s", wantRoot, body)
 	}
+	// The ISCC Trust Seal beside the title names this id and the issue date, for readers
+	// and screen readers alike, with the issue time in the caption beneath.
+	if !sealLabel.MatchString(body) {
+		t.Errorf("body missing the evidence seal with its issue time\n%s", body)
+	}
 	// The resolved hub at slot 1 is sb1.amlet.id, NOT the slot-0 sb0.iscc.id; if the
 	// decode/resolve chain were bypassed the wrong (or no) domain would render.
 	if strings.Contains(body, "transparency log of <span class=\"subject-strong subject-mono\">sb0.iscc.id</span>") {
 		t.Errorf("subject banner resolved to sb0.iscc.id; decode->resolve picked the wrong slot\n%s", body)
 	}
 	// The DS shell is linked (same-origin /_ds/), and no external CDN URL appears
-	// outside those links. The chrome/verify link to monitor.iscc.codes is the one
-	// intentional external https origin, so ban only third-party CDN hosts.
+	// outside those links. Hyperlinks to other origins (the footer's source link) are
+	// navigation, not loads, so ban only third-party CDN hosts.
 	for _, want := range []string{`href="/_ds/tokens.css"`, `href="/_ds/fonts.css"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing DS-shell link %q\n%s", want, body)
@@ -336,7 +341,7 @@ func TestCertificateAcceptsISCCIDRepresentations(t *testing.T) {
 			if !strings.Contains(body, "is included in the transparency log") {
 				t.Errorf("%s %q did not certify the leaf\n%s", via, form, body)
 			}
-			if !strings.Contains(body, `<div class="subject-id">ISCC:`+goldenID+`</div>`) {
+			if !strings.Contains(body, `<div class="subject-id">ISCC:<wbr>`+goldenID+`</div>`) {
 				t.Errorf("%s %q did not render the canonical id\n%s", via, form, body)
 			}
 		}
@@ -416,6 +421,10 @@ func TestCertificateUnacceptedLeaf(t *testing.T) {
 
 // TestCertificateMalformedID asserts a non-decodable id renders the documented
 // invalid-id 200 state, never a 4xx/5xx — a decode error is a verdict, not a fault.
+// sealLabel matches the ISCC Trust Seal's personalised accessible name, followed by the
+// caption with the UTC issue time.
+var sealLabel = regexp.MustCompile(`aria-label="ISCC Trust Seal: verifiable evidence for ISCC:[A-Z2-7]{16}, \d{4}-\d{2}-\d{2}"[\s\S]*Issued \d{2}:\d{2} UTC`)
+
 func TestCertificateMalformedID(t *testing.T) {
 	st := fixtureStore(t, "sb1.amlet.id", goldenID, 1)
 	h := Handler(testnetHubList(), st, nil, chrome.Site{})
@@ -429,6 +438,10 @@ func TestCertificateMalformedID(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing invalid-id marker %q\n%s", want, body)
 		}
+	}
+	// A page that proves nothing carries no evidence seal.
+	if strings.Contains(body, `ISCC Trust Seal`) {
+		t.Errorf("invalid-id body carries the evidence seal\n%s", body)
 	}
 }
 
@@ -1031,18 +1044,20 @@ func TestCertificateRendersWasmVerifier(t *testing.T) {
 
 		// No-JS honesty: the static HasBundle header must NOT assert a present-tense
 		// browser re-verification that does not run with JavaScript disabled — the
-		// tier-2 verdict is progressive enhancement. The header may only OFFER the
-		// always-true offline path plus a CONDITIONAL ("with JavaScript enabled")
-		// browser re-check; the #tier2-result script stays the sole asserter of an
-		// actual verdict. Non-vacuous: a negative (the old overstatement is gone) +
-		// a positive (the conditional phrasing the panel default also uses).
-		if strings.Contains(body, "This browser re-verifies the proof below") {
-			t.Errorf("no-JS baseline: HasBundle header still asserts a present-tense browser re-verification\n%s", body)
+		// tier-2 verdict is progressive enhancement. The header may only offer a
+		// CONDITIONAL ("With JavaScript enabled") browser re-check; the #tier2-result
+		// script stays the sole asserter of an actual verdict. Nor may it promise an
+		// offline re-verification the project ships no tool for (ADR-0016).
+		// Non-vacuous: negatives (the old overstatements are gone) + a positive.
+		for _, banned := range []string{"This browser re-verifies the proof below", "re-verify it offline"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("HasBundle header still claims %q\n%s", banned, body)
+			}
 		}
 		// The header-specific conditional phrasing (distinct from the #tier2-result
-		// panel's "above" wording at :501), so this positive assertion fails if the
-		// header sentence reverts to the unconditional claim.
-		if !strings.Contains(body, "with JavaScript enabled, this browser also re-checks the proof below") {
+		// panel's "above" wording), so this positive assertion fails if the header
+		// sentence reverts to an unconditional claim.
+		if !strings.Contains(body, "With JavaScript enabled, your browser re-checks the inclusion proof below.") {
 			t.Errorf("no-JS baseline: HasBundle header missing the conditional re-check phrasing\n%s", body)
 		}
 	})

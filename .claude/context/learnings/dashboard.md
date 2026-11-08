@@ -102,7 +102,8 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   the "Recently declared:" label. No test pins the h1 copy.
 - **The no-CDN ban is now narrowed to third-party hosts (`jsdelivr`/`cdn.`/`unpkg`/`googleapis`), NOT a
   blanket `https://` ban** — the masthead's intentional `https://monitor.iscc.codes/` tier-2 verify link
-  must pass, so the test now ALSO positively asserts `monitor.iscc.codes` is present. This mirrors the
+  must pass, so the test now ALSO positively asserts `monitor.iscc.codes` is present. *(Superseded
+  2026-11-07, ADR-0016: the verify link is gone; the narrowed ban stays for the footer's source link.)* This mirrors the
   certificate's already-merged posture and `web.md`'s `noExternalCDN` rule (third-party origins only).
   The load-bearing rule (no third-party CDN origin) still holds; this is the precedent, not a weakening.
   Mockup deviations accepted as constraint-wins (all flagged): "recent declarers"

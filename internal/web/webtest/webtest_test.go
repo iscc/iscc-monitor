@@ -30,7 +30,7 @@ func TestExternalLoadsIgnoresSameOriginAndLinks(t *testing.T) {
 		`<img class="chrome-logo" src="/_ds/iscc-logo.svg" alt="ISCC">`,
 		`@font-face { src: url("/_ds/fonts/readex-pro-400.woff2"); }`,
 		`<a href="https://github.com/iscc/iscc-monitor">Source</a>`,
-		`<a class="chrome-verify" href="https://monitor.iscc.codes/">verify</a>`,
+		`<a href="https://example.com/imprint">Imprint</a>`,
 		`<svg xmlns="http://www.w3.org/2000/svg"></svg>`,
 		`<span data-state="verified"></span>`,
 	} {

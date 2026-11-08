@@ -25,13 +25,14 @@ from `monitor-test.iscc.io` and `monitor.iscc.io`.
   `ISCC:` form ([#1](https://github.com/iscc/iscc-monitor/issues/1)).
 - **Web interface:** server-rendered dashboard, hub dossiers, log and record browsers, and a Certificate of
   Inclusion for any ISCC-ID in the realm. These pages work without JavaScript, and no page loads anything
-  from a CDN. The design follows the ISCC brand guidelines (edition 01).
+  from a CDN. The design follows the ISCC brand guidelines (edition 01). A certificate that proves inclusion
+  carries the ISCC Trust Seal, naming its ISCC-ID and issue date.
 - **Footer and operator co-branding:** every page shows the running version, linked to its release or
   commit, and the open-source credit. An operator can add its name, website, a logo shown beside the ISCC
   mark, and footer links such as an imprint or privacy policy, all through environment variables
   ([`deploy/OPERATING.md`](deploy/OPERATING.md#branding)).
-- **In-browser verification:** a reproducible, hash-pinned WebAssembly verifier, used on certificate pages
-  and by the standalone verifier site at `monitor.iscc.codes`.
+- **In-browser verification:** a reproducible, hash-pinned WebAssembly verifier that re-checks a
+  certificate's inclusion proof in the visitor's browser.
 - **Bitcoin anchoring:** OpenTimestamps proofs for checkpoint roots. The realm register and hub pages show
   each hub's last confirmed anchor and the entries it covers. A certificate shows the earliest confirmed
   anchor that covers its record, with a download of that anchor's proof and the `ots verify` command to
@@ -64,8 +65,11 @@ from `monitor-test.iscc.io` and `monitor.iscc.io`.
   a restart ([#5](https://github.com/iscc/iscc-monitor/issues/5)).
 - **Bitcoin anchoring selection:** every newly accepted root is stamped, rather than the newest root once a
   day as ADR-0004 specifies ([#6](https://github.com/iscc/iscc-monitor/issues/6)).
-- **Verifier site scope:** the standalone site checks Merkle proofs but not the hub's signature on the
-  checkpoint, and it ignores the bundle's Bitcoin anchor, which `ots verify` checks.
+- **In-browser check scope:** the certificate's in-browser re-check verifies the inclusion proof only, not
+  the hub's signature on the checkpoint, which the server verifies, or the Bitcoin anchor, which
+  `ots verify` checks.
+- **No standalone verifier:** a verifier app on an independent domain, which re-checks proofs without
+  relying on any monitor's own pages, is planned for a later release.
 - **Split views:** detected only when a client compares its view against a monitor. Monitor gossip and
   witness cosigning are not included.
 - **Baked testnet realm:** the image's fallback realm document names hosts that no longer serve, so set

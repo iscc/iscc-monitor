@@ -1,17 +1,14 @@
 // Package chrome renders the document chrome every server-rendered page shares: the
 // masthead (the ISCC signature, the "Trust & Transparency Monitor" mark, this instance's
-// identity, an optional operator co-brand, and the link to the independent verifier) and
-// the footer (the running software version linked to its exact source, the open-source
-// credit, the instance links, and the operator's own links such as an imprint or privacy
-// policy).
+// identity, and an optional operator co-brand) and the footer (the running software
+// version linked to its exact source, the open-source credit, the API docs link, and the
+// operator's own links such as an imprint or privacy policy).
 //
 // Source holds both partials. A page template associates it next to its own source and
 // invokes {{template "siteHeader" .Chrome}} and {{template "siteFooter" .Chrome}}, where
 // .Chrome is a View. Site is the operator-configured identity and co-branding of an
-// instance; Site.View resolves it into the View an instance page renders, and Verifier
-// returns the fixed View of the monitor-agnostic verifier app (monitor.iscc.codes),
-// which carries no operator identity. The partials' styles live in the shared
-// /_ds/site.css stylesheet.
+// instance; Site.View resolves it into the View a page renders. The partials' styles
+// live in the shared /_ds/site.css stylesheet.
 //
 // Every operator-supplied string reaches the page through html/template's contextual
 // escaping, and every operator URL is validated at startup (internal/config), so a
@@ -42,7 +39,6 @@ const (
 	instanceFallback = "monitor instance"
 	operatorFallback = "independent Trust & Transparency service · ISCC-Hub network"
 	subEvidence      = "Evidence of record · ISCC-Hub network"
-	verifierURL      = "https://monitor.iscc.codes/"
 	repoURL          = "https://github.com/iscc/iscc-monitor"
 )
 
@@ -85,8 +81,6 @@ type View struct {
 	// Instance and Operator are the resolved instance-identity lines.
 	Instance string
 	Operator string
-	// VerifyHref is the target of the masthead's verifier link.
-	VerifyHref string
 	// OperatorName, OperatorURL, and Links carry the operator co-brand.
 	OperatorName string
 	OperatorURL  string
@@ -97,9 +91,6 @@ type View struct {
 	// exact source, or is empty when the version names no published source.
 	Version    string
 	VersionURL string
-	// InstanceLinks shows the footer's links to this instance's API docs and to the
-	// independent verifier. The verifier app itself omits them.
-	InstanceLinks bool
 }
 
 // View resolves s into the chrome an instance page renders, applying the static
@@ -108,24 +99,12 @@ func (s Site) View() View {
 	v := base()
 	v.Instance = fallback(s.Instance, instanceFallback)
 	v.Operator = fallback(s.Operator, operatorFallback)
-	v.VerifyHref = verifierURL
 	v.OperatorName = s.OperatorName
 	v.OperatorURL = s.OperatorURL
 	v.Links = s.Links
-	v.InstanceLinks = true
 	if len(s.OperatorLogo.Data) > 0 {
 		v.OperatorLogo = web.OperatorLogoPath
 	}
-	return v
-}
-
-// Verifier returns the chrome of the monitor-agnostic verifier app: a fixed identity, a
-// verifier link to its own root, and a footer without instance or operator links.
-func Verifier() View {
-	v := base()
-	v.Instance = "monitor.iscc.codes"
-	v.Operator = "independent verifier app · audits any monitor instance"
-	v.VerifyHref = "/"
 	return v
 }
 

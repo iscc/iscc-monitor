@@ -2,10 +2,8 @@
 
 This is the deployment and operability contract for a **server instance** of the
 monitor — a running deployment of the data API plus its server-rendered dashboard
-at its own domain. It is distinct from the standalone in-browser **verifier app**
-(`monitor.iscc.codes`, a separate GitHub-Pages static artifact): a server image
-embeds and serves its own `/_ds/` assets (including `verify.wasm`), so it needs
-neither the Pages site nor any CDN at runtime.
+at its own domain. A server image embeds and serves its own `/_ds/` assets
+(including `verify.wasm`), so it needs no CDN at runtime.
 
 The first consumer is **iscc-infra**, which runs ISCC services as Docker Compose
 stacks behind a label-driven `caddy-docker-proxy`. The first deployment is a

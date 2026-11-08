@@ -17,7 +17,7 @@
 // internal/chrome partials), so it is golden-testable in isolation. The /_ds/... paths
 // are template LITERALS kept in sync with web.TokensPath / FontsCSSPath / SiteCSSPath /
 // ElementsJSPath / ElementsCSSPath by comment (the
-// dashboard/dossier/verifier convention). The oracle/conformance gate is N/A: this
+// dashboard/dossier convention). The oracle/conformance gate is N/A: this
 // renders only HTML and serves no signature, RFC-6962, Merkle, did:web, fsck, or
 // proof path.
 package docs

@@ -223,7 +223,7 @@ func TestCertificateProofBundleLinkRendered(t *testing.T) {
 		if strings.Contains(body, "#ZgotmplZ") {
 			t.Errorf("id %q: download href was filtered to the #ZgotmplZ sentinel (dead link)\n%s", reqID, body)
 		}
-		if strings.Contains(body, "Download proof bundle (coming soon)") {
+		if strings.Contains(body, "Proof bundle unavailable") {
 			t.Errorf("id %q: certifiable page still shows the disabled placeholder\n%s", reqID, body)
 		}
 	}

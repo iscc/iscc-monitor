@@ -54,11 +54,39 @@
     }
 
     /* Certificate head: ref, issued, instance. */
+    /* The title block, with the evidence seal to its right; on a narrow screen the
+       seal wraps beneath the title. */
     .cert-head {
-      text-align: center;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: var(--space-6);
       border-bottom: var(--space-1) solid var(--text-heading);
       padding-bottom: var(--space-5);
       margin-bottom: var(--space-6);
+    }
+    .cert-head-text {
+      flex: 1 1 18rem;
+    }
+    /* The ISCC Trust Seal (brand kit, internal/certificate/seal.go) at its 128 px
+       display size, with the issue time in a caption beneath; the seal itself carries
+       the date. It appears only on a certificate that proves inclusion. */
+    .cert-seal {
+      flex: 0 0 auto;
+      width: 128px;
+      text-align: center;
+    }
+    .cert-seal svg {
+      display: block;
+      width: 128px;
+      height: 128px;
+    }
+    .cert-seal-time {
+      margin-top: var(--space-2);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-muted);
     }
     .cert-kicker {
       font-family: var(--font-mono);
@@ -81,17 +109,20 @@
     }
 
     /* Subject banner: the loud "<id> is included in the log of <hub> at N" line. */
+    /* The subject ISCC-ID on the brand's code bar: white JetBrains Mono Bold at 19 px
+       or more on coral. White on coral is 3.09:1, which passes only as large text
+       (18.67 px bold and up), so the size never shrinks; a long id wraps instead. */
     .subject-id {
       font-family: var(--font-mono);
-      font-size: var(--text-lg);
-      font-weight: var(--weight-regular);
-      color: var(--text-heading);
+      font-size: clamp(19px, 5vw, var(--text-lg));
+      font-weight: var(--weight-bold);
+      color: var(--iscc-white);
       background: var(--iscc-coral-red);
       border-radius: var(--radius-sm);
       padding: var(--space-3) var(--space-4);
       text-align: center;
       margin-bottom: var(--space-2);
-      word-break: break-all;
+      overflow-wrap: anywhere;
     }
     .subject-line {
       text-align: center;
@@ -220,8 +251,7 @@
       color: var(--text-link);
     }
 
-    /* Certificate actions: the (placeholder) proof-bundle download + the static
-       tier-2 "verify independently" link. */
+    /* Certificate actions: the proof-bundle download (or its disabled placeholder). */
     .actions {
       display: flex;
       gap: var(--space-3);
@@ -259,8 +289,8 @@
       margin: var(--space-5) 0 0;
     }
 
-    /* Tier-2 in-browser verification result. The no-JS default text reads honestly
-       ("re-verify the downloadable bundle yourself"); the progressive-enhancement
+    /* Tier-2 in-browser verification result. The no-JS default text claims no
+       verdict (the re-check needs JavaScript); the progressive-enhancement
        <script> REPLACES it with the verdict isccVerifyInclusion returns. The
        data-state attribute the script sets recolors the panel: verified (lime),
        failed (coral — a negative VERDICT, the split-view signal), or error (muted).
@@ -309,13 +339,21 @@
 
     <div class="certificate">
       <div class="cert-head">
-        <div class="cert-kicker">Evidence of inclusion</div>
-        <h1 class="cert-title">Certificate of Inclusion</h1>
-        <div class="cert-ref">issued by this monitor instance · verifiable cache, not a trusted oracle</div>
+        <div class="cert-head-text">
+          <div class="cert-kicker">Evidence of inclusion</div>
+          <h1 class="cert-title">Certificate of Inclusion</h1>
+          <div class="cert-ref">issued by this monitor instance · verifiable cache, not a trusted oracle</div>
+        </div>
+        {{- if .Seal}}
+        <div class="cert-seal">
+          {{.Seal}}
+          <div class="cert-seal-time">Issued {{.IssuedAt.Format "15:04"}} UTC</div>
+        </div>
+        {{- end}}
       </div>
 
       {{if .Certifiable}}
-      <div class="subject-id">{{.IsccID}}</div>
+      <div class="subject-id">ISCC:<wbr>{{.IsccIDBody}}</div>
       <p class="subject-line">is included in the transparency log of <span class="subject-strong subject-mono">{{.Domain}}</span> at position <span class="subject-strong">{{.Position}}</span>.</p>
 
       <div class="clause">
@@ -392,12 +430,11 @@
 
       <div class="honesty">
         <svg class="honesty-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"></path></svg>
-        <span class="honesty-text">This certificate is <span class="honesty-tier">the monitor's account</span> (Tier 1). It does not ask for your trust: the authoritative version is the proof bundle, which <span class="honesty-tier-2">you verify yourself</span> (Tier 2). {{if .HasBundle}}You can download the bundle and re-verify it offline; with JavaScript enabled, this browser also re-checks the proof below for you.{{else}}The downloadable bundle and in-browser re-verification land in a later release.{{end}}</span>
+        <span class="honesty-text">This certificate is <span class="honesty-tier">the monitor's account</span> (Tier 1). It does not ask for your trust: the authoritative version is the proof bundle, which <span class="honesty-tier-2">you verify yourself</span> (Tier 2). {{if .HasBundle}}With JavaScript enabled, your browser re-checks the inclusion proof below. Download the bundle to keep the evidence: it holds the hub-signed checkpoint, the inclusion proof and the record, so it can be checked without trusting this monitor.{{else}}No proof bundle is offered for this record, because the monitor could not re-verify its inclusion proof (§3).{{end}}</span>
       </div>
 
       <div class="actions">
-        {{if .HasBundle}}<a class="btn-primary" href="{{.BundleHref}}" download>Download proof bundle</a>{{else}}<button type="button" class="action-download" disabled aria-disabled="true">Download proof bundle (coming soon)</button>{{end}}
-        <a class="btn-secondary" href="https://monitor.iscc.codes/">Verify independently in your browser</a>
+        {{if .HasBundle}}<a class="btn-primary" href="{{.BundleHref}}" download>Download proof bundle</a>{{else}}<button type="button" class="action-download" disabled aria-disabled="true">Proof bundle unavailable</button>{{end}}
       </div>
 
       {{if .HasBundle}}
@@ -409,7 +446,7 @@
            never any clause (the no-JS baseline). -->
       <div id="tier2-result" class="tier2" data-state="default">
         <span class="tier2-dot"></span>
-        <span id="tier2-text">Re-verify the downloadable bundle yourself — or, with JavaScript enabled, this browser re-checks the proof above against the accepted root for you.</span>
+        <span id="tier2-text">With JavaScript enabled, your browser re-checks the proof above against the accepted root.</span>
       </div>
       <!-- Proof data for the in-browser verifier, passed as a JSON data island
            (NOT interpolated into executable JS): html/template JSON-context-escapes
@@ -418,7 +455,7 @@
       <script id="tier2-data" type="application/json">{"record":{{.RecordB64}},"root":{{.CheckpointRoot}},"proof":[{{range $i, $h := .ProofHashes}}{{if $i}},{{end}}{{$h}}{{end}}],"index":{{.Position}},"size":{{.CheckpointSize}}}</script>
       {{end}}
 
-      <p class="cite">Verifiable cache — not a trusted oracle. This is the monitor's account of what the hub showed it; re-verify the proof bundle yourself.</p>
+      <p class="cite">Verifiable cache — not a trusted oracle. This is the monitor's account of what the hub showed it; the proof bundle carries the evidence to check it.</p>
       {{else}}
       <div class="notfound">
         <p class="notfound-title">Cannot certify inclusion</p>

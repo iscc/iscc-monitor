@@ -313,10 +313,9 @@ func TestDashboardRendersInMemoryStatus(t *testing.T) {
 // TestDashboardLinksTokensNoCDN pins the shared-shell wiring: the rendered "/" body
 // links the embedded DS token stylesheet at the literal web.TokensPath and carries
 // no third-party CDN URL — the load-bearing M-UI invariant that every SSR body is
-// complete with JavaScript disabled and references no third-party origin. The
-// masthead "verify ↗ monitor.iscc.codes" link is the one intentional external
-// https origin (the monitor-agnostic verifier app), so the ban is narrowed to
-// third-party CDN hosts only, mirroring the certificate's no-CDN posture.
+// complete with JavaScript disabled and loads nothing from a third-party origin.
+// Hyperlinks to other origins (the footer's source link) are navigation, so the ban
+// is narrowed to third-party CDN hosts, mirroring the certificate's no-CDN posture.
 func TestDashboardLinksTokensNoCDN(t *testing.T) {
 	st := fixtureStore(t)
 	rec := httptest.NewRecorder()
@@ -329,11 +328,6 @@ func TestDashboardLinksTokensNoCDN(t *testing.T) {
 
 	if !strings.Contains(body, `href="/_ds/tokens.css"`) {
 		t.Errorf("body missing token stylesheet link\n%s", body)
-	}
-	// The intentional tier-2 verifier link must be present and same as the
-	// certificate's; real CDN hosts must not.
-	if !strings.Contains(body, "monitor.iscc.codes") {
-		t.Errorf("body missing the tier-2 verify link\n%s", body)
 	}
 	for _, banned := range []string{"jsdelivr", "cdn.", "unpkg", "googleapis"} {
 		if strings.Contains(body, banned) {
@@ -383,13 +377,11 @@ func TestDashboardRendersHeroAndNavigation(t *testing.T) {
 		t.Errorf("dossier link count = %d, want >= 2 (one per hub)\n%s", dossierLinks, body)
 	}
 
-	// (c) The masthead instance-identity block + the tier-2 verify link, plus the
-	// self-hosted ISCC logo <img> beside the text mark (the shared document chrome).
+	// (c) The masthead instance-identity block, plus the self-hosted ISCC logo <img> beside the text mark (the shared document chrome).
 	// The logo src is the literal web.LogoPath; same-origin /_ds/ so it never trips
 	// the no-CDN ban.
 	for _, want := range []string{
 		"monitor instance",
-		"monitor.iscc.codes",
 		"hubs followed",
 		`src="/_ds/iscc-logo.svg"`,     // the shared-chrome ISCC logo (web.LogoPath)
 		`href="/_ds/site.css"`,         // the shared site-chrome stylesheet (web.SiteCSSPath)

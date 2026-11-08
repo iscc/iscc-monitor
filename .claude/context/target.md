@@ -1,8 +1,9 @@
 # Target — iscc-monitor v1
 
 > Authoritative specs: `.claude/prd/0001-iscc-monitor-v1.md`, `.claude/plans/cosmic-baking-octopus.md`,
-> `.claude/adr/0001`–`0015` (deployment/packaging = ADR-0013, OpenAPI + hosted API docs = ADR-0014,
-> brand edition 01 + shared site chrome + operator co-branding = ADR-0015),
+> `.claude/adr/0001`–`0016` (deployment/packaging = ADR-0013, OpenAPI + hosted API docs = ADR-0014,
+> brand edition 01 + shared site chrome + operator co-branding = ADR-0015, deferred verifier app =
+> ADR-0016),
 > glossary in `CLAUDE.md`. Where this file
 > and an ADR/PRD disagree, the ADR/PRD wins. This file is the *fixed target* the CID loop advances toward
 > — the desired end-state plus the bar every increment is verified against.
@@ -188,9 +189,9 @@ equivalent) and the deviation is flagged, not silently dropped. Visual polish be
 level (exact spacing, weight, "feel") is **not** an autonomous per-iteration pass/fail gate, but is no longer left unverified: when a diff touches an SSR surface, the `review` step runs a headless **visual pass** with `agent-browser` (ADR-0012) — it screenshots the changed surface and its `.dc.html` mockup and files the visual deltas as `issues.md` entries (generative, best-effort; it degrades gracefully and never stalls the loop when the browser is unavailable). The residual aesthetic judgement is a **mandatory M-UI exit gate**: M-UI does not reach DONE until every surface has passed that visual pass and a human has signed off, deviations filed as issues. Two cross-cutting
 requirements hold on every surface:
 - **Document chrome + instance identity.** Every surface carries the shared handoff header: the ISCC logo
-  + "Trust & Transparency Monitor" mark, the **instance-identity** block (this instance's domain +
-  operator + realm), and the **`verify ↗ monitor.iscc.codes`** tier-2 link — legible instance identity
-  (handoff invariant 9) and the tier-1/tier-2 split present on the page itself.
+  + "Trust & Transparency Monitor" mark and the **instance-identity** block (this instance's domain +
+  operator + realm) — legible instance identity (handoff invariant 9). The mockups' `verify ↗
+  monitor.iscc.codes` link is omitted while the verifier app is deferred (ADR-0016).
 - **Navigation closure.** The `/` → hub dossier → log browser → single record → certificate chain is
   fully traversable with **JavaScript disabled**: forward links *and* `←` breadcrumb back-links both
   present, so the index is enterable and no surface is a dead end. Two links this concretely requires: the
@@ -232,21 +233,20 @@ Per-surface landmark regions (each keyed to its mockup file under `.claude/desig
   the numbered clauses **§1 Subject · §2 Checkpoint (size, root) · §3 Inclusion proof
   (leaf→siblings→root) · §4 Signing key (did:web) · §5 Bitcoin anchor · §6 Record history** (incl. any
   deletion); the **two-tier honesty** panel (Tier 1 "the monitor's account" vs Tier 2 "you verify
-  yourself"); the **Download proof bundle** primary action + "Verify independently →" link; the "Cite as
+  yourself"); the **Download proof bundle** primary action (the mockup's "Verify independently →" link is omitted, ADR-0016); the "Cite as
   / verifiable cache" footer.
 
-The `HubStatusBadge` partial follows `HubStatusBadge.dc.html`; Surface C's verifier app follows
-`ISCC Monitor - Independent Verification.dc.html` in the WASM milestone below.
+The `HubStatusBadge` partial follows `HubStatusBadge.dc.html`. Surface C's verifier app
+(`ISCC Monitor - Independent Verification.dc.html`) is deferred (ADR-0016).
 
 ### WASM verifier upgrade  `[not started]`
 
 `internal/proof/verify` → `GOOS=js GOARCH=wasm`, lazy-loaded progressive enhancement that elevates the
-Evidence Ledger's **tier-2** result ("your browser verified…") on the M-UI certificate/dossier, plus the
-standalone **Independent Verification** verifier app (`ISCC Monitor - Independent Verification.dc.html`,
-Surface C) at `monitor.iscc.codes` (monitor-agnostic
-via `?monitor=<url>`); reproducible build + published hash + SRI pin (ADR-0003, ADR-0010). **Verify:**
-identical vectors yield identical verdicts (WASM vs server); the verifier artifact hash matches the
-published value; a `(size, root)` mismatch renders the guided split-view alert, not a dead error.
+Evidence Ledger's **tier-2** result ("your browser verified…") on the M-UI certificate/dossier;
+reproducible build + published hash + SRI pin (ADR-0003, ADR-0010). The standalone **Independent
+Verification** verifier app (Surface C, `monitor.iscc.codes`) is **deferred** (ADR-0016); it returns,
+redesigned, on another domain. **Verify:** identical vectors yield identical verdicts (WASM vs server);
+the verifier artifact hash matches the published value.
 
 ### OTS / Bitcoin anchoring  `[not started]`
 

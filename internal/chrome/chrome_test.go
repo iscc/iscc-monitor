@@ -1,8 +1,6 @@
 // Tests for the shared chrome: Site.View applies the static fallbacks and carries the
-// co-branding, Verifier returns the fixed verifier-app chrome, the version links to
-// its exact source, and the rendered partials show (and escape) exactly what the view
-// holds — the operator co-brand only when configured, the instance links only on an
-// instance.
+// co-branding, the version links to its exact source, and the rendered partials show
+// (and escape) exactly what the view holds — the operator co-brand only when configured.
 package chrome
 
 import (
@@ -58,8 +56,8 @@ func TestSiteViewFallbacks(t *testing.T) {
 	if v.Instance != instanceFallback || v.Operator != operatorFallback {
 		t.Errorf("identity = %q / %q, want the static fallbacks", v.Instance, v.Operator)
 	}
-	if v.Sub != subEvidence || v.VerifyHref != verifierURL || !v.InstanceLinks {
-		t.Errorf("view = %+v, want the evidence subtitle, the verifier link, and instance links", v)
+	if v.Sub != subEvidence {
+		t.Errorf("view = %+v, want the evidence subtitle", v)
 	}
 	if v.OperatorName != "" || v.OperatorURL != "" || v.OperatorLogo != "" || len(v.Links) != 0 {
 		t.Errorf("view = %+v, want no operator co-brand", v)
@@ -77,16 +75,6 @@ func TestSiteViewCarriesBranding(t *testing.T) {
 	}
 	if v.OperatorLogo != web.OperatorLogoPath {
 		t.Errorf("OperatorLogo = %q, want %q", v.OperatorLogo, web.OperatorLogoPath)
-	}
-}
-
-func TestVerifierView(t *testing.T) {
-	v := Verifier()
-	if v.Instance != "monitor.iscc.codes" || v.VerifyHref != "/" || v.InstanceLinks {
-		t.Errorf("Verifier() = %+v, want the fixed verifier identity, a self link, and no instance links", v)
-	}
-	if v.OperatorName != "" || v.OperatorLogo != "" || len(v.Links) != 0 {
-		t.Errorf("Verifier() = %+v, want no operator co-brand", v)
 	}
 }
 
@@ -130,16 +118,15 @@ func TestRenderUnconfigured(t *testing.T) {
 	for _, want := range []string{
 		`<a class="chrome-home" href="/"><img class="chrome-logo" src="/_ds/iscc-logo.svg" alt="ISCC Monitor home"`,
 		`<div class="chrome-instance">monitor instance</div>`,
-		`<a class="chrome-verify" href="https://monitor.iscc.codes/">`,
 		`ISCC Trust &amp; Transparency Monitor · <span class="site-footer-version">dev</span>`,
 		`Open source software by the ISCC Foundation · Apache-2.0 · <a href="https://github.com/iscc/iscc-monitor">Source</a>`,
-		`<a href="/docs">API docs</a> · <a href="https://monitor.iscc.codes/">Verify independently ↗</a>`,
+		`<nav class="site-footer-nav" aria-label="Monitor"><a href="/docs">API docs</a></nav>`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("unconfigured chrome missing %q\n%s", want, out)
 		}
 	}
-	for _, absent := range []string{"chrome-cobrand", "site-footer-operator", "Operated by"} {
+	for _, absent := range []string{"chrome-cobrand", "site-footer-operator", "Operated by", "monitor.iscc.codes", "Verify independently"} {
 		if strings.Contains(out, absent) {
 			t.Errorf("unconfigured chrome contains %q\n%s", absent, out)
 		}
@@ -193,18 +180,6 @@ func TestRenderEscapesOperatorValues(t *testing.T) {
 	for _, banned := range []string{"<script>", "<b>x</b>", `"><img src=x>`, "javascript:"} {
 		if strings.Contains(out, banned) {
 			t.Errorf("chrome renders unescaped %q\n%s", banned, out)
-		}
-	}
-}
-
-func TestRenderVerifier(t *testing.T) {
-	out := render(t, Verifier())
-	if !strings.Contains(out, `<a class="chrome-verify" href="/">`) {
-		t.Errorf("verifier chrome missing its self link\n%s", out)
-	}
-	for _, absent := range []string{`href="/docs"`, "Verify independently", "Operated by"} {
-		if strings.Contains(out, absent) {
-			t.Errorf("verifier chrome contains %q\n%s", absent, out)
 		}
 	}
 }

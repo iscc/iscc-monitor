@@ -444,7 +444,7 @@ func TestRecordRendersInMemoryStatus(t *testing.T) {
 // navigation chrome's named regions: the "← Log browser" breadcrumb back to the record
 // list (a relative records target, the same /log/ subtree the record-row links share)
 // with the bare-domain trailing crumb, plus the shared chrome's instance-identity
-// masthead + the static "verify ↗ monitor.iscc.codes" tier-2 link. It is mutation-proven:
+// masthead. It is mutation-proven:
 // removing the breadcrumb link FAILS, and threading a constant instead of the
 // {{.Instance}} / {{.Operator}} bindings FAILS the populated-identity assertions because
 // the exact operator strings would no longer appear.
@@ -467,8 +467,6 @@ func TestRecordBreadcrumbAndChromeIdentity(t *testing.T) {
 		`class="chrome-identity"`,               // the instance-identity block
 		"monitor.example.test",                  // the operator-supplied instance line
 		"operated by Example Org · example net", // the operator-supplied operator line
-		"monitor.iscc.codes",                    // the tier-2 verify link copy
-		`href="https://monitor.iscc.codes/"`,    // the tier-2 verify link target
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing chrome/breadcrumb region %q\n%s", want, body)

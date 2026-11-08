@@ -230,6 +230,16 @@ type certData struct {
 	// IsccID is the subject id: canonical once it decodes, otherwise the caller's
 	// string as supplied. It is shown even on a not-found.
 	IsccID string
+	// IsccIDBody is the canonical id without its "ISCC:" prefix. The subject bar
+	// renders "ISCC:" and the body with a line-break opportunity between them, so a
+	// narrow screen never splits the id itself. Set only when Certifiable.
+	IsccIDBody string
+	// IssuedAt is when this page was rendered, in UTC. The seal carries its date and
+	// the caption beneath it the time, so a saved or printed certificate states the
+	// moment its evidence describes.
+	IssuedAt time.Time
+	// Seal is the personalised ISCC Trust Seal, set only when Certifiable.
+	Seal template.HTML
 	// BundleHref is the path-rooted, ISCC:-prefix-free href the "Download proof
 	// bundle" action links to (/inclusion/<bare-id>.bundle). It is built canonically
 	// — a leading slash and the stripped ISCC: prefix both remove the scheme
@@ -601,6 +611,10 @@ func Handler(hubList registry.HubResolver, st *store.Store, statuses StatusSourc
 		// certData{} literal early-return branches would bypass it) so every honest 200
 		// carries the configured chrome, on the certifiable AND cannot-certify path.
 		data.Chrome = view
+		data.IssuedAt = time.Now().UTC()
+		if data.Certifiable {
+			data.Seal = trustSeal(data.IsccID, data.IssuedAt)
+		}
 		var buf bytes.Buffer
 		if err := tmpl.Execute(&buf, data); err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -902,6 +916,7 @@ func buildData(r *http.Request, hubList registry.HubResolver, st *store.Store, r
 	// default (seqs ascending), matching serveVerify. Nothing about the id is
 	// interpreted.
 	data.Certifiable = true
+	data.IsccIDBody = strings.TrimPrefix(canonicalID, "ISCC:")
 	data.Position = seqs[0]
 	// Build the proof-bundle download href canonically: path-rooted at the mount
 	// (PathPrefix) and ISCC:-prefix-free. cert.html cannot use .IsccID here —

@@ -143,10 +143,9 @@ func TestRecordsLinksTokensNoCDN(t *testing.T) {
 	if strings.Contains(body, "<table") {
 		t.Errorf("body still contains a <table> element; the ledger redress is incomplete\n%s", body)
 	}
-	// monitor.iscc.codes is the one intentional external https origin (the verifier
-	// app, same-federation, not a third-party asset CDN), so the ban targets known
-	// third-party CDN hosts and bare http://, not every https:// substring — matching
-	// the dossier / browser masthead no-CDN ban now that the chrome carries the link.
+	// Hyperlinks to other origins (the footer's source link) are navigation, not
+	// loads, so the ban targets known third-party CDN hosts and bare http://, not every
+	// https:// substring — matching the dossier / browser no-CDN ban.
 	for _, banned := range []string{"jsdelivr", "cdn.", "unpkg", "googleapis", "http://"} {
 		if strings.Contains(body, banned) {
 			t.Errorf("body contains external CDN reference %q\n%s", banned, body)
@@ -634,14 +633,11 @@ func TestRecordsHeadAndBreadcrumb(t *testing.T) {
 }
 
 // TestRecordsChromeInstanceIdentity asserts the record list carries the shared chrome's
-// instance-identity masthead + the static "verify ↗ monitor.iscc.codes" tier-2 link, the
-// SAME chrome.Site value the dashboard and dossier mastheads receive: a populated
-// Identity surfaces its exact Instance / Operator strings, while the verify link is the
-// fixed monitor.iscc.codes target. It is non-vacuous — threading a constant default
-// instead of the supplied value, or dropping the {{.Instance}} / {{.Operator}} bindings,
-// fails the populated-identity assertions because the exact operator strings would no
-// longer appear. The no-CDN body invariant still holds (the verify host is the only
-// external https origin, asserted CDN-free by TestRecordsLinksTokensNoCDN).
+// instance-identity masthead, the SAME chrome.Site value the dashboard and dossier
+// mastheads receive: a populated Identity surfaces its exact Instance / Operator strings.
+// It is non-vacuous — threading a constant default instead of the supplied value, or
+// dropping the {{.Instance}} / {{.Operator}} bindings, fails the populated-identity
+// assertions because the exact operator strings would no longer appear.
 func TestRecordsChromeInstanceIdentity(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
 	idv := chrome.Site{
@@ -659,11 +655,9 @@ func TestRecordsChromeInstanceIdentity(t *testing.T) {
 		`class="chrome-identity"`,               // the instance-identity block
 		"monitor.example.test",                  // the operator-supplied instance line
 		"operated by Example Org · example net", // the operator-supplied operator line
-		"monitor.iscc.codes",                    // the tier-2 verify link copy
-		`href="https://monitor.iscc.codes/"`,    // the tier-2 verify link target
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("body missing chrome instance-identity / verify marker %q\n%s", want, body)
+			t.Errorf("body missing chrome instance-identity marker %q\n%s", want, body)
 		}
 	}
 	// A zero-value Identity falls back to the static placeholder copy (the neutral

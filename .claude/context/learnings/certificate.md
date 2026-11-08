@@ -195,3 +195,9 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 - **`bundle.Hub.DID` shares §4's `didWeb(domain)` helper** (one encoder, two surfaces) so a
   `host:port` hub's bundle DID is `did:web:host%3Aport` while `bundle.Hub.Domain` stays the verbatim
   `host:port`. settled: pinned by `TestCertificateProofBundleDIDPortEncoded` (git history).
+- **The ISCC Trust Seal is a brand-kit file, not ours to edit** (ADR-0015 addendum). Copy a rebuilt
+  `iscc-brand/build/seal/iscc-trust-seal.template.svg` over `iscc-trust-seal.template.svg` byte-for-byte;
+  `trustSeal` substitutes `{{ISCC_ID}}` (exactly `ISCC:` + 16 base32) and `{{DATE}}` (YYYY-MM-DD), and
+  returns no seal for any other id shape, because every lettering glyph has a fixed position. Only
+  `Certifiable` pages get it; a test must match the seal by its aria-label, not by a CSS class name (the
+  page stylesheet names classes even when nothing renders).

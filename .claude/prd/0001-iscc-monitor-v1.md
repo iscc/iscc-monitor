@@ -4,6 +4,8 @@
 > Synthesized from the grilling/domain-modeling session. Authoritative decisions live in `.claude/adr/0001–0011`,
 > vocabulary in `CONTEXT.md`, the build plan in `.claude/plans/cosmic-baking-octopus.md`, and the cross-repo asks in
 > `.claude/iscc-hub-side-changes.md`. Where this PRD and an ADR disagree, the ADR wins.
+> The verifier app on `monitor.iscc.codes` (stories 5, 9 and 10, and the verifier-app passages below) is
+> deferred by ADR-0016; the certificate's in-browser re-check remains.
 
 ## Problem Statement
 

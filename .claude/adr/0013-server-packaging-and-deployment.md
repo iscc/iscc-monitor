@@ -4,6 +4,8 @@ status: accepted
 
 # Server packaging & deployment: a container image published to GHCR
 
+> The independent verifier app on `monitor.iscc.codes` is deferred by ADR-0016.
+
 PRD story 13 already scopes "a single static binary **plus a container image**, so
 that deployment is trivial and matches the hub's release flow." The static binary
 exists (`cmd/iscc-monitor`, `CGO_ENABLED=0`, ADR-0003), but the **container image

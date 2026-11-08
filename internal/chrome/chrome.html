@@ -19,7 +19,6 @@
       <div class="chrome-instance">{{.Instance}}</div>
       <div class="chrome-operator">{{.Operator}}</div>
     </div>
-    <a class="chrome-verify" href="{{.VerifyHref}}">verify ↗ monitor.iscc.codes</a>
   </div>
 </header>
 {{- end}}
@@ -31,9 +30,7 @@
       <div class="site-footer-product">ISCC Trust &amp; Transparency Monitor · <span class="site-footer-version">{{if .VersionURL}}<a href="{{.VersionURL}}">{{.Version}}</a>{{else}}{{.Version}}{{end}}</span></div>
       <div>Open source software by the ISCC Foundation · Apache-2.0 · <a href="https://github.com/iscc/iscc-monitor">Source</a></div>
     </div>
-    {{- if .InstanceLinks}}
-    <nav class="site-footer-nav" aria-label="Monitor"><a href="/docs">API docs</a> · <a href="https://monitor.iscc.codes/">Verify independently ↗</a></nav>
-    {{- end}}
+    <nav class="site-footer-nav" aria-label="Monitor"><a href="/docs">API docs</a></nav>
     {{- if or .OperatorName .Links}}
     <div class="site-footer-operator">
       {{- if .OperatorName}}Operated by {{if .OperatorURL}}<a href="{{.OperatorURL}}">{{.OperatorName}}</a>{{else}}{{.OperatorName}}{{end}}{{end}}

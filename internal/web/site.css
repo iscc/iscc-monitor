@@ -1,7 +1,7 @@
 /* ISCC Monitor shared site chrome: the masthead and footer partials
    (internal/chrome), the brand buttons, and the keyboard-focus outline. Every
-   server-rendered page and the verifier app link this stylesheet after tokens.css,
-   so the chrome is styled once. Values follow the ISCC brand guidelines, edition 01
+   server-rendered page links this stylesheet after tokens.css, so the chrome is
+   styled once. Values follow the ISCC brand guidelines, edition 01
    (ADR-0015). It references no external URL. */
 
 /* ---------- Keyboard focus: 2px ISCC Blue outline, 4px offset ---------- */
@@ -98,15 +98,6 @@
 .chrome-operator {
   font-size: var(--text-xs);
   color: var(--text-muted);
-}
-/* The link to the monitor-agnostic verifier app (monitor.iscc.codes). */
-.chrome-verify {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--text-link);
-  border: var(--border-width) solid var(--border-default);
-  border-radius: var(--radius-xs);
-  padding: var(--space-2) var(--space-3);
 }
 
 /* ---------- Footer ---------- */

@@ -5,7 +5,8 @@ status: accepted
 # Evidence-Ledger frontend direction and ISCC Design System adoption
 
 > Token values, the masthead and footer, and the brand buttons are amended by ADR-0015 (ISCC
-> brand guidelines edition 01). The page layouts and invariants below are unchanged.
+> brand guidelines edition 01). The page layouts and invariants below are unchanged. Surface C, the
+> verifier app on `monitor.iscc.codes`, and the masthead link to it are deferred by ADR-0016.
 
 The v1 web surfaces (dashboard, log browser, verifier app) were specified
 functionally (PRD §8, ADR-0003) but with **no chosen visual direction**. The UX

@@ -509,31 +509,8 @@ filed it and does **not** affect priority.
   `registry`/`username`/`password`, `build-push-action@v7` keeps `context`/`file`/`push`/`tags`/`build-args`,
   so the existing usage stays valid. Verify fixed: `! grep -RqE "docker/login-action@v3|docker/build-push-action@v6"
   .github/workflows/` AND a dispatched `publish.yml` run is green with NO Node-20 deprecation annotation.
-- **Spec:** ADR-0013 server packaging (GHCR publish); CLAUDE.md "Building the Surface-C verifier site"
-  (workflow maintenance); `learnings/ci.md` §publish (docker actions ARE node20).
-
-## `cmd/verifier-site` `generate` writes non-atomically — a mid-run error leaves a partial deploy tree
-- **Priority:** low
-- **Source:** [review] (Codex P3, reviewer-confirmed against the code)
-- **What / where / how to verify:** `cmd/verifier-site/main.go` `generate` writes `index.html` first
-  (`main.go:66`) and then render-then-writes each `/_ds/` asset in the `for _, p := range paths` loop
-  (`main.go:85-93`). If a LATER step fails — a future `/_ds/` path that 404s (the fail-closed branch),
-  or a `writeFile` error (e.g. `_ds` already exists as a *file* under a reused `-out`) — `generate`
-  returns an error but `index.html` (and any already-written assets) are ALREADY on disk, leaving a
-  partially-updated tree in a reused `dist/`. The generator's stated contract ("fails closed … rather
-  than writing a partial site", `main.go` docstring + next.md) is honored at the run level (it errors →
-  `os.Exit(1)` → CI/`TestGenerate` catches it, so a broken deploy is NEVER silently published), but NOT
-  at the output level: the directory itself is left half-written. NOT a current hazard — `TestGenerate`
-  uses a fresh `t.TempDir()`, the happy path materializes the full 14-file tree, and the Pages publish
-  workflow (next sub-step) gates on the non-zero exit. Reviewer-confirmed by inspection (write-before-
-  later-render ordering). Fix when the generator is next touched: stage into a temp dir and
-  `os.Rename` it into place on success, OR buffer every handler response (collect all `(path, body)`
-  pairs) before the first `writeFile`, so `outDir` is updated atomically. Verify fixed: force a mid-run
-  render error (e.g. inject a 404 path) and assert `outDir` is left unchanged (no stale `index.html`);
-  reverting the staging makes it FAIL. Low — skipped by the loop; the run-level fail-closed is intact.
-- **Spec:** next.md "fail closed so a broken deploy is caught … not in production"; `main.go` docstring
-  ("errors rather than writing a partial site"); learnings.md always-loaded fail-closed discipline;
-  `learnings/verifier-site.md` non-atomic-output note.
+- **Spec:** ADR-0013 server packaging (GHCR publish); `learnings/ci.md` §publish (docker actions ARE
+  node20).
 
 ## `.dockerignore` secret/sidecar globs are slashless — they only exclude CONTEXT-ROOT files, not nested ones
 - **Priority:** low

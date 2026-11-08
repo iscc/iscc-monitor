@@ -99,7 +99,7 @@ const FaviconPath = "/_ds/favicon.svg"
 
 // OperatorLogoPath is the exact path an instance serves its operator's logo at, when
 // ISCC_MONITOR_OPERATOR_LOGO configures one. The binary mounts ImageHandler there; the
-// /_ds/ subtree Handler itself never serves it, so the static verifier site has none.
+// /_ds/ subtree Handler itself never serves it.
 const OperatorLogoPath = "/_ds/operator-logo"
 
 // ElementsJSPath is the stable exact path the self-hosted Stoplight Elements

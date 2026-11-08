@@ -4,6 +4,8 @@ status: accepted
 
 # Three trust dimensions, and an in-browser verifier for non-technical users
 
+> The independent verifier app on `monitor.iscc.codes` is deferred by ADR-0016.
+
 Verifying the monitor is not one trust question but three orthogonal ones, with
 different parties in the trust path:
 

@@ -2,8 +2,8 @@
 // helper pins the no-CDN invariant (ADR-0010): a page loads every stylesheet, script,
 // image, and font from its own origin, so it renders offline and from one binary with
 // no third-party dependency in the page-load path. Hyperlinks are navigation, not page
-// loads, so a page may link to another origin, such as the independent verifier at
-// monitor.iscc.codes or the source repository.
+// loads, so a page may link to another origin, such as the source repository or an
+// operator's imprint.
 package webtest
 
 import (
