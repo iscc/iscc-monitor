@@ -9,7 +9,7 @@
 // observable store outputs (ReadTileBlob / ReadEntryBundleBlob), never follower
 // internals.
 //
-// The rest of the file pins the follow-traffic contract (target.md) at the
+// The rest of the file pins the follow-traffic contract (CLAUDE.md "Mirror") at the
 // outbound-fetch seam — the URLs the injected Fetcher actually saw, never follower
 // internals: an unchanged tree re-fetches only partials
 // (TestIngestTilesSkipsMirroredFullCoords), a grown tree fetches only the coords the

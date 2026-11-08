@@ -18,8 +18,8 @@
 // not yet reached ABSENT, and the next poll fetches them (a coord is skipped only
 // when its bytes are already stored). Recovery is therefore fill-the-gaps, never
 // overwrite: bytes already mirrored at full width are trusted as-is and are never
-// re-fetched, so a completed coord that is wrong in the mirror stays wrong. Nothing
-// in this walk repairs it — see issues.md "The mirror has no repair path".
+// re-fetched, so a normal walk leaves a completed coord that is wrong in the mirror as
+// it is. Only the force walk re-fetches it (see ingestTiles).
 //
 // Fetch only what can have changed (ADR-0005 partial-tile discipline). A completed
 // tlog-tiles tile or entry bundle is immutable — hubs serve those paths
@@ -96,8 +96,8 @@ func mirroredFullTiles(ctx context.Context, st *store.Store, hubID int64, force 
 // not a gap — the bytes are in the store, which is what the fsck rebuild, the
 // consistency proof, and the served mirror all read. Membership is decided by the
 // width column alone: the stored bytes are trusted UNVALIDATED, so a completed coord
-// that is wrong in the mirror is skipped forever (issues.md "The mirror has no repair
-// path").
+// that is wrong in the mirror is skipped unless force is set (the repair path,
+// see ingestTiles).
 func ingestHashTiles(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hubID int64, baseURL string, treeSize uint64, observedAt time.Time, force bool) error {
 	mirrored, err := mirroredFullTiles(ctx, st, hubID, force)
 	if err != nil {

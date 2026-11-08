@@ -8,8 +8,7 @@
 .git
 
 # Gitignored reference trees: cauldron/ pulls external deps the root module
-# lacks, so its presence breaks `go build ./...` (see learnings: cauldron breaks
-# a fresh build).
+# lacks, so its presence breaks `go build ./...`.
 cauldron/
 
 # Compiled monitor binaries — the 26MB artifacts `go build` emits at the repo
@@ -19,7 +18,7 @@ cauldron/
 
 # Local SQLite databases and WAL/SHM sidecars — runtime state, never source. The
 # `*.db`/`*.sqlite*` globs do NOT match the `-wal`/`-shm` sidecars, so list those
-# explicitly. (.claude/settings.local.json is already covered by the .claude/ line.)
+# explicitly.
 *.db
 *.sqlite
 *.sqlite3

@@ -7,20 +7,15 @@ to trust the monitor itself.
 
 ## Development
 
-Stack: **Go 1.26, `CGO_ENABLED=0`**, module `github.com/iscc/iscc-monitor` (ADR-0003, bumped from
-1.24 to consume the iscc-lib Go codec — ADR-0011; the config bump + dependency add is the active
-build increment). ISCC en/decoding **reuses `github.com/iscc/iscc-lib/packages/go`** (pure-Go,
+Stack: **Go 1.26, `CGO_ENABLED=0`**, module `github.com/iscc/iscc-monitor` (ADR-0003, ADR-0011). ISCC en/decoding **reuses `github.com/iscc/iscc-lib/packages/go`** (pure-Go,
 conformance-tested vs `iscc-core`) for generic ISO 24138 codec work; ISCC-IDv1 stays the interim
 in-repo port `internal/index.Decode` until iscc-lib ships it (ADR-0011). Quality gates run via
 **mise** — `mise run check` (build + vet + test) must stay green; formatting via
 `mise run fmt` / `gofmt -l .`.
 
-The project is built by an autonomous **CID loop** (Continuous Iterative Development): the `/build`
-skill runs one verified increment (`update-state → define-next → advance → review`), looped to the
-target by `/goal` or a scheduled task. Specs are the source of truth (`.claude/prd`, `.claude/plans`,
-`.claude/adr`; the chosen **Evidence Ledger** frontend design lives in `.claude/design`, ratified in
-ADR-0010); the loop's moving state lives in `.claude/context/`. See
-`.claude/skills/build/SKILL.md` and `.claude/skills/build/AUTOMATION.md`.
+Specs are the source of truth: the product requirements in `.claude/prd`, the architecture decision
+records in `.claude/adr` and the chosen **Evidence Ledger** frontend design in `.claude/design` (ratified
+in ADR-0010). Other agent tooling under `.claude/` is local and not part of the repository.
 
 ### Licensing
 
@@ -31,19 +26,20 @@ asset also needs an entry in `vendoredAssets` in `cmd/notices/main.go`.
 
 ### Releasing
 
-Releases are cut by a human; the CID loop never commits to `main` or creates tags.
+Releases are cut by a human; automation never commits to `main` or creates tags.
 
 1. On `develop`, add a `## [X.Y.Z] - <date>` section and its link reference to `CHANGELOG.md`, written by
-   hand for readers rather than generated from the `cid(...)` commit history.
+   hand for readers rather than generated from the commit history.
 2. Merge `develop` into `main` through a CI-gated PR, using a **merge commit**. A squash would make the
    branches diverge.
 3. Tag `main` and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. `.github/workflows/release.yml`
    re-runs CI and `govulncheck`, then publishes the `:vX.Y.Z`, `:latest` and `:sha-<short>` images and a
    GitHub Release. Never move or reuse a published tag, because the Go module proxy can cache it permanently;
    publish a new patch version instead.
-4. A release deploys nothing. Ask iscc-infra to pin the new `:vX.Y.Z` tag, testnet first.
+4. A release deploys nothing. Ask the operators of the Foundation's instances to pin the new `:vX.Y.Z`
+   tag, testnet first.
 
-Stay below `1.0.0` until the v1 target is reached (`.claude/context/target.md`, ADR-0013).
+Stay below `1.0.0` until the v1 target is reached (ADR-0013).
 
 ### Documentation site
 
@@ -115,20 +111,16 @@ always stay:
 
 The footer also shows the running version (`/version`), linked to its GitHub release or commit.
 
-Run it against the testnet realm with a short poll cadence:
+Run it against the testnet Hub-List with a short poll cadence:
 
 ```sh
-go build -o /tmp/iscc-monitor ./cmd/iscc-monitor
-ISCC_MONITOR_DB=/tmp/monitor-dev.db \
-ISCC_MONITOR_REALM=internal/registry/testdata/realm.txt \
+go build -o iscc-monitor ./cmd/iscc-monitor
+ISCC_MONITOR_DB=./monitor-test.db \
+ISCC_MONITOR_REALM=https://raw.githubusercontent.com/iscc/iscc-hub/refs/heads/main/hubs/testnet.yaml \
 ISCC_MONITOR_NORMAL=30s \
-ISCC_MONITOR_ADDR=0.0.0.0:41464 \
-/tmp/iscc-monitor
+ISCC_MONITOR_ADDR=127.0.0.1:41464 \
+./iscc-monitor
 ```
-
-**Dev container:** `.devcontainer/devcontainer.json` publishes `41464:41464` (`runArgs`), so binding to
-`0.0.0.0:41464` (not `127.0.0.1`) makes the instance reachable from the host at `http://localhost:41464`
-after a container rebuild.
 
 After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSON / text / Prometheus;
 `GET /` now serves a minimal server-rendered HTML dashboard (links the shared DS token stylesheet, no JS):
@@ -293,7 +285,7 @@ _Avoid_: "the monitor" when you mean a specific instance
 **Verifier app**:
 A monitor-agnostic in-browser verifier on its own origin, separate from any
 instance, that re-verifies an instance's data client-side. **Deferred**
-(ADR-0016): v0.1.0 ships none, and `monitor.iscc.codes` hosts this app's
+(ADR-0016): v0.1.0 ships none, and `monitor.iscc.codes` hosts the monitor's
 documentation instead. The certificate's in-browser re-check runs on the instance
 itself and is not this app.
 
@@ -305,8 +297,7 @@ BLOBs in SQLite (not a filesystem tree), served at canonical tlog-tiles paths, a
 if the hub goes offline. It is also the follower's **fetch cache**: a completed
 (full-width) tile or bundle is immutable, so once mirrored it is never re-fetched,
 and a poll's outbound cost tracks the tree's growth rather than its size. Partials
-(`.p/<W>`) and the checkpoint are always fetched fresh — see target.md's
-*Follow-traffic contract*.
+(`.p/<W>`) and the checkpoint are always fetched fresh.
 
 **Irreplaceable evidence**:
 The monitor records that can never be regenerated: observed checkpoints, split-view

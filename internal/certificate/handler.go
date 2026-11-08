@@ -52,7 +52,7 @@
 // detect a split view (CLAUDE.md "Comparison anchor") — bounded by the coverage window
 // (ADR-0001). It is a SEPARATE, distinctly-labelled element from §5: it does not depend
 // on the OTS row (a hub with no §5 still renders it) and carries no "anchoring"/Bitcoin
-// copy (target.md: "anchoring" stays Bitcoin-only). target.md mandates this panel the
+// copy ("anchoring" stays Bitcoin-only). The requirements mandate this panel the
 // certificate mockup omits (design-parity: the constraint wins over the mockup).
 //
 // The downloadable proof bundle is served at GET /inclusion/{iscc_id}.bundle: a
@@ -399,13 +399,13 @@ type certData struct {
 	// (CLAUDE.md "Comparison anchor"; NOT a witness, the deferred M7 role). It is the §2
 	// accepted (size, root) reframed as the monitor's own observation, bounded by the
 	// coverage window — never Bitcoin, never a re-verification, never "anchoring" copy
-	// (target.md: "anchoring" stays Bitcoin-only). It is set inside the HasClause2 guard
+	// ("anchoring" stays Bitcoin-only). It is set inside the HasClause2 guard
 	// (the anchor is meaningful only when there is an accepted (size, root) to anchor),
 	// so a hub WITH no §5 OTS row still renders it (it does NOT depend on the Bitcoin
 	// anchor — the two panels are decoupled, distinctly-labelled elements).
 	//
 	// Mockup deviation (design-parity rule: the constraint wins over the mockup):
-	// target.md mandates a comparison-anchor panel the certificate mockup omits, so this
+	// the requirements mandate a comparison-anchor panel the certificate mockup omits, so this
 	// panel is rendered beyond the mockup. Flagged here rather than silently dropped.
 	HasComparisonAnchor bool
 	// HasCoverageWindow reports whether the monitor has a recorded coverage window for
@@ -839,7 +839,7 @@ func coveringAnchor(ctx context.Context, st *store.Store, f store.SQLiteFetcher,
 //     this hub showed THIS monitor (CLAUDE.md "Comparison anchor"), bounded by the
 //     coverage window (followedHub's Coverage, no new read). It is a SEPARATE,
 //     distinctly-labelled element from §5 — it does not depend on the OTS row — and
-//     carries no "anchoring"/Bitcoin copy (target.md invariant). No new error path.
+//     carries no "anchoring"/Bitcoin copy. No new error path.
 //  10. For a certifiable id, list the §6 RECORD HISTORY: the accepted-tree seqs (seq <
 //     LastSize) from the same SeqsForISCCID result, each read via RecordAt for its
 //     note.$schema and labelled by recordKind (declaration / deletion / unknown). It
@@ -1131,7 +1131,7 @@ func buildData(r *http.Request, hubList registry.HubResolver, st *store.Store, r
 	//   - A parseable, digest-bound proof: render §5. A Bitcoin-attested proof shows the
 	//     confirming block height (+ the upgrade instant when the row carries one); a
 	//     calendar-only proof shows the honest "pending" state (calendar-asserted,
-	//     awaiting Bitcoin confirmation), never an error (target.md: a not-yet-anchored
+	//     awaiting Bitcoin confirmation), never an error (a not-yet-anchored
 	//     root renders the normal "pending" state). Only a genuine OTSForRoot DB fault is
 	//     a 500 (buffered before any 200, like every other clause).
 	if data.HasClause2 && !data.HasClause5 {
@@ -1162,7 +1162,7 @@ func buildData(r *http.Request, hubList registry.HubResolver, st *store.Store, r
 		// data.CheckpointRoot), PLUS the coverage window that bounds the claim (ADR-0001:
 		// guarantees hold only from coverage start). It is a SEPARATE, distinctly-labelled
 		// element from the §5 Bitcoin anchor: it does NOT depend on the OTS row, so a hub
-		// with no §5 still renders it (target.md: the two anchor panels are decoupled and
+		// with no §5 still renders it (the two anchor panels are decoupled and
 		// "anchoring" copy stays Bitcoin-only). No new error path — the data is already in
 		// hand, so this panel cannot 500 on its own; it renders inside the HasClause2
 		// guard and stays absent (like §2) when there is no accepted checkpoint. The

@@ -2,7 +2,7 @@
 // from a hub's mirrored hash tiles — the proof *source* the equivocation trigger
 // (CheckEquivocation) consumes. It is a port of tessera's
 // client.ProofBuilder.ConsistencyProof / fetchNodes / nodeCache.GetNode
-// (cauldron/tessera/client/client.go), stripped of its otel spans and its
+// (tessera's client/client.go), stripped of its otel spans and its
 // net/http TileFetcherFunc so it stays a pure, WASM-shareable leaf: the only
 // dependency on the outside world is an injected tile-fetch closure.
 //

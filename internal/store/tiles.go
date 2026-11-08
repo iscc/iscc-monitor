@@ -14,7 +14,7 @@
 // only for a full tile (width == 256, per tiles.IsFull); a partial is width < 256
 // with is_full = 0. A partial re-fetched at the SAME width overwrites in place via the
 // composite-PK upsert; because width is part of that key, a partial that GAINS leaves
-// lands as a new row instead (issues.md "Partial tile/bundle rows accumulate"). A full
+// lands as a new row instead, so partial rows accumulate. A full
 // tile is immutable, so an idempotent re-write of identical bytes is harmless. sha256
 // is recorded for fsck cross-checks and updated_at from the caller-supplied observedAt
 // (mirroring RecordHubKey, which takes a time rather than calling time.Now()).
@@ -23,9 +23,10 @@
 // ingest walk act on that discipline: they name the coords whose bytes are already
 // mirrored at full width, so the mirror serves as the fetch cache for the immutable
 // (completed) part of a hub's log and only partials are re-fetched each poll. Both
-// answer "is a row present at full width", NOT "are the stored bytes correct" —
-// nothing here validates length or re-checks the recorded sha256, so a completed coord
-// admitted with bad bytes is trusted and skipped indefinitely.
+// answer "is a row present at full width", NOT "are the stored bytes correct". The
+// write gates reject a wrong-length body, but nothing re-checks the recorded sha256, so
+// a right-length coord with wrong bytes is skipped until the follower's forced re-walk
+// fetches it again.
 //
 // store stays a leaf: this file uses crypto/sha256 (stdlib) and database/sql only;
 // it does NOT import internal/logclient or anything pulling net/http into the store
@@ -193,7 +194,7 @@ func (s *Store) MirroredFullTiles(ctx context.Context, hubID int64) (map[TileKey
 // same full-width key, same empty-set-not-error contract).
 //
 // The projection half is what makes the set safe to skip on: presence of the BLOB
-// alone does not establish the target.md invariant "a full entry bundle present in
+// alone does not establish the invariant "a full entry bundle present in
 // the mirror implies its iscc_index projection was written". A database written by
 // the earlier record-then-project order — or one whose bundles were mirrored before
 // projection support existed — can hold a full bundle with no index rows, and a

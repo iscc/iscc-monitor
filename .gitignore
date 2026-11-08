@@ -1,5 +1,4 @@
-# Vendored read-only reference copies of sibling-repo files (see .claude/plans).
-# Mirrored locally so plan references resolve without a specific checkout layout.
+# Local reference copies of sibling repositories.
 cauldron/
 
 # Compiled monitor binary — `go build ./cmd/iscc-monitor` emits it at the repo
@@ -10,7 +9,6 @@ cauldron/
 # Local secrets / state — never commit (public-repo safety).
 .env
 .env.*
-.claude/settings.local.json
 **/auth.json
 *.db
 *.sqlite
@@ -19,3 +17,13 @@ cauldron/
 # Documentation site build output and its Python environment (pyproject.toml).
 /site/
 /.venv/
+
+# Local agent tooling and the development container. Of .claude/, only the specs are part of
+# the repository: the decision records, the product requirements, the design and the
+# verifier-key oracle that the Go tests port.
+.claude/*
+!.claude/adr/
+!.claude/prd/
+!.claude/design/
+!.claude/derive_vkey.py
+.devcontainer/

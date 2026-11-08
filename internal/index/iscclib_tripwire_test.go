@@ -15,7 +15,7 @@
 // handles.
 //
 // When upstream iscc/iscc-lib#43 lands ISCC-IDv1 support, IsccDecode will succeed
-// and this assertion flips RED. That is the signal to the next CID loop iteration:
+// and this assertion flips RED. That is the signal to
 // migrate internal/index.Decode to the iscc-lib call and delete the port
 // (the ADR-0011 migration trigger).
 //

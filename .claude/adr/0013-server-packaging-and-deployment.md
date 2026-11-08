@@ -13,10 +13,10 @@ and its publish path were never specified**, so no milestone ever built them. Th
 ADR fixes the packaging + run contract so the CID loop has a concrete, verifiable
 target (`target.md` → M-Deploy).
 
-The first consumer is **iscc-infra**, which deploys ISCC services as Docker Compose
-stacks behind a label-driven `caddy-docker-proxy` (no PaaS, no static Caddyfile). It
-needs a *pullable image*, not an on-box source build. The first deployment is a
-**testnet test instance at `monitor-test.iscc.io`** on an existing DigitalOcean box.
+The first consumer is the ISCC Foundation's own deployment, which runs ISCC services as
+Docker Compose stacks behind a label-driven `caddy-docker-proxy` (no PaaS, no static
+Caddyfile). It needs a *pullable image*, not an on-box source build. The first
+deployment is a **testnet test instance at `monitor-test.iscc.io`**.
 
 This is the **server instance** packaging. It is distinct from, and must not be
 conflated with, the standalone in-browser **verifier app** (`monitor.iscc.codes`,
@@ -60,8 +60,8 @@ path. A server image embeds and serves its own `/_ds/` assets (incl. `verify.was
 
 5. **Runs behind a TLS-terminating reverse proxy.** The container binds `:9464` on
    the internal Docker network and **publishes no host port** — only the reverse
-   proxy (caddy-docker-proxy in iscc-infra) terminates TLS and publishes 80/443
-   (iscc-infra invariant; Docker bypasses host firewalls). The monitor needs its own
+   proxy (caddy-docker-proxy) terminates TLS and publishes 80/443 (Docker bypasses
+   host firewalls). The monitor needs its own
    vhost/subdomain (it uses root-absolute `/_ds/` asset paths + root-mounted hub
    routes), which `monitor-test.iscc.io` satisfies.
 
@@ -102,7 +102,7 @@ path. A server image embeds and serves its own `/_ds/` assets (incl. `verify.was
   human-blocked in the WASM milestone): making the GHCR package public (or issuing a
   `read:packages` token), DNS for `monitor-test.iscc.io`, the Caddy labels / Compose
   stack, box selection, and the per-instance `/metrics` exposure choice all live in
-  **iscc-infra**, not this repo, and do not gate DONE here.
+  the deployment, not this repo, and do not gate DONE here.
 - **No new runtime dependency or language change.** ADR-0003's
   static-binary / `CGO_ENABLED=0` stack is unchanged; this ADR only adds the
   packaging + run contract around it.

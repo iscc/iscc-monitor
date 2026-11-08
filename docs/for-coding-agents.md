@@ -106,7 +106,7 @@ network.
 | `internal/ots`, `otsclient` | OpenTimestamps proofs and calendar transport                                           |
 | `internal/metrics`, `metricshttp`, `healthz`, `version`, `corsmw` | Operations routes and the CORS middleware          |
 | `docs/`, `zensical.toml` | This site                                                                                 |
-| `.claude/`               | PRD, ADRs, design specs, CID-loop state; not public docs                                  |
+| `.claude/`               | PRD, ADRs and design specs; not public docs                                               |
 
 Runtime: `run()` starts the HTTP server, the OTS loop and the hourly realm refresh as goroutines; `follower.Loop` runs
 in the foreground and polls each hub (`ISCC_MONITOR_NORMAL`, or `ISCC_MONITOR_FROZEN` for frozen hubs).

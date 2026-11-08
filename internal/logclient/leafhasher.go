@@ -1,7 +1,7 @@
 // This file decodes a tlog-tiles entry bundle and RFC-6962-leaf-hashes each
 // entry it contains, in index order — the leaf hasher that fsck.New(...) takes as
 // its hasher argument when rebuilding a tree's root from its mirrored tiles. It is
-// a faithful port of the leafHasher in cauldron/iscc-hub/conformance/runfsck:
+// a faithful port of the leafHasher in iscc-hub's conformance/runfsck:
 // api.EntryBundle{}.UnmarshalText parses the C2SP framing (2-byte big-endian
 // length prefix + data per entry), then rfc6962.DefaultHasher.HashLeaf hashes each
 // entry into a 32-byte leaf hash.

@@ -16,7 +16,7 @@
 // no inbound hub-evidence transport on the follow path yet (no FetchInclusionEvidence;
 // proof-serving / verify-for-me is a later M2/M3 slice). A PollHub step that recomputed
 // the monitor's OWN proof and checked it against itself would be circular and is
-// forbidden (target.md: a green-but-wrong verify must not ship), so no production line
+// forbidden (a green-but-wrong verify must not ship), so no production line
 // is added. The missing piece this file supplies is the conformance test that drives
 // the cross-check over a real verified-poll mirror.
 //

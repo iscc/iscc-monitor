@@ -1015,7 +1015,7 @@ func TestCertificateRendersWasmVerifier(t *testing.T) {
 			}
 		}
 
-		// No-JS baseline (target.md M-UI "complete with JavaScript disabled"): every
+		// No-JS baseline (M-UI "complete with JavaScript disabled"): every
 		// §1–§6 clause marker AND the honesty/actions region must render in the document
 		// BODY (the <main> sheet), BEFORE the first executable <script src=...>/<script>
 		// loader — never inside or gated by a <script>. The first loader <script> appears
@@ -1573,7 +1573,7 @@ func fixtureStoreCovered(t *testing.T, indexDomain, indexedID string, seq, cover
 // panel — the monitor's independently-observed (size, root) of what this hub showed
 // THIS monitor, plus the coverage window (size + since) that bounds it — and that panel
 // carries NO "Bitcoin"/"anchoring"/"OpenTimestamps" copy, proving it is a SEPARATE,
-// distinctly-labelled element from the §5 Bitcoin anchor (target.md: "anchoring" copy is
+// distinctly-labelled element from the §5 Bitcoin anchor ("anchoring" copy is
 // Bitcoin-only).
 //
 // Mutation (non-vacuity, review reproduces it): forcing HasComparisonAnchor = false in
@@ -1699,7 +1699,7 @@ func TestCertificateComparisonAnchorCoverageJustStarted(t *testing.T) {
 
 // TestCertificateRendersTimestampsInUTC pins the certificate's RFC-3339 chips to UTC `Z`
 // regardless of the host timezone — the honesty-bearing, cross-platform property of every
-// federation surface (CLAUDE.md "Coverage" + the target.md cross-platform quality bar).
+// federation surface (CLAUDE.md "Coverage" + the cross-platform quality bar).
 //
 // The store reads coverage/anchor instants back via time.Unix, which re-wraps them in
 // time.Local; so a chip rendered with a bare .Format(time.RFC3339) carries the host's local
@@ -1891,7 +1891,7 @@ func TestCertificateBitcoinAnchorConfirmed(t *testing.T) {
 // binding: a certifiable id whose accepted root EQUALS the bundled proof's committed
 // digest, and whose mirrored OTS row carries a calendar-only (not yet Bitcoin-confirmed)
 // proof, renders §5 BITCOIN ANCHOR in the "pending" state — never an error and never a
-// block height (target.md: a not-yet-anchored root renders the normal "pending" state).
+// block height (a not-yet-anchored root renders the normal "pending" state).
 // merkle1.txt.ots is the bundled calendar-only vector ots.ConfirmedFor classifies
 // (false, 0, nil) under its own digest. Like the confirmed test, the accepted root is
 // driven to the fixture digest so the binding holds; §3 declines and is not asserted.

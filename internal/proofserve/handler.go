@@ -462,7 +462,7 @@ func serveEntries(w http.ResponseWriter, r *http.Request, st *store.Store, f sto
 // CheckpointAt), reads the stored proof via store.OTSForRoot, and writes the opaque
 // OTSBytes through the conditional-GET block below. The proof bytes are opaque here:
 // this route never parses or classifies them, so proofserve stays off the
-// non-WASM-pure internal/ots / internal/otsclient closure (learnings/otsclient.md).
+// non-WASM-pure internal/ots / internal/otsclient closure.
 //
 // An optional ?size=N selects an earlier accepted (size, root) instead, so a
 // certificate can link the proof of the anchor that covers an older entry: on a hub

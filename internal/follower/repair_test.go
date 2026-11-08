@@ -226,7 +226,7 @@ func TestIngestRejectsShortFullEntryBundle(t *testing.T) {
 // a full entry bundle whose iscc_index projection is absent — what the earlier
 // record-then-project write order could leave behind, and what a database predating
 // projection support holds — must NOT be treated as fully mirrored. Presence of the
-// BLOB alone does not establish target.md's "a full entry bundle present in the mirror
+// BLOB alone does not establish the invariant "a full entry bundle present in the mirror
 // implies its iscc_index projection was written", so the walk has to re-fetch and
 // re-fold it instead of skipping it forever with a permanently incomplete index.
 func TestIngestRefoldsMirroredBundleWithMissingProjection(t *testing.T) {

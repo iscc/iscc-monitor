@@ -1,8 +1,8 @@
 // Per-operation contract golden: the structural guard the path-only drift test
 // (TestOpenAPIDrift / TestOpenAPIDocsAgree) is blind to. That gate reconciles only
 // the path SET, so a wrong query param, a wrong 200 media type, or a missing
-// response code rides along green (three such defects shipped and passed every gate
-// — see learnings/openapi.md). This file pins, table-driven and against BOTH the
+// response code rides along green (three such defects shipped and passed every gate).
+// This file pins, table-driven and against BOTH the
 // YAML source of truth AND its JSON twin, the ground-truth facts the slice-4 doc
 // edits establish, each grounded in the real handler:
 //

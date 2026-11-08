@@ -184,7 +184,7 @@ func PollHub(ctx context.Context, st *store.Store, fetcher logclient.Fetcher, hu
 	// "preserve evidence"). Note the walk skips coords already mirrored at full width,
 	// so on a split view the proof is built from the honest tree's completed bytes plus
 	// the candidate's partials; the candidate's own completed-coord bytes are NOT
-	// captured (issues.md "The mirror has no repair path" covers the same skip).
+	// captured (the normal, non-force skip, see ingestTiles).
 	if err := ingestTiles(ctx, st, fetcher, hubID, baseURL, info.TreeSize, observedAt, false); err != nil {
 		return status, fmt.Errorf("follower.PollHub: hub %d: ingest tiles: %w", hubID, err)
 	}
