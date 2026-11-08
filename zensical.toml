@@ -48,12 +48,8 @@ tagline = "Trust & Transparency for the ISCC-Hub network"
 copy_page = true
 chat = false
 
-# Related ISCC sites for the "Projects" menu in the header, in display order.
-[[project.extra.iscc.related]]
-name = "iscc-monitor"
-link = "https://monitor.iscc.codes/"
-description = "Verifies and mirrors the transparency logs of ISCC hubs"
-
+# Related ISCC sites for the "Projects" menu in the header, in display order. The site
+# does not list itself.
 [[project.extra.iscc.related]]
 name = "iscc-hub"
 link = "https://hub.iscc.codes/"
