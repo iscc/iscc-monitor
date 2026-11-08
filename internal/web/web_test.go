@@ -383,7 +383,7 @@ func TestSiteCSSServed(t *testing.T) {
 		t.Errorf("Content-Type = %q, want text/css prefix", got)
 	}
 	body := rec.Body.Bytes()
-	for _, rule := range []string{".chrome-inner", ".chrome-project-logo", ".chrome-cobrand-logo", ".site-footer-inner", GrainPath, ".btn-primary", ".btn-secondary", ":focus-visible"} {
+	for _, rule := range []string{"body > main", ".chrome-inner", ".chrome-project-logo", ".chrome-cobrand-logo", ".site-footer-inner", GrainPath, ".btn-primary", ".btn-secondary", ":focus-visible"} {
 		if !bytes.Contains(body, []byte(rule)) {
 			t.Errorf("site.css missing rule %q", rule)
 		}

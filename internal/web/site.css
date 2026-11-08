@@ -22,6 +22,19 @@
 :root {
   --page-width: 1200px;
 }
+/* The page fills at least the viewport and its main column takes the spare height,
+   so on a short page the footer sits at the bottom of the window rather than above
+   blank space. The main column keeps its full width as a flex item, so its own
+   max-width and auto margins still centre it. */
+body {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+body > main {
+  flex: 1 0 auto;
+  width: 100%;
+}
 .chrome,
 .site-footer {
   background-color: var(--iscc-deep-navy);
