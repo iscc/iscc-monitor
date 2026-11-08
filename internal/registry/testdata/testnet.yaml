@@ -1,0 +1,15 @@
+# iscc testnet Hub-List — realm 0 (ADR-0010).
+# Authored from the ADR-0010 schema: hub_id is the embedded 12-bit slot, not the
+# store surrogate PK; pubkey is deprecated and ignored (keys come from did:web,
+# ADR-0009). These hubs are the real testnet pilot (consistent with realm.txt and
+# derive_vkey.py).
+version: 1
+network: testnet
+hubs:
+  - hub_id: 0
+    url: https://sb0.iscc.id
+    active: true
+    pubkey: z6MkqbHELZopsq6eKrn6qxiAgRoVvwp2Vp7mPfKsvrbYmGwJ
+  - hub_id: 1
+    url: https://sb1.amlet.id
+    active: true

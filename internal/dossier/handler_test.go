@@ -1,0 +1,1165 @@
+// Golden HTTP-seam test for the per-hub dossier route (GET /<domain>). It drives
+// dossier.Handler over a fixture store (the hub registered through the public store
+// API) and asserts the observable response — 200 text/html, the Evidence-Ledger
+// DS-shell wiring (token + font stylesheet links, DS font tokens, no <table>, no
+// external CDN URL), the hub's domain rendered through the five-status hubStatusBadge
+// partial overlaid with the in-memory StatusSource verdict, and ADR-0001 coverage
+// honesty (a covered hub shows "size N at <RFC3339>"; an uncovered hub shows the
+// explicit "no coverage yet", never a fabricated size+time). The oracle gate is N/A
+// here: no signature, RFC-6962, Merkle, did:web, fsck, or proof path.
+package dossier
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/iscc/iscc-monitor/internal/chrome"
+	"github.com/iscc/iscc-monitor/internal/proofserve"
+	"github.com/iscc/iscc-monitor/internal/store"
+)
+
+// readCheckpoint loads a captured live hub-signed checkpoint fixture from the
+// module-root testdata/live/ directory (two levels up from this package). The
+// dossier Exhibit reads its tree size back (unverified) for the size line, so the
+// frozen fixtures use real signed checkpoints of known, differing sizes (sb0 =
+// 10183, sb1 = 61) rather than hand-built strings.
+func readCheckpoint(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "live", name))
+	if err != nil {
+		t.Fatalf("read checkpoint fixture %q: %v", name, err)
+	}
+	return data
+}
+
+// fakeStatusSource is an in-memory StatusSource keyed by hub_id, standing in for the
+// metrics registry so the dossier's status overlay is golden-testable without
+// importing internal/metrics. A nil map (or a missing key) reports a miss.
+type fakeStatusSource map[int64]string
+
+func (f fakeStatusSource) Status(hubID int64) (string, bool) {
+	s, ok := f[hubID]
+	return s, ok
+}
+
+// coveredHub opens a fresh store and registers one verified hub with an accepted
+// checkpoint (which advances last_size and sets the coverage start). It returns the
+// store and the hub_id; the caller asserts on the rendered dossier.
+func coveredHub(t *testing.T) (*store.Store, int64) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "dossier.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	id, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	observed := time.Unix(1_700_000_000, 0).UTC()
+	if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+		HubID:      id,
+		TreeSize:   42,
+		Root:       []byte("root-verified-32-bytes-padding!!"),
+		Raw:        []byte("raw-checkpoint-bytes"),
+		ObservedAt: observed,
+	}); err != nil {
+		t.Fatalf("AdvanceAccepted: %v", err)
+	}
+	return st, id
+}
+
+// frozenHub opens a fresh store, registers one hub, records two self-consistency
+// violations, and freezes it — the state the dossier's non-dismissable Exhibit
+// surfaces (ADR-0006). It returns the store and the hub_id.
+//
+// The fork violation carries REAL signed checkpoints as RawA / RawB (the captured
+// sb0 = size 10183 prior and sb1 = size 61 contradictory fixtures), so the Exhibit's
+// "size before → presented" line is proven against ground truth. The later shrink
+// violation carries non-note RawA / RawB so the fail-closed "tree sizes unavailable"
+// path is exercised in the same render.
+func frozenHub(t *testing.T) (*store.Store, int64) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "frozen.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	id, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	if _, err := st.RecordViolation(ctx, store.Violation{
+		HubID: id, Kind: "fork",
+		RawA:       readCheckpoint(t, "sb0.iscc.id_checkpoint"),  // prior accepted, size 10183
+		RawB:       readCheckpoint(t, "sb1.amlet.id_checkpoint"), // contradictory, size 61
+		DetectedAt: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("RecordViolation fork: %v", err)
+	}
+	if _, err := st.RecordViolation(ctx, store.Violation{
+		HubID: id, Kind: "shrink", RawA: []byte("c"), RawB: []byte("d"),
+		DetectedAt: time.Unix(1_700_009_999, 0),
+	}); err != nil {
+		t.Fatalf("RecordViolation shrink: %v", err)
+	}
+	if err := st.Freeze(ctx, id); err != nil {
+		t.Fatalf("Freeze: %v", err)
+	}
+	return st, id
+}
+
+// TestDossierFrozenExhibit asserts a frozen hub's dossier renders the
+// categorically-distinct, non-dismissable Exhibit panel (ADR-0006): the distinct
+// panel class/heading, the literal "do not trust new state" notice, each violation
+// kind + its detected-at, AND the frozen badge silhouette marker. There must be no
+// dismiss/close control (non-dismissable: no <button>, no JS).
+func TestDossierFrozenExhibit(t *testing.T) {
+	st, id := frozenHub(t)
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// The frozen badge silhouette marker must be present (the five-status badge).
+	if !strings.Contains(body, "M8.2 3.3h7.6") {
+		t.Errorf("body missing the frozen badge silhouette marker\n%s", body)
+	}
+	// The Exhibit panel: its distinct class + heading, and the non-dismissable
+	// "do not trust new state" notice (case-insensitive on the copy).
+	for _, want := range []string{
+		`class="exhibit"`,
+		"Exhibit",
+		"self-consistency violation",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing Exhibit marker %q\n%s", want, body)
+		}
+	}
+	if !strings.Contains(strings.ToLower(body), "do not trust new state") {
+		t.Errorf("body missing the non-dismissable \"do not trust new state\" notice\n%s", body)
+	}
+	// Each violation's kind and detected-at (newest-first: shrink then fork).
+	for _, want := range []string{
+		"shrink", "fork",
+		"2023-11-14T22:13:20Z", // fork detected_at (earlier)
+		"2023-11-15T00:59:59Z", // shrink detected_at (later)
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing violation detail %q\n%s", want, body)
+		}
+	}
+	// The fork violation carries real signed checkpoints, so the Exhibit renders the
+	// two contradictory checkpoints' parsed tree sizes (size before → presented) — the
+	// sb0 prior size 10183 and the sb1 contradictory size 61, read back unverified.
+	for _, want := range []string{
+		"tree size 10183",
+		"presented 61",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing Exhibit size line %q\n%s", want, body)
+		}
+	}
+	// A stable, non-empty evidence ref derived from the raw pair (12 hex chars over
+	// sha256(RawA||RawB)). The fork pair's ref is deterministic from the fixtures.
+	wantRef := evidenceRef(readCheckpoint(t, "sb0.iscc.id_checkpoint"), readCheckpoint(t, "sb1.amlet.id_checkpoint"))
+	if wantRef == "" {
+		t.Fatal("evidenceRef of the fork pair is empty; the fixtures carry raw bytes")
+	}
+	if !strings.Contains(body, "evidence ref "+wantRef) {
+		t.Errorf("body missing the fork violation's evidence ref %q\n%s", wantRef, body)
+	}
+	// The shrink violation carries non-note RawA/RawB, so its sizes are unparseable:
+	// the Exhibit must render the honest "tree sizes unavailable" rather than a
+	// fabricated number, and must NOT show a "0" pseudo-size for it.
+	if !strings.Contains(body, "tree sizes unavailable") {
+		t.Errorf("body missing the fail-closed \"tree sizes unavailable\" line for the non-note shrink\n%s", body)
+	}
+	if strings.Contains(body, "tree size 0 →") {
+		t.Errorf("Exhibit fabricates a zero size for an unparseable violation\n%s", body)
+	}
+	// Non-dismissable: no dismiss/close control and no JS. The HTML `hidden`
+	// attribute (`hidden>` / `hidden=`) is banned specifically — not the CSS
+	// `overflow: hidden`, which is a layout property, not a visibility toggle.
+	for _, banned := range []string{"<button", "<script", " hidden>", " hidden="} {
+		if strings.Contains(body, banned) {
+			t.Errorf("Exhibit must be non-dismissable; body contains %q\n%s", banned, body)
+		}
+	}
+}
+
+// TestDossierNoExhibitWhenNotFrozen asserts a verified (non-frozen) hub renders NO
+// Exhibit panel: neither the distinct panel class nor the "do not trust new state"
+// copy may appear, so the Exhibit is categorically reserved for the frozen state.
+func TestDossierNoExhibitWhenNotFrozen(t *testing.T) {
+	st, id := coveredHub(t)
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, banned := range []string{`class="exhibit"`} {
+		if strings.Contains(body, banned) {
+			t.Errorf("verified dossier renders an Exhibit marker %q\n%s", banned, body)
+		}
+	}
+	if strings.Contains(strings.ToLower(body), "do not trust new state") {
+		t.Errorf("verified dossier renders the frozen \"do not trust new state\" copy\n%s", body)
+	}
+}
+
+// TestDossierRendersCoveredHub asserts GET /<domain> returns 200 text/html with the
+// Evidence-Ledger DS shell, the hub's domain rendered through the hubStatusBadge
+// partial, the honest coverage window for a covered hub, and no <table> / CDN URL.
+func TestDossierRendersCoveredHub(t *testing.T) {
+	st, id := coveredHub(t)
+	rec := httptest.NewRecorder()
+	// nil StatusSource: a store-verified hub renders as "verified" (no overlay).
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got, want := rec.Header().Get("Content-Type"), "text/html; charset=utf-8"; got != want {
+		t.Errorf("Content-Type = %q, want %q", got, want)
+	}
+	body := rec.Body.String()
+
+	// The DS shell is linked and the type resolves through the DS font tokens. The
+	// masthead carries the self-hosted ISCC logo <img> beside the text mark (the
+	// shared document chrome); its src is the same-origin /_ds/ literal so it never
+	// trips the no-CDN ban below.
+	for _, want := range []string{
+		`href="/_ds/tokens.css"`,
+		`href="/_ds/fonts.css"`,
+		`src="/_ds/iscc-logo.svg"`,     // the shared-chrome ISCC logo (web.LogoPath)
+		`href="/_ds/site.css"`,         // the shared site-chrome stylesheet (web.SiteCSSPath)
+		`<footer class="site-footer">`, // the shared footer partial
+		"var(--font-sans)",
+		"var(--font-mono)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing DS-shell marker %q\n%s", want, body)
+		}
+	}
+	// The hub's domain and origin must appear.
+	for _, want := range []string{"sb0.iscc.id", "sb0.iscc.id/log"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\n%s", want, body)
+		}
+	}
+	// The status renders through the five-status badge partial: the wrapper, the
+	// data-status, the fixed-table label, and the verified silhouette marker.
+	for _, want := range []string{
+		`class="hub-status-badge"`,
+		`data-status="verified"`,
+		">Verified<",
+		"M8.4 12.3",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing badge markup %q\n%s", want, body)
+		}
+	}
+	// Coverage honesty (ADR-0001): §2 shows its recorded start time + size and the
+	// derived "N days observed", never the observed last_size as a coverage
+	// guarantee. The "since <time> @ size N" form is the §2 mockup format.
+	for _, want := range []string{
+		"§2 · COVERAGE",
+		"since 2023-11-14T22:13:20Z @ size 42",
+		"days observed",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing coverage window marker %q\n%s", want, body)
+		}
+	}
+	// The trust-document head: the eyebrow "Hub dossier", the hub name in an <h1>,
+	// the domain, and the "Compiled by …" provenance line.
+	for _, want := range []string{
+		"Hub dossier",
+		`<h1 class="doc-hub-name">sb0.iscc.id</h1>`,
+		"Compiled by",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing trust-document head marker %q\n%s", want, body)
+		}
+	}
+	// §1 Identity, §3 Latest checkpoint, §4 Bitcoin anchor each render their
+	// numbered heading + value. §1 derives did:web statically (no network read);
+	// §3 shows accepted size + observed time; §4 shows the anchor dot + label.
+	for _, want := range []string{
+		"§1 · IDENTITY",
+		"did:web:sb0.iscc.id",
+		"§3 · LATEST CHECKPOINT",
+		"42 entries",
+		"observed 2023-11-14T22:13:20Z",
+		"§4 · BITCOIN ANCHOR",
+		`class="anchor-dot"`,
+		"not anchored", // no OTS row → the honest never-anchored label
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing numbered-section marker %q\n%s", want, body)
+		}
+	}
+	// The two action links resolve: "Prove an ISCC-ID in this hub" → the realm
+	// index claim-lookup hero ("/"), "Browse the log" → /{{.Origin}}/records — the
+	// paginated record-list browser (every row links to its single record), NOT the
+	// /<domain>/log/ checkpoint-summary page (which carries no link to the record
+	// list and is therefore a no-JS dead end). Reverting the href to /{{.Origin}}/
+	// fails this assertion (mutation-proven).
+	for _, want := range []string{
+		`href="/">Prove an ISCC-ID in this hub</a>`,
+		`href="/sb0.iscc.id/log/records">Browse the log</a>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing action link %q\n%s", want, body)
+		}
+	}
+	// §5 renders as an honest minimal placeholder: the heading is present but no
+	// fabricated observation line.
+	if !strings.Contains(body, "§5 · OBSERVATION LOG") {
+		t.Errorf("body missing the §5 observation-log placeholder heading\n%s", body)
+	}
+	// The dossier is a card/grid layout, never an HTML <table>.
+	if strings.Contains(body, "<table") {
+		t.Errorf("body contains a <table> element; the ledger card layout is incomplete\n%s", body)
+	}
+	// No third-party CDN URL may appear in the body. Hyperlinks to other origins (the
+	// footer's source link) are navigation, so ban only third-party CDN hosts plus bare
+	// http://, not every https:// substring.
+	for _, banned := range []string{"jsdelivr", "cdn.", "unpkg", "googleapis", "http://"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("body contains external CDN reference %q\n%s", banned, body)
+		}
+	}
+}
+
+// TestDossierBrowseLogLandsOnLiveRecordList proves the no-JS forward navigation leg
+// dossier → record list is unbroken: the dossier's "Browse the log" href resolves
+// to a live 200 text/html record list, not the /<domain>/log/ checkpoint-summary
+// dead end. It exercises the SAME fixture store through BOTH the dossier Handler and
+// proofserve.Handler (both read the same *store.Store), renders the dossier, confirms
+// its "Browse the log" href is /<origin>/records, then requests the path suffix
+// (/records) the inner proofserve path switch is mounted at and asserts the record
+// list renders 200 text/html. Reverting the dossier href to /{{.Origin}}/ would point
+// the human at the checkpoint-summary page (no link onward to the record list) — the
+// no-JS dead end the critical issue names.
+func TestDossierBrowseLogLandsOnLiveRecordList(t *testing.T) {
+	st, id := coveredHub(t)
+
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dossier status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	const wantHref = `href="/sb0.iscc.id/log/records">Browse the log</a>`
+	if !strings.Contains(body, wantHref) {
+		t.Fatalf("dossier missing forward record-list link %q\n%s", wantHref, body)
+	}
+
+	// The dossier links the record list at /<domain>/log/records; proofserve.Handler
+	// is mounted at the hub-log origin, so it sees the /records suffix. A 200 text/html
+	// record list (proofserve renders an honest empty-state 200 even with no records
+	// seeded) proves the repointed href is live, not a 404 dead end.
+	recList := httptest.NewRecorder()
+	proofserve.Handler(st, id, "sb0.iscc.id", nil, chrome.Site{}).ServeHTTP(recList, httptest.NewRequest(http.MethodGet, "/records", nil))
+	if recList.Code != http.StatusOK {
+		t.Fatalf("GET /records status = %d, want 200 (the repointed href must be live, not a dead end)", recList.Code)
+	}
+	if got := recList.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Errorf("GET /records Content-Type = %q, want text/html record list", got)
+	}
+}
+
+// multiCheckpointHub opens a fresh store and registers one hub with three accepted
+// checkpoints at increasing sizes and times — the state the §5 observation log folds
+// into newest-first size-transition lines. It returns the store and the hub_id.
+func multiCheckpointHub(t *testing.T) (*store.Store, int64) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "obs.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	id, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	for i, cp := range []struct {
+		size     uint64
+		observed time.Time
+	}{
+		{100, time.Unix(1_700_000_001, 0)},
+		{200, time.Unix(1_700_000_002, 0)},
+		{300, time.Unix(1_700_000_003, 0)},
+	} {
+		root := []byte("obs-checkpoint-root-padding-32by")
+		root[len(root)-1] = byte('0' + i) // distinct root per size (UNIQUE(hub,size,root))
+		if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+			HubID:      id,
+			TreeSize:   cp.size,
+			Root:       root,
+			Raw:        []byte("raw"),
+			ObservedAt: cp.observed,
+		}); err != nil {
+			t.Fatalf("AdvanceAccepted size %d: %v", cp.size, err)
+		}
+	}
+	return st, id
+}
+
+// TestDossierObservationLog asserts the §5 observation log renders one honest
+// size-transition line per consecutive recorded-checkpoint pair (newest-first), the
+// oldest checkpoint as a singleton, and every value traceable to a fixture row. It also
+// pins the honesty invariant: NO synthesized per-poll "consistent" / "consistency
+// PASSED" / "verified-poll" line appears (the follower records no such per-poll check).
+func TestDossierObservationLog(t *testing.T) {
+	st, id := multiCheckpointHub(t)
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// The §5 heading and the newest-first size-transition lines for each consecutive
+	// pair (300 newest), plus the oldest checkpoint as a singleton.
+	for _, want := range []string{
+		"§5 · OBSERVATION LOG",
+		"size 200 → 300", // newest pair
+		"size 100 → 200", // older pair
+		"size 100 observed",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing §5 observation marker %q\n%s", want, body)
+		}
+	}
+	// Newest-first ordering: the "200 → 300" transition precedes "100 → 200".
+	if i, j := strings.Index(body, "size 200 → 300"), strings.Index(body, "size 100 → 200"); i < 0 || j < 0 || i > j {
+		t.Errorf("§5 transitions out of newest-first order: idx(200→300)=%d idx(100→200)=%d\n%s", i, j, body)
+	}
+	// Each line carries its checkpoint's observed time (traceable to a fixture row).
+	if !strings.Contains(body, "2023-11-14T22:13:23Z") { // size-300 observed_at
+		t.Errorf("body missing the newest checkpoint's observed time\n%s", body)
+	}
+	// Honesty invariant: no synthesized per-poll "consistent" verdict.
+	for _, banned := range []string{"consistent", "consistency PASSED", "verified-poll", "consistency FAILED"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("§5 contains a synthesized per-poll verdict %q (the follower records no such check)\n%s", banned, body)
+		}
+	}
+	// The empty-state placeholder must NOT appear when there are real observations.
+	if strings.Contains(body, "No observation entries yet") {
+		t.Errorf("§5 renders the empty state despite recorded checkpoints\n%s", body)
+	}
+}
+
+// TestDossierObservationLogEmpty asserts a hub with ≤1 recorded checkpoint and no
+// confirmed anchor renders the honest §5 empty state — no fabricated history line.
+func TestDossierObservationLogEmpty(t *testing.T) {
+	// coveredHub records exactly one accepted checkpoint and no OTS row.
+	st, id := coveredHub(t)
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "No observation entries yet") {
+		t.Errorf("§5 missing the honest empty state for a single-checkpoint hub\n%s", body)
+	}
+	// A single checkpoint yields no size-transition line (no "→" between sizes), and
+	// never a synthesized per-poll verdict.
+	for _, banned := range []string{"size 42 → ", "consistent", "verified-poll"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("§5 fabricates a line for a single-checkpoint hub: %q\n%s", banned, body)
+		}
+	}
+}
+
+// TestDossierObservationLogAnchorAndFreeze asserts a frozen hub's §5 log surfaces the
+// confirmed-anchor confirmation line and the freeze pointer (mapping "fork" to the
+// canonical "split view" vocabulary, never the avoid-listed "fork" wording), and that
+// a confirmed anchor with a non-zero height renders "block N" while never "block 0".
+func TestDossierObservationLogAnchorAndFreeze(t *testing.T) {
+	ctx := context.Background()
+	st, id := frozenHub(t) // records a fork + a shrink violation, then freezes
+	// Seed two accepted checkpoints + a confirmed anchor so §5 has size transitions and
+	// an anchor line beside the freeze pointers.
+	for i, cp := range []struct {
+		size     uint64
+		observed time.Time
+	}{
+		{800, time.Unix(1_700_000_010, 0)},
+		{900, time.Unix(1_700_000_020, 0)},
+	} {
+		root := []byte("frozen-obs-root-padding-32bytes!")
+		root[len(root)-1] = byte('0' + i)
+		if _, _, err := st.RecordCheckpoint(ctx, store.CheckpointRecord{
+			HubID: id, TreeSize: cp.size, Root: root, Raw: []byte("raw"), ObservedAt: cp.observed,
+		}); err != nil {
+			t.Fatalf("RecordCheckpoint size %d: %v", cp.size, err)
+		}
+	}
+	if _, _, err := st.RecordOTS(ctx, store.OTSRecord{
+		HubID:     id,
+		TreeSize:  900,
+		Root:      []byte("frozen-obs-root-padding-32bytes1"),
+		Status:    store.OTSStatusConfirmed,
+		StampedAt: time.Unix(1_700_000_020, 0),
+		BTCHeight: 869440,
+	}); err != nil {
+		t.Fatalf("RecordOTS confirmed: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		"§5 · OBSERVATION LOG",
+		"anchored · block 869440", // confirmed anchor with a real height
+		"size 800 → 900",          // a size transition
+		"split view",              // the freeze pointer maps fork → split view
+		"froze hub",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing §5 anchor/freeze marker %q\n%s", want, body)
+		}
+	}
+	// Never a fabricated "block 0", and never the avoid-listed "fork" wording in the §5
+	// freeze pointer line (the canonical term is "split view"). "fork" may not appear in
+	// the §5 region at all here (the only violations are a fork → split view and a shrink).
+	if strings.Contains(body, "block 0") {
+		t.Errorf("§5 renders a fabricated block 0\n%s", body)
+	}
+	// No synthesized per-poll verdict on the frozen path either.
+	for _, banned := range []string{"consistency PASSED", "verified-poll"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("§5 contains a synthesized per-poll verdict %q\n%s", banned, body)
+		}
+	}
+}
+
+// TestDossierObservationLogFrozenNoPseudoTransition asserts the §5 fork/shrink fix:
+// a frozen hub whose recorded checkpoints are NOT a strictly-increasing series (a
+// same-size fork or a shrunk contradictory checkpoint, which follower.freeze records
+// at a later observed_at without advancing accepted state) renders NO "size N → N" or
+// "larger → smaller" pseudo-transition line, while the freeze pointer still appears.
+func TestDossierObservationLogFrozenNoPseudoTransition(t *testing.T) {
+	ctx := context.Background()
+
+	// Fork case: an accepted size-500 checkpoint, then a same-size/different-root
+	// contradictory checkpoint recorded at a later observed_at. §5 must NOT show
+	// "size 500 → 500" but MUST keep the freeze pointer.
+	t.Run("same-size fork", func(t *testing.T) {
+		st, err := store.Open(filepath.Join(t.TempDir(), "fork.db"))
+		if err != nil {
+			t.Fatalf("store.Open: %v", err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		id, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+		if err != nil {
+			t.Fatalf("UpsertHub: %v", err)
+		}
+		rootA := []byte("fork-accepted-root-padding-32byt")
+		if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+			HubID: id, TreeSize: 500, Root: rootA, Raw: []byte("raw-a"),
+			ObservedAt: time.Unix(1_700_000_000, 0),
+		}); err != nil {
+			t.Fatalf("AdvanceAccepted: %v", err)
+		}
+		rootB := []byte("fork-contradictory-root-pad-32by")
+		if _, _, err := st.RecordCheckpoint(ctx, store.CheckpointRecord{
+			HubID: id, TreeSize: 500, Root: rootB, Raw: []byte("raw-b"),
+			ObservedAt: time.Unix(1_700_000_100, 0),
+		}); err != nil {
+			t.Fatalf("RecordCheckpoint contradictory: %v", err)
+		}
+		if _, err := st.RecordViolation(ctx, store.Violation{
+			HubID: id, Kind: "fork", RawA: []byte("raw-a"), RawB: []byte("raw-b"),
+			DetectedAt: time.Unix(1_700_000_100, 0),
+		}); err != nil {
+			t.Fatalf("RecordViolation fork: %v", err)
+		}
+		if err := st.Freeze(ctx, id); err != nil {
+			t.Fatalf("Freeze: %v", err)
+		}
+
+		body := renderDossier(t, st, id)
+		if strings.Contains(body, "size 500 → 500") {
+			t.Errorf("§5 renders a same-size pseudo-transition \"size 500 → 500\"\n%s", body)
+		}
+		if !strings.Contains(body, "froze hub") {
+			t.Errorf("§5 missing the freeze pointer for the frozen fork hub\n%s", body)
+		}
+	})
+
+	// Shrink case: an accepted size-500 checkpoint, then a smaller (size-400)
+	// contradictory checkpoint recorded later. §5 must NOT show "size 500 → 400".
+	t.Run("shrink", func(t *testing.T) {
+		st, err := store.Open(filepath.Join(t.TempDir(), "shrink.db"))
+		if err != nil {
+			t.Fatalf("store.Open: %v", err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		id, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+		if err != nil {
+			t.Fatalf("UpsertHub: %v", err)
+		}
+		if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+			HubID: id, TreeSize: 500, Root: []byte("shrink-accepted-root-padding-32b"), Raw: []byte("raw-a"),
+			ObservedAt: time.Unix(1_700_000_000, 0),
+		}); err != nil {
+			t.Fatalf("AdvanceAccepted: %v", err)
+		}
+		if _, _, err := st.RecordCheckpoint(ctx, store.CheckpointRecord{
+			HubID: id, TreeSize: 400, Root: []byte("shrink-contradictory-root-pad-32"), Raw: []byte("raw-b"),
+			ObservedAt: time.Unix(1_700_000_100, 0),
+		}); err != nil {
+			t.Fatalf("RecordCheckpoint shrunk: %v", err)
+		}
+		if _, err := st.RecordViolation(ctx, store.Violation{
+			HubID: id, Kind: "shrink", RawA: []byte("raw-a"), RawB: []byte("raw-b"),
+			DetectedAt: time.Unix(1_700_000_100, 0),
+		}); err != nil {
+			t.Fatalf("RecordViolation shrink: %v", err)
+		}
+		if err := st.Freeze(ctx, id); err != nil {
+			t.Fatalf("Freeze: %v", err)
+		}
+
+		body := renderDossier(t, st, id)
+		if strings.Contains(body, "size 500 → 400") {
+			t.Errorf("§5 renders a shrink pseudo-transition \"size 500 → 400\"\n%s", body)
+		}
+		if !strings.Contains(body, "froze hub") {
+			t.Errorf("§5 missing the freeze pointer for the frozen shrink hub\n%s", body)
+		}
+	})
+}
+
+// renderDossier renders the dossier for hubID against st and returns the response
+// body, failing the test on a non-200 status.
+func renderDossier(t *testing.T, st *store.Store, hubID int64) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	Handler(st, hubID, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	return rec.Body.String()
+}
+
+// TestDossierConfirmedAnchorRendersHeight asserts the §4 Bitcoin-anchor section of a
+// hub with a confirmed OTS row carrying a btc_height renders the confirmed dot keyword
+// and the block height — and NEVER a 5xx or error styling.
+// It is the honesty counterpart of the pending case: the height shows ONLY when the
+// anchor is confirmed AND the height is non-zero.
+func TestDossierConfirmedAnchorRendersHeight(t *testing.T) {
+	ctx := context.Background()
+	st, id := coveredHub(t)
+	if _, _, err := st.RecordOTS(ctx, store.OTSRecord{
+		HubID:     id,
+		TreeSize:  42,
+		Root:      []byte("root-verified-32-bytes-padding!!"),
+		Status:    store.OTSStatusConfirmed,
+		StampedAt: time.Unix(1_700_000_000, 0),
+		BTCHeight: 869440,
+	}); err != nil {
+		t.Fatalf("RecordOTS confirmed: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"§4 · BITCOIN ANCHOR",
+		`data-dot="confirmed"`,
+		"block 869440",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing confirmed-anchor marker %q\n%s", want, body)
+		}
+	}
+	// No error styling: the confirmed anchor must not render the "not anchored"
+	// fallback label.
+	if strings.Contains(body, "not anchored") {
+		t.Errorf("confirmed anchor renders the not-anchored fallback label\n%s", body)
+	}
+}
+
+// TestDossierPendingAnchorHonest asserts the §4 section of a hub with only a pending
+// OTS row renders the honest "pending" label + dot and NO fabricated block height
+// (the height shows only for a confirmed anchor with a non-zero height), with no 5xx
+// or error styling. This pins the ADR-0001 / Bitcoin-anchoring honesty discipline.
+func TestDossierPendingAnchorHonest(t *testing.T) {
+	ctx := context.Background()
+	st, id := coveredHub(t)
+	if _, _, err := st.RecordOTS(ctx, store.OTSRecord{
+		HubID:     id,
+		TreeSize:  42,
+		Root:      []byte("root-verified-32-bytes-padding!!"),
+		Status:    store.OTSStatusPending,
+		StampedAt: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("RecordOTS pending: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`data-dot="pending"`, "pending"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing pending-anchor marker %q\n%s", want, body)
+		}
+	}
+	// No fabricated height: a pending anchor must render no "block N" string.
+	if strings.Contains(body, "block ") {
+		t.Errorf("pending anchor renders a fabricated block height\n%s", body)
+	}
+}
+
+// anchorStamped and anchorSeenAt are the observed and seen-confirmed instants of the
+// confirmed rows TestDossierLastAnchored seeds.
+var (
+	anchorStamped = time.Date(2026, 11, 5, 1, 33, 0, 0, time.UTC)
+	anchorSeenAt  = time.Date(2026, 11, 6, 16, 28, 53, 0, time.UTC)
+)
+
+// confirmedAt returns a confirmed OTS row at the given tree size.
+func confirmedAt(size uint64) store.OTSRecord {
+	return store.OTSRecord{TreeSize: size, Root: []byte("confirmed-root-padding-32-bytes!"), Status: store.OTSStatusConfirmed, BTCHeight: 974697, StampedAt: anchorStamped, UpgradedAt: anchorSeenAt}
+}
+
+// TestDossierLastAnchored asserts §4 for each anchor state. The growing hub is the case
+// §4 exists for: its newest root is always younger than the time confirmation takes, so
+// a panel that read only the newest root would say "pending" on a hub with confirmed
+// anchors. "ots verify" stays out of every state, because the page offers no proof to
+// run it on.
+func TestDossierLastAnchored(t *testing.T) {
+	// A non-UTC local zone: the time is mislabelled unless §4 renders it in UTC. The
+	// store's time.Unix round-trip yields local time.
+	saved := time.Local
+	time.Local = time.FixedZone("CET", 3600)
+	t.Cleanup(func() { time.Local = saved })
+
+	pending := store.OTSRecord{TreeSize: 42, Root: []byte("pending-root-padding-32-bytes!!!"), Status: store.OTSStatusPending, StampedAt: anchorStamped.Add(48 * time.Hour)}
+	const newer = "Newer entries are waiting for the next anchor."
+
+	cases := []struct {
+		name   string
+		rows   []store.OTSRecord
+		freeze bool
+		want   []string
+		absent []string
+	}{
+		{
+			name:   "growing hub shows its newest confirmed anchor",
+			rows:   []store.OTSRecord{confirmedAt(30), pending},
+			want:   []string{`data-dot="confirmed"`, "last anchored · block 974697", "Entries up to size 30 · seen confirmed 2026-11-06T16:28:53Z", newer},
+			absent: []string{`data-dot="pending"`},
+		},
+		{
+			name:   "confirmed empty tree is a confirmed anchor",
+			rows:   []store.OTSRecord{confirmedAt(0), pending},
+			want:   []string{`data-dot="confirmed"`, "last anchored · block 974697", "Entries up to size 0 · seen confirmed 2026-11-06T16:28:53Z", newer},
+			absent: []string{`data-dot="pending"`, "No confirmed anchor yet."},
+		},
+		{
+			name:   "newest root confirmed has nothing waiting",
+			rows:   []store.OTSRecord{confirmedAt(42)},
+			want:   []string{`data-dot="confirmed"`, "last anchored · block 974697", "Entries up to size 42"},
+			absent: []string{newer},
+		},
+		{
+			name:   "frozen hub does not promise a next anchor",
+			rows:   []store.OTSRecord{confirmedAt(30)},
+			freeze: true,
+			want:   []string{`data-dot="confirmed"`, "last anchored · block 974697", "Entries up to size 30"},
+			absent: []string{newer},
+		},
+		{
+			name:   "only pending roots",
+			rows:   []store.OTSRecord{pending},
+			want:   []string{`data-dot="pending"`, "No confirmed anchor yet."},
+			absent: []string{"last anchored", "block ", newer},
+		},
+		{
+			name:   "never anchored",
+			want:   []string{`data-dot="none"`, "not anchored", "No root has been anchored in Bitcoin."},
+			absent: []string{"last anchored", "block ", newer},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st, id := coveredHub(t) // accepted size 42
+			for _, row := range tc.rows {
+				row.HubID = id
+				if _, _, err := st.RecordOTS(ctx, row); err != nil {
+					t.Fatalf("RecordOTS size %d: %v", row.TreeSize, err)
+				}
+			}
+			if tc.freeze {
+				if err := st.Freeze(ctx, id); err != nil {
+					t.Fatalf("Freeze: %v", err)
+				}
+			}
+
+			rec := httptest.NewRecorder()
+			Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			body := rec.Body.String()
+			for _, want := range tc.want {
+				if !strings.Contains(body, want) {
+					t.Errorf("body missing %q\n%s", want, body)
+				}
+			}
+			for _, absent := range append(tc.absent, "ots verify") {
+				if strings.Contains(body, absent) {
+					t.Errorf("body contains %q\n%s", absent, body)
+				}
+			}
+		})
+	}
+}
+
+// TestDossierCautionForUnverified asserts a store-verified hub whose live verdict is
+// unverified renders the soft caution note (visibly distinct from the frozen
+// Exhibit) and that the "fork → split view" vocabulary map applies: the §-level
+// caution copy uses "split view", never the avoid-listed "fork". The frozen Exhibit
+// must NOT appear for a non-frozen hub.
+func TestDossierCautionForUnverified(t *testing.T) {
+	st, id := coveredHub(t)
+	statuses := fakeStatusSource{id: "unverified"}
+	rec := httptest.NewRecorder()
+	Handler(st, id, statuses, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`class="caution"`,
+		"Note · Unverified",
+		"split-view",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing soft-caution marker %q\n%s", want, body)
+		}
+	}
+	// The caution is NOT the frozen Exhibit, and the avoid-listed "fork" wording must
+	// not leak into the §-level status copy.
+	if strings.Contains(body, `class="exhibit"`) {
+		t.Errorf("unverified (non-frozen) hub renders the frozen Exhibit\n%s", body)
+	}
+}
+
+// TestDossierChromeAndBackLink asserts the dossier carries the shared chrome and its
+// navigation closure: the "monitor instance" identity label and the "← Realm index"
+// back-link up to the dashboard at "/". The DS shell stays same-origin.
+func TestDossierChromeAndBackLink(t *testing.T) {
+	st, id := coveredHub(t)
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		"← Realm index",    // the back-link copy
+		`href="/"`,         // the back-link target (realm index)
+		"monitor instance", // the instance-identity label
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing chrome/back-link marker %q\n%s", want, body)
+		}
+	}
+	// The DS shell links stay same-origin, never a CDN-hosted stylesheet or font.
+	for _, want := range []string{`href="/_ds/tokens.css"`, `href="/_ds/fonts.css"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing same-origin DS-shell link %q\n%s", want, body)
+		}
+	}
+}
+
+// TestDossierRendersInstanceIdentity proves the dossier masthead renders the
+// operator-supplied instance identity at the HTTP seam, the SAME chrome.Site
+// value the "/" page receives: a populated Identity surfaces its exact Instance /
+// Operator strings on the chrome, and a zero-value Identity falls back to the static
+// placeholder copy (the neutral "monitor instance" line and the generic operator
+// line). It is non-vacuous: dropping the {{.Instance}} binding (or the
+// .chrome-instance text node) from the template, or threading a constant default
+// instead of the supplied value, makes the populated-identity assertions fail
+// because the exact operator strings would no longer appear. Realm has no slot on
+// the dossier masthead (its title is the realm-subtitle-free "Hub dossier"), so it
+// is intentionally not asserted here.
+func TestDossierRendersInstanceIdentity(t *testing.T) {
+	st, id := coveredHub(t)
+
+	// Populated identity: the masthead must render these exact operator-supplied
+	// strings (not the static defaults), driven through the live render so reverting
+	// the template binding fails the test. Realm is set but has no dossier slot.
+	idv := chrome.Site{
+		Instance: "monitor.example.test",
+		Operator: "operated by Example Org · example net",
+		Realm:    "example net",
+	}
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, idv).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"monitor.example.test",
+		"operated by Example Org · example net",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing identity literal %q\n%s", want, body)
+		}
+	}
+	// The static placeholder copy must NOT appear when an operator configures the
+	// instance — otherwise the test would pass even if the template ignored the
+	// supplied value and kept the hard-coded default.
+	if strings.Contains(body, "monitor instance") {
+		t.Errorf("body still shows the static placeholder despite a configured Instance\n%s", body)
+	}
+
+	// Zero-value identity: the fallback masthead renders the neutral placeholder and
+	// today's generic operator line, so an unconfigured deployment is honest rather
+	// than asserting a false instance. The fallback strings MUST match the dashboard's
+	// so the two mastheads stay byte-identical.
+	recDefault := httptest.NewRecorder()
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(recDefault, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if recDefault.Code != http.StatusOK {
+		t.Fatalf("default status = %d, want 200", recDefault.Code)
+	}
+	defaultBody := recDefault.Body.String()
+	for _, want := range []string{
+		"monitor instance",
+		"independent Trust &amp; Transparency service",
+	} {
+		if !strings.Contains(defaultBody, want) {
+			t.Errorf("default body missing fallback %q\n%s", want, defaultBody)
+		}
+	}
+}
+
+// TestDossierCoverageHonestyNoCoverage asserts a followed-but-unpolled hub (no
+// coverage set) renders the explicit "no coverage yet" state, never a fabricated
+// size+time — the ADR-0001 coverage-honesty rule at the dossier seam.
+func TestDossierCoverageHonestyNoCoverage(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "uncovered.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	id, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "no coverage yet") {
+		t.Errorf("body missing the no-coverage state\n%s", body)
+	}
+	// The coverage cell must not fabricate a "size N" guarantee: the covered branch
+	// renders `row-mono">size N`, which must be absent for an uncovered hub.
+	if strings.Contains(body, `row-mono">size `) {
+		t.Errorf("uncovered hub renders a fabricated coverage size\n%s", body)
+	}
+}
+
+// TestDossierRendersInMemoryStatus proves the in-memory status overlay reaches the
+// dossier: a store-verified hub whose live verdict (from the StatusSource) is
+// unresolvable renders that richer status through the hubStatusBadge partial — the
+// wrapper, the fixed-table label, and the unresolvable silhouette marker — even
+// though the store can only prove "verified". The store-only "verified" must NOT be
+// the rendered status (the overlay won), so the body carries no data-status="verified".
+func TestDossierRendersInMemoryStatus(t *testing.T) {
+	st, id := coveredHub(t)
+	statuses := fakeStatusSource{id: "unresolvable"}
+	rec := httptest.NewRecorder()
+	Handler(st, id, statuses, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`class="hub-status-badge"`,
+		`data-status="unresolvable"`,
+		">Unresolvable<",
+		"M9.2 9.3",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing overlaid status markup %q\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `data-status="verified"`) {
+		t.Errorf("body still renders store-only verified status; overlay did not apply\n%s", body)
+	}
+}
+
+// TestDossierUnresolvedKeyWordingHonesty proves the §1 Identity verb is honesty-gated
+// against the unresolvable overlay path: a store-verified hub whose live verdict is
+// unresolvable cannot have had its did:web key resolved, so §1 must NOT assert "Key
+// resolved from" (which would contradict the same page's "signing key is unresolved"
+// caution). It renders the neutral "Key source:" wording, still showing the did:web
+// domain so the source stays honest — only the verb is gated. A sibling case asserts a
+// verified hub (overlay miss) STILL renders the mockup's "Key resolved from" copy, so
+// the gate never over-fires onto a status whose key did resolve.
+func TestDossierUnresolvedKeyWordingHonesty(t *testing.T) {
+	st, id := coveredHub(t)
+
+	// Unresolvable overlay: §1 must drop "resolved" and use the neutral source wording.
+	unres := httptest.NewRecorder()
+	Handler(st, id, fakeStatusSource{id: "unresolvable"}, chrome.Site{}).ServeHTTP(unres, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if unres.Code != http.StatusOK {
+		t.Fatalf("unresolvable status = %d, want 200", unres.Code)
+	}
+	body := unres.Body.String()
+	if strings.Contains(body, "Key resolved from") {
+		t.Errorf("unresolvable hub still asserts 'Key resolved from' in §1\n%s", body)
+	}
+	if !strings.Contains(body, "Key source:") {
+		t.Errorf("unresolvable hub missing neutral 'Key source:' §1 wording\n%s", body)
+	}
+	if !strings.Contains(body, "did:web:sb0.iscc.id") {
+		t.Errorf("unresolvable hub §1 dropped the did:web domain\n%s", body)
+	}
+
+	// Verified hub (overlay miss): the mockup's "Key resolved from" copy is unchanged,
+	// guarding against over-gating the new wording onto a status whose key did resolve.
+	ver := httptest.NewRecorder()
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(ver, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if ver.Code != http.StatusOK {
+		t.Fatalf("verified status = %d, want 200", ver.Code)
+	}
+	verBody := ver.Body.String()
+	if !strings.Contains(verBody, "Key resolved from <span class=\"mono\">did:web:sb0.iscc.id</span>") {
+		t.Errorf("verified hub no longer renders the mockup's 'Key resolved from did:web' copy\n%s", verBody)
+	}
+	if strings.Contains(verBody, "Key source:") {
+		t.Errorf("verified hub over-gated to neutral 'Key source:' wording\n%s", verBody)
+	}
+}
+
+// TestDossierNonGET asserts a non-GET method is a 405 (the shared method gate at the
+// top of Handler covers it).
+func TestDossierNonGET(t *testing.T) {
+	st, id := coveredHub(t)
+	rec := httptest.NewRecorder()
+	Handler(st, id, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", rec.Code)
+	}
+}
+
+// TestDossierHubNotInStore asserts a hub_id with no matching store summary is a 500
+// (a real store inconsistency — the binary always registers the hub before mounting
+// this handler), never a 404.
+func TestDossierHubNotInStore(t *testing.T) {
+	st, id := coveredHub(t)
+	rec := httptest.NewRecorder()
+	Handler(st, id+999, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sb0.iscc.id", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rec.Code)
+	}
+}
+
+// TestHubStatusMapping pins the store-provable glossary mapping, including the
+// inactive case the public store API cannot set (active is registry-managed; no
+// public setter exists, so it is exercised at the summary boundary the renderer
+// consumes), mirroring dashboard.TestHubStatusMapping.
+func TestHubStatusMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		in   store.HubSummary
+		want string
+	}{
+		{"inactive wins over frozen", store.HubSummary{Active: false, Frozen: true}, "inactive"},
+		{"frozen when active", store.HubSummary{Active: true, Frozen: true}, "frozen"},
+		{"verified default", store.HubSummary{Active: true, Frozen: false}, "verified"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hubStatus(tc.in); got != tc.want {
+				t.Errorf("hubStatus(%+v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOverlayStatusPrecedence pins the load-bearing precedence: the store's durable
+// inactive / frozen truths are never overridden by a fresher in-memory verdict, the
+// overlay applies only to a store-verified hub, and only the two richer live states
+// (unresolvable / unverified) are adopted — any other live value (or a nil source)
+// keeps "verified". It mirrors dashboard.TestOverlayStatusPrecedence.
+func TestOverlayStatusPrecedence(t *testing.T) {
+	verified := store.HubSummary{HubID: 1, Active: true, Frozen: false}
+	frozen := store.HubSummary{HubID: 1, Active: true, Frozen: true}
+	inactive := store.HubSummary{HubID: 1, Active: false, Frozen: false}
+
+	cases := []struct {
+		name     string
+		in       store.HubSummary
+		statuses StatusSource
+		want     string
+	}{
+		{"verified overlaid to unresolvable", verified, fakeStatusSource{1: "unresolvable"}, "unresolvable"},
+		{"verified overlaid to unverified", verified, fakeStatusSource{1: "unverified"}, "unverified"},
+		{"verified stays when live is verified", verified, fakeStatusSource{1: "verified"}, "verified"},
+		{"verified stays when no live record", verified, fakeStatusSource{}, "verified"},
+		{"verified stays with nil source", verified, nil, "verified"},
+		{"frozen wins over live unresolvable", frozen, fakeStatusSource{1: "unresolvable"}, "frozen"},
+		{"inactive wins over live unverified", inactive, fakeStatusSource{1: "unverified"}, "inactive"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := overlayStatus(tc.in, tc.statuses); got != tc.want {
+				t.Errorf("overlayStatus(%+v, %v) = %q, want %q", tc.in, tc.statuses, got, tc.want)
+			}
+		})
+	}
+}

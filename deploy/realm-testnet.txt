@@ -1,0 +1,5 @@
+# iscc testnet realm — canonical mountable/bakeable membership (domains only, ADR-0009).
+# The image bakes this file at /etc/iscc-monitor/realm.txt; a deploy may instead
+# mount its own document and point ISCC_MONITOR_REALM at it.
+sb0.iscc.id
+sb1.amlet.id

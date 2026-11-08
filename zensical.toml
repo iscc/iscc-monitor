@@ -1,0 +1,108 @@
+# Documentation site of the ISCC Monitor, published at monitor.iscc.codes from main by
+# .github/workflows/docs.yml. Theme: zensical-iscc (pyproject.toml, docs group); its reference
+# configuration is demo/zensical.toml in github.com/iscc/zensical-iscc.
+
+[project]
+site_name = "ISCC Monitor"
+site_description = "Independent Trust & Transparency service for the ISCC-Hub network: it follows every hub's transparency log, verifies it, mirrors it and publishes evidence anyone can check."
+site_author = "Titusz Pan"
+site_url = "https://monitor.iscc.codes/"
+repo_url = "https://github.com/iscc/iscc-monitor"
+repo_name = "iscc/iscc-monitor"
+edit_uri = "edit/main/docs/"
+copyright = "Copyright © 2026 The Authors" # the theme adds the ISCC links
+
+# Each page sets its navigation icon with `icon: lucide/<name>` in its front matter.
+# The last page in the navigation is "For Coding Agents".
+nav = [
+    { "Home" = "index.md" },
+    { "Guides" = [
+        { "Read a certificate" = "guides/certificate.md" },
+        "guides/verify-bundle.md",
+        "guides/bitcoin-anchor.md",
+        { "Compare log views" = "guides/split-view.md" },
+    ]},
+    { "Concepts" = [
+        "concepts/how-it-works.md",
+        { "Trust model" = "concepts/trust-model.md" },
+        "concepts/glossary.md",
+    ]},
+    { "Operators" = [
+        "operate/deploy.md",
+        "operate/configuration.md",
+        "operate/branding.md",
+        { "Backups and upgrades" = "operate/data.md" },
+        "operate/monitoring.md",
+    ]},
+    { "Reference" = [
+        "reference/http-api.md",
+        "reference/proof-bundle.md",
+        "reference/changelog.md",
+    ]},
+    { "Development" = "development.md" },
+    { "For Coding Agents" = "for-coding-agents.md" },
+]
+
+[project.extra.iscc]
+tagline = "Trust & Transparency for the ISCC-Hub network"
+copy_page = true
+chat = false
+
+# Related ISCC sites for the "Projects" menu in the header, in display order. The site
+# does not list itself.
+[[project.extra.iscc.related]]
+name = "iscc-hub"
+link = "https://hub.iscc.codes/"
+description = "Timestamping service for signed content declarations"
+
+[[project.extra.iscc.related]]
+name = "iscc-web"
+link = "https://web.iscc.codes/"
+description = "Service that generates ISCC codes for media files"
+
+[[project.extra.iscc.related]]
+name = "iscc-search"
+link = "https://search.iscc.codes/"
+description = "Similarity search engine for ISCC codes"
+
+[[project.extra.iscc.related]]
+name = "iscc-crypto"
+link = "https://crypto.iscc.codes/"
+description = "Signing and verification for the ISCC framework"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/iscc/iscc-monitor"
+
+# Fonts, palette, logo, favicon and the default features come from the theme.
+[project.theme]
+name = "zensical_iscc"
+
+[project.markdown_extensions]
+abbr = {}
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+
+[project.markdown_extensions.toc]
+permalink = true
+
+[project.markdown_extensions.pymdownx]
+details = {}
+
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+line_spans = "__span"
+pygments_lang_class = true
+
+[project.markdown_extensions.pymdownx.superfences]
+
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
+combine_header_slug = true
+
+# Pages include files from the repository root, such as CHANGELOG.md and the verification script.
+[project.markdown_extensions.pymdownx.snippets]
+check_paths = true

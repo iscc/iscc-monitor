@@ -1,0 +1,132 @@
+# CI for iscc-monitor: runs the same quality gate as `mise run check`
+# (build + vet + test under CGO_ENABLED=0, per ADR-0003) and shells out the
+# fully-independent external signature oracle `cmd/notecheck` against a captured
+# checkpoint. The notecheck reject step is load-bearing: a green-but-wrong
+# verifier must not ship on `mise run check` + an LLM review alone, so CI asserts
+# both that the oracle accepts the real checkpoint AND rejects a corrupted one.
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+  workflow_call:
+
+jobs:
+  check:
+    name: build + vet + test + notecheck oracle
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # The quality gate — identical to `mise run check`, inlined so the runner
+      # does not need mise installed.
+      - name: build + vet + test (mise run check)
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
+      # The fully-independent external signature-parity oracle. The accept step
+      # asserts the exact output string (not just exit 0); the reject step flips
+      # one base64 char in the signature line and requires a non-zero (verify-fail)
+      # exit, so a spurious accept fails the build.
+      - name: notecheck signature-parity oracle
+        env:
+          VKEY: sb0.iscc.id/log+40b74463+AaV+ivnly67hhzQSQfGqCBP3PlOV2NBcmfGyzGdE2ZE5
+        run: |
+          set -euo pipefail
+          go build -o notecheck ./cmd/notecheck
+
+          # accept: the real checkpoint verifies and prints "OK <name>".
+          got="$(./notecheck --vkey "$VKEY" < testdata/live/sb0.iscc.id_checkpoint)"
+          if [ "$got" != "OK sb0.iscc.id/log" ]; then
+            echo "ERROR: oracle output was '$got', expected 'OK sb0.iscc.id/log'"
+            exit 1
+          fi
+
+          # reject: a corrupted signature line must be rejected (exit 1). A guarded
+          # check turns a spurious accept into a CI failure.
+          if sed 's/QLdEY/QLdEZ/' testdata/live/sb0.iscc.id_checkpoint | ./notecheck --vkey "$VKEY"; then
+            echo "ERROR: oracle accepted a corrupted checkpoint"
+            exit 1
+          fi
+
+          echo "notecheck oracle: accept + reject-corrupted both held"
+
+  # The deployable-image smoke job: builds the production multi-stage Dockerfile,
+  # runs the container with a writable tmp DB + the baked realm, and asserts that
+  # GET /healthz returns 200 — proving the packaged binary actually boots and
+  # serves. Independent of `check` (sibling job, not folded in) so the gate stays
+  # fast and the image build runs in parallel. ubuntu-latest ships Docker, so a
+  # plain `docker` invocation suffices (no buildx/registry actions — those belong
+  # to the later GHCR publish workflow).
+  docker:
+    name: docker image build + /healthz smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Build the image, stamping the git short SHA into /version via the
+      # --build-arg VERSION the Dockerfile guards against an empty value.
+      - name: Build image
+        run: |
+          set -euo pipefail
+          docker build --build-arg VERSION="$(git rev-parse --short HEAD)" -t iscc-monitor:ci .
+
+      # Run the container detached and assert GET /healthz -> 200 within ~15s.
+      # The required realm path is deliberately NOT passed with -e: it comes from
+      # the image's baked ENV (-> /etc/iscc-monitor/realm.txt). If that ENV were
+      # missing or misspelled, config.Load would exit non-zero, the container would
+      # never serve, and this /healthz loop would time out and FAIL — so the absent
+      # -e is the mechanical proof the bake works. The realm hubs are unreachable in CI
+      # (no egress) — that is fine: /healthz pings only the SQLite store, not the
+      # hubs, so it returns 200 as soon as the store opens. ISCC_MONITOR_DB points
+      # at /tmp (distroless nonroot can write there; it has no safe image default);
+      # ISCC_MONITOR_ADDR binds all interfaces so -p can reach it.
+      - name: Run container and smoke /healthz
+        run: |
+          set -euo pipefail
+          docker run -d --name mon -p 9464:9464 \
+            -e ISCC_MONITOR_DB=/tmp/monitor.db \
+            -e ISCC_MONITOR_ADDR=0.0.0.0:9464 \
+            iscc-monitor:ci
+
+          ok=0
+          for i in $(seq 1 15); do
+            if curl -fsS http://localhost:9464/healthz >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$ok" -ne 1 ]; then
+            echo "ERROR: GET /healthz did not return 200 within 15s"
+            docker logs mon || true
+            docker rm -f mon || true
+            exit 1
+          fi
+
+          # Print the verdict bodies for the run log (already known 200 via --fail).
+          echo "healthz: $(curl -fsS http://localhost:9464/healthz)"
+          echo "version: $(curl -fsS http://localhost:9464/version)"
+
+          # The published image must carry the license terms it redistributes.
+          for f in LICENSE NOTICE THIRD_PARTY_NOTICES.txt; do
+            docker cp "mon:/usr/share/doc/iscc-monitor/$f" - > /dev/null
+          done
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f mon || true

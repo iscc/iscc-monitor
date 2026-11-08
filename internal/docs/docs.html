@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ISCC Monitor — API Reference</title>
+  <!-- Shared ISCC Design System v2 token stylesheet (CDN-free, self-hosted).
+       The path is a literal because templates cannot read Go consts; keep it in
+       sync with web.TokensPath. -->
+  <link rel="stylesheet" href="/_ds/tokens.css">
+  <!-- Self-hosted @font-face shell (Readex Pro / JetBrains Mono woff2 under
+       /_ds/fonts/, no runtime CDN). The path is a literal; keep it in sync with
+       web.FontsCSSPath. -->
+  <link rel="stylesheet" href="/_ds/fonts.css">
+  <link rel="icon" href="/_ds/favicon.svg" type="image/svg+xml">
+  <!-- Stoplight Elements stylesheet, self-hosted byte-verbatim under /_ds/ (no
+       external CDN). The path is a literal; keep it in sync with
+       web.ElementsCSSPath. -->
+  <link rel="stylesheet" href="/_ds/elements.min.css">
+  <!-- Shared site chrome: masthead, footer, buttons, focus outline. The path is a
+       literal; keep it in sync with web.SiteCSSPath. It loads after the Elements
+       stylesheet, whose reset contains :focus{outline:none}: at equal specificity
+       the later :focus-visible rule wins, so keyboard focus stays visible. -->
+  <link rel="stylesheet" href="/_ds/site.css">
+  <!-- No external/CDN URL appears in this page: the Stoplight Elements JS/CSS are
+       loaded same-origin from /_ds/. -->
+  <style>
+    /* Brand theme for Stoplight Elements, the one iscc-web uses for its API reference
+       (iscc_web/static/docs/index.html): Readex Pro and JetBrains Mono (self-hosted
+       under /_ds/fonts/), ISCC Blue as the accent, neutral greys for the light
+       surfaces and Deep Navy for the code panels. Elements reads its palette from the
+       CSS variables below. The masthead and footer are the shared chrome. */
+    :root {
+      --page-width: none;
+
+      --font-ui: var(--font-sans);
+      --font-prose: var(--font-sans);
+
+      /* text: near-black ink #212529 */
+      --text-h: 210;
+      --text-s: 11%;
+      --text-l: 15%;
+
+      /* light surfaces: white with neutral greys */
+      --canvas-h: 210;
+      --color-canvas-dark: #123663;
+      --color-canvas-tint: rgba(248, 249, 250, 0.5);
+      --color-canvas-50: #f8f9fa;
+      --color-canvas-100: #f1f3f5;
+      --color-canvas-200: #e9ecef;
+      --color-canvas-300: #dee2e6;
+      --color-canvas-400: #ced4da;
+      --color-canvas-500: #adb5bd;
+
+      /* accents; text shades keep 4.5:1 on white (GET = success) */
+      --primary-h: 212;
+      --primary-s: 100%;
+      --primary-l: 35%;
+      --color-primary: #0054b2;
+      --color-primary-dark: #00468f;
+      --color-primary-darker: #123663;
+      --color-primary-light: #4596f5;
+      --color-primary-tint: rgba(0, 84, 178, 0.15);
+      --color-text-primary: #0054b2;
+      --success-h: 93;
+      --success-s: 71%;
+      --success-l: 25%;
+      --color-success: #3a6b12;
+      --color-success-dark: #2f5a0e;
+      --color-success-darker: #24470a;
+      --color-success-light: #a6db50;
+      --color-success-tint: rgba(166, 219, 80, 0.3);
+      --color-text-success: #3a6b12;
+      --warning-h: 46;
+      --warning-s: 100%;
+      --warning-l: 24%;
+      --color-warning: #7a5c00;
+      --color-warning-dark: #664d00;
+      --color-warning-darker: #523e00;
+      --color-warning-light: #ffc300;
+      --color-warning-tint: rgba(255, 195, 0, 0.25);
+      --color-text-warning: #7a5c00;
+      --danger-h: 357;
+      --danger-s: 65%;
+      --danger-l: 43%;
+      --color-danger: #b3262e;
+      --color-danger-dark: #96202a;
+      --color-danger-darker: #7a1a22;
+      --color-danger-light: #f56169;
+      --color-danger-tint: rgba(245, 97, 105, 0.2);
+      --color-text-danger: #b3262e;
+    }
+
+    /* code panels and the server box: Deep Navy instead of slate */
+    :root .sl-inverted {
+      --text-h: 213;
+      --text-s: 20%;
+      --text-l: 90%;
+      --canvas-h: 213;
+      --canvas-s: 69%;
+      --canvas-l: 23%;
+      --color-canvas-dark: #0d2a4f;
+      --color-canvas-pure: #0d2a4f;
+      --color-canvas-tint: rgba(122, 194, 247, 0.12);
+      --color-canvas-50: #284b78;
+      --color-canvas-100: #1b3f6d;
+      --color-canvas-200: #183b68;
+      --color-canvas-300: #163965;
+      --color-canvas-400: #153864;
+      --color-canvas-500: #143763;
+      --color-canvas-dialog: #1b3f6d;
+      --color-primary: #0054b2;
+      --color-primary-dark: #00468f;
+      --color-primary-darker: #003a75;
+      --color-primary-light: #4596f5;
+      --color-primary-tint: rgba(69, 150, 245, 0.25);
+      --color-text-primary: #7ac2f7;
+      --color-text-success: #a6db50;
+      --color-text-warning: #ffc300;
+      --color-text-danger: #f56169;
+    }
+
+    /* sidebar icons: Elements colours operations purple (inline) and schemas with its
+       warning colour */
+    .sl-elements .fa-bullseye {
+      color: var(--iscc-blue) !important;
+    }
+
+    .sl-elements .fa-cube {
+      color: #4596f5;
+    }
+
+    /* body and secondary text one pixel larger than Elements' 12px and 11px: Readex Pro
+       reads small there */
+    .sl-elements .sl-text-base {
+      font-size: 13px;
+    }
+
+    .sl-elements .sl-text-sm {
+      font-size: 12px;
+    }
+
+    /* field and parameter descriptions, which Elements sets to 12px with these selectors */
+    .sl-elements .HttpOperation .JsonSchemaViewer .sl-markdown-viewer p,
+    .sl-elements .HttpOperation__Parameters .sl-markdown-viewer p,
+    .sl-elements .Model .JsonSchemaViewer .sl-markdown-viewer p {
+      font-size: 13px;
+    }
+
+    /* 4px corners on cards and panels, 2px on controls (Elements' own small radius) */
+    .sl-elements .sl-rounded-lg,
+    .sl-elements .sl-rounded-xl {
+      border-radius: 4px;
+    }
+
+    /* The masthead sits above Elements, which fills the rest of the window; the footer
+       closes it. */
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      font-family: var(--font-sans);
+      color: var(--text-body);
+      background: var(--iscc-white);
+    }
+
+    elements-api {
+      display: block;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .site-footer {
+      margin-top: 0;
+    }
+
+    /* the right panel may use the full width, for long ISCC strings */
+    .sl-elements .sl-relative.sl-w-2\/5.sl-ml-16 {
+      max-width: none !important;
+    }
+
+    /* code blocks scroll horizontally */
+    .sl-elements pre {
+      overflow-x: auto !important;
+      white-space: pre !important;
+    }
+
+    .sl-elements code {
+      white-space: pre !important;
+    }
+  </style>
+</head>
+<body>
+  {{template "siteHeader" .Chrome}}
+
+  <!-- Stoplight Elements API explorer. apiDescriptionUrl points at this instance's
+       own /openapi.json (same-origin), and tryItCorsProxy is deliberately UNSET so
+       the "Try It" console issues requests browser → this instance directly on the
+       existing CORS * policy — never a third-party proxy (ADR-0014 §4). The web
+       component is loaded from the self-hosted /_ds/elements.min.js below; the path
+       is a literal kept in sync with web.ElementsJSPath. -->
+  <elements-api apiDescriptionUrl="/openapi.json" router="hash" layout="responsive" hideExport="true"></elements-api>
+
+  <script src="/_ds/elements.min.js"></script>
+  {{template "siteFooter" .Chrome}}
+</body>
+</html>

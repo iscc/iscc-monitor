@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ISCC Monitor — Record List</title>
+  <!-- Shared ISCC Design System v2 token stylesheet (CDN-free, self-hosted).
+       The path is a literal because templates cannot read Go consts; keep it in
+       sync with web.TokensPath. -->
+  <link rel="stylesheet" href="/_ds/tokens.css">
+  <!-- Self-hosted @font-face shell (Readex Pro / JetBrains Mono woff2 under
+       /_ds/fonts/, no runtime CDN). The path is a literal; keep it in sync with
+       web.FontsCSSPath. -->
+  <link rel="stylesheet" href="/_ds/fonts.css">
+  <!-- Shared site chrome: masthead, footer, buttons, focus outline. The path is a
+       literal; keep it in sync with web.SiteCSSPath. -->
+  <link rel="stylesheet" href="/_ds/site.css">
+  <link rel="icon" href="/_ds/favicon.svg" type="image/svg+xml">
+  <!-- Page-scoped layout for the Evidence-Ledger record list. Every rule is
+       expressed through the embedded DS tokens (var(--*)) so the type resolves to
+       the self-hosted Readex Pro / JetBrains Mono and the surfaces use the DS
+       palette. Kept local to this page (not in the shared tokens.css) so it can
+       never regress another surface. No external/CDN URL appears here. -->
+  <style>
+    body {
+      font-family: var(--font-sans);
+      color: var(--text-body);
+      background: var(--surface-page);
+    }
+
+    .page {
+      max-width: var(--page-width);
+      margin: 0 auto;
+      padding: var(--space-10) var(--space-8) var(--space-14);
+    }
+
+    /* The back-link row to this hub's dossier (mounted at the SITE ROOT /<domain>,
+       OUTSIDE this /log/ subtree, so the href is an absolute site-root path). */
+    .backlink-row {
+      margin-bottom: var(--space-4);
+    }
+    .backlink {
+      color: var(--text-link);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-semibold);
+    }
+
+    /* Log-browser head: eyebrow "Log browser", the hub name, and the
+       "<domain> · N records mirrored" sub-line. The store carries no human display
+       name (HubSummary has only Domain/Origin), so the head name is the bare domain —
+       the same constraint-win deviation the dossier head already makes; the mockup's
+       prettified hub.name has no store source, so it is NOT fabricated here. */
+    .log-head {
+      margin-bottom: var(--space-4);
+    }
+    .log-eyebrow {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: var(--space-1);
+    }
+    .log-name {
+      font-size: var(--text-2xl);
+      font-weight: var(--weight-regular);
+      letter-spacing: -0.01em;
+      color: var(--text-heading);
+      margin: 0 0 var(--space-1);
+    }
+    .log-sub {
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      color: var(--text-body);
+    }
+
+    /* Ledger heading row. */
+    .ledger-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: var(--space-2);
+      margin-bottom: var(--space-3);
+    }
+    .ledger-title {
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--text-heading);
+      font-weight: var(--weight-bold);
+      margin: 0;
+    }
+    .ledger-count {
+      font-size: var(--text-sm);
+      color: var(--text-muted);
+      font-weight: var(--weight-regular);
+    }
+
+    /* The ledger card: a bordered, shadowed surface holding the record rows. */
+    .ledger {
+      background: var(--surface-card);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-xs);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+    /* Frozen-card tint: decorative only. The hue is never the sole status signal
+       (ADR-0010 invariant 4) — this surface's load-bearing status conveyance is the
+       dossier badge one breadcrumb up, not a per-row mark. The record-list mockup's
+       Log Browser omits a Status row, so the overlaid status reaches only the
+       .ledger's data-status attribute (the frozen tint). The attribute value in this
+       SELECTOR is intentionally unquoted (valid CSS for an identifier) so the rendered
+       <style> carries no `data-status="..."` literal — only the single .ledger element
+       emits one (with the overlaid value), keeping the overlay-precedence test honest. */
+    .ledger[data-status=frozen] {
+      background: var(--status-error-bg, rgba(245, 97, 105, 0.06));
+    }
+
+    /* The record list itself: each row is a seq + type badge + id/schema + logged-time
+       quadruple, newest first, linking to the record's per-record view. Laid out as a
+       CSS grid (no <table>) so the whole page renders complete with JavaScript disabled.
+       The head and row grids share the same 4-column template so the column headers stay
+       aligned with their data cells (Seq · Type · ISCC-ID · Logged). */
+    .records {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .records-head {
+      display: grid;
+      grid-template-columns: 120px 130px 1fr 160px;
+      gap: var(--space-4);
+      align-items: baseline;
+      padding: var(--space-3) var(--space-5);
+      border-bottom: var(--border-width) solid var(--border-default);
+    }
+    .records-head span {
+      font-family: var(--font-mono);
+      font-size: var(--text-2xs);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+    .record-row {
+      display: grid;
+      grid-template-columns: 120px 130px 1fr 160px;
+      gap: var(--space-4);
+      align-items: baseline;
+      padding: var(--space-3) var(--space-5);
+      border-bottom: var(--border-width) solid var(--border-subtle);
+    }
+    .record-row:last-child {
+      border-bottom: 0;
+    }
+    .record-seq {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-link);
+    }
+    /* The Type badge: the verbatim note.$schema mapped to a human label
+       (Declaration / Deletion / Unknown record type, ADR-0008 — the only
+       interpretation). The text label is the load-bearing, grayscale-safe status
+       signal; the per-kind hue is decorative only and keyed on data-kind. The
+       attribute selectors are intentionally unquoted (valid CSS for identifier
+       values) so the rendered <style> carries no `data-kind="..."` literal that a
+       negative body assert could trip (the cross-cutting CSS-literal trap). */
+    .record-type {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: var(--text-2xs);
+      font-weight: var(--weight-bold);
+      letter-spacing: var(--tracking-wide);
+      padding: var(--space-1) var(--space-2);
+      border: var(--border-width) solid var(--border-subtle);
+      border-radius: var(--radius-xs);
+      color: var(--text-muted);
+    }
+    .record-type[data-kind=declaration] {
+      color: var(--status-success-text);
+    }
+    .record-type[data-kind=deletion] {
+      color: var(--status-warning-text);
+    }
+    /* The record cell must be allowed to shrink below the id's min-content width
+       (grid items default to min-width:auto) so a long id wraps in the cell
+       rather than pushing the seq column out of view. */
+    .record-cell {
+      min-width: 0;
+    }
+    .record-id {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-body);
+      word-break: break-all;
+      overflow-wrap: anywhere;
+    }
+    .record-schema {
+      font-family: var(--font-mono);
+      font-size: var(--text-2xs);
+      color: var(--text-muted);
+    }
+    /* The logged time: the verbatim inner note.timestamp (RFC-3339), rendered
+       as-is (ADR-0008, never re-formatted) with an honest em-dash placeholder for a
+       record that carries no timestamp. */
+    .record-logged {
+      font-family: var(--font-mono);
+      font-size: var(--text-2xs);
+      color: var(--text-muted);
+    }
+
+    /* Pagination: plain links, no JavaScript. Two pagers bracket the record list —
+       the top pager (.pager-top) sits directly above the ledger card and the bottom
+       pager (.pager-bottom) below it — each a three-slot row: a Newer affordance
+       (left), a center label, and an Older affordance (right). The mockup's
+       JavaScript "Jump to sequence" input is deliberately omitted: the plain-link
+       ?from=… pager IS its no-JS equivalent (every clause renders complete without
+       JavaScript), so no form/input appears here. */
+    .pager {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+    }
+    .pager-top {
+      background: var(--surface-card);
+      border: var(--border-width) solid var(--border-default);
+      border-bottom: none;
+      border-radius: var(--radius-xs) var(--radius-xs) 0 0;
+      padding: var(--space-3) var(--space-4);
+    }
+    .pager-bottom {
+      margin-top: var(--space-4);
+    }
+    /* The top pager seams into the ledger card directly below it, so the card's own
+       top corners square off and it gains no extra top border. */
+    .pager-top + .ledger {
+      border-top: none;
+      border-radius: 0 0 var(--radius-xs) var(--radius-xs);
+    }
+    /* A live Newer / Older affordance is a plain link; at an end of the chain it is
+       a dimmed, non-interactive <span> (the no-JS equivalent of the mockup's
+       opacity-disabled button — same pattern the single-record stepper uses). */
+    .pager-link {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      font-weight: var(--weight-semibold);
+      color: var(--text-link);
+    }
+    .pager-disabled {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      font-weight: var(--weight-semibold);
+      color: var(--text-faint);
+    }
+    /* The center slot: the top pager carries the "seq X – Y of Z" range label; the
+       bottom pager carries the append-only footnote. */
+    .pager-range {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+    }
+    .pager-note {
+      font-size: var(--text-xs);
+      font-weight: var(--weight-regular);
+      color: var(--text-faint);
+    }
+
+    .empty {
+      padding: var(--space-6) var(--space-5);
+      color: var(--text-muted);
+    }
+
+    .footnote {
+      font-size: var(--text-xs);
+      font-weight: var(--weight-regular);
+      color: var(--text-faint);
+      line-height: var(--leading-normal);
+      margin: var(--space-4) var(--space-1) 0;
+    }
+  </style>
+</head>
+<body>
+  {{template "siteHeader" .Chrome}}
+
+  <main class="page">
+    <div class="backlink-row">
+      <a class="backlink" href="/{{.Domain}}">← {{.Domain}} dossier</a>
+    </div>
+
+    <div class="log-head">
+      <div class="log-eyebrow">Log browser</div>
+      <h1 class="log-name">{{.Domain}}</h1>
+      <div class="log-sub">{{.Domain}} · {{.Total}} records mirrored</div>
+    </div>
+
+    <div class="ledger-head">
+      <span class="ledger-count">The monitor's mirrored, accepted records for this hub, newest first.</span>
+    </div>
+
+    {{- if .Records}}
+    <div class="pager pager-top">
+      {{- if .HasNewer}}
+      <a class="pager-link" href="records?from={{.NewerFrom}}&amp;n={{.PageSize}}">&larr; newer</a>
+      {{- else}}
+      <span class="pager-disabled">&larr; newer</span>
+      {{- end}}
+      <span class="pager-range">seq {{.RangeTop}} &ndash; {{.RangeBottom}} of {{.Total}}</span>
+      {{- if .HasOlder}}
+      <a class="pager-link" href="records?from={{.OlderFrom}}&amp;n={{.PageSize}}">older &rarr;</a>
+      {{- else}}
+      <span class="pager-disabled">older &rarr;</span>
+      {{- end}}
+    </div>
+    {{- end}}
+
+    <div class="ledger" data-status="{{.Status}}">
+      {{- if .Records}}
+      <div class="records-head">
+        <span>Seq</span>
+        <span>Type</span>
+        <span>ISCC-ID</span>
+        <span>Logged</span>
+      </div>
+      <ul class="records">
+        {{- range .Records}}
+        <li class="record-row">
+          <a class="record-seq" href="record?index={{.Seq}}">seq {{.Seq}}</a>
+          <span><span class="record-type" data-kind="{{.KindKey}}">{{.Kind}}</span></span>
+          <span class="record-cell">
+            <code class="record-id">{{if .IsccID}}{{.IsccID}}{{else}}(no iscc_id){{end}}</code>
+            <span class="record-schema">{{if .NoteSchema}}{{.NoteSchema}}{{else}}(no schema){{end}}</span>
+          </span>
+          <span class="record-logged">{{if .NoteTimestamp}}{{.NoteTimestamp}}{{else}}&mdash;{{end}}</span>
+        </li>
+        {{- end}}
+      </ul>
+      {{- else}}
+      <div class="empty">
+        <p>No records yet — this hub is followed and mirrored, but the monitor has not yet indexed any accepted records for it. Records appear here once a verified checkpoint covers them.</p>
+      </div>
+      {{- end}}
+    </div>
+
+    {{- if .Records}}
+    <div class="pager pager-bottom">
+      {{- if .HasNewer}}
+      <a class="pager-link" href="records?from={{.NewerFrom}}&amp;n={{.PageSize}}">&larr; newer entries</a>
+      {{- else}}
+      <span class="pager-disabled">&larr; newer entries</span>
+      {{- end}}
+      <span class="pager-note">Records are append-only — a deletion is itself a new entry, never a removal.</span>
+      {{- if .HasOlder}}
+      <a class="pager-link" href="records?from={{.OlderFrom}}&amp;n={{.PageSize}}">older entries &rarr;</a>
+      {{- else}}
+      <span class="pager-disabled">older entries &rarr;</span>
+      {{- end}}
+    </div>
+    {{- end}}
+
+    <p class="footnote">Every record is listed verbatim — the monitor interprets neither the ISCC-ID nor the note schema. Each row links to that leaf's single-record page; guarantees hold only from coverage start, so records committed before the monitor began watching are mirrored but not vouched for.</p>
+  </main>
+  {{template "siteFooter" .Chrome}}
+</body>
+</html>

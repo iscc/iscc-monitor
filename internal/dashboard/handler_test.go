@@ -1,0 +1,617 @@
+// Golden test for the dashboard handler at the HTTP seam: it populates a fixture
+// store with two hubs (one verified with coverage, one frozen) through the public
+// store API, drives Handler over an httptest.ResponseRecorder, and asserts the
+// observable response — 200, the text/html content type, and that the rendered
+// body names every hub plus its glossary status. It also pins the method gate
+// (non-GET → 405) and the exact-path gate (GET /unknown → 404), unit-tests the
+// status mapping (including the inactive case the public store API cannot set
+// directly), and proves the in-memory status overlay so a store-verified hub
+// whose live verdict is unresolvable / unverified renders that status honestly.
+package dashboard
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/iscc/iscc-monitor/internal/chrome"
+	"github.com/iscc/iscc-monitor/internal/store"
+)
+
+// fakeStatusSource is an in-memory StatusSource keyed by hub_id, standing in for
+// the metrics registry so the dashboard's status overlay is golden-testable
+// without importing internal/metrics. A nil map (or a missing key) reports a miss.
+type fakeStatusSource map[int64]string
+
+func (f fakeStatusSource) Status(hubID int64) (string, bool) {
+	s, ok := f[hubID]
+	return s, ok
+}
+
+// fixtureStore opens a fresh store and registers two hubs: a verified one with an
+// accepted checkpoint and a recorded coverage start, and a frozen one. It returns
+// the store; the caller asserts on the rendered output.
+func fixtureStore(t *testing.T) *store.Store {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "dash.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	// Verified hub: an accepted checkpoint advances last_size and sets coverage.
+	verifiedID, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub verified: %v", err)
+	}
+	observed := time.Unix(1_700_000_000, 0).UTC()
+	verifiedRoot := []byte("root-verified-32-bytes-padding!!")
+	if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+		HubID:      verifiedID,
+		TreeSize:   42,
+		Root:       verifiedRoot,
+		Raw:        []byte("raw-checkpoint-bytes"),
+		ObservedAt: observed,
+	}); err != nil {
+		t.Fatalf("AdvanceAccepted verified: %v", err)
+	}
+	// The verified hub's accepted root is Bitcoin-anchored: a confirmed OTS row, so
+	// its Anchor cell renders the "confirmed" state. The frozen hub gets no OTS row,
+	// so it renders the honest never-stamped "not anchored" state.
+	if _, _, err := st.RecordOTS(ctx, store.OTSRecord{
+		HubID:     verifiedID,
+		TreeSize:  42,
+		Root:      verifiedRoot,
+		Status:    store.OTSStatusConfirmed,
+		StampedAt: observed,
+	}); err != nil {
+		t.Fatalf("RecordOTS verified: %v", err)
+	}
+
+	// Frozen hub: a follow_state row advanced then frozen by the freeze path.
+	frozenID, err := st.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub frozen: %v", err)
+	}
+	if err := st.AdvanceFollowState(ctx, frozenID, 7); err != nil {
+		t.Fatalf("AdvanceFollowState frozen: %v", err)
+	}
+	if err := st.Freeze(ctx, frozenID); err != nil {
+		t.Fatalf("Freeze: %v", err)
+	}
+	return st
+}
+
+func TestDashboardRendersEveryHub(t *testing.T) {
+	st := fixtureStore(t)
+	rec := httptest.NewRecorder()
+	// nil StatusSource: every store-verified hub renders as "verified" (no overlay),
+	// so this test pins the store-provable subset exactly as before the overlay.
+	Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got, want := rec.Header().Get("Content-Type"), "text/html; charset=utf-8"; got != want {
+		t.Errorf("Content-Type = %q, want %q", got, want)
+	}
+	body := rec.Body.String()
+
+	// Every hub's domain and origin must appear.
+	for _, want := range []string{
+		"sb0.iscc.id", "sb0.iscc.id/log",
+		"sb1.amlet.id", "sb1.amlet.id/log",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\n%s", want, body)
+		}
+	}
+	// Both store-provable statuses must render through the hubStatusBadge partial,
+	// not as the bare status word: the wrapper, the fixed-table label, and the
+	// per-status distinguishing silhouette marker must all appear (icon + label +
+	// silhouette, never hue alone — ADR-0010 invariant 4).
+	if !strings.Contains(body, `class="hub-status-badge"`) {
+		t.Errorf("body missing hub-status-badge wrapper (partial not rendered)\n%s", body)
+	}
+	for _, want := range []string{
+		`data-status="verified"`, ">Verified<", "M8.4 12.3", // verified: badge + label + check-circle marker
+		`data-status="frozen"`, ">Frozen<", "M8.2 3.3h7.6", // frozen: badge + label + octagon-x marker
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing badge markup %q\n%s", want, body)
+		}
+	}
+	// Coverage honesty is rendered, not just stored (ADR-0001): the verified hub
+	// shows its recorded start size, the frozen hub (no coverage set) shows the
+	// explicit "no coverage yet" — the observed size is never passed off as a
+	// coverage guarantee.
+	if !strings.Contains(body, "size 42") {
+		t.Errorf("body missing coverage start for the verified hub\n%s", body)
+	}
+	if !strings.Contains(body, "no coverage yet") {
+		t.Errorf("body missing the no-coverage state for the frozen hub\n%s", body)
+	}
+
+	// The Evidence-Ledger redress is observable at the seam: the page is styled
+	// through the DS font tokens (so the type resolves to the self-hosted
+	// webfonts) and lays out the ledger as a CSS grid, not an HTML <table>.
+	for _, want := range []string{"var(--font-sans)", "var(--font-mono)", "display: grid"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing redress marker %q\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "<table") {
+		t.Errorf("body still contains a <table> element; the grid redress is incomplete\n%s", body)
+	}
+
+	// The six-column ledger renders the mockup's Checkpoint and Anchor columns: both
+	// colheads appear, the verified hub (a confirmed OTS row) shows the "confirmed"
+	// anchor label, and the frozen hub (no OTS row) shows the honest "not anchored"
+	// state — never implying a Bitcoin anchor exists.
+	for _, want := range []string{
+		"<span>Checkpoint</span>",
+		"<span>Anchor</span>",
+		`data-anchor="confirmed"`,
+		">confirmed<",
+		`data-anchor="none"`,
+		">not anchored<",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing anchor/checkpoint markup %q\n%s", want, body)
+		}
+	}
+}
+
+// TestDashboardAnchorCell asserts the register's Anchor cell for each anchor state. The
+// growing hub is the case the cell exists for: its newest root is always younger than
+// the time confirmation takes, so a cell that read only the newest root would say
+// "pending" on a hub with confirmed anchors.
+func TestDashboardAnchorCell(t *testing.T) {
+	// A non-UTC local zone and a time near midnight: the date is wrong unless the cell
+	// renders it in UTC. The store's time.Unix round-trip yields local time.
+	saved := time.Local
+	time.Local = time.FixedZone("CET", 3600)
+	t.Cleanup(func() { time.Local = saved })
+
+	seenAt := time.Date(2026, 11, 6, 23, 28, 53, 0, time.UTC)
+	stamped := time.Date(2026, 11, 5, 1, 33, 0, 0, time.UTC)
+	confirmed := store.OTSRecord{TreeSize: 304553, Root: []byte("confirmed-root-padding-32-bytes!"), Status: store.OTSStatusConfirmed, BTCHeight: 974697, StampedAt: stamped, UpgradedAt: seenAt}
+	pending := store.OTSRecord{TreeSize: 304685, Root: []byte("pending-root-padding-32-bytes!!!"), Status: store.OTSStatusPending, StampedAt: stamped.Add(48 * time.Hour)}
+	noHeight := store.OTSRecord{TreeSize: 42, Root: []byte("no-height-root-padding-32-bytes!"), Status: store.OTSStatusConfirmed, StampedAt: stamped}
+
+	cases := []struct {
+		name   string
+		rows   []store.OTSRecord
+		want   []string
+		absent []string
+	}{
+		{
+			name:   "growing hub shows its newest confirmed anchor",
+			rows:   []store.OTSRecord{confirmed, pending},
+			want:   []string{`data-anchor="confirmed"`, ">block 974697<", ">size 304553<", ">at 2026-11-06<"},
+			absent: []string{">pending<", "no confirmed anchor yet"},
+		},
+		{
+			name:   "newest root confirmed",
+			rows:   []store.OTSRecord{confirmed},
+			want:   []string{`data-anchor="confirmed"`, ">block 974697<", ">size 304553<", ">at 2026-11-06<"},
+			absent: []string{">pending<"},
+		},
+		{
+			name: "only pending roots",
+			rows: []store.OTSRecord{pending},
+			want: []string{`data-anchor="pending"`, ">pending<", ">no confirmed anchor yet<"},
+		},
+		{
+			name:   "never anchored",
+			want:   []string{`data-anchor="none"`, ">not anchored<"},
+			absent: []string{"no confirmed anchor yet", ">size "},
+		},
+		{
+			name:   "confirmed row without a recorded height or time",
+			rows:   []store.OTSRecord{noHeight},
+			want:   []string{`data-anchor="confirmed"`, ">confirmed<", ">size 42<"},
+			absent: []string{"block 0", ">at "},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st, err := store.Open(filepath.Join(t.TempDir(), "anchor.db"))
+			if err != nil {
+				t.Fatalf("store.Open: %v", err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+			id, err := st.UpsertHub(ctx, "amlet.id", "amlet.id/log", "https://amlet.id")
+			if err != nil {
+				t.Fatalf("UpsertHub: %v", err)
+			}
+			for _, row := range tc.rows {
+				row.HubID = id
+				if _, _, err := st.RecordOTS(ctx, row); err != nil {
+					t.Fatalf("RecordOTS size %d: %v", row.TreeSize, err)
+				}
+			}
+
+			rec := httptest.NewRecorder()
+			Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			body := rec.Body.String()
+			for _, want := range tc.want {
+				if !strings.Contains(body, want) {
+					t.Errorf("body missing %q\n%s", want, body)
+				}
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(body, absent) {
+					t.Errorf("body contains %q\n%s", absent, body)
+				}
+			}
+		})
+	}
+}
+
+// TestDashboardRendersInMemoryStatus proves the in-memory status overlay at the
+// HTTP seam: a store-verified hub whose live verdict (from the StatusSource) is
+// unresolvable / unverified renders that richer status — badge label + per-status
+// silhouette marker — even though the store can only prove "verified". This is the
+// end-to-end render of a status that exists ONLY in the in-memory registry, and is
+// non-vacuous: stubbing the overlay so the live status is ignored leaves the page
+// showing "verified" and fails these assertions.
+func TestDashboardRendersInMemoryStatus(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "overlay.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	// Two store-verified hubs (active, not frozen), so the store proves "verified"
+	// for both and the overlay is the only thing that can change the displayed status.
+	unresolvableID, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub unresolvable: %v", err)
+	}
+	unverifiedID, err := st.UpsertHub(ctx, "sb1.amlet.id", "sb1.amlet.id/log", "https://sb1.amlet.id")
+	if err != nil {
+		t.Fatalf("UpsertHub unverified: %v", err)
+	}
+
+	statuses := fakeStatusSource{
+		unresolvableID: "unresolvable",
+		unverifiedID:   "unverified",
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(st, statuses, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// Both in-memory-only statuses must render through the badge partial: the
+	// fixed-table label AND the per-status distinguishing silhouette marker
+	// (badge.md: unresolvable M9.2 9.3, unverified M12 3.4 21 19H3z).
+	for _, want := range []string{
+		`data-status="unresolvable"`, ">Unresolvable<", "M9.2 9.3",
+		`data-status="unverified"`, ">Unverified<", "M12 3.4 21 19H3z",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing in-memory status markup %q\n%s", want, body)
+		}
+	}
+}
+
+// TestDashboardLinksTokensNoCDN pins the shared-shell wiring: the rendered "/" body
+// links the embedded DS token stylesheet at the literal web.TokensPath and carries
+// no third-party CDN URL — the load-bearing M-UI invariant that every SSR body is
+// complete with JavaScript disabled and loads nothing from a third-party origin.
+// Hyperlinks to other origins (the footer's source link) are navigation, so the ban
+// is narrowed to third-party CDN hosts, mirroring the certificate's no-CDN posture.
+func TestDashboardLinksTokensNoCDN(t *testing.T) {
+	st := fixtureStore(t)
+	rec := httptest.NewRecorder()
+	Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `href="/_ds/tokens.css"`) {
+		t.Errorf("body missing token stylesheet link\n%s", body)
+	}
+	for _, banned := range []string{"jsdelivr", "cdn.", "unpkg", "googleapis"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("body contains external CDN reference %q\n%s", banned, body)
+		}
+	}
+}
+
+// TestDashboardRendersHeroAndNavigation pins the three headline landmark regions the
+// mockup demands on "/": (a) the claim-lookup hero as a no-JS GET form whose action
+// resolves to /inclusion/ with an iscc_id input, (b) a dossier link per hub row (the
+// realm-index → dossier navigation closure: anchor count >= hub count), and (c) the
+// masthead instance-identity block with the tier-2 verify link. It is non-vacuous:
+// dropping the row <a> wrapper or the hero form fails these assertions.
+func TestDashboardRendersHeroAndNavigation(t *testing.T) {
+	st := fixtureStore(t)
+	rec := httptest.NewRecorder()
+	Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// (a) The claim-lookup hero: a no-JS GET form posting ?iscc_id=… to /inclusion/.
+	for _, want := range []string{
+		`<form`,
+		`method="get"`,
+		`action="/inclusion/"`,
+		`name="iscc_id"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("hero form missing %q\n%s", want, body)
+		}
+	}
+
+	// (b) Navigation closure: one dossier <a href="/<domain>"> per hub. Count the
+	// dossier links specifically (not the masthead verify link or the hero button),
+	// and require anchor count >= hub count (here both fixture hubs).
+	dossierLinks := 0
+	for _, domain := range []string{"sb0.iscc.id", "sb1.amlet.id"} {
+		if strings.Contains(body, `href="/`+domain+`"`) {
+			dossierLinks++
+		}
+	}
+	if dossierLinks < 2 {
+		t.Errorf("dossier link count = %d, want >= 2 (one per hub)\n%s", dossierLinks, body)
+	}
+
+	// (c) The masthead instance-identity block, plus the self-hosted ISCC logo <img> beside the text mark (the shared document chrome).
+	// The logo src is the literal web.LogoPath; same-origin /_ds/ so it never trips
+	// the no-CDN ban.
+	for _, want := range []string{
+		"monitor instance",
+		"hubs followed",
+		`src="/_ds/iscc-logo.svg"`,     // the shared-chrome ISCC logo (web.LogoPath)
+		`href="/_ds/site.css"`,         // the shared site-chrome stylesheet (web.SiteCSSPath)
+		`<footer class="site-footer">`, // the shared footer partial
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("masthead/heading missing %q\n%s", want, body)
+		}
+	}
+}
+
+// TestDashboardRendersInstanceIdentity proves the masthead renders the
+// operator-supplied instance identity at the HTTP seam: a populated chrome.Site
+// surfaces its exact Instance / Operator strings on the chrome and its Realm in the
+// ledger subtitle ("Realm register · <realm>"), and a zero-value chrome.Site falls
+// back to the static placeholder copy (the neutral "monitor instance" line and the
+// bare "Realm register" subtitle with no trailing separator). It is non-vacuous:
+// dropping the {{.Instance}} binding (or the .chrome-instance text node) from the
+// template, or threading a constant default instead of the supplied value, makes
+// the populated-identity assertions fail because the exact operator strings would
+// no longer appear.
+func TestDashboardRendersInstanceIdentity(t *testing.T) {
+	st := fixtureStore(t)
+
+	// Populated identity: the masthead must render these exact operator-supplied
+	// strings (not the static defaults), driven through the live render so reverting
+	// the template binding fails the test.
+	id := chrome.Site{
+		Instance: "monitor.example.test",
+		Operator: "operated by Example Org · example net",
+		Realm:    "example net",
+	}
+	rec := httptest.NewRecorder()
+	Handler(st, nil, id).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"monitor.example.test",
+		"operated by Example Org · example net",
+		"Realm register · example net",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing identity literal %q\n%s", want, body)
+		}
+	}
+	// The static placeholder copy must NOT appear when an operator configures the
+	// instance — otherwise the test would pass even if the template ignored the
+	// supplied value and kept the hard-coded default.
+	if strings.Contains(body, "monitor instance") {
+		t.Errorf("body still shows the static placeholder despite a configured Instance\n%s", body)
+	}
+
+	// Zero-value identity: the fallback masthead renders the neutral placeholder and
+	// the bare "Realm register" subtitle (no trailing "· " separator), so an
+	// unconfigured deployment is honest rather than asserting a false instance.
+	recDefault := httptest.NewRecorder()
+	Handler(st, nil, chrome.Site{}).ServeHTTP(recDefault, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recDefault.Code != http.StatusOK {
+		t.Fatalf("default status = %d, want 200", recDefault.Code)
+	}
+	defaultBody := recDefault.Body.String()
+	for _, want := range []string{
+		"monitor instance",
+		"independent Trust &amp; Transparency service",
+		`<h2 class="ledger-title">Realm register</h2>`,
+	} {
+		if !strings.Contains(defaultBody, want) {
+			t.Errorf("default body missing fallback %q\n%s", want, defaultBody)
+		}
+	}
+	// The bare subtitle must carry no trailing realm separator when Realm is empty.
+	if strings.Contains(defaultBody, "Realm register ·") {
+		t.Errorf("default body shows a trailing realm separator for an empty realm\n%s", defaultBody)
+	}
+}
+
+func TestDashboardMethodNotAllowed(t *testing.T) {
+	st := fixtureStore(t)
+	rec := httptest.NewRecorder()
+	Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST / status = %d, want 405", rec.Code)
+	}
+}
+
+func TestDashboardUnknownPath(t *testing.T) {
+	st := fixtureStore(t)
+	rec := httptest.NewRecorder()
+	Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/unknown", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /unknown status = %d, want 404", rec.Code)
+	}
+}
+
+// TestHubStatusMapping pins the store-provable glossary mapping, including the
+// inactive case the public store API cannot set (active is registry-managed; no
+// public setter exists, so it is exercised at the summary boundary the renderer
+// consumes).
+func TestHubStatusMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		in   store.HubSummary
+		want string
+	}{
+		{"inactive wins over frozen", store.HubSummary{Active: false, Frozen: true}, "inactive"},
+		{"frozen when active", store.HubSummary{Active: true, Frozen: true}, "frozen"},
+		{"verified default", store.HubSummary{Active: true, Frozen: false}, "verified"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hubStatus(tc.in); got != tc.want {
+				t.Errorf("hubStatus(%+v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOverlayStatusPrecedence pins the load-bearing precedence: the store's durable
+// inactive / frozen truths are never overridden by a fresher in-memory verdict, the
+// overlay applies only to a store-verified hub, and only the two richer live states
+// (unresolvable / unverified) are adopted — any other live value (or a nil source)
+// keeps "verified".
+func TestOverlayStatusPrecedence(t *testing.T) {
+	verified := store.HubSummary{HubID: 1, Active: true, Frozen: false}
+	frozen := store.HubSummary{HubID: 1, Active: true, Frozen: true}
+	inactive := store.HubSummary{HubID: 1, Active: false, Frozen: false}
+
+	cases := []struct {
+		name     string
+		in       store.HubSummary
+		statuses StatusSource
+		want     string
+	}{
+		{"verified overlaid to unresolvable", verified, fakeStatusSource{1: "unresolvable"}, "unresolvable"},
+		{"verified overlaid to unverified", verified, fakeStatusSource{1: "unverified"}, "unverified"},
+		{"verified stays when live is verified", verified, fakeStatusSource{1: "verified"}, "verified"},
+		{"verified stays when no live record", verified, fakeStatusSource{}, "verified"},
+		{"verified stays with nil source", verified, nil, "verified"},
+		{"frozen wins over live unresolvable", frozen, fakeStatusSource{1: "unresolvable"}, "frozen"},
+		{"inactive wins over live unverified", inactive, fakeStatusSource{1: "unverified"}, "inactive"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := overlayStatus(tc.in, tc.statuses); got != tc.want {
+				t.Errorf("overlayStatus(%+v, %v) = %q, want %q", tc.in, tc.statuses, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDashboardRecentlyDeclared confirms the hero's "Recently declared" row renders
+// exactly ONE id — the single newest declaration the monitor has indexed within the
+// accepted tree — as a click-through link to its Certificate of Inclusion. It proves
+// the selection skips a newer deletion to reach the declaration, excludes records
+// above the accepted ceiling, and emits the prefix-stripped id in the /inclusion/
+// path (no colon in the URL) while showing the full ISCC:-prefixed id as link text.
+func TestDashboardRecentlyDeclared(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "recent.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	hubID, err := st.UpsertHub(ctx, "sb0.iscc.id", "sb0.iscc.id/log", "https://sb0.iscc.id")
+	if err != nil {
+		t.Fatalf("UpsertHub: %v", err)
+	}
+	// Accepted tree size 4: seq 0..3 are accepted, seq 4 sits above the ceiling.
+	if err := st.AdvanceAccepted(ctx, store.CheckpointRecord{
+		HubID:      hubID,
+		TreeSize:   4,
+		Root:       []byte("root-recent-checkpoint-padding!!"),
+		Raw:        []byte("raw-checkpoint-bytes"),
+		ObservedAt: time.Unix(1_700_000_000, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("AdvanceAccepted: %v", err)
+	}
+	const decl = "http://purl.org/iscc/schema/iscc-note-0.8.0.json"
+	const del = "http://purl.org/iscc/schema/iscc-note-delete-0.8.0.json"
+	if err := st.RecordProjections(ctx, []store.ProjectionRecord{
+		{HubID: hubID, Seq: 0, IsccID: "ISCC:DECLAAAA", NoteSchema: decl},
+		{HubID: hubID, Seq: 1, IsccID: "ISCC:DECLBBBB", NoteSchema: decl},
+		{HubID: hubID, Seq: 2, IsccID: "ISCC:DECLCCCC", NoteSchema: decl}, // newest declaration within the ceiling -> the one shown
+		{HubID: hubID, Seq: 3, IsccID: "ISCC:DELYYYYY", NoteSchema: del},  // newest accepted record, but a deletion -> skipped
+		{HubID: hubID, Seq: 4, IsccID: "ISCC:DECLZZZZ", NoteSchema: decl}, // above the ceiling (size 4) -> excluded
+	}); err != nil {
+		t.Fatalf("RecordProjections: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "Recently declared:") {
+		t.Errorf("body missing the Recently declared row\n%s", body)
+	}
+	// Exactly the single newest declaration (seq 2, CCCC) renders — skipping the newer
+	// deletion at seq 3 — linking to its Certificate of Inclusion at /inclusion/<body>
+	// (the id with the ISCC: prefix stripped, so no colon enters the URL path); the link
+	// text shows the full ISCC:-prefixed id.
+	if want := `<a class="hero-recent-id" href="/inclusion/DECLCCCC">ISCC:DECLCCCC</a>`; !strings.Contains(body, want) {
+		t.Errorf("body missing the newest recent link %q\n%s", want, body)
+	}
+	// Only one shortcut link renders (recentDisplay == 1).
+	if got := strings.Count(body, `class="hero-recent-id"`); got != 1 {
+		t.Errorf("recent links rendered = %d, want 1\n%s", got, body)
+	}
+	// Older declarations, the newer deletion, and the above-ceiling record are all
+	// excluded — only the single newest accepted declaration is shown.
+	for _, absent := range []string{"DECLAAAA", "DECLBBBB", "DELYYYYY", "DECLZZZZ"} {
+		if strings.Contains(body, absent) {
+			t.Errorf("unexpected id %q in Recently declared (only the single newest declaration should show)\n%s", absent, body)
+		}
+	}
+}
+
+// TestDashboardNoRecentRowWhenIndexEmpty confirms the hero omits the entire "Recently
+// declared" row when no records are indexed — the honest empty state, no dangling
+// label. The fixture store seeds hubs and checkpoints but no iscc_index projections.
+func TestDashboardNoRecentRowWhenIndexEmpty(t *testing.T) {
+	st := fixtureStore(t)
+	rec := httptest.NewRecorder()
+	Handler(st, nil, chrome.Site{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if body := rec.Body.String(); strings.Contains(body, "Recently declared:") {
+		t.Errorf("empty index should omit the Recently declared row\n%s", body)
+	}
+}

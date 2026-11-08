@@ -1,0 +1,41 @@
+{{define "siteHeader" -}}
+<header class="chrome">
+  <div class="chrome-inner">
+    <a class="chrome-home" href="/"><img class="chrome-project-logo" src="/_ds/iscc-monitor-logo.svg" alt="ISCC Monitor home" width="268.56" height="31.71"><img class="chrome-logo" src="/_ds/iscc-logo.svg" alt="ISCC Monitor home" width="137" height="38"></a>
+    <div class="chrome-actions">
+      {{- if .OperatorLogo}}
+      <div class="chrome-cobrand">
+        <span class="chrome-cobrand-label">Operated by</span>
+        {{if .OperatorURL}}<a class="chrome-cobrand-link" href="{{.OperatorURL}}">{{end}}<img class="chrome-cobrand-logo" src="{{.OperatorLogo}}" alt="{{.OperatorName}}">{{if .OperatorURL}}</a>{{end}}
+      </div>
+      {{- end}}
+      <div class="chrome-identity">
+        <div class="chrome-instance">{{.Instance}}</div>
+        <div class="chrome-operator">{{.Operator}}</div>
+      </div>
+    </div>
+  </div>
+</header>
+{{- end}}
+
+{{define "siteFooter" -}}
+<footer class="site-footer">
+  <div class="site-footer-inner">
+    <div class="site-footer-meta">
+      <a class="site-footer-logo" href="https://iscc.io/"><img src="/_ds/iscc-logo-white.svg" alt="ISCC" width="784.22" height="217.92"></a>
+      <span class="site-footer-product">ISCC Monitor <span class="site-footer-version">{{if .VersionURL}}<a href="{{.VersionURL}}">{{.Version}}</a>{{else}}{{.Version}}{{end}}</span></span>
+      <span>Open source by the ISCC Foundation · Apache-2.0</span>
+    </div>
+    <div class="site-footer-end">
+      <nav class="site-footer-nav" aria-label="Monitor"><a href="https://monitor.iscc.codes/">Documentation</a><a href="/docs">API</a><a href="https://github.com/iscc/iscc-monitor">Source</a></nav>
+      {{- if or .OperatorName .Links}}
+      <span class="site-footer-divider" aria-hidden="true"></span>
+      <div class="site-footer-operator">
+        {{- if .OperatorName}}Operated by {{if .OperatorURL}}<a href="{{.OperatorURL}}">{{.OperatorName}}</a>{{else}}{{.OperatorName}}{{end}}{{end}}
+        {{- range $i, $link := .Links}}{{if or $i $.OperatorName}} · {{end}}<a href="{{$link.URL}}">{{$link.Label}}</a>{{end -}}
+      </div>
+      {{- end}}
+    </div>
+  </div>
+</footer>
+{{- end}}

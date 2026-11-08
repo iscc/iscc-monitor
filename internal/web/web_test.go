@@ -1,0 +1,578 @@
+// Tests for the static-asset handler at the HTTP seam: they drive Handler over an
+// httptest.ResponseRecorder and assert the observable response. The token and font
+// stylesheets return 200 text/css with a non-empty body carrying a known marker; the
+// wasm_exec.js loader returns 200 text/javascript with the Go runtime symbol; the
+// verify.wasm artifact returns 200 application/wasm with the \0asm magic and a body
+// whose SHA-256 equals the published WasmVerifyHash; a woff2 binary returns 200
+// font/woff2 with the woff2 magic bytes; a non-GET is 405; an If-None-Match match
+// short-circuits to 304. They also pin the load-bearing CDN-free invariant: no served
+// body references an external CDN origin in loadable content (no jsdelivr, no http(s)
+// scheme, no cdn. host) — a same-origin url("/_ds/fonts/...") in fonts.css and a
+// vendored runtime's source-comment URL are legitimate and not banned.
+package web
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/iscc/iscc-monitor/internal/web/webtest"
+)
+
+// get drives Handler with a GET for path and returns the recorder.
+func get(t *testing.T, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	return rec
+}
+
+// noExternalCDN fails if body references a third-party origin in loadable content. A
+// same-origin url("/_ds/...") is allowed; only jsdelivr / an http(s) scheme / a cdn.
+// host are banned, so a self-hosted @font-face src passes. Each line's // comment is
+// stripped before scanning, since a comment can never trigger a runtime CDN fetch —
+// this keeps the ban exactly as strict for real (loadable) content while permitting a
+// vendored runtime's source comment (e.g. wasm_exec.js's Go issue-tracker URL).
+func noExternalCDN(t *testing.T, name string, body []byte) {
+	t.Helper()
+	scanned := stripLineComments(body)
+	for _, banned := range []string{"jsdelivr", "http://", "https://", "cdn."} {
+		if bytes.Contains(scanned, []byte(banned)) {
+			t.Errorf("%s references external origin %q", name, banned)
+		}
+	}
+}
+
+// stripLineComments removes the // comment tail from each line so noExternalCDN scans
+// only loadable content. A comment is non-executable text, so a URL in it cannot be a
+// runtime resource reference. It treats // as a comment only in an actual comment
+// context: when the // is at line-start or preceded by whitespace (space/tab), the form
+// every genuine source comment takes. It is therefore NOT a comment when preceded by a
+// URL-authority delimiter (a colon as in https://, or a double-quote / single-quote /
+// open-paren as in a protocol-relative src="//cdn..." or url("//cdn...")), so a loadable
+// scheme-bearing or protocol-relative CDN URL is never truncated and still trips the ban.
+// CSS uses /* */ block comments (no // tail) and is unaffected.
+func stripLineComments(body []byte) []byte {
+	lines := bytes.Split(body, []byte("\n"))
+	for i, line := range lines {
+		for j := 0; j+1 < len(line); j++ {
+			if line[j] == '/' && line[j+1] == '/' && (j == 0 || line[j-1] == ' ' || line[j-1] == '\t') {
+				lines[i] = line[:j]
+				break
+			}
+		}
+	}
+	return bytes.Join(lines, []byte("\n"))
+}
+
+// TestNoExternalCDNProtocolRelative pins that stripLineComments only strips actual
+// comment contexts, so a protocol-relative loadable CDN URL survives the strip and
+// still trips noExternalCDN's ban, while a genuine comment URL stays suppressed. It
+// drives stripLineComments directly (no HTTP round-trip) since noExternalCDN reports
+// only via t.Errorf, making a direct survives-or-not assertion the cleanest probe.
+func TestNoExternalCDNProtocolRelative(t *testing.T) {
+	// A protocol-relative <script> src is loadable content: its host must survive the
+	// strip so the ban fires (regression for the over-strip that hid it after the ").
+	scriptSrc := stripLineComments([]byte(`<script src="//cdn.jsdelivr.net/npm/x.js"></script>`))
+	if !bytes.Contains(scriptSrc, []byte("cdn.")) {
+		t.Errorf("protocol-relative src: cdn. host was stripped, ban would miss it: %q", scriptSrc)
+	}
+	if !bytes.Contains(scriptSrc, []byte("jsdelivr")) {
+		t.Errorf("protocol-relative src: jsdelivr was stripped, ban would miss it: %q", scriptSrc)
+	}
+
+	// A protocol-relative CSS url() is loadable too: its host must survive the strip.
+	cssURL := stripLineComments([]byte(`@font-face { src: url("//cdn.example/x.woff2"); }`))
+	if !bytes.Contains(cssURL, []byte("cdn.")) {
+		t.Errorf("protocol-relative url(): cdn. host was stripped, ban would miss it: %q", cssURL)
+	}
+
+	// A genuine source comment is non-executable: its URL must stay stripped so the
+	// vendored wasm_exec.js's one Go-issue-tracker comment URL keeps passing the ban.
+	comment := stripLineComments([]byte("\t// (temporary workaround for https://github.com/golang/go/issues/28975)"))
+	if bytes.Contains(comment, []byte("https://")) {
+		t.Errorf("genuine comment URL survived the strip, would false-positive the ban: %q", comment)
+	}
+}
+
+func TestTokensServedAsCSS(t *testing.T) {
+	rec := get(t, TokensPath)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/css") {
+		t.Errorf("Content-Type = %q, want text/css prefix", got)
+	}
+	body := rec.Body.Bytes()
+	if len(body) == 0 {
+		t.Fatal("body is empty")
+	}
+	// A known token must be present so the served bytes are the real stylesheet.
+	if !bytes.Contains(body, []byte("--iscc-blue")) {
+		t.Errorf("body missing --iscc-blue token\n%s", body)
+	}
+}
+
+// TestTokensCDNFree pins the load-bearing M-UI invariant for the token CSS: it
+// references no external CDN origin. tokens.css excludes the jsDelivr @font-face
+// block and neutralizes the grain background-image, so the body carries no jsdelivr,
+// no http(s) URL, and no cdn. host.
+func TestTokensCDNFree(t *testing.T) {
+	noExternalCDN(t, "served tokens.css", get(t, TokensPath).Body.Bytes())
+}
+
+func TestTokensRevalidateETag(t *testing.T) {
+	rec := get(t, TokensPath)
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	etag := rec.Header().Get("ETag")
+	if !strings.HasPrefix(etag, "\"") || strings.HasPrefix(etag, "W/") {
+		t.Errorf("ETag = %q, want a strong quoted-hex tag", etag)
+	}
+}
+
+// TestFontsCSSServed checks the @font-face stylesheet is served as CSS, carries an
+// @font-face rule pointing at a same-origin /_ds/fonts/ path, and references no CDN.
+func TestFontsCSSServed(t *testing.T) {
+	rec := get(t, FontsCSSPath)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/css") {
+		t.Errorf("Content-Type = %q, want text/css prefix", got)
+	}
+	body := rec.Body.Bytes()
+	if !bytes.Contains(body, []byte("@font-face")) {
+		t.Errorf("fonts.css missing @font-face\n%s", body)
+	}
+	if !bytes.Contains(body, []byte("/_ds/fonts/")) {
+		t.Errorf("fonts.css missing same-origin /_ds/fonts/ src\n%s", body)
+	}
+	noExternalCDN(t, "served fonts.css", body)
+}
+
+// TestFontBinaryServed checks a woff2 binary is served with the font/woff2 content
+// type, a strong ETag, no-cache, and the woff2 magic header ("wOF2").
+func TestFontBinaryServed(t *testing.T) {
+	rec := get(t, "/_ds/fonts/readex-pro-400.woff2")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "font/woff2" {
+		t.Errorf("Content-Type = %q, want font/woff2", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	if etag := rec.Header().Get("ETag"); !strings.HasPrefix(etag, "\"") || strings.HasPrefix(etag, "W/") {
+		t.Errorf("ETag = %q, want a strong quoted-hex tag", etag)
+	}
+	if got := rec.Body.Bytes(); len(got) < 4 || string(got[:4]) != "wOF2" {
+		t.Errorf("body is not a woff2 (magic = %x)", got[:min(4, len(got))])
+	}
+}
+
+// TestFontBinaryAllSubsets checks every one of the eight embedded latin subsets is
+// served — the self-hosted @font-face stylesheet references them all.
+func TestFontBinaryAllSubsets(t *testing.T) {
+	subsets := []string{
+		"readex-pro-300.woff2", "readex-pro-400.woff2", "readex-pro-500.woff2",
+		"readex-pro-600.woff2", "readex-pro-700.woff2",
+		"jetbrains-mono-400.woff2", "jetbrains-mono-500.woff2", "jetbrains-mono-700.woff2",
+	}
+	for _, name := range subsets {
+		rec := get(t, "/_ds/fonts/"+name)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET /_ds/fonts/%s = %d, want 200", name, rec.Code)
+		}
+	}
+}
+
+// TestFontsCSSReferencesEmbeddedSubsets cross-checks that every src="/_ds/fonts/..."
+// path named in the served fonts.css resolves to an embedded binary (200), so the
+// stylesheet never points at a missing file. It scans only inside the double-quoted
+// src values, so prose mentioning the marker in a comment is not treated as a URL.
+func TestFontsCSSReferencesEmbeddedSubsets(t *testing.T) {
+	css := get(t, FontsCSSPath).Body.String()
+	const marker = `"/_ds/fonts/`
+	found := 0
+	for rest := css; ; {
+		i := strings.Index(rest, marker)
+		if i < 0 {
+			break
+		}
+		rest = rest[i+1:] // step past the opening quote
+		path, _, ok := strings.Cut(rest, `"`)
+		if !ok {
+			t.Fatalf("unterminated font URL in fonts.css near %q", rest[:min(40, len(rest))])
+		}
+		if rec := get(t, path); rec.Code != http.StatusOK {
+			t.Errorf("fonts.css references %s but GET it = %d", path, rec.Code)
+		}
+		found++
+	}
+	if found != 8 {
+		t.Errorf("fonts.css references %d font URLs, want 8 latin subsets", found)
+	}
+}
+
+// TestWasmExecServed checks the Go WASM runtime loader is served at WasmExecPath with
+// the text/javascript content type, the revalidating no-cache + strong ETag policy, a
+// non-empty body, and no external CDN reference — the same-origin runtime the tier-2
+// progressive enhancement loads before instantiating the verifier .wasm.
+func TestWasmExecServed(t *testing.T) {
+	rec := get(t, WasmExecPath)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/javascript; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/javascript; charset=utf-8", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	if etag := rec.Header().Get("ETag"); !strings.HasPrefix(etag, "\"") || strings.HasPrefix(etag, "W/") {
+		t.Errorf("ETag = %q, want a strong quoted-hex tag", etag)
+	}
+	body := rec.Body.Bytes()
+	if len(body) == 0 {
+		t.Fatal("body is empty")
+	}
+	// A known runtime symbol must be present so the served bytes are the real loader.
+	if !bytes.Contains(body, []byte("globalThis.Go")) {
+		t.Errorf("body missing globalThis.Go runtime symbol")
+	}
+	noExternalCDN(t, "served wasm_exec.js", body)
+}
+
+// TestWasmVerifyServed checks the verifier WebAssembly artifact is served at
+// WasmVerifyPath with the application/wasm content type (so the browser will accept it
+// for WebAssembly.instantiateStreaming), the revalidating no-cache + strong ETag
+// policy, a non-empty body equal to the embedded bytes, and the \0asm Wasm magic
+// header — the build-pinned module the tier-2 progressive enhancement instantiates.
+func TestWasmVerifyServed(t *testing.T) {
+	rec := get(t, WasmVerifyPath)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/wasm" {
+		t.Errorf("Content-Type = %q, want application/wasm", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	if etag := rec.Header().Get("ETag"); !strings.HasPrefix(etag, "\"") || strings.HasPrefix(etag, "W/") {
+		t.Errorf("ETag = %q, want a strong quoted-hex tag", etag)
+	}
+	body := rec.Body.Bytes()
+	if len(body) == 0 {
+		t.Fatal("body is empty")
+	}
+	if !bytes.Equal(body, wasmVerify) {
+		t.Errorf("served body (%d bytes) differs from the embedded wasmVerify (%d bytes)", len(body), len(wasmVerify))
+	}
+	// A valid Wasm module begins with the \0asm magic (00 61 73 6d).
+	if magic := []byte{0x00, 0x61, 0x73, 0x6d}; len(body) < 4 || !bytes.Equal(body[:4], magic) {
+		t.Errorf("body is not a Wasm module (magic = %x, want %x)", body[:min(4, len(body))], magic)
+	}
+}
+
+// TestWasmVerifyHashPinned is the published-hash regression guard: the SHA-256 of the
+// committed verify.wasm bytes must equal WasmVerifyHash, the value clients compare
+// against to confirm they loaded the audited verifier. Re-running `mise run build:wasm`
+// without re-pinning the const (or a toolchain/source change that shifts the bytes)
+// fails here, forcing the published hash to track the committed artifact.
+func TestWasmVerifyHashPinned(t *testing.T) {
+	got := fmt.Sprintf("%x", sha256.Sum256(wasmVerify))
+	if got != WasmVerifyHash {
+		t.Errorf("sha256(verify.wasm) = %s, but WasmVerifyHash = %s\n"+
+			"re-run `mise run build:wasm` and re-pin WasmVerifyHash to the emitted hash", got, WasmVerifyHash)
+	}
+}
+
+// TestSVGAssetsServed checks the ISCC logos, the project logo and the favicon are served
+// as image/svg+xml with the revalidating no-cache + strong ETag policy, a body byte-equal
+// to the embedded file carrying its brand colours, no cross-origin load, and an
+// If-None-Match echo short-circuiting to 304.
+func TestSVGAssetsServed(t *testing.T) {
+	for _, tc := range []struct {
+		path    string
+		want    []byte
+		markers []string
+	}{
+		{LogoPath, logoSVG, []string{"#FFFFFF", "#F56169"}},
+		{ProjectLogoPath, projectLogoSVG, []string{"#FFFFFF", "#F56169", "ISCC monitor"}},
+		{FooterLogoPath, footerLogoSVG, []string{"#FFFFFF"}},
+		{FaviconPath, faviconSVG, []string{"#212529", "#F56169"}},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			rec := get(t, tc.path)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
+				t.Errorf("Content-Type = %q, want image/svg+xml", got)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+				t.Errorf("Cache-Control = %q, want no-cache", got)
+			}
+			etag := rec.Header().Get("ETag")
+			if !strings.HasPrefix(etag, "\"") || strings.HasPrefix(etag, "W/") {
+				t.Errorf("ETag = %q, want a strong quoted-hex tag", etag)
+			}
+			body := rec.Body.Bytes()
+			if len(body) == 0 || !bytes.Equal(body, tc.want) {
+				t.Errorf("served body (%d bytes) differs from the embedded SVG (%d bytes)", len(body), len(tc.want))
+			}
+			for _, marker := range append([]string{"<svg"}, tc.markers...) {
+				if !bytes.Contains(body, []byte(marker)) {
+					t.Errorf("body missing brand marker %q", marker)
+				}
+			}
+			webtest.AssertNoExternalLoads(t, tc.path, string(body))
+
+			cond := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set("If-None-Match", etag)
+			Handler().ServeHTTP(cond, req)
+			if cond.Code != http.StatusNotModified || cond.Body.Len() != 0 {
+				t.Errorf("If-None-Match = %d with %d body bytes, want 304 with none", cond.Code, cond.Body.Len())
+			}
+		})
+	}
+}
+
+// TestGrainServed checks the grain texture is served as image/png, byte-equal to the
+// embedded file, with the revalidating cache policy.
+func TestGrainServed(t *testing.T) {
+	rec := get(t, GrainPath)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/png" {
+		t.Errorf("Content-Type = %q, want image/png", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	body := rec.Body.Bytes()
+	if !bytes.HasPrefix(body, []byte("\x89PNG")) || !bytes.Equal(body, grainPNG) {
+		t.Errorf("served body (%d bytes) is not the embedded PNG (%d bytes)", len(body), len(grainPNG))
+	}
+}
+
+// TestSiteCSSServed checks the shared site-chrome stylesheet is served as CSS, carries
+// the masthead, footer, and button rules the chrome partials use, and references no
+// external origin.
+func TestSiteCSSServed(t *testing.T) {
+	rec := get(t, SiteCSSPath)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/css") {
+		t.Errorf("Content-Type = %q, want text/css prefix", got)
+	}
+	body := rec.Body.Bytes()
+	for _, rule := range []string{"body > main", ".chrome-inner", ".chrome-project-logo", ".chrome-cobrand-logo", ".site-footer-inner", GrainPath, ".btn-primary", ".btn-secondary", ":focus-visible"} {
+		if !bytes.Contains(body, []byte(rule)) {
+			t.Errorf("site.css missing rule %q", rule)
+		}
+	}
+	noExternalCDN(t, "served site.css", body)
+}
+
+// TestOperatorLogoNotInSubtree pins that the /_ds/ subtree handler never serves the
+// operator logo: only an instance with a configured logo mounts ImageHandler there.
+func TestOperatorLogoNotInSubtree(t *testing.T) {
+	if rec := get(t, OperatorLogoPath); rec.Code != http.StatusNotFound {
+		t.Errorf("GET %s via Handler = %d, want 404", OperatorLogoPath, rec.Code)
+	}
+}
+
+// TestImageHandler checks ImageHandler serves its image with the given content type,
+// the revalidating cache policy, the restrictive Content-Security-Policy and nosniff
+// headers, a 304 on an If-None-Match echo, and a 405 for a non-GET.
+func TestImageHandler(t *testing.T) {
+	data := []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`)
+	h := ImageHandler(data, "image/svg+xml")
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, OperatorLogoPath, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	for header, want := range map[string]string{
+		"Content-Type":            "image/svg+xml",
+		"Cache-Control":           "no-cache",
+		"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+		"X-Content-Type-Options":  "nosniff",
+	} {
+		if got := rec.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+	if !bytes.Equal(rec.Body.Bytes(), data) {
+		t.Errorf("body = %q, want the image bytes", rec.Body.Bytes())
+	}
+
+	cond := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, OperatorLogoPath, nil)
+	req.Header.Set("If-None-Match", rec.Header().Get("ETag"))
+	h.ServeHTTP(cond, req)
+	if cond.Code != http.StatusNotModified {
+		t.Errorf("If-None-Match status = %d, want 304", cond.Code)
+	}
+
+	post := httptest.NewRecorder()
+	h.ServeHTTP(post, httptest.NewRequest(http.MethodPost, OperatorLogoPath, nil))
+	if post.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST status = %d, want 405", post.Code)
+	}
+}
+
+// TestElementsJSServed checks the self-hosted Stoplight Elements web-component bundle
+// is served at ElementsJSPath with the text/javascript content type, the revalidating
+// no-cache + strong ETag policy, a non-empty body byte-equal to the embedded bytes,
+// and an If-None-Match echo short-circuiting to 304 — the byte-pinned same-origin
+// script the /docs page mounts. It does NOT run the no-CDN ban over these bytes: the
+// minified bundle carries hundreds of inert baked example URL strings that are data,
+// not runtime fetches (see web.go's elementsJS doc comment).
+func TestElementsJSServed(t *testing.T) {
+	rec := get(t, ElementsJSPath)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/javascript; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/javascript; charset=utf-8", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	etag := rec.Header().Get("ETag")
+	if !strings.HasPrefix(etag, "\"") || strings.HasPrefix(etag, "W/") {
+		t.Errorf("ETag = %q, want a strong quoted-hex tag", etag)
+	}
+	body := rec.Body.Bytes()
+	if len(body) == 0 {
+		t.Fatal("body is empty")
+	}
+	if !bytes.Equal(body, elementsJS) {
+		t.Errorf("served body (%d bytes) differs from the embedded elementsJS (%d bytes)", len(body), len(elementsJS))
+	}
+
+	cond := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, ElementsJSPath, nil)
+	req.Header.Set("If-None-Match", etag)
+	Handler().ServeHTTP(cond, req)
+	if cond.Code != http.StatusNotModified {
+		t.Errorf("If-None-Match status = %d, want 304", cond.Code)
+	}
+	if cond.Body.Len() != 0 {
+		t.Errorf("304 body not empty (%d bytes)", cond.Body.Len())
+	}
+}
+
+// TestElementsCSSServed checks the self-hosted Stoplight Elements stylesheet is served
+// at ElementsCSSPath as text/css with the revalidating no-cache + strong ETag policy,
+// a non-empty body byte-equal to the embedded bytes, and a 304 on an If-None-Match
+// echo — the byte-pinned same-origin stylesheet the /docs page links.
+func TestElementsCSSServed(t *testing.T) {
+	rec := get(t, ElementsCSSPath)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/css; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/css; charset=utf-8", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	etag := rec.Header().Get("ETag")
+	if !strings.HasPrefix(etag, "\"") || strings.HasPrefix(etag, "W/") {
+		t.Errorf("ETag = %q, want a strong quoted-hex tag", etag)
+	}
+	body := rec.Body.Bytes()
+	if len(body) == 0 {
+		t.Fatal("body is empty")
+	}
+	if !bytes.Equal(body, elementsCSS) {
+		t.Errorf("served body (%d bytes) differs from the embedded elementsCSS (%d bytes)", len(body), len(elementsCSS))
+	}
+
+	cond := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, ElementsCSSPath, nil)
+	req.Header.Set("If-None-Match", etag)
+	Handler().ServeHTTP(cond, req)
+	if cond.Code != http.StatusNotModified {
+		t.Errorf("If-None-Match status = %d, want 304", cond.Code)
+	}
+	if cond.Body.Len() != 0 {
+		t.Errorf("304 body not empty (%d bytes)", cond.Body.Len())
+	}
+}
+
+// TestElementsAssetsHashPinned is the published-hash regression guard for the two
+// vendored Stoplight Elements assets (the SRI / pinned self-hosted-asset discipline,
+// the sibling of TestWasmVerifyHashPinned): the SHA-256 of each committed asset must
+// equal its published Elements*Hash const. Re-fetching a different version without
+// re-pinning the const (or hand-editing the bytes) fails here, forcing the published
+// hash to track the committed artifact.
+func TestElementsAssetsHashPinned(t *testing.T) {
+	if got := fmt.Sprintf("%x", sha256.Sum256(elementsJS)); got != ElementsJSHash {
+		t.Errorf("sha256(elements.min.js) = %s, but ElementsJSHash = %s\n"+
+			"re-fetch the pinned Stoplight Elements bundle and re-pin ElementsJSHash to the emitted hash", got, ElementsJSHash)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(elementsCSS)); got != ElementsCSSHash {
+		t.Errorf("sha256(elements.min.css) = %s, but ElementsCSSHash = %s\n"+
+			"re-fetch the pinned Stoplight Elements stylesheet and re-pin ElementsCSSHash to the emitted hash", got, ElementsCSSHash)
+	}
+}
+
+func TestFontMissingIs404(t *testing.T) {
+	if rec := get(t, "/_ds/fonts/does-not-exist.woff2"); rec.Code != http.StatusNotFound {
+		t.Errorf("missing font status = %d, want 404", rec.Code)
+	}
+}
+
+// TestIfNoneMatch304 checks the conditional-GET short-circuit: a request echoing the
+// served ETag yields 304 with an empty body and the same validating ETag.
+func TestIfNoneMatch304(t *testing.T) {
+	for _, path := range []string{TokensPath, FontsCSSPath, WasmExecPath, WasmVerifyPath, "/_ds/fonts/jetbrains-mono-700.woff2"} {
+		etag := get(t, path).Header().Get("ETag")
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("If-None-Match", etag)
+		Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotModified {
+			t.Errorf("%s with If-None-Match = %d, want 304", path, rec.Code)
+		}
+		if rec.Body.Len() != 0 {
+			t.Errorf("%s 304 body not empty (%d bytes)", path, rec.Body.Len())
+		}
+		if got := rec.Header().Get("ETag"); got != etag {
+			t.Errorf("%s 304 ETag = %q, want %q", path, got, etag)
+		}
+	}
+}
+
+func TestMethodNotAllowed(t *testing.T) {
+	for _, path := range []string{TokensPath, FontsCSSPath, WasmExecPath, WasmVerifyPath, "/_ds/fonts/readex-pro-400.woff2"} {
+		rec := httptest.NewRecorder()
+		Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("POST %s = %d, want 405", path, rec.Code)
+		}
+	}
+}

@@ -1,0 +1,4 @@
+# iscc testnet realm — pilot membership (domains only, ADR-0009)
+sb0.iscc.id
+
+sb1.amlet.id

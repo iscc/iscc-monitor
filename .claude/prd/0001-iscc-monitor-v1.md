@@ -1,9 +1,11 @@
 # PRD: iscc-monitor v1 — Trust & Transparency service for the ISCC-Hub network
 
 > Status: ready-for-agent (to be published to the issue tracker once the repo exists; apply the `ready-for-agent` label).
-> Synthesized from the grilling/domain-modeling session. Authoritative decisions live in `.claude/adr/0001–0009`,
+> Synthesized from the grilling/domain-modeling session. Authoritative decisions live in `.claude/adr/0001–0011`,
 > vocabulary in `CONTEXT.md`, the build plan in `.claude/plans/cosmic-baking-octopus.md`, and the cross-repo asks in
 > `.claude/iscc-hub-side-changes.md`. Where this PRD and an ADR disagree, the ADR wins.
+> The verifier app on `monitor.iscc.codes` (stories 5, 9 and 10, and the verifier-app passages below) is
+> deferred by ADR-0016; the certificate's in-browser re-check remains.
 
 ## Problem Statement
 
@@ -180,10 +182,21 @@ non-technical users, hosted at **`monitor.iscc.codes`** (GitHub Pages from the r
 `?monitor=<url>`, reproducibly built, hash-published, SRI-pinned, served from an origin no monitor controls. It is a
 **progressive enhancement** on the M3 server-rendered dashboard.
 
+**Frontend direction (ADR-0010).** The v1 web surfaces follow the **Evidence Ledger** design (the forensic /
+document axis) on the **ISCC Design System v2**: server-rendered, **no-JS baseline** for the dashboard & log browser
+(realm index + hub dossier + log-browser record list + single record + certificate of inclusion), with WASM
+re-verification layered on top as the tier-2 "verified in your browser" result. DS tokens + fonts are self-hosted
+(embedded, no runtime CDN); hub status is icon + label + silhouette (grayscale-safe). The developer handoff
+`.claude/design/ISCC Monitor - Developer Handoff.dc.html` is the build source of truth, subordinate to this PRD/the
+ADRs (where they disagree, the ADR/PRD wins — flag it).
+
 **No cosigning in v1 (ADR-0004).** The v1 independent attestation is **OTS-anchoring observed roots** (trustless
 timestamp + anti-rewrite; no monitor signing key in the trust path). Cosigning + gossip + witness endpoint are deferred
-to M7. **OTS = daily per hub**, keyed by `(hub, tree_size, root)` UNIQUE (each distinct root anchored once); calendar-
-attested server-side, authoritative via the user's `ots verify`; never blocks the follower.
+to M7. **OTS = daily per hub** (ADR-0004 amendment 2026-06-28): once per day, anchor each **non-frozen** hub's
+**latest accepted** `(hub, tree_size, root)`, deduped on the `UNIQUE(hub, tree_size, root)` key — NOT one stamp per
+observed checkpoint (earlier entries are covered transitively by RFC-6962 consistency, so intermediate roots are not
+individually anchored); calendar-attested server-side, authoritative via the user's `ots verify`; never blocks the
+follower.
 
 **API contracts.** REST over stdlib `net/http`, all public GET endpoints **CORS-enabled** (`Access-Control-Allow-Origin:
 *`): hubs/status (incl. coverage); latest checkpoint (+ots); `consistency?hub&from&to`; entry/range fetch;
@@ -215,7 +228,12 @@ verify; `store` (per-network SQLite + `SQLiteFetcher`); ISCC-ID `index`; pure `p
 
 **Reuse over reimplement:** `transparency-dev/tessera` (`client`, `api`, `api/layout`, `fsck`),
 `transparency-dev/merkle` (`rfc6962`, `proof`), `transparency-dev/formats`, `golang.org/x/mod/sumdb/note`,
-`nbd-wtf/opentimestamps`, `modernc.org/sqlite`. Go 1.24, `CGO_ENABLED=0`.
+`nbd-wtf/opentimestamps`, `modernc.org/sqlite`, and for the **ISCC codec**
+`github.com/iscc/iscc-lib/packages/go` (pure-Go, `CGO_ENABLED=0`, conformance-tested vs `iscc-core`;
+ADR-0011). Go 1.26, `CGO_ENABLED=0` (bumped from 1.24 — iscc-lib's `go.mod` requires `go 1.26.1`).
+**Carve-out:** ISCC-IDv1 (`MainType=ID`, `Version=1`) is not in iscc-lib yet (its `decodeHeader`
+rejects `Version>0`), so `internal/index.Decode` stays the interim in-repo port until upstream ships
+it ([iscc/iscc-lib#43](https://github.com/iscc/iscc-lib/issues/43)).
 
 ## Testing Decisions
 
@@ -246,7 +264,8 @@ correct `violations.kind`, freeze, one alert, other hubs unaffected, evidence su
 `unverified` status (keep mirroring, no advance); did:web rotation (key change does not break status); coverage/cold
 start (late start backfills + records `monitored_since`, guarantees scoped); schema-agnostic indexing (an unknown
 `note.$schema` is indexed and proof-able and does not gate verification); partial-tile discipline (partials re-fetched,
-only `width==256` marked full); OTS daily + UNIQUE dedupe of unchanged roots.
+only `width==256` marked full); OTS daily (latest accepted root per non-frozen hub, off the poll path — ADR-0004
+amendment) + UNIQUE dedupe.
 
 **Prior art:** the iscc-hub conformance tooling (`conformance/runfsck`, `conformance/notecheck`) is the model for the
 oracle gates and ships a reusable leaf hasher; `tessera/client/client_test.go` and `fetcher.go` show fetcher-driven
@@ -276,6 +295,11 @@ ISCC-Log §2.2 amendment to source keys from did:web; (2) realm registry becomes
 `hub_id` — it is the 12-bit hub field inside every ISCC-ID); (3) make the §13 coverage registry concrete (publish
 `monitored_since` per monitor/hub). The superseded `valid_from` Hub-List proposal is obsolete (rotation is did:web now).
 
+**Cross-repo dependency (iscc-lib side; ADR-0011).** ISCC en/decoding reuses the Foundation-owned
+`iscc/iscc-lib` Go binding, which today is a Version-0 / ISO 24138 codec only. ISCC-IDv1 support in
+the Go binding is requested upstream at [iscc/iscc-lib#43](https://github.com/iscc/iscc-lib/issues/43);
+until it lands, `internal/index.Decode` is the interim port, and a tripwire test signals the migration.
+
 **Verifier integrity.** The monitor can equivocate about its *own* verifier; that is why the verifier app lives on an
 independent origin (`monitor.iscc.codes`), is reproducibly built, and has its hash published independently. Same-origin
 SRI alone is insufficient.
@@ -284,5 +308,6 @@ SRI alone is insufficient.
 did:web model. `sb0.iscc.id` verifies end-to-end. Both are golden vectors and offline fixtures (`testdata/live/`).
 
 **Suggested milestone order (the headline-value path):** M1 read-only Monitor → M2 Aggregator (mirror + index +
-proofs) → M3 Trust API + dashboard + log browser → WASM verifier upgrade → OTS / Bitcoin anchoring → (M7 deferred:
-gossip + cosigning + witness). M1 is independently shippable and would already have caught the sb1 issue.
+proofs) → M3 Trust API + dashboard + log browser → M-UI Evidence Ledger frontend (ADR-0010) → WASM verifier upgrade →
+OTS / Bitcoin anchoring → (M7 deferred: gossip + cosigning + witness). M1 is independently shippable and would already
+have caught the sb1 issue.

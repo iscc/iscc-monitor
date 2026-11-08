@@ -1,0 +1,90 @@
+# Publishes a versioned release when a vX.Y.Z tag is pushed: the container image as
+# `:vX.Y.Z`, `:latest` and `:sha-<short>`, plus a GitHub Release whose notes come from
+# CHANGELOG.md. It re-runs the CI and vulnerability gates first, and refuses a tag that
+# is not on main or has no changelog section, so nothing is published from an unmerged
+# or undocumented commit. It deploys nothing: operators pin the new tag themselves
+# (docs/operate/deploy.md). Pre-release tags such as v1.0.0-rc.1 do not match the filter.
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  vulncheck:
+    uses: ./.github/workflows/vulncheck.yml
+
+  release:
+    name: publish image + GitHub Release
+    needs: [ci, vulncheck]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      # Full history, so the ancestry check below can see origin/main.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Require the tag to be on main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "ERROR: $TAG ($GITHUB_SHA) is not on main"
+            exit 1
+          fi
+
+      # Takes the lines between this version's heading and the next one, leaving out
+      # the link references at the end of the file.
+      - name: Extract release notes
+        run: |
+          version="${TAG#v}"
+          awk -v heading="## [$version]" '
+            index($0, "## [") == 1 { active = (index($0, heading) == 1); next }
+            /^\[[^]]+\]: / { next }
+            active { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "ERROR: CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+
+      - name: Derive short SHA
+        id: vars
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # VERSION carries both the release and the commit as SemVer build metadata, so
+      # GET /version reports for example v0.1.0+ac65974.
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            VERSION=${{ env.TAG }}+${{ steps.vars.outputs.short }}
+          tags: |
+            ghcr.io/iscc/iscc-monitor:${{ env.TAG }}
+            ghcr.io/iscc/iscc-monitor:latest
+            ghcr.io/iscc/iscc-monitor:sha-${{ steps.vars.outputs.short }}
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$TAG" --verify-tag --title "$TAG" --notes-file release-notes.md

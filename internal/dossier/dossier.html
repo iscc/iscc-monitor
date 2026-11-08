@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ISCC Monitor — Hub dossier</title>
+  <!-- Shared ISCC Design System v2 token stylesheet (CDN-free, self-hosted).
+       The path is a literal because templates cannot read Go consts; keep it in
+       sync with web.TokensPath. -->
+  <link rel="stylesheet" href="/_ds/tokens.css">
+  <!-- Self-hosted @font-face shell (Readex Pro / JetBrains Mono woff2 under
+       /_ds/fonts/, no runtime CDN). The path is a literal; keep it in sync with
+       web.FontsCSSPath. -->
+  <link rel="stylesheet" href="/_ds/fonts.css">
+  <!-- Shared site chrome: masthead, footer, buttons, focus outline. The path is a
+       literal; keep it in sync with web.SiteCSSPath. -->
+  <link rel="stylesheet" href="/_ds/site.css">
+  <link rel="icon" href="/_ds/favicon.svg" type="image/svg+xml">
+  <!-- Page-scoped layout for the Evidence-Ledger hub dossier. Every rule is
+       expressed through the embedded DS tokens (var(--*)) so the type resolves to
+       the self-hosted Readex Pro / JetBrains Mono and the surfaces use the DS
+       palette. Kept local to this page (not in the shared tokens.css) so it can
+       never regress another surface. No external/CDN URL appears here. -->
+  <style>
+    body {
+      font-family: var(--font-sans);
+      color: var(--text-body);
+      background: var(--surface-page);
+    }
+
+    .page {
+      max-width: var(--page-width);
+      margin: 0 auto;
+      padding: var(--space-10) var(--space-8) var(--space-14);
+    }
+
+    /* The back-link row up to the realm index (the dashboard at "/"). */
+    .backlink-row {
+      margin-bottom: var(--space-4);
+    }
+    .backlink {
+      color: var(--text-link);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-semibold);
+    }
+
+    /* The dossier "trust document": a bordered, shadowed sheet holding the head,
+       the numbered sections, and the actions — the mockup's printed-record look. */
+    .document {
+      background: var(--surface-card);
+      border: var(--border-width) solid var(--border-default);
+      border-radius: var(--radius-xs);
+      box-shadow: var(--shadow-sm);
+      padding: var(--space-10) var(--space-10) var(--space-8);
+    }
+
+    /* Trust-document head: eyebrow, hub name + domain, and the md status badge,
+       sitting above a heavy rule, with the "Compiled by …" provenance line. */
+    .doc-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: var(--space-5);
+      border-bottom: calc(var(--border-width) * 2) solid var(--text-heading);
+      padding-bottom: var(--space-4);
+      margin-bottom: var(--space-2);
+    }
+    .doc-eyebrow {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: var(--space-2);
+    }
+    .doc-hub-name {
+      font-size: var(--text-3xl);
+      font-weight: var(--weight-regular);
+      letter-spacing: -0.01em;
+      color: var(--text-heading);
+      margin: 0 0 var(--space-1);
+    }
+    .doc-hub-domain {
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      color: var(--text-body);
+    }
+    .doc-compiled {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-faint);
+      margin-bottom: var(--space-7);
+    }
+
+    /* Soft caution note for a non-frozen unresolvable / unverified hub: a bordered
+       panel with a left accent rail, visibly distinct from (and lighter than) the
+       frozen Exhibit. The warning hue is decorative; the heading copy + the note
+       text carry the meaning grayscale-safe (ADR-0010 inv.4). */
+    .caution {
+      border: var(--border-width) solid var(--status-warning-text);
+      border-left-width: var(--space-1);
+      border-radius: var(--radius-xs);
+      padding: var(--space-3) var(--space-5);
+      margin-bottom: var(--space-7);
+      background: var(--surface-page);
+    }
+    .caution-title {
+      font-family: var(--font-mono);
+      font-size: var(--text-2xs);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--status-warning-text);
+      font-weight: var(--weight-semibold);
+      margin: 0 0 var(--space-1);
+    }
+    .caution-note {
+      font-size: var(--text-sm);
+      font-weight: var(--weight-regular);
+      line-height: var(--leading-normal);
+      color: var(--text-body);
+      margin: 0;
+    }
+
+    /* The numbered §1–§4 grid: two columns, each section a top-ruled cell with a
+       mono section heading, a primary value, and a sub-copy line. */
+    .sections {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0 var(--space-8);
+    }
+    .section {
+      border-top: var(--border-width) solid var(--border-subtle);
+      padding: var(--space-4) 0;
+      min-width: 0;
+    }
+    .section-no {
+      font-family: var(--font-mono);
+      font-size: var(--text-2xs);
+      letter-spacing: var(--tracking-wide);
+      color: var(--text-muted);
+    }
+    .section-value {
+      font-size: var(--text-sm);
+      color: var(--text-heading);
+      margin-top: var(--space-2);
+    }
+    .section-value.mono {
+      font-family: var(--font-mono);
+    }
+    .section-sub {
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+      font-weight: var(--weight-regular);
+      margin-top: var(--space-1);
+    }
+    /* §4 anchor row: a decorative dot keyed on anchor state, with the label as the
+       grayscale-safe load-bearing signal (ADR-0010 inv.4). */
+    .anchor-row {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+    .anchor-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex: none;
+      background: var(--text-muted);
+    }
+    .anchor-dot[data-dot=confirmed] {
+      background: var(--status-success-text);
+    }
+    .anchor-dot[data-dot=pending] {
+      background: var(--status-warning-text);
+    }
+
+    /* §5 observation log — honest evidence derived only from recorded checkpoint
+       rows (size transitions) and a confirmed Bitcoin anchor; never a synthesized
+       per-poll "consistent" verdict (the follower records no such per-poll check).
+       Each line is one recorded event; the empty state renders when no event exists. */
+    .obs {
+      border-top: var(--border-width) solid var(--border-subtle);
+      padding: var(--space-5) 0 0;
+      margin-top: var(--space-2);
+    }
+    .obs-line {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-body);
+      padding: var(--space-1) 0;
+    }
+    /* The freeze pointer line uses the error hue decoratively; the line text carries
+       the meaning grayscale-safe (ADR-0010 inv.4). */
+    .obs-line[data-tone=freeze] {
+      color: var(--status-error-text);
+    }
+    .obs-empty {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-faint);
+      margin-top: var(--space-2);
+    }
+
+    /* The two action links: a filled primary (prove an ISCC-ID) and a bordered
+       secondary (browse the log). */
+    .actions {
+      display: flex;
+      gap: var(--space-3);
+      margin-top: var(--space-6);
+      flex-wrap: wrap;
+    }
+
+    .footnote {
+      font-size: var(--text-xs);
+      font-weight: var(--weight-regular);
+      color: var(--text-faint);
+      line-height: var(--leading-normal);
+      margin: var(--space-4) var(--space-1) 0;
+    }
+
+    /* Exhibit — the non-dismissable evidence panel for a frozen hub (ADR-0006).
+       Deliberately markup-distinct from the status badge caution (ADR-0010): a
+       full bordered panel, not a recolored chip, with a left accent rail and a
+       loud heading. There is no dismiss/close control and no JS toggle — the
+       content is always present in the served HTML (no-JS baseline). The error
+       hue is decorative; the heading copy + the per-violation list carry the
+       meaning grayscale-safe. --status-error-bg / --status-error-text have a DS
+       token; the accent rail uses --status-error-text with no literal fallback. */
+    .exhibit {
+      margin-top: var(--space-8);
+      background: var(--surface-card);
+      border: var(--border-width) solid var(--status-error-text);
+      border-left-width: var(--space-1);
+      border-radius: var(--radius-xs);
+      box-shadow: var(--shadow-sm);
+      overflow: hidden;
+    }
+    .exhibit-head {
+      padding: var(--space-4) var(--space-5) var(--space-3);
+      background: var(--status-error-bg, rgba(245, 97, 105, 0.06));
+      border-bottom: var(--border-width) solid var(--border-subtle);
+    }
+    .exhibit-title {
+      font-family: var(--font-mono);
+      font-size: var(--text-sm);
+      letter-spacing: var(--tracking-wide);
+      text-transform: uppercase;
+      color: var(--status-error-text);
+      font-weight: var(--weight-bold);
+      margin: 0;
+    }
+    .exhibit-warn {
+      font-family: var(--font-sans);
+      font-size: var(--text-sm);
+      font-weight: var(--weight-bold);
+      color: var(--status-error-text);
+      margin: var(--space-2) 0 0;
+    }
+    .exhibit-body {
+      padding: var(--space-4) var(--space-5) var(--space-5);
+    }
+    .exhibit-lede {
+      font-size: var(--text-xs);
+      color: var(--text-body);
+      line-height: var(--leading-normal);
+      margin: 0 0 var(--space-3);
+    }
+    .exhibit-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .exhibit-item {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: var(--space-4);
+      align-items: baseline;
+      padding: var(--space-2) 0;
+      border-bottom: var(--border-width) solid var(--border-subtle);
+    }
+    .exhibit-item:last-child {
+      border-bottom: 0;
+    }
+    .exhibit-kind {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--tracking-wide);
+      color: var(--status-error-text);
+      font-weight: var(--weight-bold);
+    }
+    .exhibit-when {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-body);
+      min-width: 0;
+    }
+    .exhibit-when-unknown {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-faint);
+    }
+    .exhibit-detail {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-1);
+      min-width: 0;
+    }
+    .exhibit-sizes {
+      font-size: var(--text-xs);
+      color: var(--text-heading);
+      font-weight: var(--weight-bold);
+    }
+    .exhibit-sizes-unknown {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--text-faint);
+    }
+    .exhibit-ref {
+      font-size: var(--text-2xs);
+      letter-spacing: var(--tracking-wide);
+      color: var(--text-muted);
+    }
+    .exhibit-empty {
+      font-size: var(--text-xs);
+      color: var(--text-faint);
+    }
+
+    /* The status badge partial (icon + label). Coloring is decorative and keyed
+       on data-status; the silhouette + label remain the load-bearing,
+       grayscale-safe status signal. The attribute values are unquoted (valid CSS
+       for identifiers) so the rendered <style> carries no data-status="..."
+       literal, keeping the overlay-precedence test honest. */
+    .hub-status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-family: var(--font-sans);
+      font-size: var(--text-xs);
+      font-weight: var(--weight-bold);
+      line-height: 1.1;
+      white-space: nowrap;
+      color: var(--text-body);
+    }
+    .hub-status-badge svg {
+      flex: none;
+    }
+    .hub-status-badge[data-status=verified] {
+      color: var(--status-success-text);
+    }
+    .hub-status-badge[data-status=unresolvable] {
+      color: var(--status-warning-text);
+    }
+    .hub-status-badge[data-status=unverified] {
+      color: var(--status-error-text);
+    }
+    .hub-status-badge[data-status=frozen] {
+      color: var(--status-error-text);
+    }
+    .hub-status-badge[data-status=inactive] {
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  {{template "siteHeader" .Chrome}}
+
+  <main class="page">
+    <div class="backlink-row">
+      <a class="backlink" href="/">← Realm index</a>
+    </div>
+
+    <div class="document">
+      <div class="doc-head">
+        <div>
+          <div class="doc-eyebrow">Hub dossier</div>
+          <h1 class="doc-hub-name">{{.Domain}}</h1>
+          <div class="doc-hub-domain">{{.Origin}}</div>
+        </div>
+        {{template "hubStatusBadge" .}}
+      </div>
+      <div class="doc-compiled">Compiled by {{.Chrome.Instance}} · {{if .ObservedTime}}{{.ObservedTime}}{{else}}observed time unknown{{end}}</div>
+
+      {{if .Frozen}}
+      <section class="exhibit">
+        <div class="exhibit-head">
+          <h2 class="exhibit-title">Exhibit — self-consistency violation</h2>
+          <p class="exhibit-warn">Do not trust new state from this hub.</p>
+        </div>
+        <div class="exhibit-body">
+          <p class="exhibit-lede">This hub rewrote its history against the monitor. Serving is frozen and the contradictory evidence below is preserved permanently; this freeze is not cleared automatically.</p>
+          {{if .Violations}}
+          <ul class="exhibit-list">
+            {{- range .Violations}}
+            <li class="exhibit-item">
+              <span class="exhibit-kind">{{.Kind}}</span>
+              <span class="exhibit-detail">
+                {{- if .HasSizes}}
+                <span class="exhibit-sizes mono">tree size {{.SizeBefore}} → then presented {{.SizePresented}}</span>
+                {{- else}}
+                <span class="exhibit-sizes-unknown">tree sizes unavailable</span>
+                {{- end}}
+                {{- if .DetectedAt}}
+                <span class="exhibit-when">detected {{.DetectedAt}}</span>
+                {{- else}}
+                <span class="exhibit-when-unknown">detected at an unknown time</span>
+                {{- end}}
+                {{- if .EvidenceRef}}
+                <span class="exhibit-ref mono">evidence ref {{.EvidenceRef}}</span>
+                {{- end}}
+              </span>
+            </li>
+            {{- end}}
+          </ul>
+          {{else}}
+          <p class="exhibit-empty">No itemized violation records are available, but the hub is frozen on a recorded self-consistency violation.</p>
+          {{end}}
+        </div>
+      </section>
+      {{else if .ShowCaution}}
+      <div class="caution">
+        <p class="caution-title">Note · {{.Label}}</p>
+        <p class="caution-note">{{.StatusNote}}</p>
+      </div>
+      {{end}}
+
+      <div class="sections">
+        <div class="section">
+          <div class="section-no">§1 · IDENTITY</div>
+          <div class="section-value">{{if .KeyUnresolved}}Key source: <span class="mono">did:web:{{.Domain}}</span>{{else}}Key resolved from <span class="mono">did:web:{{.Domain}}</span>{{end}}</div>
+          <div class="section-sub">Domain ownership is identity. Keys managed in the hub's own did.json.</div>
+        </div>
+        <div class="section">
+          <div class="section-no">§2 · COVERAGE</div>
+          {{- if .HasCoverage}}
+          <div class="section-value mono">since {{if .SinceTime}}{{.SinceTime}}{{else}}start time unknown{{end}} @ size {{.SinceSize}}</div>
+          <div class="section-sub">{{if .CoverageDays}}{{.CoverageDays}}. {{end}}Guarantees from coverage start only.</div>
+          {{- else}}
+          <div class="section-value">no coverage yet</div>
+          <div class="section-sub">No verified observation recorded; guarantees hold only from coverage start.</div>
+          {{- end}}
+        </div>
+        <div class="section">
+          <div class="section-no">§3 · LATEST CHECKPOINT</div>
+          <div class="section-value mono">{{.LastSize}} entries</div>
+          <div class="section-sub">{{if .ObservedTime}}observed {{.ObservedTime}}{{else}}observed time unknown{{end}}</div>
+        </div>
+        <div class="section">
+          <div class="section-no">§4 · BITCOIN ANCHOR</div>
+          <div class="section-value">
+            <span class="anchor-row"><span class="anchor-dot" data-dot="{{.AnchorDot}}"></span>{{.AnchorLabel}}{{if .HasAnchorHeight}} · block {{.AnchorHeight}}{{end}}</span>
+          </div>
+          <div class="section-sub">{{.AnchorDetail}}</div>
+          {{- if .AnchorNote}}
+          <div class="section-sub">{{.AnchorNote}}</div>
+          {{- end}}
+        </div>
+      </div>
+
+      <div class="obs">
+        <div class="section-no">§5 · OBSERVATION LOG</div>
+        {{- if .Observations}}
+        {{- range .Observations}}
+        <div class="obs-line" data-tone="{{.Tone}}">{{.Line}}</div>
+        {{- end}}
+        {{- else}}
+        <p class="obs-empty">No observation entries yet — recorded once this hub yields more than one verified checkpoint.</p>
+        {{- end}}
+      </div>
+
+      <div class="actions">
+        <a class="btn-primary" href="/">Prove an ISCC-ID in this hub</a>
+        <a class="btn-secondary" href="/{{.Origin}}/records">Browse the log</a>
+      </div>
+    </div>
+
+    <p class="footnote">Every hub is mirrored and served regardless of status. Only verified checkpoints advance the monitor's accepted state, and guarantees hold only from coverage start — entries committed before the monitor began watching are mirrored but not vouched for.</p>
+  </main>
+  {{template "siteFooter" .Chrome}}
+</body>
+</html>
