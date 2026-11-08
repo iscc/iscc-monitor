@@ -1,8 +1,9 @@
-// Package chrome renders the document chrome every server-rendered page shares: the
-// masthead (the ISCC signature, the "Trust & Transparency Monitor" mark, this instance's
-// identity, and an optional operator co-brand) and the footer (the running software
-// version linked to its exact source, the open-source credit, the API docs link, and the
-// operator's own links such as an imprint or privacy policy).
+// Package chrome renders the document chrome every server-rendered page shares, in the
+// design of the ISCC documentation sites: the Deep Navy masthead (the project logo
+// "ISCC | monitor.", this instance's identity, and an optional operator
+// co-brand) and the Deep Navy footer (the ISCC logo, the running software version linked
+// to its exact source, the open-source credit, the documentation, API and source links,
+// and the operator's own links such as an imprint or privacy policy).
 //
 // Source holds both partials. A page template associates it next to its own source and
 // invokes {{template "siteHeader" .Chrome}} and {{template "siteFooter" .Chrome}}, where
@@ -38,7 +39,6 @@ var Source string
 const (
 	instanceFallback = "monitor instance"
 	operatorFallback = "independent Trust & Transparency service · ISCC-Hub network"
-	subEvidence      = "Evidence of record · ISCC-Hub network"
 	repoURL          = "https://github.com/iscc/iscc-monitor"
 )
 
@@ -76,8 +76,6 @@ type Site struct {
 
 // View is the render context of the siteHeader and siteFooter partials.
 type View struct {
-	// Sub is the masthead line beneath the "Trust & Transparency Monitor" mark.
-	Sub string
 	// Instance and Operator are the resolved instance-identity lines.
 	Instance string
 	Operator string
@@ -108,10 +106,9 @@ func (s Site) View() View {
 	return v
 }
 
-// base returns the fields every View shares: the evidence subtitle and the version.
+// base returns the fields every View shares: the running version.
 func base() View {
 	return View{
-		Sub:        subEvidence,
 		Version:    displayVersion(version.Version),
 		VersionURL: sourceURL(version.Version),
 	}

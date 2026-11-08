@@ -56,9 +56,6 @@ func TestSiteViewFallbacks(t *testing.T) {
 	if v.Instance != instanceFallback || v.Operator != operatorFallback {
 		t.Errorf("identity = %q / %q, want the static fallbacks", v.Instance, v.Operator)
 	}
-	if v.Sub != subEvidence {
-		t.Errorf("view = %+v, want the evidence subtitle", v)
-	}
 	if v.OperatorName != "" || v.OperatorURL != "" || v.OperatorLogo != "" || len(v.Links) != 0 {
 		t.Errorf("view = %+v, want no operator co-brand", v)
 	}
@@ -116,17 +113,19 @@ func TestRenderUnconfigured(t *testing.T) {
 	setVersion(t, "dev")
 	out := render(t, Site{}.View())
 	for _, want := range []string{
-		`<a class="chrome-home" href="/"><img class="chrome-logo" src="/_ds/iscc-logo.svg" alt="ISCC Monitor home"`,
+		`<a class="chrome-home" href="/"><img class="chrome-project-logo" src="` + web.ProjectLogoPath + `" alt="ISCC Monitor home"`,
+		`<img class="chrome-logo" src="` + web.LogoPath + `" alt="ISCC Monitor home"`,
 		`<div class="chrome-instance">monitor instance</div>`,
-		`ISCC Trust &amp; Transparency Monitor · <span class="site-footer-version">dev</span>`,
-		`Open source software by the ISCC Foundation · Apache-2.0 · <a href="https://github.com/iscc/iscc-monitor">Source</a>`,
-		`<nav class="site-footer-nav" aria-label="Monitor"><a href="/docs">API docs</a></nav>`,
+		`<a class="site-footer-logo" href="https://iscc.io/"><img src="` + web.FooterLogoPath + `" alt="ISCC"`,
+		`<span class="site-footer-product">ISCC Monitor <span class="site-footer-version">dev</span></span>`,
+		`<span>Open source by the ISCC Foundation · Apache-2.0</span>`,
+		`<nav class="site-footer-nav" aria-label="Monitor"><a href="https://monitor.iscc.codes/">Documentation</a><a href="/docs">API</a><a href="https://github.com/iscc/iscc-monitor">Source</a></nav>`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("unconfigured chrome missing %q\n%s", want, out)
 		}
 	}
-	for _, absent := range []string{"chrome-cobrand", "site-footer-operator", "Operated by", "monitor.iscc.codes", "Verify independently"} {
+	for _, absent := range []string{"chrome-cobrand", "site-footer-operator", "site-footer-divider", "Operated by", "Verify independently"} {
 		if strings.Contains(out, absent) {
 			t.Errorf("unconfigured chrome contains %q\n%s", absent, out)
 		}
@@ -140,6 +139,7 @@ func TestRenderCoBranded(t *testing.T) {
 		`<a class="chrome-cobrand-link" href="https://example.com/"><img class="chrome-cobrand-logo" src="/_ds/operator-logo" alt="Example GmbH"></a>`,
 		`<div class="chrome-instance">monitor.example.com</div>`,
 		`<div class="chrome-operator">Example realm line</div>`,
+		`<span class="site-footer-divider" aria-hidden="true"></span>`,
 		`Operated by <a href="https://example.com/">Example GmbH</a> · <a href="https://example.com/imprint">Imprint</a> · <a href="https://example.com/privacy">Privacy</a>`,
 	} {
 		if !strings.Contains(out, want) {
@@ -160,7 +160,7 @@ func TestRenderOperatorVariants(t *testing.T) {
 			`<div class="site-footer-operator"><a href="https://a.example/i">Imprint</a> · <a href="https://a.example/p">Privacy</a></div>`},
 		{"logo without a url", Site{OperatorName: "Example GmbH", OperatorLogo: Logo{Data: []byte("x")}},
 			`<span class="chrome-cobrand-label">Operated by</span>
-      <img class="chrome-cobrand-logo" src="/_ds/operator-logo" alt="Example GmbH">`},
+        <img class="chrome-cobrand-logo" src="/_ds/operator-logo" alt="Example GmbH">`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if out := render(t, tc.site.View()); !strings.Contains(out, tc.want) {

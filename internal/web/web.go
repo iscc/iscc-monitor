@@ -84,12 +84,29 @@ const WasmVerifyPath = "/_ds/verify.wasm"
 // stay in sync with this value.
 const SiteCSSPath = "/_ds/site.css"
 
-// LogoPath is the stable exact path the self-hosted ISCC logo is served at: the
-// near-black signature with the coral circle, a byte-verbatim copy of the ISCC brand
-// master iscc-logo-black-coral.svg. The masthead partial (internal/chrome) renders it
-// as an <img src> beside the "Trust & Transparency Monitor" text mark; that literal
-// must stay in sync with this value, since templates cannot read the Go const.
+// LogoPath is the stable exact path the self-hosted ISCC logo is served at: the white
+// signature with the coral circle, a byte-verbatim copy of the ISCC brand master
+// iscc-logo-white-coral.svg. The masthead partial (internal/chrome) shows it on the Deep
+// Navy bar on phones, where the project logo would crowd the bar; that literal must
+// stay in sync with this value, since templates cannot read the Go const.
 const LogoPath = "/_ds/iscc-logo.svg"
+
+// ProjectLogoPath is the stable exact path the ISCC project logo "ISCC | monitor." is
+// served at, in white and coral for the Deep Navy masthead. It is the file the ISCC
+// documentation theme (zensical-iscc v0.3.0, project_logo.py) writes for the project
+// name "monitor", so the app and its documentation site share one header logo. The
+// masthead partial references it by this literal.
+const ProjectLogoPath = "/_ds/iscc-monitor-logo.svg"
+
+// FooterLogoPath is the stable exact path the plain white ISCC signature is served at,
+// a byte-verbatim copy of the ISCC brand master iscc-logo-white.svg. The footer partial
+// shows it on the Deep Navy footer bar and references it by this literal.
+const FooterLogoPath = "/_ds/iscc-logo-white.svg"
+
+// GrainPath is the stable exact path the grain texture is served at: the ISCC Design
+// System's grain.png, the copy the ISCC documentation theme uses. site.css lays it over
+// the Deep Navy masthead and footer and references it by this literal.
+const GrainPath = "/_ds/grain.png"
 
 // FaviconPath is the stable exact path the favicon is served at: the near-black ISCC
 // symbol with its coral circle, a byte-verbatim copy of the brand master
@@ -167,6 +184,9 @@ const contentTypeJS = "text/javascript; charset=utf-8"
 // instantiation.
 const contentTypeWASM = "application/wasm"
 
+// contentTypePNG is the media type served for the grain texture.
+const contentTypePNG = "image/png"
+
 // contentTypeSVG is the media type served for the embedded logo and favicon SVGs. It is
 // set explicitly so the browser renders them as images without depending on content
 // sniffing.
@@ -222,11 +242,30 @@ var wasmExecJS []byte
 var wasmVerify []byte
 
 // logoSVG is the embedded ISCC logo, a byte-verbatim copy of the ISCC brand master
-// iscc-logo-black-coral.svg (never hand-edited; the brand forbids rebuilding the logo).
+// iscc-logo-white-coral.svg (never hand-edited; the brand forbids rebuilding the logo).
 // Its viewBox includes the brand's clear space.
 //
 //go:embed iscc-logo.svg
 var logoSVG []byte
+
+// projectLogoSVG is the embedded project logo "ISCC | monitor." in white and coral,
+// byte-equal to the output of zensical-iscc v0.3.0 for the project name "monitor"
+// (never hand-edited; regenerate it with the theme to change it).
+//
+//go:embed iscc-monitor-logo.svg
+var projectLogoSVG []byte
+
+// footerLogoSVG is the embedded plain white ISCC signature, a byte-verbatim copy of the
+// ISCC brand master iscc-logo-white.svg.
+//
+//go:embed iscc-logo-white.svg
+var footerLogoSVG []byte
+
+// grainPNG is the embedded grain texture of the ISCC Design System, byte-equal to the
+// copy in zensical-iscc v0.3.0.
+//
+//go:embed grain.png
+var grainPNG []byte
 
 // faviconSVG is the embedded favicon, a byte-verbatim copy of the ISCC brand master
 // iscc-icon-black-coral.svg.
@@ -294,6 +333,12 @@ func Handler() http.Handler {
 			writeAsset(w, r, wasmVerify, contentTypeWASM)
 		case LogoPath:
 			writeAsset(w, r, logoSVG, contentTypeSVG)
+		case ProjectLogoPath:
+			writeAsset(w, r, projectLogoSVG, contentTypeSVG)
+		case FooterLogoPath:
+			writeAsset(w, r, footerLogoSVG, contentTypeSVG)
+		case GrainPath:
+			writeAsset(w, r, grainPNG, contentTypePNG)
 		case FaviconPath:
 			writeAsset(w, r, faviconSVG, contentTypeSVG)
 		case ElementsJSPath:

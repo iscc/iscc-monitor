@@ -10,49 +10,70 @@
   outline-offset: 4px;
 }
 
-/* ---------- Masthead ---------- */
-.chrome {
+/* ---------- Masthead and footer: the ISCC documentation design ----------
+   Both bars sit on Deep Navy with the Design System grain, as on the ISCC
+   documentation sites (zensical-iscc) and iscc-web. Their content spans the page
+   column, --page-width wide with 2rem side padding like a page's .page, so the logo
+   starts and the identity ends where the content of a standard page does, and the
+   bars hold still from page to page. The certificate keeps its narrower reading
+   column beneath them; the full-width /docs page sets --page-width: none. Text and
+   links are white at 78% (8:1 on navy) or 65% (6.1:1) and turn white on hover and
+   focus. */
+:root {
+  --page-width: 1200px;
+}
+.chrome,
+.site-footer {
+  background-color: var(--iscc-deep-navy);
+  background-image: url("/_ds/grain.png");
+  background-size: 256px 256px;
+  background-blend-mode: overlay;
+  color: rgba(255, 255, 255, 0.78);
+}
+.chrome-inner,
+.site-footer-inner {
+  max-width: var(--page-width);
+  margin: 0 auto;
+  padding: 0 var(--space-8);
   display: flex;
-  align-items: center;
-  gap: var(--space-4);
   flex-wrap: wrap;
-  padding: var(--space-4) var(--space-8);
-  background: var(--surface-card);
-  border-bottom: var(--border-width) solid var(--border-default);
-}
-.chrome-brand {
-  display: flex;
   align-items: center;
-  gap: var(--space-3);
 }
-/* The ISCC signature links to the start page; its alt text names the destination, as
-   the brand asks for a linked logo. */
+.chrome :focus-visible,
+.site-footer :focus-visible {
+  outline-color: var(--iscc-white);
+}
+
+/* ---------- Masthead ----------
+   72px high. It leads with the project logo "ISCC | monitor." (1 h = 24px); on phones
+   the plain white-and-coral signature stands in for it. The instance identity and an
+   optional operator co-brand end the bar. */
+.chrome-inner {
+  min-height: 72px;
+  gap: var(--space-3) var(--space-6);
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+/* The logo links to the start page; its alt text names the destination, as the brand
+   asks for a linked logo. */
 .chrome-home {
   display: block;
+  line-height: 0;
 }
-/* The ISCC signature, served verbatim from the brand master. Its viewBox carries the
-   brand's clear space, so the visible mark is shorter than the box. */
-.chrome-logo {
-  height: 38px;
-  width: auto;
+/* Both files carry the brand clear space of 25 units on each side; the negative
+   margin puts the visible edge on the page column. */
+.chrome-project-logo {
   display: block;
+  width: 268.56px;
+  max-width: none;
+  height: auto;
+  margin-left: calc(-268.56px * 25 / 1818.34);
 }
-.chrome-divider {
-  width: 1px;
-  height: 24px;
-  background: var(--border-default);
-}
-.chrome-mark {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  letter-spacing: var(--tracking-widest);
-  text-transform: uppercase;
-  color: var(--text-heading);
-  font-weight: var(--weight-medium);
-}
-.chrome-sub {
-  font-size: var(--text-xs);
-  color: var(--text-muted);
+.chrome-logo {
+  display: none;
+  width: auto;
+  height: 32px;
+  margin-left: calc(-32px * 25 / 217.92);
 }
 .chrome-actions {
   margin-left: auto;
@@ -61,8 +82,9 @@
   gap: var(--space-5);
   flex-wrap: wrap;
 }
-/* The operator co-brand: a factual "Operated by" label beside the operator's logo,
-   sized to balance the ISCC signature's visible weight. */
+/* The operator co-brand: a factual "Operated by" label beside the operator logo. The
+   logo sits on a white plate, so a logo drawn for light backgrounds stays legible on
+   navy. */
 .chrome-cobrand {
   display: flex;
   align-items: center;
@@ -73,17 +95,21 @@
   font-size: var(--text-2xs);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: rgba(255, 255, 255, 0.65);
 }
 .chrome-cobrand-link {
   display: block;
 }
 .chrome-cobrand-logo {
   display: block;
-  height: 32px;
+  box-sizing: content-box;
+  height: 28px;
   width: auto;
   max-width: 160px;
   object-fit: contain;
+  padding: 6px 10px;
+  background: var(--iscc-white);
+  border-radius: 2px;
 }
 /* The instance identity: this deployment's domain and its operator line. */
 .chrome-identity {
@@ -93,44 +119,95 @@
 .chrome-instance {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-  color: var(--text-body);
+  color: rgba(255, 255, 255, 0.78);
 }
 .chrome-operator {
   font-size: var(--text-xs);
-  color: var(--text-muted);
+  font-weight: var(--weight-light);
+  color: rgba(255, 255, 255, 0.65);
+}
+@media (max-width: 719.98px) {
+  .chrome-project-logo {
+    display: none;
+  }
+  .chrome-logo {
+    display: block;
+  }
+  .chrome-actions {
+    margin-left: 0;
+  }
+  .chrome-identity {
+    text-align: left;
+  }
 }
 
-/* ---------- Footer ---------- */
+/* ---------- Footer ----------
+   One row, at least 52px high, wrapping on narrow screens: the plain white ISCC logo,
+   the running version and the open-source credit start it; the monitor links and,
+   after a divider, the operator part end it. */
 .site-footer {
   margin-top: var(--space-8);
-  padding: var(--space-6) var(--space-8) var(--space-8);
-  border-top: var(--border-width) solid var(--border-default);
   font-size: var(--text-xs);
-  line-height: var(--leading-normal);
-  color: var(--text-muted);
+  font-weight: var(--weight-light);
+  line-height: 1.5;
 }
 .site-footer-inner {
+  min-height: 52px;
+  justify-content: space-between;
+  gap: var(--space-3) var(--space-6);
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-3);
+}
+.site-footer-meta,
+.site-footer-end,
+.site-footer-nav {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
-  gap: var(--space-3) var(--space-8);
+  align-items: center;
+  gap: var(--space-1) var(--space-5);
+}
+.site-footer-meta {
+  color: rgba(255, 255, 255, 0.65);
+}
+/* The logo is 24px high; the margins take its 25-unit clear space out of the row. */
+.site-footer-logo {
+  --footer-clear: calc(24px * -25 / 217.92);
+  margin: 0 calc(var(--footer-clear) - var(--space-2)) 0 var(--footer-clear);
+  line-height: 0;
+}
+.site-footer-logo img {
+  display: block;
+  width: auto;
+  max-width: none;
+  height: 24px;
 }
 /* Set explicitly, so a page stylesheet that resets link colours (the /docs Stoplight
-   Elements CSS does) leaves the footer links blue. */
+   Elements CSS does) leaves the footer links legible. */
 .site-footer a {
-  color: var(--text-link);
+  color: rgba(255, 255, 255, 0.78);
+  text-decoration: none;
+}
+.site-footer-meta a {
+  color: inherit;
+}
+.site-footer a:hover,
+.site-footer a:focus {
+  color: var(--iscc-white);
 }
 .site-footer-product {
   font-family: var(--font-mono);
-  color: var(--text-heading);
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.78);
 }
-.site-footer-nav {
-  margin-left: auto;
+.site-footer-divider {
+  width: 1px;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.25);
 }
-.site-footer-operator {
-  flex-basis: 100%;
-  padding-top: var(--space-3);
-  border-top: var(--border-width) solid var(--border-subtle);
+@media (max-width: 719.98px) {
+  .site-footer-divider {
+    display: none;
+  }
 }
 
 /* ---------- Buttons ----------

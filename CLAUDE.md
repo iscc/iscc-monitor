@@ -158,7 +158,10 @@ After the first poll (~seconds) the HTTP surface is live. Most endpoints are JSO
 - `GET /_ds/tokens.css` — the shared ISCC Design System v2 token stylesheet (CDN-free, build-pinned),
   its values aligned to the ISCC brand guidelines edition 01 (ADR-0015); the one no-JS, no-CDN style shell
   every server-rendered surface links. `GET /_ds/site.css` styles the shared masthead, footer and brand
-  buttons; `GET /_ds/iscc-logo.svg` and `GET /_ds/favicon.svg` are byte-verbatim brand SVG masters.
+  buttons, in the design of the ISCC documentation sites (Deep Navy bars with grain); `GET /_ds/iscc-logo.svg`
+  (white/coral), `GET /_ds/iscc-logo-white.svg` and `GET /_ds/favicon.svg` are byte-verbatim brand SVG masters,
+  `GET /_ds/iscc-monitor-logo.svg` is the project logo "ISCC | monitor." as zensical-iscc v0.3.0 draws it, and
+  `GET /_ds/grain.png` is the Design System grain.
   `GET /_ds/operator-logo` exists only when `ISCC_MONITOR_OPERATOR_LOGO` is set.
 - `GET /_ds/verify.wasm` — the verifier WebAssembly artifact (`application/wasm`), the reproducible
   `mise run build:wasm` output served byte-verbatim with the same no-cache + strong-ETag + 304 policy;

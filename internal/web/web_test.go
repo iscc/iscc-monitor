@@ -300,17 +300,20 @@ func TestWasmVerifyHashPinned(t *testing.T) {
 	}
 }
 
-// TestSVGAssetsServed checks the ISCC logo and favicon are served at LogoPath and
-// FaviconPath as image/svg+xml with the revalidating no-cache + strong ETag policy, a
-// body byte-equal to the embedded brand master carrying the brand's near-black and
-// coral, no cross-origin load, and an If-None-Match echo short-circuiting to 304.
+// TestSVGAssetsServed checks the ISCC logos, the project logo and the favicon are served
+// as image/svg+xml with the revalidating no-cache + strong ETag policy, a body byte-equal
+// to the embedded file carrying its brand colours, no cross-origin load, and an
+// If-None-Match echo short-circuiting to 304.
 func TestSVGAssetsServed(t *testing.T) {
 	for _, tc := range []struct {
-		path string
-		want []byte
+		path    string
+		want    []byte
+		markers []string
 	}{
-		{LogoPath, logoSVG},
-		{FaviconPath, faviconSVG},
+		{LogoPath, logoSVG, []string{"#FFFFFF", "#F56169"}},
+		{ProjectLogoPath, projectLogoSVG, []string{"#FFFFFF", "#F56169", "ISCC monitor"}},
+		{FooterLogoPath, footerLogoSVG, []string{"#FFFFFF"}},
+		{FaviconPath, faviconSVG, []string{"#212529", "#F56169"}},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			rec := get(t, tc.path)
@@ -331,7 +334,7 @@ func TestSVGAssetsServed(t *testing.T) {
 			if len(body) == 0 || !bytes.Equal(body, tc.want) {
 				t.Errorf("served body (%d bytes) differs from the embedded SVG (%d bytes)", len(body), len(tc.want))
 			}
-			for _, marker := range []string{"<svg", "#212529", "#F56169"} {
+			for _, marker := range append([]string{"<svg"}, tc.markers...) {
 				if !bytes.Contains(body, []byte(marker)) {
 					t.Errorf("body missing brand marker %q", marker)
 				}
@@ -349,6 +352,25 @@ func TestSVGAssetsServed(t *testing.T) {
 	}
 }
 
+// TestGrainServed checks the grain texture is served as image/png, byte-equal to the
+// embedded file, with the revalidating cache policy.
+func TestGrainServed(t *testing.T) {
+	rec := get(t, GrainPath)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "image/png" {
+		t.Errorf("Content-Type = %q, want image/png", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	body := rec.Body.Bytes()
+	if !bytes.HasPrefix(body, []byte("\x89PNG")) || !bytes.Equal(body, grainPNG) {
+		t.Errorf("served body (%d bytes) is not the embedded PNG (%d bytes)", len(body), len(grainPNG))
+	}
+}
+
 // TestSiteCSSServed checks the shared site-chrome stylesheet is served as CSS, carries
 // the masthead, footer, and button rules the chrome partials use, and references no
 // external origin.
@@ -361,7 +383,7 @@ func TestSiteCSSServed(t *testing.T) {
 		t.Errorf("Content-Type = %q, want text/css prefix", got)
 	}
 	body := rec.Body.Bytes()
-	for _, rule := range []string{".chrome {", ".chrome-cobrand-logo", ".site-footer {", ".btn-primary", ".btn-secondary", ":focus-visible"} {
+	for _, rule := range []string{".chrome-inner", ".chrome-project-logo", ".chrome-cobrand-logo", ".site-footer-inner", GrainPath, ".btn-primary", ".btn-secondary", ":focus-visible"} {
 		if !bytes.Contains(body, []byte(rule)) {
 			t.Errorf("site.css missing rule %q", rule)
 		}

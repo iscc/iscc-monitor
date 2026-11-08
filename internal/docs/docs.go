@@ -45,9 +45,6 @@ var tmpl = func() *template.Template {
 	return template.Must(t.Parse(chrome.Source))
 }()
 
-// subAPI is the docs masthead line beneath the "Trust & Transparency Monitor" mark.
-const subAPI = "API reference · ISCC-Hub network"
-
 // pageData is the docs template context: the shared masthead and footer.
 type pageData struct {
 	Chrome chrome.View
@@ -62,7 +59,6 @@ type pageData struct {
 // a half-rendered 200.
 func Handler(site chrome.Site) http.Handler {
 	data := pageData{Chrome: site.View()}
-	data.Chrome.Sub = subAPI
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
