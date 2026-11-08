@@ -327,9 +327,9 @@ type ConsistencyEvidence struct {
 //
 // Status mapping: a missing or non-numeric from → 400; no accepted checkpoint yet
 // (LastSize == 0) → 404; from > LastSize (a future/over-large prior — RFC-6962
-// requires M ≤ N) → 400; from has no recorded checkpoint row → 404; a tile not yet
-// mirrored (a wrapped os.ErrNotExist) → 404; any other read/build error → 500. The
-// degenerate from == 0 and from == LastSize cases yield an empty (nil) proof
+// requires M ≤ N) → 400; a tile not yet mirrored (a wrapped os.ErrNotExist) → 404;
+// any other read/build error → 500. Every from in [0, LastSize] is served, recorded
+// checkpoint or not. The degenerate from == 0 and from == LastSize cases yield an empty (nil) proof
 // without touching the fetcher — a valid degenerate consistency proof — and are
 // served as a 200 with an empty consistencyProof array, never a 400.
 func serveConsistency(w http.ResponseWriter, r *http.Request, st *store.Store, f store.SQLiteFetcher, hubID int64) {
@@ -362,22 +362,10 @@ func serveConsistency(w http.ResponseWriter, r *http.Request, st *store.Store, f
 		return
 	}
 
-	// The prior root must be one the monitor actually recorded a checkpoint for,
-	// so the client's prior (size, root) is checkable against a known accepted
-	// root. An unrecorded from is a 404. CheckpointAt(size) also confirms the
-	// accepted-size row exists for the degenerate from == size roundtrip. from == 0
-	// is the empty-tree prior — there is no checkpoint at size 0 by construction —
-	// so it skips the row requirement and serves the empty degenerate proof.
-	if from > 0 {
-		if _, _, found, err := st.CheckpointAt(ctx, hubID, from); err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		} else if !found {
-			http.Error(w, "no checkpoint at from", http.StatusNotFound)
-			return
-		}
-	}
-
+	// Any from in [0, size] is served, whether or not the monitor recorded a
+	// checkpoint at it: a client's checkpoint is usually at a size the monitor
+	// never polled. The proof needs only the two sizes and the mirrored tiles of the
+	// accepted tree; the client verifies it with its own root at from.
 	proof, err := logclient.ConsistencyProofFromTiles(ctx, f.ReadTile, from, size)
 	if err != nil {
 		// A tile not yet mirrored surfaces as a wrapped os.ErrNotExist (the

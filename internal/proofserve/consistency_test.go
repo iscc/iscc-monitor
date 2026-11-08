@@ -1,8 +1,8 @@
 // Conformance test for the computed-consistency-proof HTTP surface: it reuses the
 // inclusion test's 300-leaf testonly.Tree mirror fixture (buildMirror) — the single
-// source of truth for the tree's roots and proofs — records a prior accepted
-// checkpoint at each tested from size, then drives proofserve.Handler's
-// /consistency route over the real SQLiteFetcher. For from values straddling the
+// source of truth for the tree's roots and proofs, with a checkpoint recorded only at
+// the accepted size — then drives proofserve.Handler's /consistency route over the
+// real SQLiteFetcher, for from sizes the monitor never recorded a checkpoint at. For from values straddling the
 // 256-leaf tile boundary it asserts the served consistencyProof base64-decodes to
 // bytes proof.VerifyConsistency ACCEPTS against the tree's two roots and byte-equals
 // tree.ConsistencyProof, with a sharp wrong-from negative.
@@ -24,7 +24,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
@@ -32,23 +31,6 @@ import (
 	"github.com/iscc/iscc-monitor/internal/chrome"
 	"github.com/iscc/iscc-monitor/internal/store"
 )
-
-// recordPriorCheckpoint records an accepted checkpoint at a prior tree size with
-// the tree's real root at that size, so serveConsistency's CheckpointAt(from)
-// finds a row. buildMirror records only the one checkpoint at the accepted size;
-// the consistency route additionally requires a recorded checkpoint at from.
-func recordPriorCheckpoint(t *testing.T, m mirrorTree, size uint64) {
-	t.Helper()
-	if _, _, err := m.store.RecordCheckpoint(context.Background(), store.CheckpointRecord{
-		HubID:      m.hubID,
-		TreeSize:   size,
-		Root:       m.tree.HashAt(size),
-		Raw:        []byte("checkpoint-at-prior"),
-		ObservedAt: time.Unix(1700000000, 0),
-	}); err != nil {
-		t.Fatalf("RecordCheckpoint at size %d: %v", size, err)
-	}
-}
 
 // getConsistency drives the handler's /consistency route with the given query
 // string and decodes the JSON body, returning the status code and the parsed
@@ -107,14 +89,17 @@ func itoa(n uint64) string {
 // served proof decodes to bytes proof.VerifyConsistency ACCEPTS against the tree's
 // prior and accepted roots, byte-equals the tree's own ConsistencyProof, and does
 // NOT verify against a different prior root.
+//
+// No checkpoint is recorded at any of these from sizes: a client's checkpoint is
+// usually at a size the monitor never polled, and the proof needs only the two
+// sizes and the mirrored tiles, so an unrecorded from must still be served.
 func TestConsistencyServedProofVerifies(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
 	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
 	larger := m.size
 	largerRoot := m.tree.HashAt(larger)
 
-	for _, from := range []uint64{1, 200, 255, 256, 299} {
-		recordPriorCheckpoint(t, m, from)
+	for _, from := range []uint64{1, 100, 200, 255, 256, 299} {
 		fromRoot := m.tree.HashAt(from)
 
 		code, ev := getConsistency(t, h, fmtFrom(from))
@@ -160,9 +145,8 @@ func TestConsistencyServedProofVerifies(t *testing.T) {
 
 // TestConsistencyDegenerateBoundaries proves the empty-proof boundaries are served
 // as a 200 with an empty consistencyProof array (a valid degenerate proof), not a
-// 400: from == 0 (the empty-tree prior, no checkpoint row required) and
-// from == LastSize (the same-size roundtrip, which needs the accepted-size row that
-// buildMirror already recorded).
+// 400: from == 0 (the empty-tree prior) and from == LastSize (the same-size
+// roundtrip).
 func TestConsistencyDegenerateBoundaries(t *testing.T) {
 	m := buildMirror(t, mirrorLeaves)
 	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
@@ -226,18 +210,6 @@ func TestConsistencyNoAcceptedCheckpoint(t *testing.T) {
 	}
 	h := Handler(st, hubID, "sb0.iscc.id", nil, chrome.Site{})
 	code, _ := getConsistency(t, h, fmtFrom(1))
-	if code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", code)
-	}
-}
-
-// TestConsistencyUnknownFrom asserts a from with no recorded checkpoint row is a
-// 404 (the client's prior root must be one the monitor recorded). buildMirror
-// records a checkpoint only at the accepted size, so a mid-tree from has no row.
-func TestConsistencyUnknownFrom(t *testing.T) {
-	m := buildMirror(t, mirrorLeaves)
-	h := Handler(m.store, m.hubID, "sb0.iscc.id", nil, chrome.Site{})
-	code, _ := getConsistency(t, h, fmtFrom(100)) // no checkpoint recorded at 100
 	if code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", code)
 	}

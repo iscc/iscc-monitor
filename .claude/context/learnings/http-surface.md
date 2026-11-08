@@ -35,9 +35,12 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
 - **settled:** the `/consistency` RFC-6962 proof seam is landed + stable (oracle gate APPLIES, mutation-
   proven by corrupting `encoded[0]`). Durable traps: (1) **`VerifyConsistency(hasher, size1, size2,
   proof, root1, root2)`** — `proof` precedes the two roots, UNLIKE `VerifyInclusion`; (2) degenerate
-  `from == 0`/`from == LastSize` → 200 with empty proof (`from == 0` SKIPS the `CheckpointAt(from)` row
-  requirement, `from == LastSize` still REQUIRES it). Status: missing/non-numeric → 400; `LastSize==0` →
-  404; `from>LastSize` → 400; unrecorded `from`/tile-miss → 404. (Detail in git history pre-2026-06-21.)
+  `from == 0`/`from == LastSize` → 200 with empty proof. Status: missing/non-numeric → 400; `LastSize==0` →
+  404; `from>LastSize` → 400; tile-miss → 404. (3) **Never gate `from` on a recorded checkpoint row**
+  (`CheckpointAt(from)`): a client's checkpoint is almost always at a size the monitor never polled, and
+  the proof needs only the two sizes + mirrored tiles. The gate existed until 2026-11-08 and made the
+  endpoint useless for split-view comparison (release blocker for v0.1.0); `TestConsistencyServedProofVerifies`
+  now records no row at any tested `from`.
 - **`CheckpointAt`'s `ORDER BY rowid LIMIT 1` is load-bearing: `id INTEGER PRIMARY KEY` aliases `rowid`
   (monotonic by insertion), so the first-recorded (prior accepted) row wins over a later same-`tree_size`
   contradicting-evidence row** (two roots at one size = two rows = the fork-evidence case). `DESC` would

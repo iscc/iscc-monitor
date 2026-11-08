@@ -186,7 +186,7 @@ paths:
         "400":
           description: Missing or non-numeric `from`, or `from` exceeds the accepted size.
         "404":
-          description: No accepted checkpoint yet, `from` has no recorded checkpoint, or a tile is not mirrored.
+          description: No accepted checkpoint yet, or a tile is not mirrored.
   /{domain}/log/entries:
     get:
       tags: [proofs]

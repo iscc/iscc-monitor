@@ -31,7 +31,7 @@ with or without the `ISCC:` or `did:iscc:` prefix.
 | -------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `/inclusion/<iscc_id>.bundle`          | The [proof bundle](proof-bundle.md) for an ISCC-ID, as a JSON download                     |
 | `/<hub>/log/inclusion?iscc_id=<id>`    | Inclusion proof of the ISCC-ID's record against the accepted checkpoint; `&index=<n>` picks a record when several name the ID |
-| `/<hub>/log/consistency?from=<size>`   | Consistency proof from an earlier size, at which the monitor recorded a checkpoint, to the accepted size |
+| `/<hub>/log/consistency?from=<size>`   | Consistency proof from any earlier size to the accepted size                              |
 | `/<hub>/log/verify?iscc_id=<id>`       | *verify-for-me*: the monitor's own verdict, the weaker path                               |
 
 ### Mirror

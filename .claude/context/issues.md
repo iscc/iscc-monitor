@@ -18,29 +18,6 @@ filed it and does **not** affect priority.
 
 ---
 
-## `/consistency` refuses any `from` the monitor did not record a checkpoint at — RELEASE BLOCKER for v0.1.0
-- **Priority:** critical
-- **Source:** [human] (Titusz, 2026-11-08: fix before the v0.1.0 release; found while writing the
-  "Compare your view of a log" docs guide)
-- **What / where / how to verify:** `serveConsistency` (`internal/proofserve/handler.go`, the
-  `st.CheckpointAt(ctx, hubID, from)` gate) returns `404 "no checkpoint at from"` unless the monitor itself
-  recorded a checkpoint at exactly size `from`. The monitor records one checkpoint per poll (default 5m), so
-  a client holding a hub checkpoint at an arbitrary size, the normal case (a receipt, or a checkpoint fetched
-  from the hub between polls), almost always gets 404. That defeats the endpoint's purpose: the split-view
-  comparison the glossary's *comparison anchor* role and the certificate's Comparison Anchor panel invite.
-  The gate is not needed for correctness: `logclient.ConsistencyProofFromTiles(ctx, read, from, size)` takes
-  only the two sizes and reads the mirrored tiles of the accepted tree, and the response carries no root at
-  `from` (the client supplies its own root when verifying). The gate's comment says it makes "the client's
-  prior (size, root) checkable against a known accepted root", which the response never does.
-  Fix: drop the `CheckpointAt` requirement for `0 < from <= size` (keep `from > size` → 400 and the
-  tile-not-mirrored → 404), then update the 404 wording in `internal/openapi/openapi.yaml`
-  (`getConsistencyProof`) and the sentence in `docs/guides/split-view.md` and `docs/reference/http-api.md`
-  that documents the restriction. Verify: a test requests `?from=N` for an `N` with no checkpoint row and
-  gets 200 with a proof that `proof.VerifyConsistency` accepts against the real root at `N` (rebuilt from
-  the tiles) and the accepted root; reverting the fix fails it. Check whether any other caller relies on
-  the 404 (the route-spec drift test, `proofserve` tests asserting "no checkpoint at from").
-- **Spec:** CLAUDE.md glossary *Comparison anchor* / *Split view*; ADR-0014 (OpenAPI contract).
-
 ## Mirror-repair residuals after the corrupt-completed-coord fix (the critical itself is CLOSED)
 - **Priority:** low
 - **Source:** [review] + [codex] (residuals of the now-closed critical; every load-bearing half landed

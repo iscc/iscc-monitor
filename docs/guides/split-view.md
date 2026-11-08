@@ -58,9 +58,9 @@ Verify the proof with the root of *your* checkpoint at `firstSize` and the root 
 [`transparency-dev/merkle`](https://github.com/transparency-dev/merkle) (`proof.VerifyConsistency`). A proof that
 fails to verify means that your checkpoint and the monitor's cannot both be states of one log.
 
-The endpoint answers only for a `from` size at which the monitor itself recorded a checkpoint; for other sizes it
-returns `404`. When your checkpoint is larger than the monitor's, the monitor has not seen that state yet: wait
-for its next poll, by default within five minutes.
+`from` can be any size up to the monitor's accepted size, whether or not the monitor ever saw a checkpoint at that
+size. When your checkpoint is larger than the monitor's, the endpoint returns `400`: the monitor has not seen that
+state yet. Wait for its next poll, by default within five minutes.
 
 Any tlog-tiles client can also compute the consistency proof from the hub's own log tiles, without the monitor.
 

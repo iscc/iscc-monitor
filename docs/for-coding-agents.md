@@ -55,7 +55,7 @@ All routes are `GET`, need no authentication and send `Access-Control-Allow-Orig
 | A bundle exists only after the instance verified the inclusion itself; it is never partial.                    |
 | `anchor` in a bundle is optional; it is present only when a confirmed Bitcoin anchor covers the record.        |
 | `key.revoked` (RFC 3339) is present only when the hub's did:web document marks the key revoked.                |
-| `/<hub>/log/consistency?from=<n>` currently answers `404` unless the instance recorded a checkpoint at size `n`. |
+| `/<hub>/log/consistency?from=<n>` accepts any `n` up to the accepted size; a larger `n` is `400` (the instance has not seen that state yet). |
 | `checkpoint.ots` answers `404` while the root is not yet anchored.                                             |
 | A log's origin is `<hub domain>/log`, for example `iscc.id/log`.                                               |
 | Guarantees start at coverage start; an instance cannot vouch for what happened before it watched.              |
