@@ -1,6 +1,7 @@
 # iscc-monitor
 
-An independent **Trust & Transparency** service for the ISCC-Hub network. It follows every hub's
+An independent **Trust & Transparency** service for the ISCC-Hub network. Documentation:
+**<https://monitor.iscc.codes>**. It follows every hub's
 [tlog-tiles](https://c2sp.org/tlog-tiles) transparency log, verifies Ed25519 signed-note signatures
 and RFC-6962 consistency, mirrors the logs as SQLite BLOBs, and publishes verifiable evidence — so no
 party has to trust the monitor itself.
@@ -42,9 +43,10 @@ verify-for-me routes.
 Two variables are **required** and have no default — `ISCC_MONITOR_DB` (the SQLite file path; there is
 no safe default, it must point at your own storage) and `ISCC_MONITOR_REALM` (the realm-membership
 document). The poll intervals default (`ISCC_MONITOR_NORMAL=5m`, `ISCC_MONITOR_FROZEN=1h`) and the
-masthead identity keys are optional. For the full variable list and every endpoint, see the
-[Running a local dev instance](CLAUDE.md#running-a-local-dev-instance) section of `CLAUDE.md` — the
-single authoritative env-var table.
+masthead identity keys are optional. For the full variable list, see
+[Configuration](https://monitor.iscc.codes/operate/configuration/) (source:
+[`docs/operate/configuration.md`](docs/operate/configuration.md)); for every endpoint, the
+[HTTP API](https://monitor.iscc.codes/reference/http-api/) reference.
 
 ## Quality gate
 
@@ -56,10 +58,16 @@ Quality gates run via [mise](https://mise.jdx.dev/):
 
 ## Deployment
 
-A container image is published to GHCR (`ghcr.io/iscc/iscc-monitor`). See
-[`deploy/OPERATING.md`](deploy/OPERATING.md) for the operator contract — image tags, the SQLite volume
-and backup unit, the non-root uid, the reverse-proxy / port invariant, egress, and the `/metrics`
-exposure decision.
+A container image is published to GHCR (`ghcr.io/iscc/iscc-monitor`). The
+[operator guide](https://monitor.iscc.codes/operate/deploy/) (source: [`docs/operate/`](docs/operate/)) covers
+image tags, the SQLite volume and backups, the non-root uid, the reverse proxy, egress, upgrades, branding and
+the `/metrics` exposure decision.
+
+## Documentation site
+
+The site at monitor.iscc.codes is built from `docs/` with [Zensical](https://zensical.org) and the ISCC theme,
+and published from `main` by `.github/workflows/docs.yml`. It needs [uv](https://docs.astral.sh/uv/):
+`mise run docs:build`, `mise run docs:check` and `mise run docs:serve` (preview on port 41465).
 
 ## Specs & pointers
 

@@ -15,3 +15,7 @@ cauldron/
 *.db
 *.sqlite
 *.sqlite3
+
+# Documentation site build output and its Python environment (pyproject.toml).
+/site/
+/.venv/

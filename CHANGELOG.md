@@ -30,7 +30,7 @@ from `monitor-test.iscc.io` and `monitor.iscc.io`.
 - **Footer and operator co-branding:** every page shows the running version, linked to its release or
   commit, and the open-source credit. An operator can add its name, website, a logo shown beside the ISCC
   mark, and footer links such as an imprint or privacy policy, all through environment variables
-  ([`deploy/OPERATING.md`](deploy/OPERATING.md#branding)).
+  ([Branding](https://monitor.iscc.codes/operate/branding/)).
 - **In-browser verification:** a reproducible, hash-pinned WebAssembly verifier that re-checks a
   certificate's inclusion proof in the visitor's browser.
 - **Bitcoin anchoring:** OpenTimestamps proofs for checkpoint roots. The realm register and hub pages show
@@ -41,10 +41,12 @@ from `monitor-test.iscc.io` and `monitor.iscc.io`.
   calendar and checks them for confirmation at startup and then hourly (`ISCC_MONITOR_OTS_INTERVAL`), and
   logs one summary line per pass ([#6](https://github.com/iscc/iscc-monitor/issues/6)).
 - **API and operations:** OpenAPI 3.1 contract with hosted reference docs, Prometheus metrics, health and
-  build-version endpoints, a non-root container image, and an operator guide
-  ([`deploy/OPERATING.md`](deploy/OPERATING.md)).
+  build-version endpoints, and a non-root container image.
+- **Documentation:** a documentation site at [monitor.iscc.codes](https://monitor.iscc.codes) with guides to
+  reading a certificate, verifying a proof bundle with a short Python script, checking a Bitcoin anchor and
+  comparing log views, an explanation of the trust model, the operator guide and the API reference.
 - **Project licensing:** Apache License 2.0, with third-party terms collected in
-  [`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt) and shipped in the image.
+  [`THIRD_PARTY_NOTICES.txt`](https://github.com/iscc/iscc-monitor/blob/main/THIRD_PARTY_NOTICES.txt) and shipped in the image.
 - **Release process:** tagged releases publish `:vX.Y.Z` and `:latest` images and a GitHub Release.
 - **Vulnerability scanning:** `govulncheck` runs on every push and pull request, weekly, and before a
   release.

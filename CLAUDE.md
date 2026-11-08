@@ -45,6 +45,24 @@ Releases are cut by a human; the CID loop never commits to `main` or creates tag
 
 Stay below `1.0.0` until the v1 target is reached (`.claude/context/target.md`, ADR-0013).
 
+### Documentation site
+
+`docs/` is the public, human-facing documentation, published at **monitor.iscc.codes** from `main` by
+`.github/workflows/docs.yml` (so the site always describes the released version). It is built with Zensical
+and the ISCC theme `zensical-iscc`, pinned in `pyproject.toml` / `uv.lock` (Python tooling for the docs only;
+the monitor stays pure Go). Commands: `mise run docs:build`, `mise run docs:check` (must report `0 errors,
+0 warnings`), `mise run docs:serve` (port 41465). Every page sets `icon: lucide/<name>` in its front matter;
+pages load nothing from third parties, and Mermaid is not available.
+
+Keep the docs in step with the code. `docs/operate/configuration.md` is the user-facing reference for every
+`ISCC_MONITOR_*` key, and `internal/config` fails a test when a key is missing from it. A change to routes,
+metrics, log lines, the proof bundle or operator behaviour updates the matching page under `docs/`.
+`docs/guides/verify_bundle.py` is the documented bundle verifier; the docs workflow runs it against the example
+bundle `docs/reference/MEIGKV5N6NTVF4AB.bundle.json`, so a bundle format change needs both updated.
+
+After changing the public API, CLI or configuration, run the docs-for-agents skill with `update`. Its page is
+`docs/for-coding-agents.md`, the last entry in `nav`.
+
 ## Running a local dev instance
 
 The monitor is a single binary (`cmd/iscc-monitor`) configured entirely through environment variables
@@ -81,7 +99,7 @@ The monitor is a single binary (`cmd/iscc-monitor`) configured entirely through 
   subtitle. Distinct from the required realm-document PATH `ISCC_MONITOR_REALM`: this is the display
   name, not the on-disk file, so overloading the path var would leak a filename into the subtitle.
 
-Operator co-branding (all optional, validated at startup; see `deploy/OPERATING.md` → *Branding*). Every
+Operator co-branding (all optional, validated at startup; see `docs/operate/branding.md`). Every
 page shows the shared masthead and footer (`internal/chrome`); the ISCC mark and the open-source credit
 always stay:
 
@@ -272,7 +290,7 @@ _Avoid_: "the monitor" when you mean a specific instance
 **Verifier app**:
 A monitor-agnostic in-browser verifier on its own origin, separate from any
 instance, that re-verifies an instance's data client-side. **Deferred**
-(ADR-0016): v0.1.0 ships none, and `monitor.iscc.codes` will host this app's
+(ADR-0016): v0.1.0 ships none, and `monitor.iscc.codes` hosts this app's
 documentation instead. The certificate's in-browser re-check runs on the instance
 itself and is not this app.
 

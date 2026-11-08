@@ -3,7 +3,7 @@
 # CHANGELOG.md. It re-runs the CI and vulnerability gates first, and refuses a tag that
 # is not on main or has no changelog section, so nothing is published from an unmerged
 # or undocumented commit. It deploys nothing: operators pin the new tag themselves
-# (deploy/OPERATING.md). Pre-release tags such as v1.0.0-rc.1 do not match the filter.
+# (docs/operate/deploy.md). Pre-release tags such as v1.0.0-rc.1 do not match the filter.
 name: Release
 
 on:

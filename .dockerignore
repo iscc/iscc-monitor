@@ -41,3 +41,8 @@ cauldron/
 .github/
 .dockerignore
 Dockerfile
+
+# Documentation site sources, build output and its Python environment — not part of the binary.
+docs/
+site/
+.venv/

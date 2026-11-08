@@ -1,0 +1,17 @@
+# Python tooling for the documentation site only (docs/, zensical.toml). The monitor itself is Go;
+# nothing here is part of its build. Build and check the site with `mise run docs:build` / `docs:check`.
+[project]
+name = "iscc-monitor-docs"
+version = "0.0.0"
+description = "Documentation site of the ISCC Monitor"
+requires-python = ">=3.11"
+
+[dependency-groups]
+docs = ["zensical-iscc"]
+
+[tool.uv]
+package = false
+default-groups = ["docs"]
+
+[tool.uv.sources]
+zensical-iscc = { git = "https://github.com/iscc/zensical-iscc", tag = "v0.3.0" }

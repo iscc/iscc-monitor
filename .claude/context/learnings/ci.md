@@ -66,7 +66,7 @@ the index (`.claude/context/learnings.md`); the package-local mechanics are here
   the `docker` smoke job PROVES it by NOT passing `-e ISCC_MONITOR_REALM`** (advance `2f6d50a`): a
   missing/misspelled `ENV` makes `config.Load` exit non-zero, the container never serves, and the
   `/healthz` loop times out → the job FAILs. `ISCC_MONITOR_DB`/`ISCC_MONITOR_ADDR` are still passed (no
-  safe image default). Note for `deploy/OPERATING.md`: a Docker **Compose** volume declared `monitor-data:`
+  safe image default). Note for the operator guide (`docs/operate/deploy.md`): a Docker **Compose** volume declared `monitor-data:`
   with no `name:`/`external:` is project-PREFIXED at runtime (`<project>_monitor-data`), so a separate
   `docker run -v monitor-data:/data … chown` prep targets a DIFFERENT volume than `docker compose up`
   mounts — pin `name:` or use a Compose-native prep (open `normal`).
